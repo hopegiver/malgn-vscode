@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "malgnsoft-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "malgnsoft/claude-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "malgn-agent@malgnsoft-plugins": true
+  }
+}

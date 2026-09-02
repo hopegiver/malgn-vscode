@@ -1,0 +1,7 @@
+STATUS.md
+node_modules/
+*.vsix
+.vscode-test/
+out/
+dist/
+.dev.vars
