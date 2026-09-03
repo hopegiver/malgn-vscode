@@ -27,6 +27,52 @@ pnpm run compile        # dist/extension.cjs 생성 (esbuild, CommonJS, external
 pnpm run watch           # esbuild watch 모드
 ```
 
+`check-types`/`test`/`compat:check`/`build`는 모두 실행 전에 `gen:site`를 먼저 돌린다
+(pnpm의 `pre<script>` 훅 — 아래 "민감값 분리" 참고). 수동으로 먼저 돌리고 싶으면
+`pnpm run gen:site`.
+
+## 민감값 분리(compat/ 공개면 · site/ 사이트면) — docs/policy-contract.md §8.4
+
+`compat/compatibility.json`의 사내 인프라 값(수집기 authority·keychain 항목명 등)은
+`{"$site":"..."}` 구멍이다. 실값은 빌드 시 `pnpm gen:site`가 채운다:
+
+- **로컬에 `site/site.json`이 있으면** 그 값(영구 비추적 — `.gitignore`)으로 채우고
+  `src/generated/siteConstants.ts`의 `siteProfile`을 `'site'`로 emit한다.
+- **없으면** `compat/site.example.json`(예약 네임스페이스 값만, 추적됨)으로 채우고
+  `siteProfile`은 `'example'`이 된다 — CI·신선 클론(`docs/` 없는 상태 포함)은 항상 이
+  경로다.
+- 두 파일이 모두 없거나 구멍이 하나라도 안 채워지면 `gen:site`가 0이 아닌 종료 코드로
+  실패한다(fail-closed — 빈 화이트리스트로 조용히 폴백하지 않는다).
+- `siteProfile !== 'site'`인 산출물은 어떤 provider도 `apply()`할 수 없고(
+  `src/core/policy/siteProfileGuard.ts`) 패키징도 실패한다(
+  `scripts/assert-site-profile-for-packaging.mjs`, `pnpm run prepackage`).
+
+실제 사내 값을 쓰려면 `site/site.json`을 로컬에 만든다(형태는 `compat/site.example.json`
+참고 — git에 절대 커밋하지 않는다).
+
+## 계약 검증(`pnpm compat:check`)
+
+```bash
+pnpm compat:check   # docs/policy-contract.md §6/§8 검사 ①~⑪
+```
+
+검사 ①B·⑤C·⑦은 `docs/`가 로컬에 있을 때만 돈다(문서 실지 스캔 — 모드는 `docs/` 실재로
+결정되며 플래그가 아니다). `docs/`가 없으면(CI 등) 그 셋은 건너뛰고 나머지는 그대로
+차단성으로 강제된다 — 정본이 `docs/`가 아니라 `compat/`에 있기 때문이다(§8.2 정본 반전).
+
+`pnpm run contract:snapshot`은 `docs/`가 있을 때만(로컬) `compat/contract-snapshot.json`
+(이름·형태·해시만 — 값 0)을 재생성한다. 계약(`compat/*.json`의 `allowed*` 키)을 바꾸면
+이 명령을 다시 실행해야 검사 ⑤A가 통과한다.
+
+## 민감값 유출 방지 — pre-push 훅(선택, 기본 비활성)
+
+```bash
+git config core.hooksPath .githooks   # 사람이 직접 활성화한다(사람의 몫)
+```
+
+활성화하면 push 직전 `.githooks/pre-push`가 추적 트리 전체를 검사 ⑨와 같은 패턴 파일
+(`compat/sensitive-classes.json`)·같은 로직(`scripts/lib/sensitiveScan.mjs`)으로 스캔한다.
+
 ## 테스트
 
 ```bash

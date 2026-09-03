@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-02T00:00:00Z",
+  "extension": { "latestVersion": "0.1.0", "downloadHint": "https://<사내 배포 안내>" },
+  "killSwitch": {
+    "minExtensionVersion": null,
+    "maxExtensionVersion": null,
+    "disableProviders": [],
+    "message": null,
+    "upgradeHint": null
+  },
+  "rollout": [{ "provider": "cloudflare", "percent": 20 }],
+  "compat": { "malgnAgent": ">=1.8.24 <2.0.0", "claudeCode": ">=2.1.240" },
+  "agent": {
+    "marketplace": "malgnsoft/claude-plugins",
+    "plugin": "malgn-agent@malgnsoft-plugins",
+    "scope": "user",
+    "channel": "stable"
+  },
+  "otel": {
+    "env": {
+      "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+      "OTEL_METRICS_EXPORTER": "otlp",
+      "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+      "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "https://<수집기>/v1/metrics",
+      "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "https://<수집기>/v1/logs",
+      "OTEL_LOG_USER_PROMPTS": "0",
+      "OTEL_LOG_TOOL_CONTENT": "0",
+      "OTEL_LOG_TOOL_DETAILS": "0",
+      "OTEL_LOG_RAW_API_BODIES": "0"
+    },
+    "headersHelper": { "kind": "keychain-basic", "service": "<keychain-item>", "account": "<keychain-item>" }
+  },
+  "install": { "mode": "assisted" },
+  "github": { "requiredScopes": ["repo", "read:org", "workflow"] },
+  "cloudflare": { "loginMode": "wrangler-oauth" }
+}

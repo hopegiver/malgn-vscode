@@ -25,7 +25,7 @@ function load(policy: unknown): PolicyLoadResult {
 const BASE = {
   schemaVersion: 1,
   generatedAt: '2026-09-02T00:00:00Z',
-  extension: { latestVersion: '9.9.9', downloadHint: 'https://download.malgnsoft.com/x.vsix' },
+  extension: { latestVersion: '9.9.9', downloadHint: 'https://download.example.com/x.vsix' },
   killSwitch: { minExtensionVersion: null, maxExtensionVersion: null, disableProviders: [], message: null, upgradeHint: null },
   rollout: [{ provider: 'cloudflare', percent: 20 }],
   compat: { malgnAgent: '>=1.8.30 <2.0.0', claudeCode: '>=2.1.240' },
@@ -33,13 +33,13 @@ const BASE = {
   otel: {
     env: {
       CLAUDE_CODE_ENABLE_TELEMETRY: '1',
-      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://14.0.87.123:18443/v1/metrics',
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://203.0.113.10:4318/v1/metrics',
       OTEL_LOG_USER_PROMPTS: '0',
       OTEL_LOG_TOOL_CONTENT: '0',
       OTEL_LOG_TOOL_DETAILS: '0',
       OTEL_LOG_RAW_API_BODIES: '0',
     },
-    headersHelper: { kind: 'keychain-basic', service: 'claude-otel', account: 'claude-otel' },
+    headersHelper: { kind: 'keychain-basic', service: 'example-service', account: 'example-service' },
   },
   install: { mode: 'assisted' },
   github: { requiredScopes: ['repo'] },
@@ -51,7 +51,10 @@ const BASE = {
  * 이 배열의 길이(= 아래 `it.each` 케이스 수)가 표의 리프 개수와 같아야 "표에는
  * 있는데 테스트가 없는 행"이 없다고 주장할 수 있다.
  */
-const DOC_TABLE_LEAF_FIELDS = [
+// `export`: 검사 ③C(src/compat-check/checks/check3c-fieldTableCrossSync.ts)가 이 배열을
+// check3-fixtureLeafCoverage.ts의 독립 사본과 코드 대 코드로 대조한다
+// (docs/policy-contract.md §8.3 "③C 신설").
+export const DOC_TABLE_LEAF_FIELDS = [
   'schemaVersion',
   'generatedAt',
   'extension.latestVersion',
@@ -120,7 +123,7 @@ const cases: FieldCase[] = [
   {
     field: 'extension.downloadHint',
     run: () => {
-      const result = load({ ...BASE, extension: { ...BASE.extension, downloadHint: 'https://evil.example.com/x.vsix' } });
+      const result = load({ ...BASE, extension: { ...BASE.extension, downloadHint: 'https://evil.invalid/x.vsix' } });
       expect(result.status).toBe('ok');
       if (result.status === 'ok') expect(result.policy.extension.downloadHint).toBeNull();
     },
@@ -240,7 +243,7 @@ const cases: FieldCase[] = [
   {
     field: 'otel.env(OTEL_EXPORTER_OTLP_*_ENDPOINT)',
     run: () => {
-      const result = load({ ...BASE, otel: { ...BASE.otel, env: { ...BASE.otel.env, OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://evil.example.com/v1/metrics' } } });
+      const result = load({ ...BASE, otel: { ...BASE.otel, env: { ...BASE.otel.env, OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://evil.invalid/v1/metrics' } } });
       expect(result.status).toBe('ok');
       if (result.status === 'ok') expect(result.policy.otel.blocked).toBe(true);
     },
@@ -271,7 +274,7 @@ const cases: FieldCase[] = [
   {
     field: 'otel.headersHelper.service/.account',
     run: () => {
-      const result = load({ ...BASE, otel: { ...BASE.otel, headersHelper: { kind: 'keychain-basic', service: 'not-allowed-item', account: 'claude-otel' } } });
+      const result = load({ ...BASE, otel: { ...BASE.otel, headersHelper: { kind: 'keychain-basic', service: 'not-allowed-item', account: 'example-service' } } });
       expect(result.status).toBe('ok');
       if (result.status === 'ok') expect(result.policy.otel.blocked).toBe(true);
     },

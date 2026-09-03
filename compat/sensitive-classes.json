@@ -1,0 +1,32 @@
+{
+  "//": "docs/policy-contract.md §8.3 검사 ⑨의 부류 정의 — 공개면. 패턴/allowlist만 담는다.",
+  "//1": "값(실제 IP·실제 도메인)은 여기 담지 않는다 — 담는 순간 이 파일 자체가 C-2를 위반한다.",
+  "//2": "domainAuthority 클래스는 '알려진 공개 서비스가 아닌 모든 도메인'을 기본 차단하는",
+  "//3": "default-deny 방식이라 특정 사내 도메인 문자열을 알 필요가 없다.",
+  "version": 1,
+  "classes": [
+    {
+      "id": "ipv4-literal",
+      "kind": "ipv4",
+      "description": "인용부호(문자열 리터럴) 안에 등장하는 IPv4 리터럴. 실제 인프라 IP가 다시 하드코딩되면 반드시 걸린다.",
+      "exemptCidrs": ["127.0.0.0/8", "0.0.0.0/32", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"]
+    },
+    {
+      "id": "network-authority-domain",
+      "kind": "domain-default-deny",
+      "description": "인용부호 안에 등장하는, TLD로 끝나는 도메인 리터럴. publicAllowlist(공개적으로 알려진 외부 서비스)와 예약 네임스페이스에 없는 도메인은 전부 사내 인프라 값 후보로 간주해 차단한다. 이 목록에 항목을 추가하는 것은 diff로 드러난다(§8.6 재발 방지 5).",
+      "recognizedTlds": [
+        "com", "net", "org", "io", "dev", "app", "co", "ai", "cloud",
+        "kr", "jp", "cn", "uk", "de", "fr", "us", "info", "biz", "tech", "xyz", "me", "sh", "gg",
+        "example", "invalid", "test", "localhost"
+      ],
+      "publicAllowlist": []
+    }
+  ],
+  "reservedNamespaceAllowlist": {
+    "//": "RFC 2606 / RFC 5737 / RFC 3849 예약 네임스페이스 — 예시면·테스트 fixture에서만 쓴다.",
+    "domainSuffixes": ["example.com", "example.net", "example.org", ".example", ".invalid", ".test"],
+    "ipv4Cidrs": ["192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "127.0.0.0/8", "0.0.0.0/32"],
+    "ipv6Cidrs": ["2001:db8::/32"]
+  }
+}

@@ -40,6 +40,14 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
+      # docs/policy-contract.md §8.7 S7 — 민감값 분리(§8.4) 이후 compat/compatibility.json은
+      # {"$site":"..."} 구멍을 갖는다. CI 러너에는 site/site.json이 없으므로(사이트면은
+      # 영구 비추적) 이 단계는 항상 compat/site.example.json(예약 네임스페이스 전용)으로
+      # 구멍을 채운다 — siteProfile=example. 시크릿 0 회귀 금지선(§7.3.1)을 지키기 위해
+      # 이 단계는 CI 시크릿을 쓰지 않는다(architect가 이미 기각한 대안).
+      - name: Generate site constants (gen:site, example face)
+        run: pnpm run gen:site
+
       - name: Type check
         run: pnpm run check-types
 

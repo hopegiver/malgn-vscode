@@ -1,0 +1,16 @@
+#!/bin/sh
+# pre-push 훅 — docs/policy-contract.md §8.3 검사 ⑨ / §8.6 2차선("public 저장소에서
+# CI 탐지는 사후다 — 그래서 마지막 선이지 첫 선이 아니다").
+#
+# 검사 ⑨(src/compat-check/checks/check9-sensitiveValueScan.ts, CI)와 **같은 패턴 파일**
+# (compat/sensitive-classes.json)과 **같은 정본 로직**(scripts/lib/sensitiveScan.mjs)을
+# 그대로 재사용한다 — "규칙 이중 정의 금지".
+#
+# 활성화: 이 저장소는 기본적으로 이 훅을 쓰지 않는다(HRS 3 등 다른 결정과 마찬가지로
+# 활성화는 사람이 명시적으로 한다). 활성화하려면:
+#   git config core.hooksPath .githooks
+# (이 명령은 backend-dev가 실행하지 않는다 — git config 변경은 PM/사람의 몫이다.)
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+node "$REPO_ROOT/scripts/pre-push-sensitive-scan.mjs"
+exit $?

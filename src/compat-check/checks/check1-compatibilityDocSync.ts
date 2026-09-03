@@ -1,51 +1,37 @@
-// 검사 ① — `compatibility.json` ↔ `package.json`·문서 일치
-// (policy-contract.md §6 "검사 3중" (a)①. tech-stack.md §5.4 원문: "compat/compatibility.json이
-// 생성물(package.json engines 등)과 일치")
+// 검사 ①B — 문서 사본(policy-contract.md §2 JSONC 예시 · architecture.md 산문) ↔
+// compat/compatibility.json 실값 일치 (policy-contract.md §6 "검사 3중" (a)①의 나머지 절반)
+// (S4 분할: docs/policy-contract.md §8.3)
 //
-// 이 슬라이스 시점에는 §3.5.3이 요구하는 "PR-7 생성" 파이프라인(임계값을 빌드 시
-// package.json engines 등에 생성)이 아직 없다(그 파이프라인 자체는 W6 범위 밖). 그래서
-// "일치"를 두 가지 **실재하는** 대조로 구현한다 — 새 스키마를 발명하지 않고 이미 있는
-// 값끼리만 비교한다:
-//   (a) compatibility.json.extensionVersion === package.json.version
-//       (확장 버전의 정본은 하나뿐이어야 한다 — PR-7)
-//   (b) compatibility.json.requires.{claudeCode,malgnAgent}가 policy-contract.md §2의
-//       JSONC 예시에 박제된 리터럴 값과 같다 — 그 JSONC가 "이 값들의 유일한 정본"이라고
-//       스스로 선언하는 블록이므로(§2 원문), 실제 fixture와 어긋나면 문서가 거짓말을
-//       하고 있는 것이다.
+// v1.2-split 이후 이 검사는 **로컬 full 모드 전용**이다 — docs/policy-contract.md·
+// architecture.md를 직접 읽는다. §8.2의 정본 반전(계약 값의 정본이 문서 JSONC에서
+// compat/ 실물 파일로 옮겨짐) 덕분에, 문서가 낡아도 코드가 계약을 벗어나는 일은 생기지
+// 않는다 — 이 검사가 잡는 것은 "사람이 낡은 문서를 보고 fixture를 잘못 고치는" 2차
+// 경로뿐이며, 그래서 CI에서 강제할 필요가 없다(§8.3 ① 행: "①B는 CI 아니오").
+//
+// (a) extensionVersion == package.json.version 비교는 ①A(check1a-extensionVersionSync.ts)로
+// 옮겨져 docs/ 없이도 CI에서 항상 강제된다 — 이 파일은 (b)(c)만 남는다.
 
 import { readFileSync } from 'node:fs';
 import type { CheckResult } from '../types.js';
 import { fail, ok } from '../types.js';
 import { parseFencedJsonc } from '../lib/textUtils.js';
 
-export interface Check1Input {
-  readonly packageJsonPath: string;
+export interface Check1bInput {
   readonly compatibilityJsonPath: string;
   readonly policyContractMdPath: string;
   readonly architectureMdPath: string;
 }
 
-export function checkCompatibilityDocSync(input: Check1Input): CheckResult {
-  const id = '①';
-  const label = 'compatibility.json ↔ package.json·문서 일치';
+export function checkCompatibilityDocSync(input: Check1bInput): CheckResult {
+  const id = '①B';
+  const label = '문서 사본(§2 JSONC·architecture.md 산문) ↔ compatibility.json 실값 일치 (로컬 full 전용)';
   const violations: { ref: string; message: string }[] = [];
 
-  const pkg = JSON.parse(readFileSync(input.packageJsonPath, 'utf8')) as { version?: unknown };
   const compat = JSON.parse(readFileSync(input.compatibilityJsonPath, 'utf8')) as {
-    extensionVersion?: unknown;
     requires?: { claudeCode?: unknown; malgnAgent?: unknown };
   };
   const doc = readFileSync(input.policyContractMdPath, 'utf8');
   const architectureDoc = readFileSync(input.architectureMdPath, 'utf8');
-
-  if (typeof pkg.version !== 'string') {
-    violations.push({ ref: 'PR-7', message: 'package.json.version이 문자열이 아닙니다' });
-  } else if (compat.extensionVersion !== pkg.version) {
-    violations.push({
-      ref: 'PR-7',
-      message: `compatibility.json.extensionVersion(${String(compat.extensionVersion)}) !== package.json.version(${pkg.version})`,
-    });
-  }
 
   const docConstants = parseFencedJsonc(doc, 'compat/compatibility.json') as {
     requires?: { claudeCode?: unknown; malgnAgent?: unknown };

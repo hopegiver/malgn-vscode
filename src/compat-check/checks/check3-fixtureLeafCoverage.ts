@@ -3,17 +3,19 @@
 // 열거해 이 문서 상단 전수 검증표의 행 집합과 대조한다. 행 없는 필드가 하나라도
 // 있으면 CI 실패다")
 //
-// check2와 같은 정책 fixture(§1 JSONC 예시)를 재사용해 **모든 리프 경로**를 기계적으로
-// 열거하고, 그 경로가 전수 검증표(policy-contract.md 상단 "필드별 전수 검증표")의 27개
-// 리프 항목 중 하나로 대응되는지 확인한다. loader.ts의 fieldCoverage.test.ts가 이미
-// "표에 있는 필드를 코드가 실제로 검증하는가"(반대 방향)를 증명하므로, 이 검사는 그
-// 짝인 "fixture에 표에 없는 필드가 있는가"(PR-11①이 문자 그대로 요구하는 방향)를
-// 담당한다 — 둘은 서로 다른 실패 모드를 잡는다.
+// v1.2-split(S3) 이후 check2와 같은 정책 fixture(`compat/policy.sample.json` — 정본
+// 반전으로 문서 JSONC에서 이전됨)를 재사용해 **모든 리프 경로**를 기계적으로 열거하고,
+// 그 경로가 전수 검증표(policy-contract.md 상단 "필드별 전수 검증표")의 27개 리프 항목
+// 중 하나로 대응되는지 확인한다. loader.ts의 fieldCoverage.test.ts가 이미 "표에 있는
+// 필드를 코드가 실제로 검증하는가"(반대 방향)를 증명하므로, 이 검사는 그 짝인
+// "fixture에 표에 없는 필드가 있는가"(PR-11①이 문자 그대로 요구하는 방향)를 담당한다 —
+// 둘은 서로 다른 실패 모드를 잡는다. 아래 `DOC_TABLE_LEAF_FIELDS`는
+// `fieldCoverage.test.ts`의 독립 사본과 코드 대 코드로 대조된다(③C,
+// check3c-fieldTableCrossSync.ts) — 표가 바뀌었는데 한쪽만 갱신되는 사고를 잡기 위해서다.
 
 import { readFileSync } from 'node:fs';
 import type { CheckResult } from '../types.js';
 import { fail, ok } from '../types.js';
-import { extractFencedBlockContaining, stripJsonComments } from '../lib/textUtils.js';
 
 /**
  * policy-contract.md 상단 "필드별 전수 검증표"(17행)를 리프 단위로 분해한 27개 항목.
@@ -87,7 +89,7 @@ function walkLeafPaths(value: unknown, path: string, out: Set<string>): void {
 }
 
 export interface Check3Input {
-  readonly policyContractMdPath: string;
+  readonly policySampleJsonPath: string;
 }
 
 export function checkFixtureLeafCoverage(input: Check3Input): CheckResult {
@@ -95,18 +97,12 @@ export function checkFixtureLeafCoverage(input: Check3Input): CheckResult {
   const label = '정책 fixture의 모든 리프 경로가 전수 검증표의 행을 갖는지 (PR-11①)';
   const violations: { ref: string; message: string }[] = [];
 
-  const doc = readFileSync(input.policyContractMdPath, 'utf8');
-  const block = extractFencedBlockContaining(doc, '"schemaVersion": 1, "generatedAt"');
-  if (block === null) {
-    return fail(id, label, [{ ref: '§1', message: 'policy-contract.md §1의 정책 스키마 JSONC 예시 블록을 찾을 수 없습니다' }]);
-  }
-
   let fixture: unknown;
   try {
-    fixture = JSON.parse(stripJsonComments(block));
+    fixture = JSON.parse(readFileSync(input.policySampleJsonPath, 'utf8'));
   } catch (error) {
     return fail(id, label, [
-      { ref: '§1', message: `정책 스키마 예시 블록이 유효한 JSONC가 아닙니다: ${error instanceof Error ? error.message : String(error)}` },
+      { ref: 'compat/policy.sample.json', message: `정책 fixture가 유효한 JSON이 아닙니다: ${error instanceof Error ? error.message : String(error)}` },
     ]);
   }
 

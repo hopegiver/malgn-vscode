@@ -1,0 +1,13 @@
+{
+  "//": "docs/policy-contract.md §8.4 예시 사이트면 — `site/site.json`이 없을 때 `pnpm gen:site`의",
+  "//1": "기본 입력이 된다. 모든 값은 예약 네임스페이스(RFC 2606/5737)에만 속한다(검사 ⑪(a)).",
+  "//2": "형태(키 개수·배열 길이)는 실사이트면과 같아야 한다(검사 ⑪(b), contract-snapshot.json의 siteShape 대조).",
+  "authorities": {
+    "otel": ["203.0.113.10:4318"],
+    "extension": ["*.example.com"],
+    "identity": ["auth.example.com", "hub.example.com"],
+    "hub": ["hub.example.com"],
+    "mcp": ["hub.example.com"]
+  },
+  "keychainItems": ["example-service"]
+}

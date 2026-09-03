@@ -11,6 +11,12 @@ import compatibilityRaw from '../../../compat/compatibility.json';
 import installTargetsRaw from '../../../compat/install-targets.json';
 import managerPathsRaw from '../../../compat/manager-paths.json';
 import installEnvRaw from '../../../compat/install-env.json';
+// `src/generated/siteConstants.ts`는 `pnpm gen:site`의 빌드 산출물이라 git에 없다
+// (src/generated/.gitignore). `pnpm test`/`pnpm compat:check`/`pnpm build`는 모두 이보다
+// 먼저 `gen:site`를 강제한다(package.json의 pretest/precompat:check/prebuild + CI 명시 단계,
+// docs/policy-contract.md §8.7 S2). 이 import가 실패한다는 것 자체가 "gen:site를 건너뛰고
+// 빌드를 시도했다"는 신호이며, 그 실패가 곧 fail-closed 3종 중 첫째·둘째의 실제 강제 지점이다.
+import { siteConstants, siteProfile } from '../../generated/siteConstants.js';
 import { MV_INSTALL_TARGET_UNVERIFIED } from './errors.js';
 import type { CodeConstants, InstallTargetRow, RejectedInstallTargetRow } from './types.js';
 
@@ -109,11 +115,14 @@ export function loadCodeConstants(): CodeConstants {
     requires: compatibilityRaw.requires,
     known: compatibilityRaw.known as CodeConstants['known'],
     onUnknownNewer: compatibilityRaw.onUnknownNewer as 'warn',
-    allowedAuthorities: compatibilityRaw.allowedAuthorities,
+    // 민감 슬롯(§8.4) — compatibility.json에는 {"$site":"..."} 구멍만 있고, 실값은
+    // gen:site가 만든 생성 모듈에서 온다.
+    siteProfile,
+    allowedAuthorities: siteConstants.allowedAuthorities,
     allowedMarketplaces: compatibilityRaw.allowedMarketplaces,
     allowedPlugins: compatibilityRaw.allowedPlugins,
     allowedInstallScopes: compatibilityRaw.allowedInstallScopes,
-    allowedKeychainItems: compatibilityRaw.allowedKeychainItems,
+    allowedKeychainItems: siteConstants.allowedKeychainItems,
     allowedGithubScopes: compatibilityRaw.allowedGithubScopes,
     allowedInstallTargets: valid,
     allowedManagerPaths: managerPathsRaw,

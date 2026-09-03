@@ -1,0 +1,5 @@
+# docs/policy-contract.md §8.4 — 이 디렉터리는 `pnpm gen:site`의 빌드 산출물만 담는다.
+# 값이 site/example 어느 쪽이든(민감할 수 있으므로) 추적하지 않는다.
+# 이 파일 자체는 추적한다(디렉터리 존재·규칙을 git에 남기기 위해 `!.gitignore`로 예외).
+*
+!.gitignore

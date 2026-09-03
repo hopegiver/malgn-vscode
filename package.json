@@ -24,13 +24,21 @@
     }
   },
   "scripts": {
+    "gen:site": "node scripts/gen-site.mjs",
+    "contract:snapshot": "node scripts/gen-contract-snapshot.mjs",
+    "pretest": "pnpm run gen:site",
+    "precheck-types": "pnpm run gen:site",
+    "precompat:check": "pnpm run gen:site",
     "check-types": "tsc --noEmit",
     "compile": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
+    "prebuild": "pnpm run gen:site",
     "build": "pnpm run check-types && pnpm run compile",
     "test": "vitest run",
     "test:watch": "vitest",
-    "compat:check": "vitest run --config vitest.compat.config.ts"
+    "compat:check": "vitest run --config vitest.compat.config.ts",
+    "prepackage": "pnpm run gen:site && node scripts/assert-site-profile-for-packaging.mjs",
+    "package": "pnpm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

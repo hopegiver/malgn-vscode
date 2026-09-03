@@ -16,16 +16,10 @@
     }
   ],
   "onUnknownNewer": "warn",
-  "allowedAuthorities": {
-    "otel": ["14.0.87.123:18443"],
-    "extension": ["*.malgnsoft.com"],
-    "identity": ["auth.apiserver.kr", "malgnai-hub.apiserver.kr"],
-    "hub": ["malgnai-hub.apiserver.kr"],
-    "mcp": ["malgnai-hub.apiserver.kr"]
-  },
+  "allowedAuthorities": { "$site": "authorities" },
   "allowedMarketplaces": ["malgnsoft/claude-plugins"],
   "allowedPlugins": ["malgn-agent@malgnsoft-plugins"],
   "allowedInstallScopes": ["user"],
-  "allowedKeychainItems": ["claude-otel"],
+  "allowedKeychainItems": { "$site": "keychainItems" },
   "allowedGithubScopes": ["repo", "read:org", "workflow", "gist", "read:user"]
 }

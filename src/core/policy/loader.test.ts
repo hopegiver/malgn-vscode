@@ -24,7 +24,7 @@ function load(policy: unknown): PolicyLoadResult {
 const VALID_POLICY = {
   schemaVersion: 1,
   generatedAt: '2026-09-02T00:00:00Z',
-  extension: { latestVersion: '9.9.9', downloadHint: 'https://download.malgnsoft.com/malgn-vscode.vsix' },
+  extension: { latestVersion: '9.9.9', downloadHint: 'https://download.example.com/malgn-vscode.vsix' },
   killSwitch: {
     minExtensionVersion: null,
     maxExtensionVersion: null,
@@ -39,13 +39,13 @@ const VALID_POLICY = {
     env: {
       CLAUDE_CODE_ENABLE_TELEMETRY: '1',
       OTEL_METRICS_EXPORTER: 'otlp',
-      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://14.0.87.123:18443/v1/metrics',
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://203.0.113.10:4318/v1/metrics',
       OTEL_LOG_USER_PROMPTS: '0',
       OTEL_LOG_TOOL_CONTENT: '0',
       OTEL_LOG_TOOL_DETAILS: '0',
       OTEL_LOG_RAW_API_BODIES: '0',
     },
-    headersHelper: { kind: 'keychain-basic', service: 'claude-otel', account: 'claude-otel' },
+    headersHelper: { kind: 'keychain-basic', service: 'example-service', account: 'example-service' },
   },
   install: { mode: 'assisted' },
   github: { requiredScopes: ['repo', 'read:org', 'workflow'] },
@@ -92,7 +92,7 @@ describe('loadPolicyFromText — 파일 전체 거부(사이즈/파싱)', () => 
 // --- PR-5(정책 무비밀) ---
 describe('loadPolicyFromText — PR-5 정책 무비밀', () => {
   it('token/secret/password/authorization 형태의 키 이름이 있으면 파일 전체가 거부된다', () => {
-    const withSecret = { ...VALID_POLICY, otel: { ...VALID_POLICY.otel, headersHelper: { kind: 'keychain-basic', service: 'claude-otel', account: 'claude-otel', apiToken: 'xxx' } } };
+    const withSecret = { ...VALID_POLICY, otel: { ...VALID_POLICY.otel, headersHelper: { kind: 'keychain-basic', service: 'example-service', account: 'example-service', apiToken: 'xxx' } } };
     const result = load(withSecret);
     expect(result.status).toBe('rejected');
     if (result.status !== 'rejected') return;
@@ -122,7 +122,7 @@ describe('부재는 차단 (PR-11 ①) — 필수 키가 빠진 정책이 통과
   it('otel.headersHelper.kind가 없으면 정책 파일 전체가 거부된다(otel만 부분 무효화되지 않는다)', () => {
     const withoutKind = {
       ...VALID_POLICY,
-      otel: { ...VALID_POLICY.otel, headersHelper: { service: 'claude-otel', account: 'claude-otel' } },
+      otel: { ...VALID_POLICY.otel, headersHelper: { service: 'example-service', account: 'example-service' } },
     };
     const result = load(withoutKind);
     expect(result.status).toBe('rejected');
@@ -144,7 +144,7 @@ describe('좁히기만 허용된다 (PR-9) — 넓히려는 시도는 폐기되�
   });
 
   it('허용 목적지를 추가(=화이트리스트 밖 목적지 사용)하려는 시도는 폐기되고 MV_POLICY_AUTHORITY_DENIED가 난다', () => {
-    const untrustedHost = { ...VALID_POLICY, extension: { ...VALID_POLICY.extension, downloadHint: 'https://evil.example.com/malgn-vscode.vsix' } };
+    const untrustedHost = { ...VALID_POLICY, extension: { ...VALID_POLICY.extension, downloadHint: 'https://evil.invalid/malgn-vscode.vsix' } };
     const result = load(untrustedHost);
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
@@ -192,7 +192,7 @@ describe('otel.env — S4 프라이버시 4키/S2 목적지/PII 확장 우회 �
   it('허용되지 않은 수집기 목적지는 OTel 전체를 blocked로 만든다', () => {
     const wrongCollector = {
       ...VALID_POLICY,
-      otel: { ...VALID_POLICY.otel, env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://evil.example.com/v1/metrics' } },
+      otel: { ...VALID_POLICY.otel, env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://evil.invalid/v1/metrics' } },
     };
     const result = load(wrongCollector);
     expect(result.status).toBe('ok');

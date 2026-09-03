@@ -50,12 +50,19 @@ export interface InstallTargetRow {
   readonly strategy: string;
 }
 
+/** docs/policy-contract.md §8.4 — 이 값이 'site'가 아니면 어떤 provider도 apply할 수 없다
+ * (fail-closed 3종의 셋째). `src/generated/siteConstants.ts`(빌드 산출물)가 채운다. */
+export type SiteProfile = 'site' | 'example';
+
 export interface CodeConstants {
   readonly schemaVersion: number;
   readonly extensionVersion: string;
   readonly requires: CompatRequires;
   readonly known: readonly KnownVersionEntry[];
   readonly onUnknownNewer: 'warn';
+  /** 'example'이면 allowedAuthorities/allowedKeychainItems가 예약 네임스페이스 예시값이다 —
+   * 실제 인프라를 가리키지 않는다(§8.4). */
+  readonly siteProfile: SiteProfile;
   readonly allowedAuthorities: AllowedAuthorities;
   readonly allowedMarketplaces: readonly string[];
   readonly allowedPlugins: readonly string[];
