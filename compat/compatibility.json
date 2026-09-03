@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "extensionVersion": "0.1.0",
+  "requires": {
+    "claudeCode": ">=2.1.237",
+    "malgnAgent": ">=1.8.24 <2.0.0",
+    "manifestSchema": { "min": 1, "max": 1 }
+  },
+  "known": [
+    {
+      "component": "malgnAgent",
+      "range": "1.8.19",
+      "verdict": "block-apply",
+      "reason": "이 버전은 known 결함으로 apply가 차단됩니다",
+      "action": "업데이트 후 다시 시도하세요"
+    }
+  ],
+  "onUnknownNewer": "warn",
+  "allowedAuthorities": {
+    "otel": ["14.0.87.123:18443"],
+    "extension": ["*.malgnsoft.com"],
+    "identity": ["auth.apiserver.kr", "malgnai-hub.apiserver.kr"],
+    "hub": ["malgnai-hub.apiserver.kr"],
+    "mcp": ["malgnai-hub.apiserver.kr"]
+  },
+  "allowedMarketplaces": ["malgnsoft/claude-plugins"],
+  "allowedPlugins": ["malgn-agent@malgnsoft-plugins"],
+  "allowedInstallScopes": ["user"],
+  "allowedKeychainItems": ["claude-otel"],
+  "allowedGithubScopes": ["repo", "read:org", "workflow", "gist", "read:user"]
+}

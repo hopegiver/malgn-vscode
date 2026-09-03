@@ -1,0 +1,57 @@
+[
+  {
+    "tool": "claude",
+    "platform": "darwin",
+    "manager": "brew",
+    "subcommand": "install --cask",
+    "packageId": "claude-code",
+    "artifactKind": "Binary",
+    "expectedSigner": "Anthropic PBC",
+    "verified": false,
+    "strategy": "PkgManagerStrategy"
+  },
+  {
+    "tool": "claude",
+    "platform": "win32",
+    "manager": "winget",
+    "subcommand": "install",
+    "packageId": "Anthropic.ClaudeCode",
+    "artifactKind": null,
+    "expectedSigner": null,
+    "verified": false,
+    "strategy": "PkgManagerStrategy"
+  },
+  {
+    "tool": "gh",
+    "platform": "darwin",
+    "manager": "brew",
+    "subcommand": "install",
+    "packageId": "gh",
+    "artifactKind": null,
+    "expectedSigner": null,
+    "verified": false,
+    "strategy": "PkgManagerStrategy"
+  },
+  {
+    "tool": "gh",
+    "platform": "win32",
+    "manager": "winget",
+    "subcommand": "install",
+    "packageId": "GitHub.cli",
+    "artifactKind": null,
+    "expectedSigner": null,
+    "verified": false,
+    "strategy": "PkgManagerStrategy"
+  },
+  {
+    "tool": "wrangler",
+    "platform": "*",
+    "manager": "pnpm",
+    "subcommand": "add -D",
+    "packageId": "wrangler@latest",
+    "artifactKind": null,
+    "expectedSigner": null,
+    "verified": false,
+    "strategy": "WorkspaceDepStrategy"
+  }
+]
