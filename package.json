@@ -29,7 +29,8 @@
     "watch": "node esbuild.mjs --watch",
     "build": "pnpm run check-types && pnpm run compile",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "compat:check": "vitest run --config vitest.compat.config.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

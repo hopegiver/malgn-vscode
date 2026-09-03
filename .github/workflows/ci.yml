@@ -1,0 +1,53 @@
+# 차단성 CI — docs/tech-stack.md §5.4 파이프라인의 로컬·오프라인 갈래만 구현한다:
+# install(frozen) → tsc --noEmit → vitest → compat:check → esbuild 빌드.
+#
+# 설계 원칙(docs/architecture.md §7.3.1 "회귀 금지 항목" / docs/policy-contract.md §6):
+#   - 차단성 검사는 로컬·오프라인만이다 — 이 워크플로는 상위 저장소(malgnsoft/claude-plugins)를
+#     조회하지 않는다. 인터페이스 지문 대조(§3.5.2)는 **비차단성 스케줄 잡**이고 이
+#     워크플로의 범위가 아니다(W6 작업 지시 "비차단 스케줄 잡은 이번 범위가 아닙니다").
+#   - 액션은 sha로 고정한다(가변 태그 `@v4` 금지).
+#   - `permissions`는 최소(`contents: read`)로 둔다.
+#   - 시크릿을 쓰지 않는다.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  compat-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm run check-types
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Contract gate — compat:check
+        run: pnpm compat:check
+
+      - name: Build (esbuild bundle sanity check)
+        run: pnpm run compile

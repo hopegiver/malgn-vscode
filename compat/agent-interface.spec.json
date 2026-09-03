@@ -1,0 +1,18 @@
+{
+  "cliSurface": [
+    "plugin install:--yes.description",
+    "plugin list:--json",
+    "plugin marketplace:add"
+  ],
+  "source": ".claude-plugin/plugin.json",
+  "fields": [
+    "name",
+    "mcpServers.*.type",
+    "mcpServers.*.url",
+    "mcpServers.*.oauth.clientId",
+    "userConfig.*.type",
+    "userConfig.*.required",
+    "userConfig.*.sensitive"
+  ],
+  "policyFile": "workstation-profile.json"
+}
