@@ -10,6 +10,7 @@
     "allowedKeychainItems",
     "allowedManagerPaths",
     "allowedMarketplaces",
+    "allowedOtelEnvKeys",
     "allowedPlugins"
   ],
   "leafRows": [
@@ -60,7 +61,7 @@
     {
       "doc": "policy-contract.md",
       "region": "§2",
-      "sha256": "sha256:1aa24d13e92df0ecc8ab0c4ccec89a1c00f17492f2993d0a929c533e5da1b77c"
+      "sha256": "sha256:00b592f65b0ab14f73525ea0613644b4603c7a645d6c581bdbf1cbdfaa8dc260"
     },
     {
       "doc": "policy-contract.md",
@@ -78,5 +79,5 @@
       "sha256": "sha256:3454ba70badceb4b150baf44d750e96da2400f20d036e57c833341710565fd29"
     }
   ],
-  "digest": "sha256:11f4a79f6c1049f7826deadf470eb080d9c573badd9ac4d7667b06e8f203d556"
+  "digest": "sha256:588c48b88e69b814573f97f94f962464531c2df4560e3e0ee0d44ef5d73ce2ea"
 }

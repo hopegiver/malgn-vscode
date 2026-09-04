@@ -26,6 +26,10 @@ export const MV_GITHUB_SCOPE_DENIED = 'MV_GITHUB_SCOPE_DENIED';
 /** policy-contract.md §2.1 — allowedInstallTargets 격자에서 verified !== true(키 부재 포함) */
 export const MV_INSTALL_TARGET_UNVERIFIED = 'MV_INSTALL_TARGET_UNVERIFIED';
 
+/** 전수 검증표 killSwitch.disableProviders[]/rollout[].provider 행(§2.5) — `"install"`은
+ * 조용히 폐기하지 않고 명시 거부한다(severity=high). */
+export const MV_POLICY_KILLSWITCH_INSTALL_DENIED = 'MV_POLICY_KILLSWITCH_INSTALL_DENIED';
+
 // --- synthesized (표에 문자열이 없는 행 · MV_POLICY_<REASON> 관례) ----------
 
 export const MV_POLICY_MALFORMED = 'MV_POLICY_MALFORMED';

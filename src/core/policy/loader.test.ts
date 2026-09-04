@@ -5,6 +5,8 @@ import {
   MV_COMPAT_WIDENING_REJECTED,
   MV_GITHUB_SCOPE_DENIED,
   MV_POLICY_AUTHORITY_DENIED,
+  MV_POLICY_KILLSWITCH_INSTALL_DENIED,
+  MV_POLICY_KILLSWITCH_PROVIDER_UNKNOWN,
   MV_POLICY_MALFORMED,
   MV_POLICY_OTEL_ENDPOINT_AUTHORITY_DENIED,
   MV_POLICY_OTEL_ENV_KEY_DENIED,
@@ -204,13 +206,13 @@ describe('otel.env — S4 프라이버시 4키/S2 목적지/PII 확장 우회 �
 });
 
 // --- A-31(F-4, security-report.md) — otel.env 검사 순서 회귀 3축 ---
-// loader.ts:341-355의 엔드포인트 분기가 KNOWN_OTEL_ENV_KEYS 화이트리스트보다 먼저 돌면
+// loader.ts의 엔드포인트 분기가 allowedOtelEnvKeys(compat/compatibility.json, §2.4) 화이트리스트보다 먼저 돌면
 // TRACES_ENDPOINT·임의 접미 키가 authority만 통과해도 effective env에 실린다(실측
 // 재현됨). 순서를 뒤집은 뒤에도 (1) 그 두 키는 여전히 폐기되는지 (2) 화이트리스트
 // 안의 METRICS/LOGS_ENDPOINT는 여전히 authority 검사를 받는지 (3) 허용 밖 authority가
 // 여전히 high로 거부되는지 3축 전부를 고정한다.
 describe('otel.env — A-31(F-4) 검사 순서 회귀: 화이트리스트가 엔드포인트 분기보다 먼저 돈다', () => {
-  it('[축1] TRACES_ENDPOINT(화이트리스트 밖, 대조군은 KNOWN_OTEL_ENV_KEYS에 METRICS/LOGS만 있음)는 authority가 허용값이어도 폐기되고 blocked를 만들지 않는다', () => {
+  it('[축1] TRACES_ENDPOINT(화이트리스트 밖, 대조군은 allowedOtelEnvKeys에 METRICS/LOGS만 있음)는 authority가 허용값이어도 폐기되고 blocked를 만들지 않는다', () => {
     const withTraces = {
       ...VALID_POLICY,
       otel: {
@@ -290,13 +292,15 @@ describe('otel.env — A-31(F-4) 검사 순서 회귀: 화이트리스트가 엔
 });
 
 describe('killSwitch / rollout — enum·범위 검증', () => {
-  it('disableProviders의 미지 원소는 폐기되고 나머지는 유지된다', () => {
-    const p = { ...VALID_POLICY, killSwitch: { ...VALID_POLICY.killSwitch, disableProviders: ['otel', 'install', 'not-a-provider'] } };
+  it('disableProviders의 순수 미지 원소(enum에 없는 임의 문자열)는 info로 폐기되고 나머지는 유지된다', () => {
+    const p = { ...VALID_POLICY, killSwitch: { ...VALID_POLICY.killSwitch, disableProviders: ['otel', 'not-a-provider'] } };
     const result = load(p);
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
-    // 'install'은 enum 밖(§ 표 원문: agent|otel|github|cloudflare|mcp만)이라 폐기된다
     expect(result.policy.killSwitch.disableProviders).toEqual(['otel']);
+    expect(
+      result.issues.some((i) => i.field === 'killSwitch.disableProviders[]' && i.code === MV_POLICY_KILLSWITCH_PROVIDER_UNKNOWN && i.severity === 'info')
+    ).toBe(true);
   });
 
   it('rollout percent가 0~100 밖이면 그 항목이 폐기된다', () => {
@@ -305,5 +309,37 @@ describe('killSwitch / rollout — enum·범위 검증', () => {
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     expect(result.policy.rollout).toEqual([]);
+  });
+});
+
+// --- v1.2-stopmatrix(B-4) — policy-contract.md §2.5 killSwitch `install` 명시 거부 ---
+describe('killSwitch/rollout — install은 미지 값 폐기가 아니라 명시 거부(MV_POLICY_KILLSWITCH_INSTALL_DENIED, severity high)', () => {
+  it('disableProviders에 install이 있으면 명시 거부되고(high) 나머지 원소는 유지된다', () => {
+    const p = { ...VALID_POLICY, killSwitch: { ...VALID_POLICY.killSwitch, disableProviders: ['otel', 'install', 'not-a-provider'] } };
+    const result = load(p);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.policy.killSwitch.disableProviders).toEqual(['otel']);
+    const installIssue = result.issues.find(
+      (i) => i.field === 'killSwitch.disableProviders[]' && i.code === MV_POLICY_KILLSWITCH_INSTALL_DENIED
+    );
+    expect(installIssue).toBeDefined();
+    expect(installIssue?.severity).toBe('high');
+    // 순수 미지 값('not-a-provider')은 여전히 별도의 info 사유로 폐기된다 — install
+    // 전용 분기가 일반 미지 값 처리를 대체하지 않는다.
+    expect(
+      result.issues.some((i) => i.field === 'killSwitch.disableProviders[]' && i.code === MV_POLICY_KILLSWITCH_PROVIDER_UNKNOWN)
+    ).toBe(true);
+  });
+
+  it('rollout[].provider가 install이면 명시 거부되고(high) 그 항목은 rollout에 포함되지 않는다', () => {
+    const p = { ...VALID_POLICY, rollout: [{ provider: 'install', percent: 50 }] };
+    const result = load(p);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.policy.rollout).toEqual([]);
+    const installIssue = result.issues.find((i) => i.field === 'rollout[].provider' && i.code === MV_POLICY_KILLSWITCH_INSTALL_DENIED);
+    expect(installIssue).toBeDefined();
+    expect(installIssue?.severity).toBe('high');
   });
 });

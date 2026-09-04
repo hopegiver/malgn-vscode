@@ -1,5 +1,6 @@
-// STOPPABLE_SURFACES + 정지 판정 — architecture.md §3.6.1(정본)·§3.5.3·§2.1·§3.7.3(N-2)
-// 구현. W4 작업 지시 정본.
+// STOPPABLE_SURFACES + 정지 판정 — architecture.md §3.6.1(정본, 5경로×2표면×install 매트릭스)·
+// §3.5.3·§2.1·§3.7.3(N-2) 구현. v1.2-stopmatrix — architect 판정에 따라 install 예외 범위를
+// 축소한다.
 //
 // [핵심 성질] "정지 방향만 가능하고 주입은 불가"다. §3.6.1 원문:
 //   "정지 판정을 내리는 모든 경로가 이 상수를 참조한다. 이 표가 유일한 정본이다."
@@ -8,21 +9,29 @@
 // 고위험 표면 변경 재동의(HRS 4, §7.3.1) 다섯 경로가 전부 `evaluateStop()` 하나를
 // 통해서만 정지를 표현한다. HRS 4의 "표면 파일 변경 감지" 자체(무엇이 바뀌었는지 판단)는
 // W7 소관이라 여기 없다 — 이 모듈은 그 판정 결과(불리언 신호)가 이 상수를 통해서만
-// 정지로 이어지도록 배선만 제공한다(작업 지시 "W4는 STOPPABLE_SURFACES가 그 경로를
-// 포함하도록만 하십시오").
+// 정지로 이어지도록 배선만 제공한다.
 //
 // [주입 불가 보장] `evaluateStop()`의 반환 타입(`StopDecision`)은 `{stopped, reasons}`만
 // 갖는다 — 어떤 입력을 넣어도 이 함수가 새 Change·새 target·새 provider 대상을 만들어낼
 // 수 없다(타입 자체가 생성 능력을 갖지 않는다). 이 함수는 순수하고(네트워크·fs 없음)
 // 상태를 갖지 않는다 — 매 호출이 입력 신호만으로 결정된다.
 //
-// [정지 불가 범위 — install 예외] 작업 지시 원문: "정지되는 것은 install 외 provider의
-// apply()와 신규 동의 발급뿐이다." install provider의 apply는 하한 미달을 해소할
-// **유일한 경로**이므로(§3.5.3) 5개 정지 경로 **전부**에서 예외다. §2.1 원문 표는
-// "금지: 모든 apply()"라고만 적어 install 예외를 명시하지 않지만, §3.6.1이 "이 표가
-// 유일한 정본"이라고 선언하고 이 작업 지시가 install 예외를 5개 경로 전체에 걸어
-// 명시했으므로 그 판단을 따른다 — §2.1 문면과의 긴장은 반환문에 별도 보고한다(문서는
-// 고치지 않는다).
+// [정지 불가 범위 — install 예외는 "규칙 A"로 축소된다, §3.6.1] 구판(W4)은 진입부의 이른
+// 반환으로 install을 5개 정지 경로 **전부**에서 배제했다. 그러나 그 근거(§3.5.3 "하한
+// 미달을 해소할 유일한 경로")는 **②(호환 게이트 하한 미달) 상태에만 붙어 있고 다른
+// 상태로 전이되지 않는다** — 이것이 §3.6.1의 규칙 A다: "그 정지 상태를 install의
+// `apply()`가 해소할 수 있는 경로만 예외다." 매트릭스가 실제로 정하는 것은:
+//   ① 킬 스위치      — install은 대상 아님(정책 enum 밖, policy-contract.md §2.5) + 런타임 재확인
+//   ② 호환 게이트 하한 미달 — install만 예외, 계속 동작(§3.5.3 — 유일한 해소 경로)
+//   ③ 미신뢰 워크스페이스 — install도 정지(예외 없음, §3.6.1 판정 A-1 — 미신뢰 워크스페이스는
+//                          install이 해소할 수 있는 상태가 아니다)
+//   ④ 정책 체크아웃 14일 노후 — install도 정지(예외 없음 — 체크아웃 갱신은 이미 있는
+//                          `claude`가 하고, `claude`가 없으면 이 상태 자체가 성립하지 않는다)
+//   ⑤ HRS 4 재동의    — provider.apply만 정지(아래 항목 참고). install은 표면 집합 밖이라
+//                          해당 없음(HRS4 신호는 W7이 non-install provider 표면에 대해서만 계산한다)
+// 그래서 install 예외는 **①킬스위치 판정 내부**와 **②호환 게이트 판정** 두 곳에만 건다 —
+// 진입부의 블랭킷 이른 반환을 제거했다. §2.1 원문 표("금지: 모든 apply() — install
+// 포함")와의 긴장은 이제 §3.6.1 판정 A-1로 해소됐다(문서는 고치지 않는다).
 //
 // [HRS 4는 provider.apply만 정지한다] STOPPABLE_SURFACES 두 값 중 `consent.issue`까지
 // HRS 4가 막으면 재동의(그 자체가 HRS 4의 복구 경로)를 발급할 수단이 없어진다 —
@@ -107,15 +116,24 @@ export interface StopDecision {
   readonly reasons: readonly StopReason[];
 }
 
-/** 정지 불가 범위 ① — 하한 미달을 해소할 유일한 경로(§3.5.3). 5개 정지 경로 전부에서
- * 예외다(작업 지시 "정지되는 것은 install 외 provider의 apply()와 신규 동의 발급뿐"). */
-const NEVER_STOPPABLE_PROVIDER: ProviderId = 'install';
-
+/**
+ * 정지 경로 ① 킬 스위치 — install 예외는 **여기 안에서만** 적용한다(§3.6.1 규칙 A 매트릭스
+ * ①행: "대상 아님(정책 enum 밖) + 런타임 재확인"). `disableProviders[]`·`rollout[].provider`
+ * enum에는 애초에 `install`이 없다(policy-contract.md §2.5 — 정책 로더 `loader.ts`의
+ * `KILLSWITCH_PROVIDER_IDS`가 걸러낸다). 이 함수는 그 계층이 뚫리는 경우까지 대비해
+ * `providerId === 'install'`을 별도로 재확인한다(방어심층) — `minExtensionVersion`/
+ * `maxExtensionVersion`(버전 상하한, "provider 전체" 적용)도 함께 면제한다: 버전 상하한이
+ * install까지 멈추면 §3.5.3이 유일한 해소 경로로 지정한 것이 정책 한 장(구버전 PC가
+ * 하한 아래 머무는 것)으로 무효화되고, policy-contract.md §2.5 ①의 순환 차단 논리
+ * ("정책을 가져오는 도구가 바로 그 claude")가 버전 축에서도 깨진다.
+ */
 function killSwitchStops(
   providerId: ProviderId,
   killSwitch: EffectiveKillSwitch,
   currentExtensionVersion: string
 ): boolean {
+  if (providerId === 'install') return false;
+
   if (killSwitch.disableProviders.includes(providerId)) return true;
 
   const current = parseVersion(currentExtensionVersion);
@@ -136,22 +154,24 @@ function killSwitchStops(
  * 정지 판정 — 유일한 정본 함수. `surface`가 `STOPPABLE_SURFACES` 밖의 값이면 TS가
  * 컴파일 타임에 거부한다(`StoppableSurface` 유니온 밖의 문자열을 넣을 수 없다).
  *
- * install provider는 어떤 신호가 들어와도 정지되지 않는다(정지 불가 범위 ①) — 이 예외를
- * 신호마다 개별 처리하지 않고 함수 진입부 한 곳에서 처리한다. "5개 신호 중 하나가 install
- * 예외를 빠뜨린다"는 실수가 구조적으로 발생할 수 없다(M-13이 지적한 결함의 재발 방지).
+ * install 예외는 **①킬스위치**와 **②호환 게이트** 두 판정에만 개별적으로 걸려 있다
+ * (§3.6.1 규칙 A — "그 정지 상태를 install의 `apply()`가 해소할 수 있는 경로만
+ * 예외다" → ②뿐, ①은 애초에 install이 킬스위치 대상 enum 밖이라 별도로 면제).
+ * **③ 미신뢰 워크스페이스·④ 정책 체크아웃 노후는 install에도 예외 없이 적용된다** —
+ * 이 두 상태는 install의 `apply()`가 해소할 수 있는 상태가 아니기 때문이다(규칙 A가
+ * 성립하지 않는다). 블랭킷 이른 반환을 두지 않고 신호마다 개별 판정하는 것이 이 축소의
+ * 핵심이다 — 진입부 한 곳에서 install을 걸러내면 ③④가 구조적으로 함께 면제돼 버려
+ * 규칙 A가 요구하는 "상태별로 다르게" 판단을 표현할 수 없다.
  */
 export function evaluateStop(
   surface: StoppableSurface,
   providerId: ProviderId,
   signals: StopSignals
 ): StopDecision {
-  if (providerId === NEVER_STOPPABLE_PROVIDER) {
-    return { stopped: false, reasons: [] };
-  }
-
   const reasons: StopReason[] = [];
 
-  // ① 킬 스위치(G-2) — provider.apply·consent.issue 둘 다 정지
+  // ① 킬 스위치(G-2) — provider.apply·consent.issue 둘 다 정지. install 예외는
+  //    killSwitchStops() 내부에서만 적용된다(위 함수 주석 참고).
   if (killSwitchStops(providerId, signals.killSwitch, signals.currentExtensionVersion)) {
     reasons.push({
       code: MV_STOP_KILL_SWITCH,
@@ -159,17 +179,20 @@ export function evaluateStop(
     });
   }
 
-  // ② 호환 게이트 하한 미달(§3.5.3) — provider.apply·consent.issue 둘 다 정지
-  //    (install은 위에서 이미 반환됐으므로 여기 도달한 시점에 install일 수 없다 — §3.5.3의
-  //    "install provider는 예외적으로 계속 동작"이 이 함수 진입부의 이른 반환으로 이미 충족됨)
-  if (signals.compatGateBelowMinimum) {
+  // ② 호환 게이트 하한 미달(§3.5.3) — provider.apply·consent.issue 둘 다 정지하되
+  //    install은 예외다(§3.5.3 — 하한 미달을 해소할 유일한 경로). 이 예외는 이 판정
+  //    안에서만 적용한다 — ③④로 전이되지 않는다(규칙 A).
+  if (signals.compatGateBelowMinimum && providerId !== 'install') {
     reasons.push({
       code: MV_STOP_COMPAT_GATE_BELOW_MINIMUM,
       message: '호환 하한 미달 — Claude Code 업데이트가 필요합니다',
     });
   }
 
-  // ③ 미신뢰 워크스페이스(§2.1) — provider.apply·consent.issue 둘 다 정지
+  // ③ 미신뢰 워크스페이스(§2.1) — provider.apply·consent.issue 둘 다 정지. install도
+  //    예외 없이 정지된다(§3.6.1 판정 A-1 — 미신뢰 워크스페이스는 install이 해소할 수
+  //    있는 상태가 아니고, policy-contract.md §2.2가 I-B 매니저 경로 화이트리스트를
+  //    Workspace Trust로 대체한다고 명문화했다).
   if (!signals.workspaceTrusted) {
     reasons.push({
       code: MV_STOP_UNTRUSTED_WORKSPACE,
@@ -178,6 +201,8 @@ export function evaluateStop(
   }
 
   // ④ 정책 체크아웃 14일 노후(§3.7.3·N-2) — provider.apply·consent.issue 둘 다 정지.
+  //    install도 예외 없이 정지된다 — 체크아웃 갱신은 이미 있는 `claude`가 하고,
+  //    `claude`가 없으면 체크아웃이 없어 이 상태 자체가 성립하지 않는다(§3.6.1 규칙 A).
   //    detect·대시보드·진단·되돌리기·정책 재로드는 이 함수가 애초에 다루지 않는 표면이라
   //    (STOPPABLE_SURFACES 밖) 여기서 멈출 방법이 없다 — "구조적으로 막지 못한다".
   if (signals.policyCheckoutStale) {
@@ -189,6 +214,9 @@ export function evaluateStop(
 
   // ⑤ HRS 4 재동의(§7.3.1) — provider.apply만 정지한다(위 모듈 주석 "HRS 4는
   //    provider.apply만 정지한다" 참고). consent.issue까지 막으면 재동의 자체가 불가능해진다.
+  //    install에 대한 별도 예외는 두지 않는다 — HRS4 신호는 W7이 non-install provider의
+  //    표면 지문에 대해서만 계산하므로(§3.6.1 매트릭스 ⑤행 "표면 집합 밖이라 해당 없음")
+  //    install에 대해서는 이 신호가 구조적으로 발동하지 않는다.
   if (signals.hrs4ReconsentRequired && surface === 'provider.apply') {
     reasons.push({
       code: MV_STOP_HRS4_RECONSENT_REQUIRED,

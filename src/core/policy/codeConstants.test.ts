@@ -13,6 +13,18 @@ describe('loadCodeConstants', () => {
     expect(constants.allowedGithubScopes).toContain('repo');
     expect(constants.allowedGithubScopes).not.toContain('admin:org');
     expect(constants.allowedGithubScopes).not.toContain('delete_repo');
+    // policy-contract.md §2.4(B-2) — otel.env 알려진 키 화이트리스트의 값 정본
+    expect(constants.allowedOtelEnvKeys).toEqual([
+      'CLAUDE_CODE_ENABLE_TELEMETRY',
+      'OTEL_METRICS_EXPORTER',
+      'OTEL_EXPORTER_OTLP_PROTOCOL',
+      'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
+      'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
+      'OTEL_LOG_USER_PROMPTS',
+      'OTEL_LOG_TOOL_CONTENT',
+      'OTEL_LOG_TOOL_DETAILS',
+      'OTEL_LOG_RAW_API_BODIES',
+    ]);
     // pnpm 키는 의도적으로 정의하지 않는다 (policy-contract.md §2.2 M-14 예외)
     expect(constants.allowedManagerPaths.pnpm).toBeUndefined();
     expect(constants.allowedManagerPaths.brew).toContain('/opt/homebrew/bin/brew');

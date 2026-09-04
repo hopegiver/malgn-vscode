@@ -17,6 +17,7 @@ import {
   MV_POLICY_EXTENSION_DOWNGRADE_REJECTED,
   MV_POLICY_GENERATED_AT_INVALID,
   MV_POLICY_INSTALL_MODE_INVALID,
+  MV_POLICY_KILLSWITCH_INSTALL_DENIED,
   MV_POLICY_KILLSWITCH_PROVIDER_UNKNOWN,
   MV_POLICY_KILLSWITCH_VERSION_INVALID,
   MV_POLICY_MALFORMED,
@@ -52,25 +53,15 @@ import type {
 export const POLICY_MAX_BYTES = 64 * 1024;
 
 /** killSwitch.disableProviders[] / rollout[].provider 허용 enum. `install`은 제외돼 있다
- * (policy-contract.md 표 원문: "agent|otel|github|cloudflare|mcp enum만") — install provider의
- * apply는 이 킬스위치로 정지시킬 수 있는 대상이 아니다(§3.5.3의 별도 예외 경로와 일관). */
+ * — 근거는 policy-contract.md §2.5(v1.2-stopmatrix, B-4): ① 킬스위치는 자기 해제 경로를
+ * 끊을 수 없다(§3.5.3이 유일한 해소 경로로 지정한 install을 정책 한 장이 정지시키면
+ * 그 순환을 끊을 수단이 없다) ② 정책이 install을 통제하는 정본 채널은 `install.mode`
+ * (정지가 아니라 격하)뿐이다 ③ rollout이 나눌 대상(코호트별 목표값)이 install에는
+ * 없다(§4.8.3 부트스트랩 순환 + PR-10으로 argv 전량이 코드 상수). `install`이 이 배열에
+ * 들어오면 미지 값으로 조용히 버리지 않고 **명시 거부**한다(§2.5 ④ — "정책이 지정했는데
+ * 엔진이 조용히 무시한다"는 불일치를 만들지 않는다. 아래 validateDisableProviders/
+ * validateRollout의 MV_POLICY_KILLSWITCH_INSTALL_DENIED 분기가 그 명시 거부다). */
 const KILLSWITCH_PROVIDER_IDS: readonly ProviderId[] = ['agent', 'otel', 'github', 'cloudflare', 'mcp'];
-
-/** otel.env 키 화이트리스트 — §1 정책 스키마 예시 JSONC에 등장하는 9개 키가 유일한
- * 근거다. **알려진 gap**: policy-contract.md는 "알려진 키 화이트리스트"를 언급만 하고
- * `allowedOtelEnvKeys` 같은 코드 상수로 값을 정의하지 않는다(§2 compatibility.json에
- * 해당 항목 없음) — 이 목록은 스키마 예시에서 역추출했다. 반환문에 gap으로 보고한다. */
-const KNOWN_OTEL_ENV_KEYS = new Set([
-  'CLAUDE_CODE_ENABLE_TELEMETRY',
-  'OTEL_METRICS_EXPORTER',
-  'OTEL_EXPORTER_OTLP_PROTOCOL',
-  'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
-  'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
-  'OTEL_LOG_USER_PROMPTS',
-  'OTEL_LOG_TOOL_CONTENT',
-  'OTEL_LOG_TOOL_DETAILS',
-  'OTEL_LOG_RAW_API_BODIES',
-]);
 
 const OTEL_PRIVACY_KEYS = new Set([
   'OTEL_LOG_USER_PROMPTS',
@@ -175,6 +166,18 @@ function validateDisableProviders(raw: unknown, issues: PolicyIssue[]): readonly
   }
   const result: ProviderId[] = [];
   for (const entry of raw) {
+    if (entry === 'install') {
+      // policy-contract.md §2.5 전수 검증표 원문 — 미지 값 폐기가 아니라 명시 거부(severity high).
+      issues.push(
+        issue(
+          'killSwitch.disableProviders[]',
+          MV_POLICY_KILLSWITCH_INSTALL_DENIED,
+          'high',
+          'install은 킬스위치 대상이 아닙니다 — install.mode: guided-only를 쓰십시오'
+        )
+      );
+      continue;
+    }
     if (typeof entry === 'string' && (KILLSWITCH_PROVIDER_IDS as readonly string[]).includes(entry)) {
       result.push(entry as ProviderId);
     } else {
@@ -213,6 +216,18 @@ function validateRollout(raw: unknown, issues: PolicyIssue[]): readonly Effectiv
     }
     const provider = entry.provider;
     const percent = entry.percent;
+    if (provider === 'install') {
+      // policy-contract.md §2.5 전수 검증표 원문 — 미지 값 폐기가 아니라 명시 거부(severity high).
+      issues.push(
+        issue(
+          'rollout[].provider',
+          MV_POLICY_KILLSWITCH_INSTALL_DENIED,
+          'high',
+          'install은 킬스위치 대상이 아닙니다 — install.mode: guided-only를 쓰십시오'
+        )
+      );
+      continue;
+    }
     const providerValid = typeof provider === 'string' && (KILLSWITCH_PROVIDER_IDS as readonly string[]).includes(provider);
     const percentValid = typeof percent === 'number' && Number.isInteger(percent) && percent >= 0 && percent <= 100;
     if (!providerValid) {
@@ -310,6 +325,11 @@ function validateOtel(raw: unknown, constants: CodeConstants, issues: PolicyIssu
     return { fileRejected: false, otel: { blocked: true, blockedReason: 'otel 필드가 객체가 아닙니다', env: {}, headersHelper: null } };
   }
 
+  // policy-contract.md §2.4 — 값 정본은 compat/compatibility.json.allowedOtelEnvKeys(9개).
+  // 코드 상수 로더(codeConstants.ts)가 실은 값을 그대로 쓴다 — 이 함수 안에서 목록을
+  // 다시 정의하지 않는다(PR-7 단일 정본 값).
+  const knownOtelEnvKeys = new Set(constants.allowedOtelEnvKeys);
+
   let blocked = false;
   let blockedReason: string | undefined;
   const env: Record<string, string> = {};
@@ -339,16 +359,16 @@ function validateOtel(raw: unknown, constants: CodeConstants, issues: PolicyIssu
           continue;
         }
         // A-31(F-4, security-report.md) — 순서 교정: 닫힌 화이트리스트를 먼저 확인한다.
-        // 이전에는 엔드포인트 분기가 이 검사보다 먼저 돌아 `KNOWN_OTEL_ENV_KEYS`에 없는
-        // 임의의 `OTEL_EXPORTER_OTLP_*_ENDPOINT` 키(예: TRACES_ENDPOINT, 또는 임의 접미
-        // 키)가 authority만 통과하면 `env[key] = value; continue;`로 닫힌 목록을 건너뛰고
+        // 이전에는 엔드포인트 분기가 이 검사보다 먼저 돌아 화이트리스트에 없는 임의의
+        // `OTEL_EXPORTER_OTLP_*_ENDPOINT` 키(예: TRACES_ENDPOINT, 또는 임의 접미 키)가
+        // authority만 통과하면 `env[key] = value; continue;`로 닫힌 목록을 건너뛰고
         // effective env에 실렸다(실측 재현, F-4). 대조군인 `..._HEADERS`는 이미 닫힌
         // 목록에서 폐기되고 있었다 — 그 정상 동작과 같은 경로를 엔드포인트 키에도
-        // 적용한다. 순서를 바꾸면: KNOWN_OTEL_ENV_KEYS 밖의 엔드포인트 키는 authority
-        // 검사에 도달하지 않고 그대로 폐기된다(info, blocked 아님) — HEADERS와 동일한
-        // "폐기됨" 취급이다. METRICS_ENDPOINT/LOGS_ENDPOINT(화이트리스트 안)는 그대로
-        // authority 검사를 받는다.
-        if (!OTEL_ENV_KEY_SHAPE_RE.test(key) || !KNOWN_OTEL_ENV_KEYS.has(key)) {
+        // 적용한다. 순서를 바꾸면: 화이트리스트 밖의 엔드포인트 키는 authority 검사에
+        // 도달하지 않고 그대로 폐기된다(info, blocked 아님) — HEADERS와 동일한 "폐기됨"
+        // 취급이다. METRICS_ENDPOINT/LOGS_ENDPOINT(화이트리스트 안)는 그대로 authority
+        // 검사를 받는다.
+        if (!OTEL_ENV_KEY_SHAPE_RE.test(key) || !knownOtelEnvKeys.has(key)) {
           issues.push(issue(`otel.env.${key}`, MV_POLICY_OTEL_ENV_KEY_DENIED, 'info', `알려진 키 화이트리스트 밖이라 폐기했습니다: ${key}`));
           continue;
         }

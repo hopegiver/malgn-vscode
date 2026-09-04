@@ -21,5 +21,16 @@
   "allowedPlugins": ["malgn-agent@malgnsoft-plugins"],
   "allowedInstallScopes": ["user"],
   "allowedKeychainItems": { "$site": "keychainItems" },
-  "allowedGithubScopes": ["repo", "read:org", "workflow", "gist", "read:user"]
+  "allowedGithubScopes": ["repo", "read:org", "workflow", "gist", "read:user"],
+  "allowedOtelEnvKeys": [
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_TOOL_CONTENT",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_RAW_API_BODIES"
+  ]
 }

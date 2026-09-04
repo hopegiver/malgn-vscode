@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { compareVersions, parseRange, parseVersion } from '../../core/policy/semver.js';
-import type { CodeConstants, InstallTargetRow } from '../../core/policy/types.js';
+import type { CodeConstants, CompatRequires, InstallTargetRow } from '../../core/policy/types.js';
 import type { CheckResult } from '../types.js';
 import { fail, ok } from '../types.js';
 
@@ -42,18 +42,28 @@ function evidenceFileName(row: Pick<InstallTargetRow, 'tool' | 'platform' | 'man
 }
 
 /**
+ * policy-contract.md §6 ⓐ — tool → compatibility.json 하한 필드 매핑표. **이 표가 정본**
+ * (B-3 판정): 술어를 `tool === 'claude'`로 하드코딩하지 않고 이 표를 조회한다(ⓓ) —
+ * 그래야 나중에 `gh`·`wrangler` 하한이 정의되는 날 이 표에 한 줄만 추가하면 (c)가
+ * 자동으로 적용되고 검사 코드(`resolveVersionFloor`/`evaluateHrsEvidence`)를 고칠 필요가
+ * 없다. 이 표에 없는 tool은 (c) 하한 비교를 **건너뛴다**(다른 3개 조건 (a)(b)(d)는
+ * 그대로 적용) — "미확인은 미확인으로 표기, 추정으로 메우지 않는다"(architecture.md
+ * §4.8.6 원칙)를 따른 것이며 임의로 claudeCode 하한을 다른 tool에 전용하지 않는다.
+ * fail-closed(하한 없는 tool의 verified:true를 전부 차단)로 가지 않는 이유도 같다 —
+ * 그러면 `gh` 승격의 유일한 해법이 "근거 없는 숫자를 지어내는 것"이 된다.
+ */
+const VERSION_FLOOR_FIELD_BY_TOOL: Readonly<Record<string, keyof Pick<CompatRequires, 'claudeCode' | 'malgnAgent'>>> = {
+  claude: 'claudeCode',
+};
+
+/**
  * `verified:true` 행의 tool → compatibility.json 하한(semver range 하한)을 결정한다.
- * **알려진 갭**: compatibility.json은 `claude`(=claudeCode)의 하한만 코드 상수로 갖고
- * `gh`·`wrangler` 같은 다른 tool의 버전 하한은 이 계약 어디에도 정의돼 있지 않다
- * (§2가 정의하는 것은 `requires.claudeCode`/`requires.malgnAgent`뿐이다). 정의되지
- * 않은 tool은 (c) 하한 비교를 **건너뛴다**(다른 3개 조건 (a)(b)(d)는 그대로 적용) —
- * "미확인은 미확인으로 표기, 추정으로 메우지 않는다"(architecture.md §4.8.6 원칙)를
- * 따른 것이며 임의로 claudeCode 하한을 다른 tool에 전용하지 않는다. 반환문에 별도
- * 설계 갭으로 보고한다.
+ * 매핑표(`VERSION_FLOOR_FIELD_BY_TOOL`) 조회일 뿐 하드코딩된 분기가 아니다(ⓓ).
  */
 function resolveVersionFloor(tool: string, constants: Pick<CodeConstants, 'requires'>): string | null {
-  if (tool === 'claude') return constants.requires.claudeCode;
-  return null;
+  const field = VERSION_FLOOR_FIELD_BY_TOOL[tool];
+  if (field === undefined) return null;
+  return constants.requires[field];
 }
 
 export interface EvaluateHrsEvidenceInput {
@@ -68,9 +78,25 @@ export interface HrsEvidenceViolation {
   readonly message: string;
 }
 
+/** §6 ⓒ — (c)를 건너뛴 사실의 출력 단위. "조용한 통과 금지"를 만족하기 위해
+ * `evaluateHrsEvidence`가 데이터로 반환하고, 이를 소비하는 `checkHrsEvidence`(CLI 진입점,
+ * 아래)가 실제로 stdout에 출력한다 — 순수 함수 자신은 IO를 하지 않는다. */
+export interface HrsEvidenceSkip {
+  readonly tool: string;
+  /** 형식은 §6 ⓒ 원문 그대로: "(c) — <tool> 하한 미정의" */
+  readonly reason: string;
+}
+
+export interface EvaluateHrsEvidenceResult {
+  readonly violations: readonly HrsEvidenceViolation[];
+  readonly skipped: readonly HrsEvidenceSkip[];
+}
+
 /** 순수 검사 로직. runner.ts와 회귀 테스트가 공유한다. */
-export function evaluateHrsEvidence(input: EvaluateHrsEvidenceInput): readonly HrsEvidenceViolation[] {
+export function evaluateHrsEvidence(input: EvaluateHrsEvidenceInput): EvaluateHrsEvidenceResult {
   const violations: HrsEvidenceViolation[] = [];
+  const skipped: HrsEvidenceSkip[] = [];
+  const skippedTools = new Set<string>();
 
   for (const row of input.verifiedRows) {
     if (row.verified !== true) continue; // 방어적 재확인(호출자가 이미 필터했어도)
@@ -108,6 +134,22 @@ export function evaluateHrsEvidence(input: EvaluateHrsEvidenceInput): readonly H
           message: `증거 파일 ${fileName}의 resolvedVersion(${evidence.resolvedVersion})이 compatibility.json 하한(${floorRange}) 미만입니다`,
         });
       }
+    } else {
+      // §6 ⓒ — (c)를 건너뛴 사실을 출력 대상으로 남긴다(도구당 1회만 — 같은 tool의
+      // 여러 행이 중복 출력을 만들지 않는다).
+      if (!skippedTools.has(row.tool)) {
+        skippedTools.add(row.tool);
+        skipped.push({ tool: row.tool, reason: `(c) — ${row.tool} 하한 미정의` });
+      }
+      // §6 ⓑ(c′) — (c)를 건너뛰어도 resolvedVersion은 "비어 있지 않은 파싱 가능한
+      // 버전 문자열"이어야 한다. 하한이 없다는 것이 "버전을 기록하지 않아도 된다"는
+      // 뜻은 아니다 — 이것이 없으면 resolvedVersion이 빈 문자열이어도 검사가 통과한다.
+      if (parseVersion(evidence.resolvedVersion) === null) {
+        violations.push({
+          ref: 'HRS-E (c′)',
+          message: `증거 파일 ${fileName}의 resolvedVersion이 비어 있거나 파싱 가능한 버전 문자열이 아닙니다: "${evidence.resolvedVersion}"`,
+        });
+      }
     }
 
     const finishedAt = new Date(evidence.finishedAt);
@@ -121,7 +163,7 @@ export function evaluateHrsEvidence(input: EvaluateHrsEvidenceInput): readonly H
     }
   }
 
-  return violations;
+  return { violations, skipped };
 }
 
 /** git HEAD 커밋 시각을 구한다. git이 없거나 커밋이 0개인 저장소(예: 최초 커밋 전
@@ -153,7 +195,7 @@ export function checkHrsEvidence(input: Check8Input): CheckResult {
 
   const verifiedRows = input.installTargets.filter((r) => r.verified === true);
 
-  const violations = evaluateHrsEvidence({
+  const { violations, skipped } = evaluateHrsEvidence({
     verifiedRows,
     constants: input.constants,
     commitTimestamp: input.commitTimestamp,
@@ -167,6 +209,12 @@ export function checkHrsEvidence(input: Check8Input): CheckResult {
       }
     },
   });
+
+  // §6 ⓒ — 건너뛴 사실을 출력한다(조용한 통과 금지). 이 함수(CLI 진입점)만 IO를 하고
+  // `evaluateHrsEvidence`는 순수 함수로 남는다.
+  for (const skip of skipped) {
+    console.log(`[compat-check] ${id} skipped: ${skip.reason}`);
+  }
 
   return violations.length === 0 ? ok(id, label) : fail(id, label, violations);
 }

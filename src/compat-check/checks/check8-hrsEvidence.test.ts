@@ -46,19 +46,32 @@ function validEvidence(overrides: Partial<VerificationEvidence> = {}): Verificat
   };
 }
 
+const GH_ROW: InstallTargetRow = {
+  tool: 'gh',
+  platform: 'darwin',
+  manager: 'brew',
+  subcommand: 'install',
+  packageId: 'gh',
+  artifactKind: null,
+  expectedSigner: null,
+  verified: true,
+  strategy: 'PkgManagerStrategy',
+};
+
 describe('evaluateHrsEvidence — 정상 경로', () => {
   it('증거가 모든 조건을 만족하면 위반이 없다', () => {
-    const violations = evaluateHrsEvidence({
+    const { violations, skipped } = evaluateHrsEvidence({
       verifiedRows: [VERIFIED_ROW],
       constants: CONSTANTS,
       commitTimestamp: COMMIT_TIMESTAMP,
       loadEvidence: () => validEvidence(),
     });
     expect(violations).toEqual([]);
+    expect(skipped).toEqual([]); // claude는 하한이 정의돼 있어 (c)를 건너뛰지 않는다
   });
 
   it('verified:false 행은 애초에 검사 대상이 아니다(빈 집합에서 실패하지 않는다)', () => {
-    const violations = evaluateHrsEvidence({
+    const { violations, skipped } = evaluateHrsEvidence({
       verifiedRows: [],
       constants: CONSTANTS,
       commitTimestamp: COMMIT_TIMESTAMP,
@@ -67,12 +80,13 @@ describe('evaluateHrsEvidence — 정상 경로', () => {
       },
     });
     expect(violations).toEqual([]);
+    expect(skipped).toEqual([]);
   });
 });
 
-describe('evaluateHrsEvidence — 회귀 테스트 4종 (§6 완료 조건)', () => {
+describe('evaluateHrsEvidence — 회귀 테스트 5종 (§6 완료 조건, B-3로 4→5종 확장)', () => {
   it('1. 증거 없음 — verified:true인데 대응 파일이 없으면 (a) 위반', () => {
-    const violations = evaluateHrsEvidence({
+    const { violations } = evaluateHrsEvidence({
       verifiedRows: [VERIFIED_ROW],
       constants: CONSTANTS,
       commitTimestamp: COMMIT_TIMESTAMP,
@@ -83,7 +97,7 @@ describe('evaluateHrsEvidence — 회귀 테스트 4종 (§6 완료 조건)', ()
   });
 
   it('2. 키 불일치 — 증거 파일의 tool/platform/manager가 행과 다르면 (b) 위반', () => {
-    const violations = evaluateHrsEvidence({
+    const { violations } = evaluateHrsEvidence({
       verifiedRows: [VERIFIED_ROW],
       constants: CONSTANTS,
       commitTimestamp: COMMIT_TIMESTAMP,
@@ -94,7 +108,7 @@ describe('evaluateHrsEvidence — 회귀 테스트 4종 (§6 완료 조건)', ()
   });
 
   it('3. 하한 미달 — resolvedVersion이 compatibility.json 하한보다 낮으면 (c) 위반', () => {
-    const violations = evaluateHrsEvidence({
+    const { violations } = evaluateHrsEvidence({
       verifiedRows: [VERIFIED_ROW],
       constants: CONSTANTS,
       commitTimestamp: COMMIT_TIMESTAMP,
@@ -105,7 +119,7 @@ describe('evaluateHrsEvidence — 회귀 테스트 4종 (§6 완료 조건)', ()
   });
 
   it('4. 미래 타임스탬프 — finishedAt이 커밋 시각 이전이 아니면 (d) 위반', () => {
-    const violations = evaluateHrsEvidence({
+    const { violations } = evaluateHrsEvidence({
       verifiedRows: [VERIFIED_ROW],
       constants: CONSTANTS,
       commitTimestamp: COMMIT_TIMESTAMP,
@@ -114,27 +128,46 @@ describe('evaluateHrsEvidence — 회귀 테스트 4종 (§6 완료 조건)', ()
     expect(violations).toHaveLength(1);
     expect(violations[0]?.ref).toBe('HRS-E (d)');
   });
+
+  it('5. (c′) 하한 미정의 tool + 빈 resolvedVersion — (c)를 건너뛰어도 파싱 불가 버전은 위반이다', () => {
+    const { violations, skipped } = evaluateHrsEvidence({
+      verifiedRows: [GH_ROW],
+      constants: CONSTANTS,
+      commitTimestamp: COMMIT_TIMESTAMP,
+      loadEvidence: () => validEvidence({ tool: 'gh', manager: 'brew', resolvedVersion: '' }),
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.ref).toBe('HRS-E (c′)');
+    expect(skipped).toEqual([{ tool: 'gh', reason: '(c) — gh 하한 미정의' }]);
+  });
 });
 
-describe('evaluateHrsEvidence — tool별 하한 정의 갭', () => {
-  it('compatibility.json에 하한이 없는 tool(gh)은 (c)를 건너뛰고 나머지 조건만 적용한다', () => {
-    const ghRow: InstallTargetRow = {
-      tool: 'gh',
-      platform: 'darwin',
-      manager: 'brew',
-      subcommand: 'install',
-      packageId: 'gh',
-      artifactKind: null,
-      expectedSigner: null,
-      verified: true,
-      strategy: 'PkgManagerStrategy',
-    };
-    const violations = evaluateHrsEvidence({
-      verifiedRows: [ghRow],
+describe('evaluateHrsEvidence — tool별 하한 정의 갭(B-3, 매핑표 조회)', () => {
+  it('compatibility.json에 하한이 없는 tool(gh)은 (c)를 건너뛰고 나머지 조건만 적용하며 건너뛴 사실을 skipped에 남긴다', () => {
+    const { violations, skipped } = evaluateHrsEvidence({
+      verifiedRows: [GH_ROW],
       constants: CONSTANTS,
       commitTimestamp: COMMIT_TIMESTAMP,
       loadEvidence: () => validEvidence({ tool: 'gh', manager: 'brew', resolvedVersion: '0.0.1' }),
     });
     expect(violations).toEqual([]);
+    expect(skipped).toEqual([{ tool: 'gh', reason: '(c) — gh 하한 미정의' }]);
+  });
+
+  it('같은 tool의 여러 verified:true 행이 있어도 skipped는 tool당 1회만 기록된다', () => {
+    const ghWinget: InstallTargetRow = { ...GH_ROW, platform: 'win32', manager: 'winget', packageId: 'GitHub.cli' };
+    const { skipped } = evaluateHrsEvidence({
+      verifiedRows: [GH_ROW, ghWinget],
+      constants: CONSTANTS,
+      commitTimestamp: COMMIT_TIMESTAMP,
+      loadEvidence: (fileName) =>
+        validEvidence({
+          tool: 'gh',
+          manager: fileName.includes('winget') ? 'winget' : 'brew',
+          platform: fileName.includes('winget') ? 'win32' : 'darwin',
+          resolvedVersion: '2.50.0',
+        }),
+    });
+    expect(skipped).toEqual([{ tool: 'gh', reason: '(c) — gh 하한 미정의' }]);
   });
 });

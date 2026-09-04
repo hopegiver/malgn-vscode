@@ -13,12 +13,12 @@
 // 상대는 `loadCodeConstants()`가 조립한 병합 뷰(compatibility.json + 사이트면 + $ref
 // fixture)다 — 그것이 "코드 상수 블록"의 실행 시점 형태이기 때문이다.
 //
-// 알려진 설계 갭(작업 지시 원문): "`otel.env` '알려진 키 화이트리스트'에 대응하는
-// 코드 상수 정본이 §2에 없다" — 그러나 이 갭은 문서 어디에도
-// backtick으로 `allowedOtelEnvKeys` 형태로 등장하지 않는다(grep 확인, 2026-09-03).
-// PR-11②는 "문서에 backtick으로 등장하는 식별자"만 대상으로 하므로 이 검사의 스캔
-// 대상에 애초에 걸리지 않는다 — 갭이 사라진 것이 아니라 이 검사의 탐지 범위 밖에
-// 있을 뿐이다(별도 보고 대상).
+// [해소됨 — v1.2-stopmatrix, B-2] 구 갭 서술("`otel.env` '알려진 키 화이트리스트'에
+// 대응하는 코드 상수 정본이 §2에 없다")은 policy-contract.md §2.4가 `allowedOtelEnvKeys`
+// 값 정본을 §2 JSONC에 신설하면서 해소됐다. 문서에 `allowedOtelEnvKeys`가 backtick으로
+// 등장하는 순간(§2.4) 이 검사의 스캔 대상에 들어왔고, `codeConstants.ts`가 그 값을
+// `CodeConstants.allowedOtelEnvKeys`로 실어 이 검사가 실제로 대조한다 — 더 이상 탐지
+// 범위 밖이 아니다.
 
 import { readFileSync } from 'node:fs';
 import { loadCodeConstants } from '../../core/policy/codeConstants.js';

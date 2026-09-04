@@ -168,33 +168,140 @@ describe('정지 경로 ⑤ HRS 4 재동의(§7.3.1) — provider.apply만 정�
   });
 });
 
-describe('복구 경로 생존 — install provider는 절대 정지되지 않는다', () => {
+describe('§3.6.1 매트릭스 — 5경로 × 2표면 × install/비install (architect 판정, 규칙 A)', () => {
   const nonInstallProviders: readonly ProviderId[] = ['agent', 'otel', 'github', 'cloudflare', 'mcp'];
 
-  it('최악의 킬스위치(5개 신호 전부 발동)에서도 install의 provider.apply·consent.issue는 정지되지 않는다', () => {
-    const signals = worstCaseSignals();
-    expect(evaluateStop('provider.apply', 'install', signals)).toEqual({ stopped: false, reasons: [] });
-    expect(evaluateStop('consent.issue', 'install', signals)).toEqual({ stopped: false, reasons: [] });
+  // 매트릭스 원문(§3.6.1 표) 그대로 고정한다:
+  //   ① 킬 스위치            | 정지 | 정지 | install: 대상 아님 + 런타임 재확인
+  //   ② 호환 게이트 하한 미달  | 정지 | 정지 | install: 예외 — 계속 동작
+  //   ③ 미신뢰 워크스페이스    | 정지 | 정지 | install: 정지(예외 없음)
+  //   ④ 정책 체크아웃 14일 노후 | 정지 | 정지 | install: 정지(예외 없음)
+  //   ⑤ HRS 4 재동의          | 정지 | 정지하지 않는다 | install: 표면 집합 밖(해당 없음)
+
+  describe('① 킬 스위치 — install은 대상 아님(정책 enum 밖) + 런타임 재확인', () => {
+    it('비install provider는 provider.apply·consent.issue 둘 다 정지된다', () => {
+      const signals = allClearSignals({ killSwitch: noKillSwitch({ disableProviders: ['agent'] }) });
+      for (const providerId of nonInstallProviders.filter((p) => p === 'agent')) {
+        expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
+        expect(evaluateStop('consent.issue', providerId, signals).stopped).toBe(true);
+      }
+    });
+
+    it('install은 disableProviders에 섞여 들어와도(정책 계층 우회 가정) provider.apply·consent.issue 둘 다 정지되지 않는다(런타임 재확인)', () => {
+      const signals = allClearSignals({
+        killSwitch: noKillSwitch({ disableProviders: ['install' as ProviderId] }),
+      });
+      expect(evaluateStop('provider.apply', 'install', signals)).toEqual({ stopped: false, reasons: [] });
+      expect(evaluateStop('consent.issue', 'install', signals)).toEqual({ stopped: false, reasons: [] });
+    });
+
+    it('install은 minExtensionVersion/maxExtensionVersion(버전 상하한, provider 전체 적용)에도 정지되지 않는다', () => {
+      const belowMin = allClearSignals({
+        killSwitch: noKillSwitch({ minExtensionVersion: '0.2.0' }),
+        currentExtensionVersion: '0.1.0',
+      });
+      const aboveMax = allClearSignals({
+        killSwitch: noKillSwitch({ maxExtensionVersion: '0.1.0' }),
+        currentExtensionVersion: '0.2.0',
+      });
+      expect(evaluateStop('provider.apply', 'install', belowMin).stopped).toBe(false);
+      expect(evaluateStop('provider.apply', 'install', aboveMax).stopped).toBe(false);
+      // 대조군 — 같은 신호에서 비install provider는 실제로 정지된다.
+      expect(evaluateStop('provider.apply', 'agent', belowMin).stopped).toBe(true);
+      expect(evaluateStop('provider.apply', 'agent', aboveMax).stopped).toBe(true);
+    });
   });
 
-  it('대조군 — 같은 최악의 신호에서 install 외 provider는 실제로 정지된다(테스트가 항상 통과하는 게 아님을 증명)', () => {
+  describe('② 호환 게이트 하한 미달(§3.5.3) — install만 예외, 계속 동작', () => {
+    it('비install provider는 provider.apply·consent.issue 둘 다 정지된다', () => {
+      const signals = allClearSignals({ compatGateBelowMinimum: true });
+      for (const providerId of nonInstallProviders) {
+        expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
+        expect(evaluateStop('consent.issue', providerId, signals).stopped).toBe(true);
+      }
+    });
+
+    it('install은 provider.apply·consent.issue 둘 다 정지되지 않는다(§3.5.3 — 유일한 해소 경로)', () => {
+      const signals = allClearSignals({ compatGateBelowMinimum: true });
+      expect(evaluateStop('provider.apply', 'install', signals)).toEqual({ stopped: false, reasons: [] });
+      expect(evaluateStop('consent.issue', 'install', signals)).toEqual({ stopped: false, reasons: [] });
+    });
+  });
+
+  describe('③ 미신뢰 워크스페이스(§2.1) — install도 정지(예외 없음, 규칙 A)', () => {
+    it('비install provider는 provider.apply·consent.issue 둘 다 정지된다', () => {
+      const signals = allClearSignals({ workspaceTrusted: false });
+      for (const providerId of nonInstallProviders) {
+        expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
+        expect(evaluateStop('consent.issue', providerId, signals).stopped).toBe(true);
+      }
+    });
+
+    it('install도 provider.apply·consent.issue 둘 다 정지된다(예외 없음)', () => {
+      const signals = allClearSignals({ workspaceTrusted: false });
+      const applyDecision = evaluateStop('provider.apply', 'install', signals);
+      const issueDecision = evaluateStop('consent.issue', 'install', signals);
+      expect(applyDecision.stopped).toBe(true);
+      expect(applyDecision.reasons.map((r) => r.code)).toContain(MV_STOP_UNTRUSTED_WORKSPACE);
+      expect(issueDecision.stopped).toBe(true);
+      expect(issueDecision.reasons.map((r) => r.code)).toContain(MV_STOP_UNTRUSTED_WORKSPACE);
+    });
+  });
+
+  describe('④ 정책 체크아웃 14일 노후(§3.7.3·N-2) — install도 정지(예외 없음, 규칙 A)', () => {
+    it('비install provider는 provider.apply·consent.issue 둘 다 정지된다', () => {
+      const signals = allClearSignals({ policyCheckoutStale: true });
+      for (const providerId of nonInstallProviders) {
+        expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
+        expect(evaluateStop('consent.issue', providerId, signals).stopped).toBe(true);
+      }
+    });
+
+    it('install도 provider.apply·consent.issue 둘 다 정지된다(예외 없음)', () => {
+      const signals = allClearSignals({ policyCheckoutStale: true });
+      const applyDecision = evaluateStop('provider.apply', 'install', signals);
+      const issueDecision = evaluateStop('consent.issue', 'install', signals);
+      expect(applyDecision.stopped).toBe(true);
+      expect(applyDecision.reasons.map((r) => r.code)).toContain(MV_STOP_POLICY_CHECKOUT_STALE);
+      expect(issueDecision.stopped).toBe(true);
+      expect(issueDecision.reasons.map((r) => r.code)).toContain(MV_STOP_POLICY_CHECKOUT_STALE);
+    });
+  });
+
+  describe('⑤ HRS 4 재동의(§7.3.1) — provider.apply만 정지, install은 표면 집합 밖(해당 없음)', () => {
+    it('비install provider는 provider.apply만 정지되고 consent.issue는 정지되지 않는다', () => {
+      const signals = allClearSignals({ hrs4ReconsentRequired: true });
+      expect(evaluateStop('provider.apply', 'agent', signals).stopped).toBe(true);
+      expect(evaluateStop('consent.issue', 'agent', signals).stopped).toBe(false);
+    });
+
+    it('install에는 이 신호에 대한 별도 코드 예외가 없다 — 신호는 non-install provider 표면에 대해서만 계산되므로(W7) 구조적으로 발동하지 않는다', () => {
+      // 매트릭스의 "표면 집합 밖이라 해당 없음"은 신호 계산 범위(W7 책임)에 대한
+      // 서술이지 이 함수가 install을 별도로 면제한다는 뜻이 아니다 — ①②만 install
+      // 예외가 있다(작업 지시: "install 예외를 ①킬스위치 판정 내부와 ②호환 게이트,
+      // 두 곳에만 겁니다"). 신호가 (가정적으로) 켜지면 install도 다른 provider와
+      // 동일하게 정지된다는 것을 대조군으로 고정한다.
+      const signals = allClearSignals({ hrs4ReconsentRequired: true });
+      expect(evaluateStop('provider.apply', 'install', signals).stopped).toBe(true);
+    });
+  });
+
+  it('대조군 — 5개 신호를 전부 최악으로 켜면 비install provider는 모두 정지된다(install 예외가 "항상 통과"로 새지 않았음을 증명)', () => {
     const signals = worstCaseSignals();
     for (const providerId of nonInstallProviders) {
       expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
     }
   });
 
-  it('방어심층 — killSwitch.disableProviders에 install이 섞여 들어와도(정책 계층 우회 가정) 코드가 한 번 더 막는다', () => {
-    const signals = allClearSignals({
-      killSwitch: noKillSwitch({ disableProviders: ['install' as ProviderId] }),
-    });
-    expect(evaluateStop('provider.apply', 'install', signals)).toEqual({ stopped: false, reasons: [] });
-  });
-
-  it('호환 게이트 하한 미달 상태에서도 install만은 계속 동작한다(§3.5.3 — 유일한 해소 경로)', () => {
-    const signals = allClearSignals({ compatGateBelowMinimum: true });
-    expect(evaluateStop('provider.apply', 'install', signals).stopped).toBe(false);
-    expect(evaluateStop('provider.apply', 'agent', signals).stopped).toBe(true);
+  it('install은 ①②만 정지되지 않고 ③④(+가정적 ⑤)는 정지된다 — "5개 정지 경로 전부 예외"였던 구판과의 핵심 차이', () => {
+    const signals = worstCaseSignals();
+    const decision = evaluateStop('provider.apply', 'install', signals);
+    expect(decision.stopped).toBe(true); // ③④가 살아있어 전체 판정은 정지다
+    const codes = decision.reasons.map((r) => r.code);
+    expect(codes).not.toContain(MV_STOP_KILL_SWITCH);
+    expect(codes).not.toContain(MV_STOP_COMPAT_GATE_BELOW_MINIMUM);
+    expect(codes).toContain(MV_STOP_UNTRUSTED_WORKSPACE);
+    expect(codes).toContain(MV_STOP_POLICY_CHECKOUT_STALE);
   });
 });
 

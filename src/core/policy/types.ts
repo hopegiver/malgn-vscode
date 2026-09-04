@@ -69,6 +69,9 @@ export interface CodeConstants {
   readonly allowedInstallScopes: readonly string[];
   readonly allowedKeychainItems: readonly string[];
   readonly allowedGithubScopes: readonly string[];
+  /** policy-contract.md §2.4 — `otel.env` 알려진 키 화이트리스트의 값 정본(9개).
+   * loader.ts의 otel.env 키 검증이 이 값을 소비한다(구 로컬 상수 `KNOWN_OTEL_ENV_KEYS` 대체). */
+  readonly allowedOtelEnvKeys: readonly string[];
   /** PR-11③ 검사를 통과한 행만 담긴다 — 필수 열이 빠진 행은 여기 없다(격자 밖 취급) */
   readonly allowedInstallTargets: readonly InstallTargetRow[];
   readonly allowedManagerPaths: Readonly<Record<string, readonly string[]>>;
