@@ -76,6 +76,48 @@ function extractLeafRows(policyContractMdText) {
   return [...new Set(rows)];
 }
 
+/** security-plan.md §11.5 "public 저장소 반입 금지 부류 정의표"의 헤더 — 이 표 첫 열의
+ * 부류 id(PUB-X/A/B/C/D)만 뽑는다(값 아님). §12.4 B1/B2 — `sensitive-classes.json`의
+ * `taxonomyIdsSha256`가 이 해시와 맞아야 한다(검사 ⑩(e), B3). */
+const PUB_CLASS_TABLE_HEADER = '| 부류 | 판정 질문 (Yes = 이 부류) | 해당 값 (이 프로젝트 실례) | public git | 위반 시 조치 |';
+
+function extractPubClassTableRows(securityPlanMdText) {
+  const headerIdx = securityPlanMdText.indexOf(PUB_CLASS_TABLE_HEADER);
+  if (headerIdx === -1) return [];
+  const rest = securityPlanMdText.slice(headerIdx);
+  const lines = rest.split('\n');
+  const rows = [lines[0] ?? '', lines[1] ?? ''];
+  for (let i = 2; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line || !line.trimStart().startsWith('|')) break;
+    rows.push(line);
+  }
+  return rows;
+}
+
+/** §11.5 표 첫 열에서 부류 id(`PUB-X` 등)만 뽑아 정렬한다 — id만, 판정 질문·실례·조치는
+ * 버린다(값 0 유지). B3(검사 ⑩(e))가 이 목록의 해시를 `sensitive-classes.json.
+ * taxonomyIdsSha256`와 대조한다. */
+export function extractPubClassIds(securityPlanMdText) {
+  const rows = extractPubClassTableRows(securityPlanMdText);
+  const ids = new Set();
+  for (const line of rows.slice(2)) {
+    const firstCell = line.split('|')[1] ?? '';
+    const m = /PUB-[A-Z]/.exec(firstCell);
+    if (m) ids.add(m[0]);
+  }
+  return [...ids].sort();
+}
+
+/** §11.5 표 전문(헤더+구분선+데이터 행 원문)을 그대로 이어붙인다 — B5(로컬 full 모드
+ * 전용, §12.4)가 "부류의 정의 문구가 바뀌었는데 id가 그대로인 경우"를 잡을 때 쓴다.
+ * 이 전문에는 표가 예시로 담은 실값(호스트·포트·항목명)이 그대로 들어 있으므로 **CI가
+ * 아니라 로컬 full 모드**(docs/ 실재 = 관리자 기기)에서만 대조한다(§12.4 정본 판정과
+ * 동일한 이유 — 이 표 자체가 PUB-B라 public CI 아티팩트에 실을 수 없다). */
+export function extractPubClassTableFullText(securityPlanMdText) {
+  return extractPubClassTableRows(securityPlanMdText).join('\n');
+}
+
 /** §2 JSONC 코드펜스(`compat/compatibility.json` 예시) 블록 텍스트를 찾는다. */
 function extractSection2Block(policyContractMdText) {
   const fenceRe = /```jsonc\n([\s\S]*?)\n```/g;
@@ -166,17 +208,23 @@ function extractSiteShape(section2Text) {
  * `input`에 다른 키(예: compatibilityJson)가 섞여 들어와도 무시한다(destructuring이
  * 명시된 키만 뽑는다) — 그것이 D2 단위 테스트가 증명하는 성질이다.
  */
-export function generateContractSnapshot({ policyContractMdText, architectureMdText, extensionVersion }) {
+export function generateContractSnapshot({ policyContractMdText, architectureMdText, securityPlanMdText, extensionVersion }) {
   const docIdentifiers = [
     ...new Set([...extractDocIdentifiers(policyContractMdText), ...extractDocIdentifiers(architectureMdText)]),
   ].sort();
   const leafRows = extractLeafRows(policyContractMdText);
   const section2Block = extractSection2Block(policyContractMdText);
   const siteShape = extractSiteShape(section2Block);
+  const pubClassIds = extractPubClassIds(securityPlanMdText ?? '');
+  const pubClassTableFullText = extractPubClassTableFullText(securityPlanMdText ?? '');
 
   const sourceRegions = [
     { doc: 'policy-contract.md', region: '§2', sha256: sha256(section2Block ?? '') },
     { doc: 'policy-contract.md', region: '필드별 전수 검증표', sha256: sha256(leafRows.join('\n')) },
+    // §12.4 B2 — security-plan.md §11.5 부류표를 스냅샷에 바인딩한다. id 목록 해시는
+    // CI(검사 ⑩(e), B3)가, 전문 해시는 로컬 full 모드(B5)가 각각 대조한다.
+    { doc: 'security-plan.md', region: '§11.5 부류 id', sha256: sha256(pubClassIds.join('\n')) },
+    { doc: 'security-plan.md', region: '§11.5 전문', sha256: sha256(pubClassTableFullText) },
   ];
 
   const withoutDigest = {
@@ -198,19 +246,21 @@ export function main(rootOverride) {
   const docsDir = join(root, 'docs');
   const policyContractMdPath = join(docsDir, 'policy-contract.md');
   const architectureMdPath = join(docsDir, 'architecture.md');
+  const securityPlanMdPath = join(docsDir, 'security-plan.md');
   const packageJsonPath = join(root, 'package.json');
   const outPath = join(root, 'compat', 'contract-snapshot.json');
 
   // D1 — docs/ 부재 시 거부(생성 전용 + 선행조건).
-  if (!existsSync(docsDir) || !existsSync(policyContractMdPath) || !existsSync(architectureMdPath)) {
-    throw new Error(`docs/ 부재: '${policyContractMdPath}' 또는 '${architectureMdPath}'를 찾을 수 없습니다 (§8.5 D1)`);
+  if (!existsSync(docsDir) || !existsSync(policyContractMdPath) || !existsSync(architectureMdPath) || !existsSync(securityPlanMdPath)) {
+    throw new Error(`docs/ 부재: '${policyContractMdPath}' · '${architectureMdPath}' · '${securityPlanMdPath}' 중 하나를 찾을 수 없습니다 (§8.5 D1)`);
   }
 
   const policyContractMdText = readFileSync(policyContractMdPath, 'utf8');
   const architectureMdText = readFileSync(architectureMdPath, 'utf8');
+  const securityPlanMdText = readFileSync(securityPlanMdPath, 'utf8');
   const extensionVersion = JSON.parse(readFileSync(packageJsonPath, 'utf8')).version;
 
-  const snapshot = generateContractSnapshot({ policyContractMdText, architectureMdText, extensionVersion });
+  const snapshot = generateContractSnapshot({ policyContractMdText, architectureMdText, securityPlanMdText, extensionVersion });
   writeFileSync(outPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
   console.log(`[contract:snapshot] → ${outPath}`);
   return snapshot;

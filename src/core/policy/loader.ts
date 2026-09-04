@@ -338,6 +338,20 @@ function validateOtel(raw: unknown, constants: CodeConstants, issues: PolicyIssu
           env[key] = value;
           continue;
         }
+        // A-31(F-4, security-report.md) — 순서 교정: 닫힌 화이트리스트를 먼저 확인한다.
+        // 이전에는 엔드포인트 분기가 이 검사보다 먼저 돌아 `KNOWN_OTEL_ENV_KEYS`에 없는
+        // 임의의 `OTEL_EXPORTER_OTLP_*_ENDPOINT` 키(예: TRACES_ENDPOINT, 또는 임의 접미
+        // 키)가 authority만 통과하면 `env[key] = value; continue;`로 닫힌 목록을 건너뛰고
+        // effective env에 실렸다(실측 재현, F-4). 대조군인 `..._HEADERS`는 이미 닫힌
+        // 목록에서 폐기되고 있었다 — 그 정상 동작과 같은 경로를 엔드포인트 키에도
+        // 적용한다. 순서를 바꾸면: KNOWN_OTEL_ENV_KEYS 밖의 엔드포인트 키는 authority
+        // 검사에 도달하지 않고 그대로 폐기된다(info, blocked 아님) — HEADERS와 동일한
+        // "폐기됨" 취급이다. METRICS_ENDPOINT/LOGS_ENDPOINT(화이트리스트 안)는 그대로
+        // authority 검사를 받는다.
+        if (!OTEL_ENV_KEY_SHAPE_RE.test(key) || !KNOWN_OTEL_ENV_KEYS.has(key)) {
+          issues.push(issue(`otel.env.${key}`, MV_POLICY_OTEL_ENV_KEY_DENIED, 'info', `알려진 키 화이트리스트 밖이라 폐기했습니다: ${key}`));
+          continue;
+        }
         if (OTEL_ENDPOINT_KEY_RE.test(key)) {
           const authority = extractHttpsAuthority(value);
           if (!authority || !authorityAllowed(authority, constants.allowedAuthorities.otel)) {
@@ -346,12 +360,6 @@ function validateOtel(raw: unknown, constants: CodeConstants, issues: PolicyIssu
             blockedReason = blockedReason ?? `${key} 목적지 거부`;
             continue;
           }
-          env[key] = value;
-          continue;
-        }
-        if (!OTEL_ENV_KEY_SHAPE_RE.test(key) || !KNOWN_OTEL_ENV_KEYS.has(key)) {
-          issues.push(issue(`otel.env.${key}`, MV_POLICY_OTEL_ENV_KEY_DENIED, 'info', `알려진 키 화이트리스트 밖이라 폐기했습니다: ${key}`));
-          continue;
         }
         env[key] = value;
       }

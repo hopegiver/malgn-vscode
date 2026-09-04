@@ -66,7 +66,17 @@
       "doc": "policy-contract.md",
       "region": "필드별 전수 검증표",
       "sha256": "sha256:85b976286f3c5dfa802795155eec8fae3420a7bcba0384ec8448d91e70672532"
+    },
+    {
+      "doc": "security-plan.md",
+      "region": "§11.5 부류 id",
+      "sha256": "sha256:07cbecce8bd392641f012e69337b8698ba65ec820bd7f619d6c83da60439379a"
+    },
+    {
+      "doc": "security-plan.md",
+      "region": "§11.5 전문",
+      "sha256": "sha256:3454ba70badceb4b150baf44d750e96da2400f20d036e57c833341710565fd29"
     }
   ],
-  "digest": "sha256:dcf9d58e8a4d98dd45c691de581badea2ab36bc0b8a371ba8d04241223cba999"
+  "digest": "sha256:11f4a79f6c1049f7826deadf470eb080d9c573badd9ac4d7667b06e8f203d556"
 }

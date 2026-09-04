@@ -21,7 +21,14 @@ export interface ContractSnapshot {
 export function generateContractSnapshot(args: {
   readonly policyContractMdText: string;
   readonly architectureMdText: string;
+  readonly securityPlanMdText?: string;
   readonly extensionVersion: string;
 }): ContractSnapshot;
 
 export function main(rootOverride?: string): ContractSnapshot;
+
+/** security-plan.md §11.5 표 첫 열에서 부류 id(PUB-X 등)만 뽑는다 (§12.4 B1/B2). */
+export function extractPubClassIds(securityPlanMdText: string): readonly string[];
+
+/** security-plan.md §11.5 표 전문(헤더+데이터 행 원문)을 이어붙인다 (§12.4 B5, 로컬 full 전용). */
+export function extractPubClassTableFullText(securityPlanMdText: string): string;

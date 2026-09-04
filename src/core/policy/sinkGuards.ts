@@ -58,8 +58,12 @@ export function isValidCredentialLookupKey(value: string): boolean {
   return S3_KEY_RE.test(value);
 }
 
-/** PR-5(정책 무비밀) — 문서 전체에 적용되는 유일한 파일 전체 거부급 키 이름 검사 */
-const SECRET_KEY_RE = /token|secret|password|authorization/i;
+/** PR-5(정책 무비밀) — 문서 전체에 적용되는 유일한 파일 전체 거부급 키 이름 검사.
+ * A-33(F-5, security-report.md) — 원래 정규식은 `apiKey`·`apiToken`은 `token` 부분
+ * 매칭으로 잡았지만 `credential`·`privateKey`·`passwd`·`pwd`·`bearer`·`passphrase`는
+ * 놓쳤다(그릇 이름만 바꾸면 통과). `cert`는 `certificate` 같은 비-비밀 필드명과 충돌할
+ * 위험이 있어 이번 확장에서 제외한다(security-report.md §2 F-5 "선택" 표기). */
+const SECRET_KEY_RE = /token|secret|password|authorization|credential|private[_-]?key|passwd|pwd|bearer|passphrase/i;
 
 /**
  * 파싱된 정책 객체를 재귀적으로 순회해 시크릿 형태의 "키 이름"이 하나라도 있으면

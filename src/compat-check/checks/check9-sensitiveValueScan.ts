@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 // scripts/lib/sensitiveScan.mjs는 일반 JS(.mjs) 모듈이다 — TS 프로젝트 밖(scripts/)에
 // 있다. 타입은 sensitiveScan.d.mts가 제공한다.
-import { loadClassesConfig, scanText } from '../../../scripts/lib/sensitiveScan.mjs';
+import { getEnforcedCoverageGaps, loadClassesConfig, scanText } from '../../../scripts/lib/sensitiveScan.mjs';
 import type { CheckResult } from '../types.js';
 import { fail, ok } from '../types.js';
 
@@ -38,6 +38,17 @@ export function checkSensitiveValueScan(input: Check9Input): CheckResult {
       continue; // 바이너리·읽기 불가 파일은 건너뛴다(텍스트 스캔 대상이 아니다)
     }
     violations.push(...scanText(relPath, text, config));
+  }
+
+  // B4(security-plan.md §12.4) — enforcedClasses의 각 부류를 커버하는 활성 class가
+  // 최소 1개 있어야 한다. 오늘 상태(PUB-X·PUB-A 패턴 0개)는 이 규칙 하나로 즉시
+  // 실패해야 한다 — 그게 이 장치를 넣는 실질 이유다.
+  for (const gap of getEnforcedCoverageGaps(config)) {
+    violations.push({
+      file: 'compat/sensitive-classes.json',
+      classId: 'enforced-coverage-gap',
+      match: `enforcedClasses의 ${gap} 부류를 커버하는 활성 class가 없습니다`,
+    });
   }
 
   if (violations.length === 0) return ok(id, label);

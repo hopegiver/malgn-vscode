@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { generateContractSnapshot, main } from './gen-contract-snapshot.mjs';
+import { extractPubClassIds, extractPubClassTableFullText, generateContractSnapshot, main } from './gen-contract-snapshot.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, 'gen-contract-snapshot.mjs');
@@ -85,6 +85,57 @@ describe('generateContractSnapshot — 스냅샷은 docs 텍스트를 따라간�
   });
 });
 
+// --- §12.4 B1/B2 — security-plan.md §11.5 부류표 바인딩 ---
+const SECURITY_PLAN_DOC = `## 11.5 Q9-4 [핵심 산출] public 저장소 반입 금지 부류 정의표
+
+| 부류 | 판정 질문 (Yes = 이 부류) | 해당 값 (이 프로젝트 실례) | public git | 위반 시 조치 |
+|---|---|---|---|---|
+| **PUB-X**<br>절대 금지 | ①이 값을 아는 것만으로 | GitHub PAT | **금지** | 즉시 폐기 |
+| **PUB-A**<br>개인식별 | ②이 값이 개인을 식별 | 사번·실명 | **금지** | 회전 불가 |
+| **PUB-B**<br>내부 지형 | ③이 값이 내부 지형 | 역할↔호스트 매핑 | **기본 금지** | 반입 전 ④ 판정 |
+| **PUB-C**<br>공개 계약 | ④이 값이 모든 사용자 기기에 배포 | allowedAuthorities | **반입 가능** | — |
+| **PUB-D**<br>무해 | 위 넷 모두 No | 로그 레벨 | 반입 가능 | 없음 |
+
+### 다음 절
+`;
+
+describe('extractPubClassIds/extractPubClassTableFullText — §11.5 표 바인딩(B1/B2)', () => {
+  it('부류 id 5종만 뽑는다(값·질문·실례는 버린다)', () => {
+    expect(extractPubClassIds(SECURITY_PLAN_DOC)).toEqual(['PUB-A', 'PUB-B', 'PUB-C', 'PUB-D', 'PUB-X']);
+  });
+
+  it('표가 없으면 빈 배열을 반환한다', () => {
+    expect(extractPubClassIds('아무 내용 없음')).toEqual([]);
+  });
+
+  it('전문 해시는 표 내용이 바뀌면 함께 바뀐다(B5 전제)', () => {
+    const fullTextA = extractPubClassTableFullText(SECURITY_PLAN_DOC);
+    const changed = SECURITY_PLAN_DOC.replace('GitHub PAT', 'GitHub PAT(변경됨)');
+    const fullTextB = extractPubClassTableFullText(changed);
+    expect(fullTextA).not.toEqual(fullTextB);
+    // id 집합 자체는 문구 변경으로 흔들리지 않는다(id 해시와 전문 해시가 각기 다른 축을 잡는다는 증거).
+    expect(extractPubClassIds(SECURITY_PLAN_DOC)).toEqual(extractPubClassIds(changed));
+  });
+});
+
+describe('generateContractSnapshot — security-plan.md §11.5를 sourceRegions에 담는다(B2)', () => {
+  it('§11.5 부류 id·전문 두 region이 sourceRegions에 있다', () => {
+    const snap = generateContractSnapshot({
+      policyContractMdText: DOC_A,
+      architectureMdText: '',
+      securityPlanMdText: SECURITY_PLAN_DOC,
+      extensionVersion: '0.1.0',
+    });
+    const idRegion = snap.sourceRegions.find((r) => r.doc === 'security-plan.md' && r.region === '§11.5 부류 id');
+    const fullRegion = snap.sourceRegions.find((r) => r.doc === 'security-plan.md' && r.region === '§11.5 전문');
+    expect(idRegion).toBeDefined();
+    expect(fullRegion).toBeDefined();
+    expect(idRegion.sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    // 스냅샷 전체 직렬화에 실제 예시 값(GitHub PAT 등)이 값으로는 안 남는다 — 해시로만 존재.
+    expect(JSON.stringify(snap)).not.toContain('GitHub PAT');
+  });
+});
+
 // --- D2 반타우톨로지: 생성기는 compat/를 입력으로 받지 않는다(구조적 증거 + 행동 증거) ---
 describe('D2 — 생성기는 docs/에서만 읽는다(compat/를 읽지 않는다)', () => {
   it('함수 시그니처가 docs 관련 키만 받는다(compat 경로 파라미터가 없다)', () => {
@@ -129,6 +180,7 @@ describe('scripts/gen-contract-snapshot.mjs — main() D1(docs/ 부재 시 거�
       mkdirSync(join(dir, 'docs'), { recursive: true });
       writeFileSync(join(dir, 'docs', 'policy-contract.md'), DOC_A, 'utf8');
       writeFileSync(join(dir, 'docs', 'architecture.md'), '', 'utf8');
+      writeFileSync(join(dir, 'docs', 'security-plan.md'), '', 'utf8');
     }
     return dir;
   }

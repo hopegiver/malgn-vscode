@@ -11,13 +11,15 @@
 // 통과시킨다"는 뜻이 아니다: 정본 반전(§8.2 ①) 덕분에 코드가 계약을 벗어나는 경로 자체가
 // 문서 유무와 무관하게 이미 막혀 있다.
 
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadCodeConstants } from '../core/policy/codeConstants.js';
-import { GENERATOR_VERSION } from '../../scripts/gen-contract-snapshot.mjs';
+import { GENERATOR_VERSION, extractPubClassTableFullText } from '../../scripts/gen-contract-snapshot.mjs';
 import { checkExtensionVersionSync } from './checks/check1a-extensionVersionSync.js';
 import { checkCompatibilityDocSync } from './checks/check1-compatibilityDocSync.js';
 import { checkPolicyFixtureSchema } from './checks/check2-policyFixtureSchema.js';
@@ -48,6 +50,7 @@ const SENSITIVE_CLASSES_JSON = join(COMPAT, 'sensitive-classes.json');
 const CONTRACT_SNAPSHOT_JSON = join(COMPAT, 'contract-snapshot.json');
 const POLICY_CONTRACT_MD = join(DOCS, 'policy-contract.md');
 const ARCHITECTURE_MD = join(DOCS, 'architecture.md');
+const SECURITY_PLAN_MD = join(DOCS, 'security-plan.md');
 const TECH_STACK_MD = join(DOCS, 'tech-stack.md');
 const MALGN_AUTH_MD = join(DOCS, 'malgn-auth-requirements.md');
 const MALGNAI_HUB_MD = join(DOCS, 'malgnai-hub-requirements.md');
@@ -164,13 +167,38 @@ describe(`pnpm compat:check — policy-contract.md §6 검사 ①~⑪ (모드: $
     expect(result.violations, reportOf(result)).toEqual([]);
   });
 
-  it('⑩ 스냅샷 무결성·신선도 (§8.5 D4)', () => {
+  it('⑩ 스냅샷 무결성·신선도 (§8.5 D4 / §12.4 B3)', () => {
     const result = checkSnapshotIntegrity({
       contractSnapshotJsonPath: CONTRACT_SNAPSHOT_JSON,
       packageJsonPath: PACKAGE_JSON,
       currentGeneratorVersion: GENERATOR_VERSION,
+      sensitiveClassesJsonPath: SENSITIVE_CLASSES_JSON,
     });
     expect(result.violations, reportOf(result)).toEqual([]);
+  });
+
+  it.runIf(DOCS_PRESENT)('⑩(f) 부류표 전문 해시 대조 — security-plan.md §11.5 실물 대조(B5, 로컬 full 전용)', () => {
+    // B5(§12.4) — id 집합은 같아도 부류의 *정의 문구*가 바뀐 경우를 잡는다. 이 표는
+    // 그 자체로 PUB-B(호스트·포트·항목명 실례)를 예시로 담고 있어 CI가 아니라 로컬
+    // full 모드(docs/ 실재 = 관리자 기기)에서만 대조한다 — id 해시(B3)는 CI, 전문
+    // 해시(B5)는 로컬. 대조 대상은 스냅샷에 이미 박제된 해시뿐이고, 표 원문 자체는
+    // 이 테스트 실행 중에도 트리 밖으로 나가지 않는다(로컬 프로세스 메모리 안에서만 사용).
+    const securityPlanMdText = readFileSync(SECURITY_PLAN_MD, 'utf8');
+    const recomputed = `sha256:${createHash('sha256').update(extractPubClassTableFullText(securityPlanMdText), 'utf8').digest('hex')}`;
+    const snapshot = JSON.parse(readFileSync(CONTRACT_SNAPSHOT_JSON, 'utf8')) as {
+      sourceRegions?: readonly { doc?: unknown; region?: unknown; sha256?: unknown }[];
+    };
+    const fullRegion = (snapshot.sourceRegions ?? []).find((r) => r.doc === 'security-plan.md' && r.region === '§11.5 전문');
+    expect(fullRegion, 'contract-snapshot.json에 security-plan.md §11.5 전문 region이 없습니다').toBeDefined();
+    expect(fullRegion?.sha256, '표 문구가 바뀌었는데 스냅샷이 낡았습니다 — `pnpm contract:snapshot`을 다시 실행하십시오').toBe(recomputed);
+  });
+
+  it.runIf(DOCS_PRESENT)('A-34 — pre-push 훅이 무장되어 있는지(core.hooksPath, 로컬 full 전용, F-6 보강)', () => {
+    // §8.6 2차선(pre-push 훅)은 로컬 git config라 다른 클론·다른 기기에는 따라가지
+    // 않는다(security-report.md F-6 "통제를 용기에 걸었다"). 릴리스 빌드를 하는 관리자
+    // 기기(docs/ 실재)에서만 강제해 CI를 방해하지 않는다.
+    const hooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    expect(hooksPath, 'git config core.hooksPath가 .githooks가 아닙니다 — pre-push 민감값 스캔이 무장되지 않았습니다(AP-18)').toBe('.githooks');
   });
 
   it('⑪ 사이트면 규율 — 예시면은 예약 네임스페이스만 + 형태 일치 + 구멍 무잔존', () => {

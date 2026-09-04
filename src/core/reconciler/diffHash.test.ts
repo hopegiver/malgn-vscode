@@ -18,7 +18,7 @@ const changeB: Change = {
   target: '~/.claude/settings.json#otel.endpoint',
   kind: 'add',
   level: 'L1',
-  after: 'https://collector.internal',
+  after: 'https://collector.example.com',
   reversible: true,
   rationale: 'OTel endpoint 추가',
 };

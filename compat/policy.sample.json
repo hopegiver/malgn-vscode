@@ -29,7 +29,7 @@
       "OTEL_LOG_TOOL_DETAILS": "0",
       "OTEL_LOG_RAW_API_BODIES": "0"
     },
-    "headersHelper": { "kind": "keychain-basic", "service": "<keychain-item>", "account": "<keychain-item>" }
+    "headersHelper": { "kind": "keychain-basic", "service": "example-service", "account": "example-service" }
   },
   "install": { "mode": "assisted" },
   "github": { "requiredScopes": ["repo", "read:org", "workflow"] },

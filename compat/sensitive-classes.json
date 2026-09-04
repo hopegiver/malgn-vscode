@@ -1,32 +1,137 @@
 {
   "//": "docs/policy-contract.md §8.3 검사 ⑨의 부류 정의 — 공개면. 패턴/allowlist만 담는다.",
-  "//1": "값(실제 IP·실제 도메인)은 여기 담지 않는다 — 담는 순간 이 파일 자체가 C-2를 위반한다.",
-  "//2": "domainAuthority 클래스는 '알려진 공개 서비스가 아닌 모든 도메인'을 기본 차단하는",
-  "//3": "default-deny 방식이라 특정 사내 도메인 문자열을 알 필요가 없다.",
-  "version": 1,
+  "//1": "값(실제 IP·실제 도메인·실제 시크릿)은 여기 담지 않는다 — 담는 순간 이 파일 자체가 위반이다.",
+  "//2": "v2(security-plan.md §12.2). classTaxonomy는 docs/security-plan.md §11.5의 공식 부류표(PUB-X/A/B/C/D)를",
+  "//3": "그대로 옮긴 것이다. taxonomyIdsSha256은 `pnpm contract:snapshot`이 §11.5 표에서 재계산해 채운다 —",
+  "//4": "손으로 고치면 검사 ⑩(e)가 §12.4 B1~B5 래칫으로 잡는다.",
+  "version": 2,
+  "classTaxonomy": ["PUB-X", "PUB-A", "PUB-B", "PUB-C", "PUB-D"],
+  "enforcedClasses": ["PUB-X", "PUB-A", "PUB-B"],
+  "taxonomyIdsSha256": "sha256:07cbecce8bd392641f012e69337b8698ba65ec820bd7f619d6c83da60439379a",
+  "scanScopes": {
+    "//": "C-0 — 코드 확장자만 인용부호 프리필터(식별자 체인 오탐 방지). 그 밖은 전문 스캔.",
+    "//1": "새로 생기는 파일 형식은 default(wholeText, 엄격한 쪽)로 떨어진다 — fail-closed.",
+    "quotedOnly": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.mjs", "**/*.cjs", "**/*.json", "**/*.jsonc"],
+    "wholeText": ["**/*.md", "**/*.yml", "**/*.yaml", "**/*.toml", "**/*.txt", "**/*.sh", "**/Dockerfile*", "**/*.env*"],
+    "default": "wholeText"
+  },
   "classes": [
     {
+      "id": "secret-token-prefix",
+      "covers": "PUB-X",
+      "kind": "regex-any",
+      "description": "발급자 형태로 식별 가능한 토큰·개인키 접두 7종. 아는 것만으로 조직 자원에 접근 가능한 값이다.",
+      "scope": "wholeText",
+      "redactMatch": true,
+      "patterns": [
+        "(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,255}",
+        "github_pat_[A-Za-z0-9_]{22,255}",
+        "-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+        "AKIA[0-9A-Z]{16}",
+        "xox[baprs]-[A-Za-z0-9-]{10,}",
+        "sk-[A-Za-z0-9]{20,}",
+        "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"
+      ]
+    },
+    {
+      "id": "secret-bearing-key",
+      "covers": "PUB-X",
+      "kind": "key-with-literal-value",
+      "description": "PR-5(정책 무비밀)의 저장소 트리판 — 비밀 형태의 키 이름에 비-플레이스홀더 리터럴 값이 실린 경우.",
+      "redactMatch": true,
+      "keyNameRe": "(?i)(pass(word|wd|phrase)?|pwd|secret|token|api[_-]?key|apikey|credential|private[_-]?key|authorization|bearer|client[_-]?secret)",
+      "placeholderValues": ["", null, "$site", "REPLACE_ME", "CHANGEME", "example", "xxx", "***"],
+      "placeholderValueRe": "^\\$\\{?[A-Z_]+\\}?$|^\\{\\{.*\\}\\}$|^<[^>]*>$"
+    },
+    {
+      "id": "home-directory-path",
+      "covers": "PUB-A",
+      "kind": "regex-any",
+      "description": "개발자 로컬 절대경로 — 회전 불가(비가역)의 실례.",
+      "scope": "wholeText",
+      "redactMatch": true,
+      "patterns": [
+        "/Users/(?!Shared/)[^/\\s\"'`]+/",
+        "/home/(?!runner/|ubuntu/|node/|vscode/)[^/\\s\"'`]+/",
+        "[A-Z]:\\\\Users\\\\(?!Public\\\\)[^\\\\\\s\"'`]+\\\\"
+      ]
+    },
+    {
+      "id": "email-literal",
+      "covers": "PUB-A",
+      "kind": "regex-any",
+      "description": "개인 식별 이메일 리터럴.",
+      "scope": "wholeText",
+      "redactMatch": true,
+      "patterns": ["[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,24}"],
+      "exemptPatterns": ["@example\\.(com|net|org)$", "^noreply@", "@users\\.noreply\\.github\\.com$"]
+    },
+    {
       "id": "ipv4-literal",
+      "covers": "PUB-B",
       "kind": "ipv4",
       "description": "인용부호(문자열 리터럴) 안에 등장하는 IPv4 리터럴. 실제 인프라 IP가 다시 하드코딩되면 반드시 걸린다.",
       "exemptCidrs": ["127.0.0.0/8", "0.0.0.0/32", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"]
     },
     {
+      "id": "ipv6-literal",
+      "covers": "PUB-B",
+      "kind": "ipv6",
+      "description": "IPv6 리터럴. RFC 4291 링크로컬(fe80 접두, /10)·RFC 4193 ULA(fc00 접두, /7)는 §11.5 PUB-B가 말하는 '사내 IP 대역' 그 자체이므로 면제하지 않는다.",
+      "exemptCidrs": ["::1/128"]
+    },
+    {
       "id": "network-authority-domain",
+      "covers": "PUB-B",
       "kind": "domain-default-deny",
       "description": "인용부호 안에 등장하는, TLD로 끝나는 도메인 리터럴. publicAllowlist(공개적으로 알려진 외부 서비스)와 예약 네임스페이스에 없는 도메인은 전부 사내 인프라 값 후보로 간주해 차단한다. 이 목록에 항목을 추가하는 것은 diff로 드러난다(§8.6 재발 방지 5).",
       "recognizedTlds": [
         "com", "net", "org", "io", "dev", "app", "co", "ai", "cloud",
         "kr", "jp", "cn", "uk", "de", "fr", "us", "info", "biz", "tech", "xyz", "me", "sh", "gg",
+        "systems", "cc", "local", "internal",
         "example", "invalid", "test", "localhost"
       ],
       "publicAllowlist": []
+    },
+    {
+      "id": "nonstandard-authority-port",
+      "covers": "PUB-B",
+      "kind": "port-after-authority",
+      "description": "호스트가 면제 대상이어도 포트는 별도로 판정한다 — <예약대역IP>:<실포트> 형태(§11.5 PUB-B가 경고하는 정확한 유출 모양)를 잡기 위해서다. 실제 포트 번호는 이 파일에 나열하지 않는다 — 공개적으로 문서화된 값만 허용목록으로 담는다.",
+      "allowedPorts": [80, 443, 3000, 3001, 4317, 4318, 5173, 8080, 8443, 9090, 9464, 5432, 6379, 3306, 1433, 27017, 22]
+    },
+    {
+      "id": "site-hole-discipline",
+      "covers": "PUB-B",
+      "kind": "structural-key-path",
+      "description": "어휘가 아니라 키 경로로 판정한다(§12.2 C-6 — §11.5 CI 스케치의 'Keychain 항목명 패턴'은 실현 불가능한 요구였다는 정정). allowedAuthorities/allowedKeychainItems/authorities.*/keychainItems/otel.headersHelper.service|account의 값은 $site 구멍이거나 예약 네임스페이스이거나 사유 붙은 publicAllowlist 항목이어야 한다.",
+      "filesGlob": "compat/*.json",
+      "excludeFiles": ["compat/contract-snapshot.json", "compat/sensitive-classes.json"],
+      "keyPaths": ["allowedAuthorities", "allowedKeychainItems", "authorities", "keychainItems", "otel.headersHelper.service", "otel.headersHelper.account"]
+    },
+    {
+      "id": "high-entropy-literal",
+      "covers": "PUB-X",
+      "kind": "high-entropy",
+      "description": "고엔트로피 리터럴(base64/hex, 길이 32 이상, Shannon 엔트로피 4.0 이상). 오탐이 확실히 나므로 C-1~C-6이 먼저 안정화된 뒤 켠다(A-29).",
+      "enabled": false,
+      "minLength": 32,
+      "minEntropy": 4.0
     }
   ],
   "reservedNamespaceAllowlist": {
     "//": "RFC 2606 / RFC 5737 / RFC 3849 예약 네임스페이스 — 예시면·테스트 fixture에서만 쓴다.",
-    "domainSuffixes": ["example.com", "example.net", "example.org", ".example", ".invalid", ".test"],
+    "domainSuffixes": ["example.com", "example.net", "example.org", ".example", ".invalid", ".test", "localhost"],
     "ipv4Cidrs": ["192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "127.0.0.0/8", "0.0.0.0/32"],
     "ipv6Cidrs": ["2001:db8::/32"]
-  }
+  },
+  "publicAllowlist": [
+    { "value": "example-service", "covers": "PUB-C", "reason": "M-40이 도입한 합성 keychain 항목명 — site.example.json·policy.sample.json·테스트 fixture 전반이 공유하는 값", "approvedIn": "security-report.md §3.2 M-40" }
+  ],
+  "pathExemptions": [
+    { "path": "pnpm-lock.yaml", "classes": ["high-entropy-literal"], "reason": "무결성 해시 전용 파일 — 엔트로피 부류만 면제" },
+    { "path": "compat/sensitive-classes.json", "classes": ["home-directory-path"], "reason": "이 파일 자신이 home-directory-path 정규식의 소스 텍스트('/Users/'·'/home/')를 규칙으로 담고 있다 — 실제 경로가 아니라 규칙 정의다(자기참조 오탐, X-6과 같은 종류)" },
+    { "path": "scripts/lib/sensitiveScan.mjs", "classes": ["ipv6-literal"], "reason": "IPv6 매칭 정규식 소스 자체가 압축형 콜론 반복 표기를 포함한다 — 실제 주소가 아니라 매칭 규칙 코드다(자기참조 오탐)" },
+    { "path": "scripts/lib/sensitiveScan.v2.test.mjs", "classes": ["secret-token-prefix", "secret-bearing-key", "home-directory-path", "email-literal", "ipv4-literal", "ipv6-literal", "network-authority-domain", "nonstandard-authority-port"], "reason": "security-plan.md §12.3 회귀 테스트 — 검증하려는 코드 경로(원문 스캔)를 우회하지 않으려 조각 결합 없이 합성값을 정면으로 담았다. 전부 합성값이며 실제 발급 토큰·실제 인프라 주소가 아니다" }
+  ]
 }

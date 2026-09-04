@@ -26,7 +26,10 @@ const SYNTHETIC_NON_EXEMPT_DOMAIN = 'fakecorp-internal' + '.io';
 
 describe('scanText — 민감값 모양(합성 값)을 주입하면 검출한다(완료판정 #5의 메커니즘 증명)', () => {
   it('예약 대역 밖 IPv4 리터럴(합성 값)을 검출한다', () => {
-    const violations = scanText('fake.ts', `const x = "${SYNTHETIC_NON_EXEMPT_IP}:18443";`, config);
+    // 포트는 공개 문서화된 값(4318 — OTLP 기본 포트, PUB-D)을 쓴다(A-27/X-6/F-7).
+    // 실제 수집기 포트를 리터럴로 남기지 않는다 — C-5(포트 부류)가 켜지면 그 값 자체가
+    // 이 파일을 위반으로 잡는다.
+    const violations = scanText('fake.ts', `const x = "${SYNTHETIC_NON_EXEMPT_IP}:4318";`, config);
     expect(violations.some((v) => v.classId === 'ipv4-literal' && v.match === SYNTHETIC_NON_EXEMPT_IP)).toBe(true);
   });
 

@@ -26,6 +26,12 @@ function sha256(text: string): string {
   return `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`;
 }
 
+interface SourceRegion {
+  readonly doc?: unknown;
+  readonly region?: unknown;
+  readonly sha256?: unknown;
+}
+
 interface Snapshot {
   readonly snapshotVersion?: unknown;
   readonly generatorVersion?: unknown;
@@ -33,7 +39,7 @@ interface Snapshot {
   readonly docIdentifiers?: unknown;
   readonly leafRows?: unknown;
   readonly siteShape?: unknown;
-  readonly sourceRegions?: unknown;
+  readonly sourceRegions?: readonly SourceRegion[];
   readonly digest?: unknown;
 }
 
@@ -64,6 +70,9 @@ export interface Check10Input {
   readonly contractSnapshotJsonPath: string;
   readonly packageJsonPath: string;
   readonly currentGeneratorVersion: string;
+  /** B3(§12.4) — `sensitive-classes.json.taxonomyIdsSha256`를 스냅샷의
+   * `sourceRegions["security-plan.md"/"§11.5 부류 id"]`와 대조한다. */
+  readonly sensitiveClassesJsonPath: string;
 }
 
 export function checkSnapshotIntegrity(input: Check10Input): CheckResult {
@@ -103,6 +112,29 @@ export function checkSnapshotIntegrity(input: Check10Input): CheckResult {
 
   if (hasValueLikeField(snapshot.siteShape)) {
     violations.push({ ref: '§8.5 D4(d)', message: 'siteShape에 이름·개수 이외의 값형 필드가 있습니다' });
+  }
+
+  // (e) B3(security-plan.md §12.4) — sensitive-classes.json.taxonomyIdsSha256이
+  // 스냅샷의 security-plan.md §11.5 부류 id 해시와 일치해야 한다. 어긋나면 표(부류
+  // 정의)와 JSON(강제 규칙)이 서로 다른 부류 집합을 말하고 있다는 뜻이다 — 손으로
+  // 고치지 말고 `pnpm contract:snapshot`을 다시 돌려 이 값을 채운다(로컬 full, D1).
+  let sensitiveClasses: { taxonomyIdsSha256?: unknown };
+  try {
+    sensitiveClasses = JSON.parse(readFileSync(input.sensitiveClassesJsonPath, 'utf8')) as { taxonomyIdsSha256?: unknown };
+  } catch (error) {
+    return fail(id, label, [
+      ...violations,
+      { ref: '§12.4 B3', message: `${input.sensitiveClassesJsonPath}를 읽거나 파싱할 수 없습니다: ${error instanceof Error ? error.message : String(error)}` },
+    ]);
+  }
+  const idRegion = (snapshot.sourceRegions ?? []).find((r) => r.doc === 'security-plan.md' && r.region === '§11.5 부류 id');
+  if (!idRegion) {
+    violations.push({ ref: '§12.4 B3', message: '스냅샷에 security-plan.md §11.5 부류 id region이 없습니다(`pnpm contract:snapshot`을 다시 실행하십시오)' });
+  } else if (sensitiveClasses.taxonomyIdsSha256 !== idRegion.sha256) {
+    violations.push({
+      ref: '§12.4 B3',
+      message: `sensitive-classes.json.taxonomyIdsSha256(${String(sensitiveClasses.taxonomyIdsSha256)}) !== 스냅샷 §11.5 부류 id 해시(${String(idRegion.sha256)})`,
+    });
   }
 
   return violations.length === 0 ? ok(id, label) : fail(id, label, violations);

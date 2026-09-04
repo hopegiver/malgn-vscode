@@ -6,6 +6,8 @@ import {
   MV_GITHUB_SCOPE_DENIED,
   MV_POLICY_AUTHORITY_DENIED,
   MV_POLICY_MALFORMED,
+  MV_POLICY_OTEL_ENDPOINT_AUTHORITY_DENIED,
+  MV_POLICY_OTEL_ENV_KEY_DENIED,
   MV_POLICY_OTEL_HEADERS_KIND_INVALID,
   MV_POLICY_SCHEMA_UNSUPPORTED,
   MV_POLICY_SECRET_FIELD_DETECTED,
@@ -198,6 +200,92 @@ describe('otel.env — S4 프라이버시 4키/S2 목적지/PII 확장 우회 �
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     expect(result.policy.otel.blocked).toBe(true);
+  });
+});
+
+// --- A-31(F-4, security-report.md) — otel.env 검사 순서 회귀 3축 ---
+// loader.ts:341-355의 엔드포인트 분기가 KNOWN_OTEL_ENV_KEYS 화이트리스트보다 먼저 돌면
+// TRACES_ENDPOINT·임의 접미 키가 authority만 통과해도 effective env에 실린다(실측
+// 재현됨). 순서를 뒤집은 뒤에도 (1) 그 두 키는 여전히 폐기되는지 (2) 화이트리스트
+// 안의 METRICS/LOGS_ENDPOINT는 여전히 authority 검사를 받는지 (3) 허용 밖 authority가
+// 여전히 high로 거부되는지 3축 전부를 고정한다.
+describe('otel.env — A-31(F-4) 검사 순서 회귀: 화이트리스트가 엔드포인트 분기보다 먼저 돈다', () => {
+  it('[축1] TRACES_ENDPOINT(화이트리스트 밖, 대조군은 KNOWN_OTEL_ENV_KEYS에 METRICS/LOGS만 있음)는 authority가 허용값이어도 폐기되고 blocked를 만들지 않는다', () => {
+    const withTraces = {
+      ...VALID_POLICY,
+      otel: {
+        ...VALID_POLICY.otel,
+        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://203.0.113.10:4318/v1/traces' },
+      },
+    };
+    const result = load(withTraces);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBeUndefined();
+    expect(result.policy.otel.blocked).toBe(false);
+    expect(
+      result.issues.some((i) => i.field === 'otel.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT' && i.code === MV_POLICY_OTEL_ENV_KEY_DENIED)
+    ).toBe(true);
+  });
+
+  it('[축1] 임의 접미 OTEL_EXPORTER_OTLP_*_ENDPOINT 키도 authority가 허용값이어도 폐기된다(TRACES와 동일 취급)', () => {
+    const withArbitrary = {
+      ...VALID_POLICY,
+      otel: {
+        ...VALID_POLICY.otel,
+        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_ANYTHINGGOES_ENDPOINT: 'https://203.0.113.10:4318/v1/x' },
+      },
+    };
+    const result = load(withArbitrary);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_ANYTHINGGOES_ENDPOINT).toBeUndefined();
+    expect(result.policy.otel.blocked).toBe(false);
+  });
+
+  it('[축2] 화이트리스트 안의 METRICS_ENDPOINT/LOGS_ENDPOINT는 여전히 authority 검사를 받아 허용 목적지면 채택된다', () => {
+    const withLogs = {
+      ...VALID_POLICY,
+      otel: {
+        ...VALID_POLICY.otel,
+        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'https://203.0.113.10:4318/v1/logs' },
+      },
+    };
+    const result = load(withLogs);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT).toBe('https://203.0.113.10:4318/v1/metrics');
+    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).toBe('https://203.0.113.10:4318/v1/logs');
+    expect(result.policy.otel.blocked).toBe(false);
+  });
+
+  it('[축3] 화이트리스트 안 키(LOGS_ENDPOINT)라도 허용 밖 authority면 여전히 high로 거부되고 OTel 전체가 blocked된다', () => {
+    const wrongLogs = {
+      ...VALID_POLICY,
+      otel: {
+        ...VALID_POLICY.otel,
+        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'https://evil.invalid/v1/logs' },
+      },
+    };
+    const result = load(wrongLogs);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.policy.otel.blocked).toBe(true);
+    expect(
+      result.issues.some((i) => i.field === 'otel.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT' && i.code === MV_POLICY_OTEL_ENDPOINT_AUTHORITY_DENIED && i.severity === 'high')
+    ).toBe(true);
+  });
+
+  it('[대조군] OTEL_EXPORTER_OTLP_HEADERS(엔드포인트 형태 아님)는 원래도 지금도 폐기된다', () => {
+    const withHeaders = {
+      ...VALID_POLICY,
+      otel: { ...VALID_POLICY.otel, env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_HEADERS: 'x-api-key=abc' } },
+    };
+    const result = load(withHeaders);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_HEADERS).toBeUndefined();
+    expect(result.policy.otel.blocked).toBe(false);
   });
 });
 
