@@ -35,6 +35,8 @@ const KNOWN_DOC_NAMES = [
   'README.md',
   'security-plan.md',
   'devops-review.md',
+  'install-provider.md',
+  'release-gates.md',
 ];
 
 function isExempt(before: string): boolean {
