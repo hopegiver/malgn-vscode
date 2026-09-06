@@ -55,6 +55,8 @@ const TECH_STACK_MD = join(DOCS, 'tech-stack.md');
 const MALGN_AUTH_MD = join(DOCS, 'malgn-auth-requirements.md');
 const MALGNAI_HUB_MD = join(DOCS, 'malgnai-hub-requirements.md');
 const DOCS_README_MD = join(DOCS, 'README.md');
+const INSTALL_PROVIDER_MD = join(DOCS, 'install-provider.md');
+const RELEASE_GATES_MD = join(DOCS, 'release-gates.md');
 const INSTALL_TARGETS_JSON = join(COMPAT, 'install-targets.json');
 const AGENT_INTERFACE_SPEC_JSON = join(COMPAT, 'agent-interface.spec.json');
 const EVIDENCE_DIR = join(COMPAT, 'verification-evidence');
@@ -131,7 +133,15 @@ describe(`pnpm compat:check — policy-contract.md §6 검사 ①~⑪ (모드: $
 
   it.runIf(DOCS_PRESENT)('⑦ 위성 문서의 architecture.md 절 참조가 실재 헤딩을 가리키는지 (로컬 full 전용, §7, M-18)', () => {
     const result = checkCrossDocReferences({
-      targetDocPaths: [POLICY_CONTRACT_MD, TECH_STACK_MD, MALGN_AUTH_MD, MALGNAI_HUB_MD, DOCS_README_MD],
+      targetDocPaths: [
+        POLICY_CONTRACT_MD,
+        TECH_STACK_MD,
+        MALGN_AUTH_MD,
+        MALGNAI_HUB_MD,
+        DOCS_README_MD,
+        INSTALL_PROVIDER_MD,
+        RELEASE_GATES_MD,
+      ],
       docRegistryPaths: {
         'architecture.md': ARCHITECTURE_MD,
         'policy-contract.md': POLICY_CONTRACT_MD,
@@ -139,6 +149,8 @@ describe(`pnpm compat:check — policy-contract.md §6 검사 ①~⑪ (모드: $
         'malgn-auth-requirements.md': MALGN_AUTH_MD,
         'malgnai-hub-requirements.md': MALGNAI_HUB_MD,
         'README.md': DOCS_README_MD,
+        'install-provider.md': INSTALL_PROVIDER_MD,
+        'release-gates.md': RELEASE_GATES_MD,
       },
       architectureMdFileName: 'architecture.md',
     });
