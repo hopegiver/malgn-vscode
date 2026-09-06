@@ -10,6 +10,9 @@
 // 대조한다. 이 파일의 테스트 개수가 DOC_TABLE_FIELDS 리프 개수와 정확히 일치하는지도
 // 별도로 assert해 "표에는 있는데 테스트가 없는 행"이 생기지 않게 한다.
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadCodeConstants } from './codeConstants.js';
 import { loadPolicyFromText } from './loader.js';
@@ -26,7 +29,7 @@ const BASE = {
   schemaVersion: 1,
   generatedAt: '2026-09-02T00:00:00Z',
   extension: { latestVersion: '9.9.9', downloadHint: 'https://download.example.com/x.vsix' },
-  killSwitch: { minExtensionVersion: null, maxExtensionVersion: null, disableProviders: [], message: null, upgradeHint: null },
+  killSwitch: { minAppVersion: null, maxAppVersion: null, disableProviders: [], message: null, upgradeHint: null },
   rollout: [{ provider: 'cloudflare', percent: 20 }],
   compat: { malgnAgent: '>=1.8.30 <2.0.0', claudeCode: '>=2.1.240' },
   agent: { marketplace: 'malgnsoft/claude-plugins', plugin: 'malgn-agent@malgnsoft-plugins', scope: 'user', channel: 'stable' },
@@ -59,8 +62,8 @@ export const DOC_TABLE_LEAF_FIELDS = [
   'generatedAt',
   'extension.latestVersion',
   'extension.downloadHint',
-  'killSwitch.minExtensionVersion',
-  'killSwitch.maxExtensionVersion',
+  'killSwitch.minAppVersion',
+  'killSwitch.maxAppVersion',
   'killSwitch.disableProviders[]',
   'rollout[].provider',
   'rollout[].percent',
@@ -129,19 +132,19 @@ const cases: FieldCase[] = [
     },
   },
   {
-    field: 'killSwitch.minExtensionVersion',
+    field: 'killSwitch.minAppVersion',
     run: () => {
-      const result = load({ ...BASE, killSwitch: { ...BASE.killSwitch, minExtensionVersion: 'not-semver' } });
+      const result = load({ ...BASE, killSwitch: { ...BASE.killSwitch, minAppVersion: 'not-semver' } });
       expect(result.status).toBe('ok');
-      if (result.status === 'ok') expect(result.policy.killSwitch.minExtensionVersion).toBeNull();
+      if (result.status === 'ok') expect(result.policy.killSwitch.minAppVersion).toBeNull();
     },
   },
   {
-    field: 'killSwitch.maxExtensionVersion',
+    field: 'killSwitch.maxAppVersion',
     run: () => {
-      const result = load({ ...BASE, killSwitch: { ...BASE.killSwitch, maxExtensionVersion: 'not-semver' } });
+      const result = load({ ...BASE, killSwitch: { ...BASE.killSwitch, maxAppVersion: 'not-semver' } });
       expect(result.status).toBe('ok');
-      if (result.status === 'ok') expect(result.policy.killSwitch.maxExtensionVersion).toBeNull();
+      if (result.status === 'ok') expect(result.policy.killSwitch.maxAppVersion).toBeNull();
     },
   },
   {
@@ -324,5 +327,42 @@ describe('전수 검증표 리프 필드별 동작 증거 (표 ↔ 코드 대조
 
   it.each(cases)('$field — 검증기가 실제로 반응한다', ({ run }) => {
     run();
+  });
+});
+
+// --- AT-U6 (architecture.md §3.6.1) — "정책의 어떤 리프 필드도 싱크 `update`를
+// 배정받지 않는다(PR-11① 전수 검증표에 `update` 싱크가 존재하지 않는다) |
+// fieldCoverage.test.ts 확장" — 원문 지시대로 이 파일을 확장한다.
+describe('AT-U6 — 정책 리프 필드는 어떤 형태로도 update 싱크로 라우팅되지 않는다', () => {
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const TYPES_SOURCE = readFileSync(join(HERE, 'types.ts'), 'utf8');
+  const LOADER_SOURCE = readFileSync(join(HERE, 'loader.ts'), 'utf8');
+
+  it('EffectivePolicy 인터페이스에 update라는 이름의 리프 필드가 없다', () => {
+    const start = TYPES_SOURCE.indexOf('export interface EffectivePolicy');
+    expect(start, 'types.ts에서 EffectivePolicy 정의를 찾을 수 없습니다').toBeGreaterThanOrEqual(0);
+    const end = TYPES_SOURCE.indexOf('\n}', start);
+    const body = TYPES_SOURCE.slice(start, end);
+    // §0 싱크 분류(S1~S6) 중 어느 것도 이름이 "update"가 아니다 — 이 인터페이스가
+    // 그 6종 밖의 새 싱크(예: `update`)를 리프 필드로 들이지 않는지 직접 확인한다.
+    expect(body).not.toMatch(/readonly\s+update\s*[:?]/);
+  });
+
+  it('DOC_TABLE_LEAF_FIELDS(전수 검증표) 27개 항목 중 어느 것도 "update"가 아니다', () => {
+    for (const field of DOC_TABLE_LEAF_FIELDS) {
+      expect(field.toLowerCase()).not.toBe('update');
+    }
+  });
+
+  it('loader.ts는 update 모듈을 import하지 않는다(AT-U1과 같은 경계를 정책 쪽에서도 재확인)', () => {
+    expect(LOADER_SOURCE).not.toMatch(/from\s+['"][^'"]*\/update\//);
+  });
+
+  it('[위반 주입 확인] EffectivePolicy에 update 리프가 있다고 가정한 가짜 소스는 이 검사가 실제로 잡는다', () => {
+    const fakeTypesSource = `export interface EffectivePolicy {\n  readonly update: { readonly channel: string };\n}\n`;
+    const start = fakeTypesSource.indexOf('export interface EffectivePolicy');
+    const end = fakeTypesSource.indexOf('\n}', start);
+    const body = fakeTypesSource.slice(start, end);
+    expect(body).toMatch(/readonly\s+update\s*[:?]/);
   });
 });

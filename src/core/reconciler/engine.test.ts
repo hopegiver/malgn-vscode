@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DETECT_TIMEOUT_MS, detectAll } from './engine.js';
 import type { DetectContext, Observed, Provider, VerifyResult } from '../../providers/types.js';
 
-const baseCtx: DetectContext = { workspaceTrusted: true };
+const baseCtx: DetectContext = { targetFolderTrusted: true };
 
 function okObserved(id: Provider['id']): Observed {
   return { providerId: id, status: 'ok', code: `MV_${id.toUpperCase()}_OK`, message: 'ok', observedAt: new Date().toISOString() };

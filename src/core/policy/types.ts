@@ -103,9 +103,13 @@ export interface EffectiveExtension {
   readonly downloadHint: string | null;
 }
 
+/** [개명 · v2.0-native M-9] 구 `min/maxExtensionVersion` — 네이티브 전환으로 "extension"
+ * 어휘가 틀려졌다(architecture.md §3.6.1 "[개명 예정 · 원자적 이행]"). `min/maxAppVersion`으로
+ * 개명한다 — 정책 스키마 필드라 fixture(`compat/policy.sample.json`)·loader.ts·
+ * fieldCoverage.test.ts·check3-fixtureLeafCoverage.ts가 이 커밋에서 함께 움직인다. */
 export interface EffectiveKillSwitch {
-  readonly minExtensionVersion: string | null;
-  readonly maxExtensionVersion: string | null;
+  readonly minAppVersion: string | null;
+  readonly maxAppVersion: string | null;
   readonly disableProviders: readonly ProviderId[];
   readonly message: string | null;
   readonly upgradeHint: string | null;

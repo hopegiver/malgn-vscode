@@ -540,15 +540,20 @@ export function loadPolicyFromText(rawText: string, constants: CodeConstants, op
   };
 
   const killSwitchRaw = parsed.killSwitch;
+  // [개명 · v2.0-native M-9] 정책 필드 이름도 min/maxAppVersion이다 — 구 정책 파일이
+  // 여전히 minExtensionVersion/maxExtensionVersion을 보내면(하위호환 없음, §11 W-N2
+  // "출하된 정책이 0장이라 하위호환 부담이 없다") 이 로더는 그 옛 키를 인식하지 않고
+  // undefined로 취급해 폐기한다(validateKillSwitchVersion의 "값 없음" 경로) — 조용히
+  // 무시가 아니라 필드가 그냥 없는 것과 동일하게 처리된다.
   const killSwitch: EffectiveKillSwitch = {
-    minExtensionVersion: validateKillSwitchVersion(
-      isPlainObject(killSwitchRaw) ? killSwitchRaw.minExtensionVersion : undefined,
-      'killSwitch.minExtensionVersion',
+    minAppVersion: validateKillSwitchVersion(
+      isPlainObject(killSwitchRaw) ? killSwitchRaw.minAppVersion : undefined,
+      'killSwitch.minAppVersion',
       issues
     ),
-    maxExtensionVersion: validateKillSwitchVersion(
-      isPlainObject(killSwitchRaw) ? killSwitchRaw.maxExtensionVersion : undefined,
-      'killSwitch.maxExtensionVersion',
+    maxAppVersion: validateKillSwitchVersion(
+      isPlainObject(killSwitchRaw) ? killSwitchRaw.maxAppVersion : undefined,
+      'killSwitch.maxAppVersion',
       issues
     ),
     disableProviders: validateDisableProviders(isPlainObject(killSwitchRaw) ? killSwitchRaw.disableProviders : undefined, issues),

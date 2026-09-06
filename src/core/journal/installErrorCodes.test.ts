@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { loadCodeConstants } from '../policy/codeConstants.js';
 import {
   MV_INSTALL_MANAGER_PATH_DENIED,
   MV_INSTALL_NEEDS_ELEVATION,
@@ -10,6 +11,7 @@ import {
   MV_INSTALL_TIMEOUT,
   MV_INSTALL_VERIFY_FAILED,
   classifyInstallExecFailure,
+  resolveManagerPathAllowlist,
 } from './installErrorCodes.js';
 
 // docs-exact 대조 — architecture.md·policy-contract.md에 리터럴로 등장하는 문자열과
@@ -50,5 +52,34 @@ describe('classifyInstallExecFailure — MV_INSTALL_TIMEOUT vs MV_INSTALL_VERIFY
 
   it('아직 종료되지 않은 프로세스(exitCode null, timedOut false)는 미분류(null)', () => {
     expect(classifyInstallExecFailure({ exitCode: null, timedOut: false })).toBeNull();
+  });
+});
+
+// policy-contract.md §2.2 T-4(v2.0-native 개정) — "규칙 ①은 키 부재·빈 목록을
+// fail-closed로 정의한다"의 실행 지점.
+describe('resolveManagerPathAllowlist — T-4: 키 부재·빈 목록은 fail-closed(blocked)', () => {
+  it('pnpm은 compat/manager-paths.json에 키가 없어 항상 blocked다(v1.1 이전)', () => {
+    const constants = loadCodeConstants();
+    const result = resolveManagerPathAllowlist(constants.allowedManagerPaths, 'pnpm');
+    expect(result).toEqual({ status: 'blocked', code: MV_INSTALL_MANAGER_PATH_DENIED });
+  });
+
+  it('brew처럼 화이트리스트에 정의된 매니저는 allowed + 후보 경로 배열을 반환한다', () => {
+    const constants = loadCodeConstants();
+    const result = resolveManagerPathAllowlist(constants.allowedManagerPaths, 'brew');
+    expect(result.status).toBe('allowed');
+    if (result.status === 'allowed') {
+      expect(result.candidates).toContain('/opt/homebrew/bin/brew');
+    }
+  });
+
+  it('키는 있지만 값이 빈 배열이면 blocked다("검사 생략"이 아니다)', () => {
+    const result = resolveManagerPathAllowlist({ emptyManager: [] }, 'emptyManager');
+    expect(result).toEqual({ status: 'blocked', code: MV_INSTALL_MANAGER_PATH_DENIED });
+  });
+
+  it('완전히 알려지지 않은 매니저 키도 blocked다(fail-open으로 새지 않는다)', () => {
+    const result = resolveManagerPathAllowlist({}, 'totally-unknown-manager');
+    expect(result).toEqual({ status: 'blocked', code: MV_INSTALL_MANAGER_PATH_DENIED });
   });
 });

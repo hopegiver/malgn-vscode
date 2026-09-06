@@ -30,8 +30,8 @@ const VALID_POLICY = {
   generatedAt: '2026-09-02T00:00:00Z',
   extension: { latestVersion: '9.9.9', downloadHint: 'https://download.example.com/malgn-vscode.vsix' },
   killSwitch: {
-    minExtensionVersion: null,
-    maxExtensionVersion: null,
+    minAppVersion: null,
+    maxAppVersion: null,
     disableProviders: [],
     message: null,
     upgradeHint: null,

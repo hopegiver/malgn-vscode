@@ -1,15 +1,24 @@
 // architecture.md §3.6.1 완료 판정 — 이 파일은 다음을 증명한다:
 //  (a) STOPPABLE_SURFACES 정본 값이 §3.6.1 원문과 정확히 일치한다
-//  (b) 정지 경로 5개(킬 스위치·호환 게이트·미신뢰 워크스페이스·정책 노후·HRS4)가
+//  (b) 정지 경로 6개(킬 스위치·호환 게이트·대상 폴더 미신뢰·정책 노후·HRS4·무인 세션)가
 //      전부 evaluateStop() 하나만을 통해서만 정지를 표현한다(같은 상수 참조 — 별도
 //      정지 함수/상수가 없다는 것 자체가 이 파일에 다른 정지 경로가 없다는 사실로 증명된다)
-//  (c) install provider는 다섯 신호를 전부 최댓값(worst case)으로 켜도 정지되지 않는다
-//      → "복구 경로가 살아남음"
+//  (c) install provider는 여섯 신호를 전부 최댓값(worst case)으로 켜도 ①②는 정지되지
+//      않는다 → "복구 경로가 살아남음"(③④⑥은 install도 예외 없이 정지된다)
 //  (d) 정책 계층(disableProviders enum)이 뚫려 install이 섞여 들어와도 코드가 한 번 더
 //      막는다(방어심층)
 //  (e) StopDecision은 {stopped, reasons}만 반환한다 — 새 target·change를 만들 수 없다
 //      ("주입 불가")
 //  (f) HRS4는 provider.apply만 정지하고 consent.issue는 막지 않는다(재동의 경로 보존)
+//
+// [C-11 관련 — 이 파일이 증명하지 않는 것] 아래 테스트들은 `targetFolderTrusted`를
+// **리터럴 불리언으로 주입**한다 — evaluateStop()의 순수 로직(신호 → 정지 판정 번역)만
+// 검증한다. "신뢰 원장을 지우거나 상수화해도 이 로직 자체는 계속 옳게 동작한다"는 것과
+// "원장이 실제로 기본값 untrusted를 만들어낸다"는 서로 다른 명제다 — 후자(신호의
+// *생산*이 살아있는가, C-11의 실제 실패 지점)는 `core/trust/ledger.test.ts`의 "원장
+// 조회 형태" 회귀 테스트가 담당한다. 주입 테스트만 남기면 C-11이 그대로 재현된다(원장을
+// 삭제해도 여기 테스트는 계속 통과하기 때문이다) — 그래서 이 파일 하나만으로 C-11
+// 재현 방지를 주장하지 않는다.
 
 import { describe, expect, it } from 'vitest';
 import type { ProviderId } from '../../providers/types.js';
@@ -19,7 +28,8 @@ import {
   MV_STOP_HRS4_RECONSENT_REQUIRED,
   MV_STOP_KILL_SWITCH,
   MV_STOP_POLICY_CHECKOUT_STALE,
-  MV_STOP_UNTRUSTED_WORKSPACE,
+  MV_STOP_TARGET_FOLDER_UNTRUSTED,
+  MV_STOP_UNATTENDED_SESSION,
   POLICY_CHECKOUT_STALE_DAYS,
   STOPPABLE_SURFACES,
   evaluateStop,
@@ -32,8 +42,8 @@ const CURRENT_VERSION = '0.1.0';
 
 function noKillSwitch(overrides: Partial<EffectiveKillSwitch> = {}): EffectiveKillSwitch {
   return {
-    minExtensionVersion: null,
-    maxExtensionVersion: null,
+    minAppVersion: null,
+    maxAppVersion: null,
     disableProviders: [],
     message: null,
     upgradeHint: null,
@@ -46,22 +56,24 @@ function allClearSignals(overrides: Partial<StopSignals> = {}): StopSignals {
     killSwitch: noKillSwitch(),
     currentExtensionVersion: CURRENT_VERSION,
     compatGateBelowMinimum: false,
-    workspaceTrusted: true,
+    targetFolderTrusted: true,
     policyCheckoutStale: false,
     hrs4ReconsentRequired: false,
+    sessionAttended: true,
     ...overrides,
   };
 }
 
-/** 5개 신호를 전부 "정지 발동" 상태로 켠 최악의 킬스위치 시나리오 */
+/** 6개 신호를 전부 "정지 발동" 상태로 켠 최악의 킬스위치 시나리오 */
 function worstCaseSignals(): StopSignals {
   return {
     killSwitch: noKillSwitch({ disableProviders: ['agent', 'otel', 'github', 'cloudflare', 'mcp'] }),
     currentExtensionVersion: CURRENT_VERSION,
     compatGateBelowMinimum: true,
-    workspaceTrusted: false,
+    targetFolderTrusted: false,
     policyCheckoutStale: true,
     hrs4ReconsentRequired: true,
+    sessionAttended: false,
   };
 }
 
@@ -93,17 +105,17 @@ describe('정지 경로 ① 킬 스위치(G-2)', () => {
     expect(issueDecision.reasons.map((r) => r.code)).toContain(MV_STOP_KILL_SWITCH);
   });
 
-  it('minExtensionVersion 미달이면 정지된다', () => {
+  it('minAppVersion 미달이면 정지된다', () => {
     const signals = allClearSignals({
-      killSwitch: noKillSwitch({ minExtensionVersion: '0.2.0' }),
+      killSwitch: noKillSwitch({ minAppVersion: '0.2.0' }),
       currentExtensionVersion: '0.1.0',
     });
     expect(evaluateStop('provider.apply', 'agent', signals).stopped).toBe(true);
   });
 
-  it('maxExtensionVersion 초과면 정지된다(미래 버전 회수용)', () => {
+  it('maxAppVersion 초과면 정지된다(미래 버전 회수용)', () => {
     const signals = allClearSignals({
-      killSwitch: noKillSwitch({ maxExtensionVersion: '0.1.0' }),
+      killSwitch: noKillSwitch({ maxAppVersion: '0.1.0' }),
       currentExtensionVersion: '0.2.0',
     });
     expect(evaluateStop('provider.apply', 'agent', signals).stopped).toBe(true);
@@ -111,7 +123,7 @@ describe('정지 경로 ① 킬 스위치(G-2)', () => {
 
   it('버전 범위 안이면 정지되지 않는다', () => {
     const signals = allClearSignals({
-      killSwitch: noKillSwitch({ minExtensionVersion: '0.1.0', maxExtensionVersion: '0.5.0' }),
+      killSwitch: noKillSwitch({ minAppVersion: '0.1.0', maxAppVersion: '0.5.0' }),
       currentExtensionVersion: '0.2.0',
     });
     expect(evaluateStop('provider.apply', 'agent', signals).stopped).toBe(false);
@@ -128,14 +140,14 @@ describe('정지 경로 ② 호환 게이트 하한 미달(§3.5.3)', () => {
   });
 });
 
-describe('정지 경로 ③ 미신뢰 워크스페이스(§2.1)', () => {
-  it('workspaceTrusted=false면 provider.apply·consent.issue 둘 다 정지된다', () => {
-    const signals = allClearSignals({ workspaceTrusted: false });
+describe('정지 경로 ③ 대상 폴더 미신뢰(§3.6.1 ③, C-11 해소)', () => {
+  it('targetFolderTrusted=false면 provider.apply·consent.issue 둘 다 정지된다', () => {
+    const signals = allClearSignals({ targetFolderTrusted: false });
     expect(evaluateStop('provider.apply', 'agent', signals).reasons.map((r) => r.code)).toContain(
-      MV_STOP_UNTRUSTED_WORKSPACE
+      MV_STOP_TARGET_FOLDER_UNTRUSTED
     );
     expect(evaluateStop('consent.issue', 'agent', signals).reasons.map((r) => r.code)).toContain(
-      MV_STOP_UNTRUSTED_WORKSPACE
+      MV_STOP_TARGET_FOLDER_UNTRUSTED
     );
   });
 });
@@ -168,15 +180,35 @@ describe('정지 경로 ⑤ HRS 4 재동의(§7.3.1) — provider.apply만 정�
   });
 });
 
-describe('§3.6.1 매트릭스 — 5경로 × 2표면 × install/비install (architect 판정, 규칙 A)', () => {
+describe('정지 경로 ⑥ 무인 세션(§3.6.1 ⑥, 신설·W-N3·T-3)', () => {
+  it('sessionAttended=false면 provider.apply·consent.issue 둘 다 정지된다', () => {
+    const signals = allClearSignals({ sessionAttended: false });
+    expect(evaluateStop('provider.apply', 'agent', signals).reasons.map((r) => r.code)).toContain(
+      MV_STOP_UNATTENDED_SESSION
+    );
+    expect(evaluateStop('consent.issue', 'agent', signals).reasons.map((r) => r.code)).toContain(
+      MV_STOP_UNATTENDED_SESSION
+    );
+  });
+
+  it('sessionAttended=true(기본값)면 이 경로는 정지를 발생시키지 않는다', () => {
+    const signals = allClearSignals();
+    expect(evaluateStop('provider.apply', 'agent', signals).reasons.map((r) => r.code)).not.toContain(
+      MV_STOP_UNATTENDED_SESSION
+    );
+  });
+});
+
+describe('§3.6.1 매트릭스 — 6경로 × 2표면 × install/비install (architect 판정, 규칙 A)', () => {
   const nonInstallProviders: readonly ProviderId[] = ['agent', 'otel', 'github', 'cloudflare', 'mcp'];
 
   // 매트릭스 원문(§3.6.1 표) 그대로 고정한다:
   //   ① 킬 스위치            | 정지 | 정지 | install: 대상 아님 + 런타임 재확인
   //   ② 호환 게이트 하한 미달  | 정지 | 정지 | install: 예외 — 계속 동작
-  //   ③ 미신뢰 워크스페이스    | 정지 | 정지 | install: 정지(예외 없음)
+  //   ③ 대상 폴더 미신뢰      | 정지 | 정지 | install: 정지(예외 없음)
   //   ④ 정책 체크아웃 14일 노후 | 정지 | 정지 | install: 정지(예외 없음)
   //   ⑤ HRS 4 재동의          | 정지 | 정지하지 않는다 | install: 표면 집합 밖(해당 없음)
+  //   ⑥ 무인 세션(신설)       | 정지 | 정지 | install: 정지(예외 없음)
 
   describe('① 킬 스위치 — install은 대상 아님(정책 enum 밖) + 런타임 재확인', () => {
     it('비install provider는 provider.apply·consent.issue 둘 다 정지된다', () => {
@@ -195,13 +227,13 @@ describe('§3.6.1 매트릭스 — 5경로 × 2표면 × install/비install (arc
       expect(evaluateStop('consent.issue', 'install', signals)).toEqual({ stopped: false, reasons: [] });
     });
 
-    it('install은 minExtensionVersion/maxExtensionVersion(버전 상하한, provider 전체 적용)에도 정지되지 않는다', () => {
+    it('install은 minAppVersion/maxAppVersion(버전 상하한, provider 전체 적용)에도 정지되지 않는다', () => {
       const belowMin = allClearSignals({
-        killSwitch: noKillSwitch({ minExtensionVersion: '0.2.0' }),
+        killSwitch: noKillSwitch({ minAppVersion: '0.2.0' }),
         currentExtensionVersion: '0.1.0',
       });
       const aboveMax = allClearSignals({
-        killSwitch: noKillSwitch({ maxExtensionVersion: '0.1.0' }),
+        killSwitch: noKillSwitch({ maxAppVersion: '0.1.0' }),
         currentExtensionVersion: '0.2.0',
       });
       expect(evaluateStop('provider.apply', 'install', belowMin).stopped).toBe(false);
@@ -228,9 +260,9 @@ describe('§3.6.1 매트릭스 — 5경로 × 2표면 × install/비install (arc
     });
   });
 
-  describe('③ 미신뢰 워크스페이스(§2.1) — install도 정지(예외 없음, 규칙 A)', () => {
+  describe('③ 대상 폴더 미신뢰(§3.6.1 ③) — install도 정지(예외 없음, 규칙 A)', () => {
     it('비install provider는 provider.apply·consent.issue 둘 다 정지된다', () => {
-      const signals = allClearSignals({ workspaceTrusted: false });
+      const signals = allClearSignals({ targetFolderTrusted: false });
       for (const providerId of nonInstallProviders) {
         expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
         expect(evaluateStop('consent.issue', providerId, signals).stopped).toBe(true);
@@ -238,13 +270,13 @@ describe('§3.6.1 매트릭스 — 5경로 × 2표면 × install/비install (arc
     });
 
     it('install도 provider.apply·consent.issue 둘 다 정지된다(예외 없음)', () => {
-      const signals = allClearSignals({ workspaceTrusted: false });
+      const signals = allClearSignals({ targetFolderTrusted: false });
       const applyDecision = evaluateStop('provider.apply', 'install', signals);
       const issueDecision = evaluateStop('consent.issue', 'install', signals);
       expect(applyDecision.stopped).toBe(true);
-      expect(applyDecision.reasons.map((r) => r.code)).toContain(MV_STOP_UNTRUSTED_WORKSPACE);
+      expect(applyDecision.reasons.map((r) => r.code)).toContain(MV_STOP_TARGET_FOLDER_UNTRUSTED);
       expect(issueDecision.stopped).toBe(true);
-      expect(issueDecision.reasons.map((r) => r.code)).toContain(MV_STOP_UNTRUSTED_WORKSPACE);
+      expect(issueDecision.reasons.map((r) => r.code)).toContain(MV_STOP_TARGET_FOLDER_UNTRUSTED);
     });
   });
 
@@ -286,22 +318,43 @@ describe('§3.6.1 매트릭스 — 5경로 × 2표면 × install/비install (arc
     });
   });
 
-  it('대조군 — 5개 신호를 전부 최악으로 켜면 비install provider는 모두 정지된다(install 예외가 "항상 통과"로 새지 않았음을 증명)', () => {
+  describe('⑥ 무인 세션(신설) — install도 정지(예외 없음, 규칙 A)', () => {
+    it('비install provider는 provider.apply·consent.issue 둘 다 정지된다', () => {
+      const signals = allClearSignals({ sessionAttended: false });
+      for (const providerId of nonInstallProviders) {
+        expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
+        expect(evaluateStop('consent.issue', providerId, signals).stopped).toBe(true);
+      }
+    });
+
+    it('install도 provider.apply·consent.issue 둘 다 정지된다(예외 없음)', () => {
+      const signals = allClearSignals({ sessionAttended: false });
+      const applyDecision = evaluateStop('provider.apply', 'install', signals);
+      const issueDecision = evaluateStop('consent.issue', 'install', signals);
+      expect(applyDecision.stopped).toBe(true);
+      expect(applyDecision.reasons.map((r) => r.code)).toContain(MV_STOP_UNATTENDED_SESSION);
+      expect(issueDecision.stopped).toBe(true);
+      expect(issueDecision.reasons.map((r) => r.code)).toContain(MV_STOP_UNATTENDED_SESSION);
+    });
+  });
+
+  it('대조군 — 6개 신호를 전부 최악으로 켜면 비install provider는 모두 정지된다(install 예외가 "항상 통과"로 새지 않았음을 증명)', () => {
     const signals = worstCaseSignals();
     for (const providerId of nonInstallProviders) {
       expect(evaluateStop('provider.apply', providerId, signals).stopped).toBe(true);
     }
   });
 
-  it('install은 ①②만 정지되지 않고 ③④(+가정적 ⑤)는 정지된다 — "5개 정지 경로 전부 예외"였던 구판과의 핵심 차이', () => {
+  it('install은 ①②만 정지되지 않고 ③④⑥(+가정적 ⑤)는 정지된다 — "정지 경로 전부 예외"였던 구판과의 핵심 차이', () => {
     const signals = worstCaseSignals();
     const decision = evaluateStop('provider.apply', 'install', signals);
-    expect(decision.stopped).toBe(true); // ③④가 살아있어 전체 판정은 정지다
+    expect(decision.stopped).toBe(true); // ③④⑥이 살아있어 전체 판정은 정지다
     const codes = decision.reasons.map((r) => r.code);
     expect(codes).not.toContain(MV_STOP_KILL_SWITCH);
     expect(codes).not.toContain(MV_STOP_COMPAT_GATE_BELOW_MINIMUM);
-    expect(codes).toContain(MV_STOP_UNTRUSTED_WORKSPACE);
+    expect(codes).toContain(MV_STOP_TARGET_FOLDER_UNTRUSTED);
     expect(codes).toContain(MV_STOP_POLICY_CHECKOUT_STALE);
+    expect(codes).toContain(MV_STOP_UNATTENDED_SESSION);
   });
 });
 
@@ -314,13 +367,14 @@ describe('주입 불가 — StopDecision은 {stopped, reasons}만 반환한다',
     }
   });
 
-  it('reasons의 code는 5개 고정 상수 중 하나만 나온다 — 임의 문자열이 섞이지 않는다', () => {
+  it('reasons의 code는 6개 고정 상수 중 하나만 나온다 — 임의 문자열이 섞이지 않는다', () => {
     const KNOWN_CODES = new Set([
       MV_STOP_KILL_SWITCH,
       MV_STOP_COMPAT_GATE_BELOW_MINIMUM,
-      MV_STOP_UNTRUSTED_WORKSPACE,
+      MV_STOP_TARGET_FOLDER_UNTRUSTED,
       MV_STOP_POLICY_CHECKOUT_STALE,
       MV_STOP_HRS4_RECONSENT_REQUIRED,
+      MV_STOP_UNATTENDED_SESSION,
     ]);
     const decision = evaluateStop('provider.apply', 'agent', worstCaseSignals());
     expect(decision.reasons.length).toBeGreaterThan(0);

@@ -3,8 +3,8 @@
   "generatedAt": "2026-09-02T00:00:00Z",
   "extension": { "latestVersion": "0.1.0", "downloadHint": "https://<사내 배포 안내>" },
   "killSwitch": {
-    "minExtensionVersion": null,
-    "maxExtensionVersion": null,
+    "minAppVersion": null,
+    "maxAppVersion": null,
     "disableProviders": [],
     "message": null,
     "upgradeHint": null

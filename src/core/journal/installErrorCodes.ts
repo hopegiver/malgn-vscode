@@ -45,6 +45,37 @@ export const MV_INSTALL_SIGNATURE_UNCHECKED = 'MV_INSTALL_SIGNATURE_UNCHECKED';
  * "자동설치가 100%가 아닌 유일한 구조적 구멍") */
 export const MV_INSTALL_NO_PACKAGE_MANAGER = 'MV_INSTALL_NO_PACKAGE_MANAGER';
 
+export type ManagerPathAllowlistResolution =
+  | { readonly status: 'allowed'; readonly candidates: readonly string[] }
+  | { readonly status: 'blocked'; readonly code: typeof MV_INSTALL_MANAGER_PATH_DENIED };
+
+/**
+ * §4.8.4 p1 규칙 ①(policy-contract.md §2.2, T-4 v2.0-native 개정) — 매니저 키가
+ * `allowedManagerPaths`에 없거나 값이 빈 배열이면 "검사 생략"이 아니라 "허용 경로
+ * 0개"로 fail-closed 판정한다. 구 근거("`WorkspaceDepStrategy`는 Workspace Trust +
+ * lockfile 리뷰로 대체한다")는 네이티브 전환으로 Workspace Trust가 사라지며 절반이
+ * 소멸했다 — 대체물은 값이 아니라 **규칙**이다: 키 부재를 fail-open(검사 생략)과
+ * fail-closed(항상 차단) 중 구현자가 임의로 고르게 두지 않는다.
+ *
+ * 예: `pnpm`은 아직 `compat/manager-paths.json`에 키가 없다(corepack·volta·nvm·brew·
+ * `npm -g` 등 경로가 다양해 지금 확정하면 오탐으로 I-B 전체가 blocked가 된다 —
+ * policy-contract.md §2.2). 그래서 이 함수는 `pnpm`에 대해 항상 `blocked`를 반환한다 —
+ * v1.1에서 `allowedManagerPaths.pnpm`이 채워지기 전까지는 구조적으로 그렇다.
+ *
+ * 이 함수는 **규칙 ①**(존재·비어있음)만 판정한다. realpath 비교(②)·소유자 검사(③)·
+ * 저널의 직전 managerPath 대조는 install provider(W10, 이 슬라이스 범위 밖)의 몫이다.
+ */
+export function resolveManagerPathAllowlist(
+  allowedManagerPaths: Readonly<Record<string, readonly string[]>>,
+  managerKey: string
+): ManagerPathAllowlistResolution {
+  const candidates = allowedManagerPaths[managerKey];
+  if (candidates === undefined || candidates.length === 0) {
+    return { status: 'blocked', code: MV_INSTALL_MANAGER_PATH_DENIED };
+  }
+  return { status: 'allowed', candidates };
+}
+
 export type InstallErrorCode =
   | typeof MV_INSTALL_MANAGER_PATH_DENIED
   | typeof MV_INSTALL_NEEDS_ELEVATION

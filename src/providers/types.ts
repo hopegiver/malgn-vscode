@@ -76,7 +76,9 @@ export interface Plan {
 
 /** detect()/verify() 호출 시 공통 컨텍스트 */
 export interface DetectContext {
-  readonly workspaceTrusted: boolean;
+  /** [개명 · C-11 해소, architecture.md §3.6.1 ③] 구 `workspaceTrusted` — 대상 폴더 신뢰
+   * 원장(`core/trust/ledger.ts`) 조회 결과. 기본값 `untrusted`. */
+  readonly targetFolderTrusted: boolean;
   readonly remoteName?: string;
   /**
    * engine이 타임아웃 시 abort()를 호출한다 (§2.2 ⑤ 5초 타임아웃).
@@ -88,7 +90,9 @@ export interface DetectContext {
 
 /** apply() 호출 시 컨텍스트. 구체 필드(로거·exec 핸들 등)는 provider가 늘어나며 확정된다 */
 export interface ApplyContext {
-  readonly workspaceTrusted: boolean;
+  /** [개명 · C-11 해소, architecture.md §3.6.1 ③] 구 `workspaceTrusted` — 대상 폴더 신뢰
+   * 원장(`core/trust/ledger.ts`) 조회 결과. 기본값 `untrusted`. */
+  readonly targetFolderTrusted: boolean;
   readonly remoteName?: string;
   readonly signal?: AbortSignal;
 }

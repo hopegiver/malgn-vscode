@@ -6,8 +6,8 @@ import { buildDiagnosticReport, renderDiagnosticReportForClipboard, toLastInstal
 import type { InstallJournalEntry } from '../journal/types.js';
 
 const NO_KILL_SWITCH: EffectiveKillSwitch = {
-  minExtensionVersion: null,
-  maxExtensionVersion: null,
+  minAppVersion: null,
+  maxAppVersion: null,
   disableProviders: [],
   message: null,
   upgradeHint: null,
@@ -18,9 +18,10 @@ function okVerdict() {
     killSwitch: NO_KILL_SWITCH,
     currentExtensionVersion: '0.1.0',
     compatGateBelowMinimum: false,
-    workspaceTrusted: true,
+    targetFolderTrusted: true,
     policyCheckoutStale: false,
     hrs4ReconsentRequired: false,
+    sessionAttended: true,
   });
 }
 
@@ -105,9 +106,10 @@ describe('buildDiagnosticReport — policy-contract.md §4 "항상" + "install �
       killSwitch: NO_KILL_SWITCH,
       currentExtensionVersion: '0.1.0',
       compatGateBelowMinimum: false,
-      workspaceTrusted: true,
+      targetFolderTrusted: true,
       policyCheckoutStale: true,
       hrs4ReconsentRequired: false,
+      sessionAttended: true,
     });
     const report = buildDiagnosticReport({
       extensionVersion: '0.1.0',

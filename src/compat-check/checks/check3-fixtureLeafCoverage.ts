@@ -23,14 +23,19 @@ import { fail, ok } from '../types.js';
  * 같아야 하지만(둘 다 같은 표에서 나온다), 파일을 공유하지 않는다 — 표가 바뀌었는데
  * 한쪽만 갱신되는 사고를 두 파일이 서로 다른 각도(검증기 반응 vs fixture 경로)로
  * 잡기 위해서다.
+ *
+ * [개명 · v2.0-native M-9] 문서 표의 원문 행 라벨은 "killSwitch.min/maxExtensionVersion"
+ * (하나의 표 행)이지만, 이 배열은 fixture 리프 *경로* 단위로 분해하므로 실제 JSON
+ * 키 이름(`minAppVersion`/`maxAppVersion`, architecture.md §3.6.1 개명)을 그대로 쓴다 —
+ * `docs/policy-contract.md`는 이 슬라이스에서 수정하지 않는다(금지 범위).
  */
 export const DOC_TABLE_LEAF_FIELDS = [
   'schemaVersion',
   'generatedAt',
   'extension.latestVersion',
   'extension.downloadHint',
-  'killSwitch.minExtensionVersion',
-  'killSwitch.maxExtensionVersion',
+  'killSwitch.minAppVersion',
+  'killSwitch.maxAppVersion',
   'killSwitch.disableProviders[]',
   'rollout[].provider',
   'rollout[].percent',
