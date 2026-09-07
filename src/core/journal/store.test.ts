@@ -100,6 +100,19 @@ describe('JournalStore — architecture.md §4.5 step⑥ + §1.1 append-only', (
     expect(entry).toMatchObject({ kind: 'consentFailure', code: 'MV_CONSENT_INVALID', severity: 'high' });
   });
 
+  it('appendVersionTransition — §3.6.2 U-4② 버전 전환 저널 축', async () => {
+    const store = new JournalStore({ baseDir });
+    await store.appendVersionTransition({
+      ts: '2026-09-07T00:00:00.000Z',
+      fromVersion: '0.1.0',
+      toVersion: '0.2.0',
+      trigger: 'timer',
+    });
+
+    const [entry] = await store.readAll();
+    expect(entry).toMatchObject({ kind: 'versionTransition', fromVersion: '0.1.0', toVersion: '0.2.0', trigger: 'timer' });
+  });
+
   it('diffHash(sha256 64-hex)는 32자 이상이어도 고엔트로피 마스킹에서 살아남는다', async () => {
     const store = new JournalStore({ baseDir });
     // 실제 diffHash와 같은 형태 — computeDiffHash()가 만드는 값과 동일하게 64자

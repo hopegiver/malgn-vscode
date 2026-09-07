@@ -94,4 +94,21 @@ export interface ConsentFailureJournalEntry {
   readonly providerId: ProviderId | null;
 }
 
-export type JournalEntry = ChangeJournalEntry | InstallJournalEntry | ConsentFailureJournalEntry;
+// ---------------------------------------------------------------------------
+// ④ 업데이트 버전 전환 저널 — architecture.md §3.6.2 U-4("버전 전환의 가시성 —
+// ① UI 표기 ② 저널 기록 ③ 전환 후 첫 apply에서 재동의 여부 판정"). `src/update/
+// versionTransitionRecord.ts`의 `VersionTransitionRecord`와 필드가 같다 — 그 파일은
+// AT-U1(모듈 경계) 때문에 이 저널 모듈을 import할 수 없으므로, 호스트 어댑터(W-N1)가
+// 그 레코드를 이 저널 엔트리로 옮겨 담는 변환 지점이 된다(두 타입이 우연히 같은
+// 모양이 아니라, 옮겨 담는 지점이 반드시 코어 밖에 있어야 하는 구조적 이유가 있다).
+// ---------------------------------------------------------------------------
+
+export interface VersionTransitionJournalEntry {
+  readonly kind: 'versionTransition';
+  readonly ts: string;
+  readonly fromVersion: string;
+  readonly toVersion: string;
+  readonly trigger: string;
+}
+
+export type JournalEntry = ChangeJournalEntry | InstallJournalEntry | ConsentFailureJournalEntry | VersionTransitionJournalEntry;

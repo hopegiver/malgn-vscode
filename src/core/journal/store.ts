@@ -11,7 +11,13 @@
 import { mkdir, appendFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { maskDeepValues } from '../diagnostics/mask.js';
-import type { ChangeJournalEntry, ConsentFailureJournalEntry, InstallJournalEntry, JournalEntry } from './types.js';
+import type {
+  ChangeJournalEntry,
+  ConsentFailureJournalEntry,
+  InstallJournalEntry,
+  JournalEntry,
+  VersionTransitionJournalEntry,
+} from './types.js';
 
 export interface JournalStoreOptions {
   readonly baseDir: string;
@@ -43,6 +49,13 @@ export class JournalStore {
    * 애초에 이 메서드를 부르지 않는다(`consentFailureRecorder.ts`가 그 구분을 담당). */
   async appendConsentFailure(entry: Omit<ConsentFailureJournalEntry, 'kind'>): Promise<void> {
     await this.#appendLine({ kind: 'consentFailure', ...entry });
+  }
+
+  /** §3.6.2 U-4②(버전 전환 가시성의 저널 축). 호스트 어댑터(`src/host/update/
+   * journalVersionTransitionSink.ts`)가 `VersionTransitionSink.record()` 구현에서
+   * 이 메서드를 호출한다. */
+  async appendVersionTransition(entry: Omit<VersionTransitionJournalEntry, 'kind'>): Promise<void> {
+    await this.#appendLine({ kind: 'versionTransition', ...entry });
   }
 
   /**
