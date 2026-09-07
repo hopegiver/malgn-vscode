@@ -1,7 +1,11 @@
 // AT-U1~U5 — architecture.md §3.6.1 "아키텍처 테스트 규격 (A-30 · 자동업데이트 코드를
 // 쓰기 *전에* 존재해야 한다)". 두 계층으로 검증한다:
-//  ① 실제 저장소 대조 — `src/update/**`가 아직 없는 이 슬라이스 상태에서 모든 검사가
-//     "대상 없음"(skippedNoTarget) 또는 "위반 0건"으로 통과하는지 확인한다.
+//  ① 실제 저장소 대조 — W-N4-b가 `src/update/**`를 실제로 채운 지금, 그 실물 코드가
+//     각 규칙을 위반하지 않는지 확인한다("대상 없음"으로 건너뛰던 이전 상태의 결과가
+//     아니라 실제 스캔 결과가 위반 0건임을 본다 — AT-U1·U2·U3은 이제 `skippedNoTarget:
+//     false`가 정상이고, AT-U4는 `updateTrigger.ts` 한 파일이 대상이 되어 역시
+//     `skippedNoTarget: false`로 위반 0건이 정상이다. AT-U5는 정의 지점이 1개가 된
+//     지금도 위반이 아니다 — 위반은 "2개 이상"부터다).
 //  ② fixture 위반 주입 — 임시 디렉터리에 각 규칙을 실제로 어기는 최소 코드를 만들어
 //     각 검사 함수가 그 위반을 실제로 잡는지, 그리고 정상 형태는 잡지 않는지 확인한다
 //     (완료판정 #4 "위반을 주입해 확인"을 실제 소스 트리를 건드리지 않고 재현한다).
@@ -25,32 +29,32 @@ const REAL_SRC_ROOT = join(HERE, '..');
 const REAL_UPDATE_DIR = join(REAL_SRC_ROOT, 'update');
 const REAL_POLICY_DIR = join(REAL_SRC_ROOT, 'core', 'policy');
 
-describe('실제 저장소 대조 — src/update/**가 아직 없는 이 슬라이스 상태', () => {
-  it('AT-U1: 모듈 경계 검사는 "대상 없음"으로 통과한다', () => {
+describe('실제 저장소 대조 — W-N4-b가 채운 src/update/** 실물 코드', () => {
+  it('AT-U1: 실제 update 모듈은 정책 모듈 디렉터리를 import하지 않고, 그 역도 성립한다', () => {
     const result = checkModuleBoundaryBidirectional(REAL_UPDATE_DIR, REAL_POLICY_DIR);
-    expect(result.skippedNoTarget).toBe(true);
+    expect(result.skippedNoTarget).toBe(false);
     expect(result.violations).toEqual([]);
   });
 
-  it('AT-U2: 타입 도달 불가 검사는 "대상 없음"으로 통과한다', () => {
+  it('AT-U2: 실제 update 모듈 어디에도 정책 파생 타입 식별자가 등장하지 않는다', () => {
     const result = checkTypeReachability(REAL_UPDATE_DIR);
-    expect(result.skippedNoTarget).toBe(true);
+    expect(result.skippedNoTarget).toBe(false);
     expect(result.violations).toEqual([]);
   });
 
-  it('AT-U3: 식별자 부재 검사는 "대상 없음"으로 통과한다', () => {
+  it('AT-U3: 실제 update 모듈 전체(주석 포함)에 금지 식별자가 0회 등장한다', () => {
     const result = checkForbiddenIdentifiers(REAL_UPDATE_DIR);
-    expect(result.skippedNoTarget).toBe(true);
+    expect(result.skippedNoTarget).toBe(false);
     expect(result.violations).toEqual([]);
   });
 
-  it('AT-U4: 트리거 입력 열거 검사는 "대상 없음"으로 통과한다', () => {
+  it('AT-U4: 실제 트리거 유니온(updateTrigger.ts)의 리터럴 태그가 허용된 3종을 벗어나지 않는다', () => {
     const result = checkTriggerInputEnumeration(REAL_UPDATE_DIR);
-    expect(result.skippedNoTarget).toBe(true);
+    expect(result.skippedNoTarget).toBe(false);
     expect(result.violations).toEqual([]);
   });
 
-  it('AT-U5: authority 정의는 저장소 전체에서 0개다(W-N4-b 이전 — 0은 정상, 위반이 아니다)', () => {
+  it('AT-U5: authority 정의 지점이 저장소 전체에서 정확히 1개다(updateServerAuthority.ts) — 위반은 2개부터다', () => {
     const result = checkAuthoritySingleDefinition(REAL_SRC_ROOT);
     expect(result.violations).toEqual([]);
   });
