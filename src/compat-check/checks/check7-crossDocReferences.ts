@@ -26,7 +26,13 @@ export interface Check7Input {
 }
 
 const REF_RE = /§(\d+(?:\.\d+)*)(-[0-9A-Za-z]+)?/g;
-const KNOWN_DOC_NAMES = [
+/**
+ * 내보내는 이유: policy-contract.md §7 레지스트리 불변식(KNOWN_DOC_NAMES ⊆
+ * docRegistryPaths)을 compatCheck.gate.test.ts가 코드 대 코드로 강제하려면 이
+ * 배열이 유일한 정본이어야 한다 — 사본을 만들면 그 사본 자체가 또 다른 미갱신
+ * 지점이 된다.
+ */
+export const KNOWN_DOC_NAMES = [
   'architecture.md',
   'policy-contract.md',
   'tech-stack.md',

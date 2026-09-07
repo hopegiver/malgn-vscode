@@ -30,7 +30,7 @@ import { checkAllowedIdentifiers } from './checks/check5-allowedIdentifiers.js';
 import { checkSnapshotIdentifierSync } from './checks/check5a-snapshotIdentifierSync.js';
 import { checkAllowedNonEmpty } from './checks/check5b-allowedNonEmpty.js';
 import { checkInstallTargetColumns } from './checks/check6-installTargetColumns.js';
-import { checkCrossDocReferences } from './checks/check7-crossDocReferences.js';
+import { KNOWN_DOC_NAMES, checkCrossDocReferences } from './checks/check7-crossDocReferences.js';
 import { checkHrsEvidence, getCommitTimestamp } from './checks/check8-hrsEvidence.js';
 import { checkSensitiveValueScan } from './checks/check9-sensitiveValueScan.js';
 import { checkSnapshotIntegrity } from './checks/check10-snapshotIntegrity.js';
@@ -51,6 +51,7 @@ const CONTRACT_SNAPSHOT_JSON = join(COMPAT, 'contract-snapshot.json');
 const POLICY_CONTRACT_MD = join(DOCS, 'policy-contract.md');
 const ARCHITECTURE_MD = join(DOCS, 'architecture.md');
 const SECURITY_PLAN_MD = join(DOCS, 'security-plan.md');
+const DEVOPS_REVIEW_MD = join(DOCS, 'devops-review.md');
 const TECH_STACK_MD = join(DOCS, 'tech-stack.md');
 const MALGN_AUTH_MD = join(DOCS, 'malgn-auth-requirements.md');
 const MALGNAI_HUB_MD = join(DOCS, 'malgnai-hub-requirements.md');
@@ -69,6 +70,25 @@ const CURRENT_EXTENSION_VERSION = (JSON.parse(readFileSync(PACKAGE_JSON, 'utf8')
 
 /** docs/ 실재 여부만으로 모드를 정한다 — 플래그·환경변수는 쓰지 않는다(§8.3/§8.7 S4). */
 const DOCS_PRESENT = existsSync(DOCS);
+
+/**
+ * 검사 ⑦의 문서 레지스트리(파일명 → 절대경로) — policy-contract.md §7의
+ * "인식(KNOWN_DOC_NAMES) ⊆ 해소(docRegistryPaths)" 불변식이 지켜져야 하는
+ * 유일한 정본. 검사 ⑦ 테스트와 아래 불변식 테스트가 이 상수 하나를 공유한다
+ * (사본을 만들면 그 사본이 또 다른 미갱신 지점이 된다).
+ */
+const DOC_REGISTRY_PATHS: Readonly<Record<string, string>> = {
+  'architecture.md': ARCHITECTURE_MD,
+  'policy-contract.md': POLICY_CONTRACT_MD,
+  'tech-stack.md': TECH_STACK_MD,
+  'malgn-auth-requirements.md': MALGN_AUTH_MD,
+  'malgnai-hub-requirements.md': MALGNAI_HUB_MD,
+  'README.md': DOCS_README_MD,
+  'install-provider.md': INSTALL_PROVIDER_MD,
+  'release-gates.md': RELEASE_GATES_MD,
+  'security-plan.md': SECURITY_PLAN_MD,
+  'devops-review.md': DEVOPS_REVIEW_MD,
+};
 
 function reportOf(result: CheckResult): string {
   return result.violations.map((v) => `  - [${v.ref}] ${v.message}`).join('\n');
@@ -143,19 +163,20 @@ describe(`pnpm compat:check — policy-contract.md §6 검사 ①~⑪ (모드: $
         INSTALL_PROVIDER_MD,
         RELEASE_GATES_MD,
       ],
-      docRegistryPaths: {
-        'architecture.md': ARCHITECTURE_MD,
-        'policy-contract.md': POLICY_CONTRACT_MD,
-        'tech-stack.md': TECH_STACK_MD,
-        'malgn-auth-requirements.md': MALGN_AUTH_MD,
-        'malgnai-hub-requirements.md': MALGNAI_HUB_MD,
-        'README.md': DOCS_README_MD,
-        'install-provider.md': INSTALL_PROVIDER_MD,
-        'release-gates.md': RELEASE_GATES_MD,
-      },
+      docRegistryPaths: DOC_REGISTRY_PATHS,
       architectureMdFileName: 'architecture.md',
     });
     expect(result.violations, reportOf(result)).toEqual([]);
+  });
+
+  it('⑦ 레지스트리 불변식 — KNOWN_DOC_NAMES ⊆ docRegistryPaths (§7, 재발 방지)', () => {
+    // 검사 ⑦이 같은 유형(레지스트리 미갱신)으로 세 번 반복 실패했다(§7). 인식기가
+    // 문서명을 알면서 해소 레지스트리에 없으면 실패 메시지가 "없는 절"에서
+    // "레지스트리에서 찾을 수 없음"으로 바뀔 뿐 실패는 그대로다 — 이 불변식이
+    // 깨지는 순간을 문서 유무·§참조 실재 여부와 무관하게 항상 잡는다(docs/ 부재인
+    // CI에서도 상수 비교만으로 검증 가능하므로 runIf 없이 항상 돈다).
+    const missing = KNOWN_DOC_NAMES.filter((name) => !(name in DOC_REGISTRY_PATHS));
+    expect(missing, `KNOWN_DOC_NAMES에는 있으나 docRegistryPaths에 없는 문서명: ${missing.join(', ')}`).toEqual([]);
   });
 
   it('⑧ HRS-E — verified:true 행 ↔ 검증 증거 파일 바인딩', () => {
