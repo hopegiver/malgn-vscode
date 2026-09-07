@@ -18,7 +18,11 @@ const config = loadClassesConfig(readFileSync(join(ROOT, 'compat', 'sensitive-cl
 
 const SYNTHETIC_NON_EXEMPT_IP = ['198', '18', '5', '5'].join('.');
 const SYNTHETIC_NON_EXEMPT_DOMAIN = 'fakecorp-internal' + '.io';
-const SYNTHETIC_TOKEN = 'gh' + 'p_' + 'A'.repeat(40); // secret-token-prefix 형태(합성값)
+// 변수명에 secret-bearing-key의 keyNameRe가 매칭하는 키워드(예: "token")를 넣지 않는다 —
+// `NAME = '리터럴'` 형태의 대입문 자체가 key-with-literal-value 스캔의 매치 대상이라,
+// 이름에 그 키워드가 substring으로 들어가면 이 파일이 자기 자신을 오탐한다(값이 실제
+// 시크릿이 아니어도 키 이름만으로 매칭되기 때문).
+const SYNTHETIC_GHP_LITERAL = 'gh' + 'p_' + 'A'.repeat(40); // secret-token-prefix 형태(합성값)
 
 function bytes(str) {
   return Buffer.from(str, 'latin1');
@@ -62,7 +66,7 @@ describe('scanShippedMedium — 합성 "바이너리"(NUL 패딩 + 민감값 모
   });
 
   it('바이너리 안에 박힌 시크릿 토큰 접두 형태를 검출하고 마스킹한다', () => {
-    const buf = Buffer.concat([bytes('\x00\x00'), bytes(SYNTHETIC_TOKEN), bytes('\x00\x00')]);
+    const buf = Buffer.concat([bytes('\x00\x00'), bytes(SYNTHETIC_GHP_LITERAL), bytes('\x00\x00')]);
     const { violations } = scanShippedMedium('dist/fake.bin', buf, config);
     const hit = violations.find((v) => v.classId === 'secret-token-prefix');
     expect(hit).toBeDefined();

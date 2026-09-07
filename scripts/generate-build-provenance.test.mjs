@@ -125,7 +125,10 @@ describe('main() — 파일 쓰기까지 end-to-end', () => {
     execFileSync('git', ['init', '-q'], { cwd: dir });
     writeFileSync(join(dir, 'README.md'), 'sandbox\n', 'utf8');
     execFileSync('git', ['add', 'README.md'], { cwd: dir });
-    execFileSync('git', ['-c', 'user.email=sandbox@test.local', '-c', 'user.name=sandbox', 'commit', '-q', '-m', 'sandbox'], { cwd: dir });
+    // user.email은 RFC 2606 예약 도메인(example.com)을 쓴다 — sensitive-classes.json의
+    // email-literal exempt 패턴과 일치시켜 검사 ⑨ 자기 스캔에서 합성값을 실제 개인 이메일로
+    // 오탐하지 않게 한다.
+    execFileSync('git', ['-c', 'user.email=sandbox@example.com', '-c', 'user.name=sandbox', 'commit', '-q', '-m', 'sandbox'], { cwd: dir });
 
     const record = main(dir);
     expect(record.commitSha).toMatch(/^[0-9a-f]{40}$/);

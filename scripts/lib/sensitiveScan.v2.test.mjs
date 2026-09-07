@@ -227,3 +227,31 @@ describe('구조(C-6) — site-hole-discipline은 키 경로로 판정한다(어
     expect(violates('src/fixture-not-compat.json', text, 'site-hole-discipline')).toBe(false);
   });
 });
+
+// --- 경로 문맥의 .app 오탐 방지 — .app은 실제 gTLD이면서 macOS 앱 번들 확장자다.
+// 어휘(recognizedTlds에서 .app 제거)가 아니라 경로 구분자 연속 여부(문맥)로 가른다.
+describe('경로 문맥(.app) — 파일시스템 경로는 통과하고, authority 위치의 .app 도메인은 여전히 검출한다', () => {
+  it('양성 — dist/app.app(단일 슬래시, 경로 세그먼트)은 통과한다', () => {
+    expect(violates('fixture.ts', `'빌드 산출물 경로: dist/app.app'`, 'network-authority-domain')).toBe(false);
+  });
+
+  it('양성 — 절대경로 /Applications/Foo.app(단일 슬래시)도 통과한다', () => {
+    expect(violates('fixture.md', '설치 위치: /Applications/Foo.app 를 확인하세요', 'network-authority-domain')).toBe(false);
+  });
+
+  it('양성 — Windows 경로 C:\\\\dist\\\\app.app(단일 백슬래시)도 통과한다', () => {
+    expect(violates('fixture.md', 'C:\\dist\\app.app', 'network-authority-domain')).toBe(false);
+  });
+
+  it('음성 — https://evil.app(스킴 뒤 authority, 연속 슬래시)는 여전히 검출한다', () => {
+    expect(violates('fixture.md', '콜백 주소: https://evil.app/callback', 'network-authority-domain')).toBe(true);
+  });
+
+  it('음성 — 경로 구분자 없이 단독으로 나온 evil.app도 여전히 검출한다', () => {
+    expect(violates('fixture.md', '이 도메인이 의심스럽다: evil.app', 'network-authority-domain')).toBe(true);
+  });
+
+  it('음성 — 프로토콜 상대 URL(//evil.app, 연속 슬래시)도 여전히 검출한다', () => {
+    expect(violates('fixture.md', '리소스: //evil.app/lib.js', 'network-authority-domain')).toBe(true);
+  });
+});

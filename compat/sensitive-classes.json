@@ -84,7 +84,7 @@
       "id": "network-authority-domain",
       "covers": "PUB-B",
       "kind": "domain-default-deny",
-      "description": "인용부호 안에 등장하는, TLD로 끝나는 도메인 리터럴. publicAllowlist(공개적으로 알려진 외부 서비스)와 예약 네임스페이스에 없는 도메인은 전부 사내 인프라 값 후보로 간주해 차단한다. 이 목록에 항목을 추가하는 것은 diff로 드러난다(§8.6 재발 방지 5).",
+      "description": "인용부호 안에 등장하는, TLD로 끝나는 도메인 리터럴. publicAllowlist(공개적으로 알려진 외부 서비스)와 예약 네임스페이스에 없는 도메인은 전부 사내 인프라 값 후보로 간주해 차단한다. 이 목록에 항목을 추가하는 것은 diff로 드러난다(§8.6 재발 방지 5). 파일시스템 경로 문맥(예: dist/app.app — .app은 실제 gTLD이자 macOS 앱 번들 확장자)의 판정은 어휘가 아니라 경로 구분자 연속 여부로 sensitiveScan.mjs의 isFilesystemPathContext가 가른다 — 이 파일에는 값을 담지 않는다.",
       "recognizedTlds": [
         "com", "net", "org", "io", "dev", "app", "co", "ai", "cloud",
         "kr", "jp", "cn", "uk", "de", "fr", "us", "info", "biz", "tech", "xyz", "me", "sh", "gg",

@@ -387,11 +387,33 @@ function scanIpv6(filePath, text, cls, violations) {
   }
 }
 
+// 파일시스템 경로 문맥의 TLD형 토큰(예: 빌드 산출물 경로의 마지막 세그먼트, macOS 앱
+// 번들 확장자처럼 실제 gTLD와 겹치는 확장자)은 도메인이 아니다 — 어휘(TLD 자체)만으로는
+// 그런 확장자를 가진 실제 도메인과 구별할 수 없다. 그래서 어휘가 아니라 경로 구분자의
+// 연속 여부(문맥)로 가른다:
+//   - 후보 직전이 구분자 1개(예: 슬래시 한 번, 세그먼트/파일명.확장자)면 경로 세그먼트다
+//     → 스킵.
+//   - 후보 직전이 구분자 연속 2개 이상(URL 스킴 뒤 authority의 콜론+슬래시 두 번, 또는
+//     UNC 공유 이름의 역슬래시 두 번)이면 여전히 네트워크 authority 후보다 → 스킵하지
+//     않는다.
+// 이 판정은 특정 확장자 하나에 한정되지 않는다 — 같은 모양(경로 구분자 뒤 마지막
+// 세그먼트)을 갖는 어떤 TLD형 후보에도 동일하게 적용되므로, 특정 TLD를 recognizedTlds에서
+// 빼는 식의 어휘적 완화가 아니다. 회귀 테스트: scripts/lib/sensitiveScan.v2.test.mjs
+// "경로 문맥(.app)" describe 블록.
+function isFilesystemPathContext(text, matchIndex) {
+  const before1 = text[matchIndex - 1];
+  const before2 = text[matchIndex - 2];
+  if (before1 === '/' && before2 !== '/') return true;
+  if (before1 === '\\' && before2 !== '\\') return true;
+  return false;
+}
+
 function scanDomain(filePath, text, cls, reservedDomainSuffixes, violations) {
   DOMAIN_CANDIDATE_RE.lastIndex = 0;
   let dm;
   while ((dm = DOMAIN_CANDIDATE_RE.exec(text)) !== null) {
     const candidate = dm[0];
+    if (isFilesystemPathContext(text, dm.index)) continue;
     const lastLabel = candidate.slice(candidate.lastIndexOf('.') + 1).toLowerCase();
     if (!cls.recognizedTlds.has(lastLabel)) continue;
     if (isReservedOrAllowedDomain(candidate, reservedDomainSuffixes, cls.publicAllowlist)) continue;
