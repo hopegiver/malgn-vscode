@@ -16,7 +16,7 @@ import { app } from 'electron';
 import { TrustLedger } from '../core/trust/ledger.js';
 import { JournalStore } from '../core/journal/store.js';
 import { runActivationSequence } from './activation/activationSequence.js';
-import type { TrayState } from './activation/activationSequence.js';
+import type { ActivationStatusReport, TrayState } from './activation/activationSequence.js';
 import { ensureAppDataDirStructure } from './appData/ensure.js';
 import { resolveRealAppDataDir } from './electron/appDataDirAdapter.js';
 import { showTrustConsentDialogElectron } from './electron/trustDialogAdapter.js';
@@ -28,15 +28,57 @@ import type { ReadTextFile } from './policySource/checkoutAndInstalledPaths.js';
 import compatibilityRaw from '../../compat/compatibility.json';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { electronExecFile } from './electron/execFileAdapter.js';
+import { userInfo } from 'node:os';
+import { createAgentProvider } from '../providers/agent/index.js';
+import { createMcpProvider } from '../providers/mcp/index.js';
+import { createOtelProvider } from '../providers/otel/index.js';
+import { nodePathExecutable } from '../providers/otel/settingsFile.js';
+import type { OtelDesiredSlice } from '../providers/otel/plan.js';
+import type { DesiredSlice, Provider, ProviderId } from '../providers/types.js';
+import type { LoadEffectivePolicyWithFallbackResult } from './policySource/loadWithFallback.js';
 
 export interface AppRuntimeHandles {
   readonly setTrayState: (state: TrayState) => void;
   readonly trustLedger: TrustLedger;
   readonly journal: JournalStore;
   readonly appDataDir: string;
+  /** W7 — apply 오케스트레이션(`host/apply/**`, 이 파일 밖)이 `runApplyWithConsent`를
+   * 부를 때 필요한 provider 핸들. 이 파일 자신은 여전히 이 값으로 apply를 호출하지
+   * 않는다(위 "[apply()를 호출하지 않는다]" 불변량 — 반환만 하고 쓰지 않는다). */
+  readonly providers: readonly Provider[];
+  readonly claudeHomeDir: string;
 }
 
 const readTextFile: ReadTextFile = (path) => readFile(path, 'utf8');
+
+/**
+ * W7 — `runActivationSequence`가 요구하는 `buildDesiredSlice`. agent는 정책의
+ * `agent`/`compat` 조각을 그대로 옮기고(`providers/agent/plan.ts`의 `AgentDesiredSlice`),
+ * mcp는 정책 필드가 없으므로(REQ-5, §0.1.1 A-1) providerId만 담는다. 정책 로드가
+ * `rejected` 상태면 agent도 "차단"으로 접는다(PR-6 — 정책을 못 읽었는데 추측해 설치
+ * 대상을 고르지 않는다).
+ */
+function buildDesiredSlice(providerId: ProviderId, policy: LoadEffectivePolicyWithFallbackResult): DesiredSlice {
+  if (providerId === 'agent') {
+    if (policy.result.status !== 'ok') {
+      return { providerId: 'agent', agent: { blocked: true, reason: '정책을 로드하지 못했습니다' }, compat: { malgnAgent: '>=0.0.0', claudeCode: '>=0.0.0' } };
+    }
+    return { providerId: 'agent', agent: policy.result.policy.agent, compat: policy.result.policy.compat };
+  }
+  if (providerId === 'otel') {
+    // W8 — 정책이 otel.env를 제안하면(이미 loader.ts의 validateOtel을 통과한 값) 그대로
+    // 넘기고, 정책을 못 읽었거나 otel이 blocked·빈 env면 null을 넘긴다 — `planOtel`이
+    // null일 때 사이트면 코드 상수(otelDefaultEnv)로 스스로 기본값을 만든다
+    // (providers/otel/desiredEnv.ts). 정책은 여기서도 "제안"만 한다(PR-4).
+    const policyEnv =
+      policy.result.status === 'ok' && !policy.result.policy.otel.blocked && Object.keys(policy.result.policy.otel.env).length > 0
+        ? policy.result.policy.otel.env
+        : null;
+    return { providerId: 'otel', policyEnv } satisfies OtelDesiredSlice;
+  }
+  return { providerId };
+}
 
 /**
  * §2.2 활성화 시퀀스를 실제 경로·실제 저장소로 조립해 1회 실행한다. 호출자
@@ -45,7 +87,10 @@ const readTextFile: ReadTextFile = (path) => readFile(path, 'utf8');
  * 몫이다(이 함수 자신은 1회 실행만 책임진다 — 반복 스케줄링과 활성화 로직을 한 함수에
  * 묶지 않는다).
  */
-export async function bootstrapAndRunOnce(setTrayState: (state: TrayState) => void): Promise<AppRuntimeHandles> {
+export async function bootstrapAndRunOnce(
+  setTrayState: (state: TrayState) => void,
+  onReport?: (report: ActivationStatusReport) => void
+): Promise<AppRuntimeHandles> {
   const appDataDir = resolveRealAppDataDir();
   await ensureAppDataDirStructure({ appDataDir, platform: process.platform });
 
@@ -64,6 +109,26 @@ export async function bootstrapAndRunOnce(setTrayState: (state: TrayState) => vo
 
   const claudeHomeDir = join(app.getPath('home'), '.claude');
 
+  // W7 — agent(§3.2)·mcp(§5) provider 배선. `dependsOn:['agent']`(mcp)가
+  // `runActivationSequence`의 `detectAll`/`plan` 순회 자체를 바꾸지는 않지만(engine은
+  // 입력 배열 순서로 병렬 detect한다, §2.2 ⑤), 배열 순서를 dependsOn과 맞춰 둔다 —
+  // `providers/registry.ts`의 `topologicalOrder`가 실행 순서를 강제해야 하는 지점(향후
+  // apply 오케스트레이션의 순차 실행)에서 이 순서가 그대로 쓰인다.
+  const agentProvider = createAgentProvider({ execFileFn: electronExecFile, env: process.env, claudeHomeDir, readTextFile });
+  const mcpProvider = createMcpProvider({ execFileFn: electronExecFile, env: process.env });
+  // W8 — otel(macOS만, §4.2). `dependsOn: []`이라 agent/mcp와 실행 순서 의존은 없지만
+  // (§1.2 "mcp는 agent 이후"만 명시돼 있다), 배열에서는 이 셋 뒤에 둔다 — 나중에 실제
+  // dependsOn이 생기면 이 순서를 그대로 쓸 수 있게 하기 위함이다.
+  const otelProvider = createOtelProvider({
+    claudeHomeDir,
+    readTextFile,
+    pathExecutable: nodePathExecutable,
+    platform: process.platform,
+    backupsDir: join(appDataDir, 'backups'),
+    osUsername: userInfo().username,
+  });
+  const providers: readonly Provider[] = [agentProvider, mcpProvider, otelProvider];
+
   await runActivationSequence({
     setTrayState,
     loadPolicy: () =>
@@ -72,11 +137,14 @@ export async function bootstrapAndRunOnce(setTrayState: (state: TrayState) => vo
         readTextFile,
         currentExtensionVersion: compatibilityRaw.extensionVersion,
       }),
-    providers: [], // W7~W10 이전 — 항상 빈 배열
-    buildDesiredSlice: (providerId) => ({ providerId }),
+    providers,
+    buildDesiredSlice: (providerId, policy) => buildDesiredSlice(providerId, policy),
     detectContext: { targetFolderTrusted: false }, // I-B 대상 provider가 없어 이 슬라이스에서는 미사용
-    reportStatus: () => {
-      // 대시보드 UI(W11)가 아직 없다 — 상태 리포트를 받을 자리만 갖춘다.
+    reportStatus: (report) => {
+      // 대시보드 UI(W11)는 아직 없다 — 그러나 W7 동의 화면(`host/apply/**`)이 "지금
+      // 적용" 메뉴를 채우려면 최신 plan이 필요하므로, 그 배선이 구독할 수 있게
+      // 콜백으로 넘긴다(이 함수 자신은 report의 내용을 해석하지 않는다).
+      onReport?.(report);
     },
   });
 
@@ -86,7 +154,7 @@ export async function bootstrapAndRunOnce(setTrayState: (state: TrayState) => vo
     version: compatibilityRaw.extensionVersion,
   });
 
-  return { setTrayState, trustLedger, journal, appDataDir };
+  return { setTrayState, trustLedger, journal, appDataDir, providers, claudeHomeDir };
 }
 
 /** `trust.grant` 표면 진입점 — 대시보드/온보딩 UI(이 슬라이스 범위 밖)가 나중에

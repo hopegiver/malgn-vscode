@@ -39,9 +39,14 @@
     "test:watch": "vitest",
     "compat:check": "vitest run --config vitest.compat.config.ts",
     "prepackage": "pnpm run gen:site && node scripts/assert-site-profile-for-packaging.mjs",
-    "package": "pnpm run build && node scripts/assert-shipped-media-scan.mjs"
+    "package": "pnpm run build && node scripts/assert-shipped-media-scan.mjs",
+    "build:host": "node scripts/build-host.mjs",
+    "app:dev": "pnpm run build:host && electron dist/dev-app/host/entry.dev.cjs",
+    "stage:dev-app": "node scripts/stage-dev-app.mjs",
+    "package:dev-app": "node scripts/package-dev-app.mjs"
   },
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
     "electron": "^44.2.0",

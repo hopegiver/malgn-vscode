@@ -6,8 +6,11 @@
 import { createHash } from 'node:crypto';
 import type { Change, ProviderId } from '../../providers/types.js';
 
-/** 객체 키를 재귀적으로 정렬해 직렬화가 프로퍼티 삽입 순서에 좌우되지 않게 한다 */
-function stableStringify(value: unknown): string {
+/** 객체 키를 재귀적으로 정렬해 직렬화가 프로퍼티 삽입 순서에 좌우되지 않게 한다.
+ * export하는 이유: `providers/agent/entryDescriptor.ts`(§3.2.2 "entryJson 정규화")가
+ * 같은 정규화 규칙을 재사용한다 — 두 곳이 각자 구현하면 "정규화"의 정의가 갈릴 위험이
+ * 있다(이 프로젝트가 반복해서 겪은 실패 패턴, `sinkGuards.ts` 도입 사유와 동형). */
+export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
   }

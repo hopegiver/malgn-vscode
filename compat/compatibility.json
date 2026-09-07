@@ -21,6 +21,7 @@
   "allowedPlugins": ["malgn-agent@malgnsoft-plugins"],
   "allowedInstallScopes": ["user"],
   "allowedKeychainItems": { "$site": "keychainItems" },
+  "otelDefaultEnv": { "$site": "otelDefaultEnv" },
   "allowedGithubScopes": ["repo", "read:org", "workflow", "gist", "read:user"],
   "allowedOtelEnvKeys": [
     "CLAUDE_CODE_ENABLE_TELEMETRY",

@@ -67,9 +67,13 @@ describe('마스킹 함수(maskSensitive/maskDeepValues) 호출부는 정해진 
     expect(importersOf('maskSensitive').sort()).toEqual([join('ui', 'log.ts')]);
   });
 
-  it('maskDeepValues(구조화 값용)를 import하는 production 파일은 정확히 store.ts·report.ts 둘뿐이다', () => {
+  it('maskDeepValues(구조화 값용)를 import하는 production 파일은 정확히 store.ts·report.ts·platform/exec.ts 셋뿐이다', () => {
+    // [W7 추가] `platform/exec.ts`의 `toLoggableExecResult()` — agent/mcp provider가
+    // exec 결과(stdout/stderr)를 로그로 내보내기 직전에만 통과시키는 마스킹 경계다
+    // (architecture.md §3.2.2 "실행은... 출력은 마스킹 후 로그"). `runExec()` 자신의
+    // 반환값(원문)에는 적용하지 않는다 — 원문은 검사기(파서)에 필요하다.
     expect(importersOf('maskDeepValues').sort()).toEqual(
-      [join('core', 'journal', 'store.ts'), join('core', 'diagnostics', 'report.ts')].sort()
+      [join('core', 'journal', 'store.ts'), join('core', 'diagnostics', 'report.ts'), join('platform', 'exec.ts')].sort()
     );
   });
 });

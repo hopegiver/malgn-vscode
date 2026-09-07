@@ -20,6 +20,18 @@ import type { PolicyLoadResult } from './types.js';
 
 const constants = loadCodeConstants();
 const CURRENT_VERSION = '0.1.0';
+// [site 프로필 독립] 실 사이트면이 있든(siteProfile==='site') 없든(siteProfile==='example')
+// 이 파일은 항상 같은 결과를 내야 한다 — 코드 상수(`allowedAuthorities.otel[0]`/
+// `allowedKeychainItems[0]`)를 그대로 fixture에 써서 하드코딩된 예시값(`203.0.113.10:4318`/
+// `example-service`)과의 결합을 없앤다.
+const OTEL_ALLOWED_AUTHORITY = constants.allowedAuthorities.otel[0]!;
+const ALLOWED_KEYCHAIN_ITEM = constants.allowedKeychainItems[0]!;
+/** `*.suffix` 형태의 allowlist 항목을 실제 매치되는 호스트 하나로 만든다(완전일치
+ * 항목이면 그대로 쓴다) — `extension.downloadHint` fixture용. */
+function sampleHostFor(authorityEntry: string): string {
+  return authorityEntry.startsWith('*.') ? `download.${authorityEntry.slice(2)}` : authorityEntry;
+}
+const EXTENSION_ALLOWED_HOST = sampleHostFor(constants.allowedAuthorities.extension[0]!);
 
 function load(policy: unknown): PolicyLoadResult {
   return loadPolicyFromText(JSON.stringify(policy), constants, { currentExtensionVersion: CURRENT_VERSION });
@@ -28,7 +40,7 @@ function load(policy: unknown): PolicyLoadResult {
 const VALID_POLICY = {
   schemaVersion: 1,
   generatedAt: '2026-09-02T00:00:00Z',
-  extension: { latestVersion: '9.9.9', downloadHint: 'https://download.example.com/malgn-vscode.vsix' },
+  extension: { latestVersion: '9.9.9', downloadHint: `https://${EXTENSION_ALLOWED_HOST}/malgn-vscode.vsix` },
   killSwitch: {
     minAppVersion: null,
     maxAppVersion: null,
@@ -43,13 +55,13 @@ const VALID_POLICY = {
     env: {
       CLAUDE_CODE_ENABLE_TELEMETRY: '1',
       OTEL_METRICS_EXPORTER: 'otlp',
-      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'https://203.0.113.10:4318/v1/metrics',
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: `https://${OTEL_ALLOWED_AUTHORITY}/v1/metrics`,
       OTEL_LOG_USER_PROMPTS: '0',
       OTEL_LOG_TOOL_CONTENT: '0',
       OTEL_LOG_TOOL_DETAILS: '0',
       OTEL_LOG_RAW_API_BODIES: '0',
     },
-    headersHelper: { kind: 'keychain-basic', service: 'example-service', account: 'example-service' },
+    headersHelper: { kind: 'keychain-basic', service: ALLOWED_KEYCHAIN_ITEM, account: ALLOWED_KEYCHAIN_ITEM },
   },
   install: { mode: 'assisted' },
   github: { requiredScopes: ['repo', 'read:org', 'workflow'] },
@@ -96,7 +108,7 @@ describe('loadPolicyFromText — 파일 전체 거부(사이즈/파싱)', () => 
 // --- PR-5(정책 무비밀) ---
 describe('loadPolicyFromText — PR-5 정책 무비밀', () => {
   it('token/secret/password/authorization 형태의 키 이름이 있으면 파일 전체가 거부된다', () => {
-    const withSecret = { ...VALID_POLICY, otel: { ...VALID_POLICY.otel, headersHelper: { kind: 'keychain-basic', service: 'example-service', account: 'example-service', apiToken: 'xxx' } } };
+    const withSecret = { ...VALID_POLICY, otel: { ...VALID_POLICY.otel, headersHelper: { kind: 'keychain-basic', service: ALLOWED_KEYCHAIN_ITEM, account: ALLOWED_KEYCHAIN_ITEM, apiToken: 'xxx' } } };
     const result = load(withSecret);
     expect(result.status).toBe('rejected');
     if (result.status !== 'rejected') return;
@@ -126,7 +138,7 @@ describe('부재는 차단 (PR-11 ①) — 필수 키가 빠진 정책이 통과
   it('otel.headersHelper.kind가 없으면 정책 파일 전체가 거부된다(otel만 부분 무효화되지 않는다)', () => {
     const withoutKind = {
       ...VALID_POLICY,
-      otel: { ...VALID_POLICY.otel, headersHelper: { service: 'example-service', account: 'example-service' } },
+      otel: { ...VALID_POLICY.otel, headersHelper: { service: ALLOWED_KEYCHAIN_ITEM, account: ALLOWED_KEYCHAIN_ITEM } },
     };
     const result = load(withoutKind);
     expect(result.status).toBe('rejected');
@@ -217,7 +229,7 @@ describe('otel.env — A-31(F-4) 검사 순서 회귀: 화이트리스트가 엔
       ...VALID_POLICY,
       otel: {
         ...VALID_POLICY.otel,
-        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'https://203.0.113.10:4318/v1/traces' },
+        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://${OTEL_ALLOWED_AUTHORITY}/v1/traces` },
       },
     };
     const result = load(withTraces);
@@ -235,7 +247,7 @@ describe('otel.env — A-31(F-4) 검사 순서 회귀: 화이트리스트가 엔
       ...VALID_POLICY,
       otel: {
         ...VALID_POLICY.otel,
-        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_ANYTHINGGOES_ENDPOINT: 'https://203.0.113.10:4318/v1/x' },
+        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_ANYTHINGGOES_ENDPOINT: `https://${OTEL_ALLOWED_AUTHORITY}/v1/x` },
       },
     };
     const result = load(withArbitrary);
@@ -250,14 +262,14 @@ describe('otel.env — A-31(F-4) 검사 순서 회귀: 화이트리스트가 엔
       ...VALID_POLICY,
       otel: {
         ...VALID_POLICY.otel,
-        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'https://203.0.113.10:4318/v1/logs' },
+        env: { ...VALID_POLICY.otel.env, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `https://${OTEL_ALLOWED_AUTHORITY}/v1/logs` },
       },
     };
     const result = load(withLogs);
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
-    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT).toBe('https://203.0.113.10:4318/v1/metrics');
-    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).toBe('https://203.0.113.10:4318/v1/logs');
+    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT).toBe(`https://${OTEL_ALLOWED_AUTHORITY}/v1/metrics`);
+    expect(result.policy.otel.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT).toBe(`https://${OTEL_ALLOWED_AUTHORITY}/v1/logs`);
     expect(result.policy.otel.blocked).toBe(false);
   });
 

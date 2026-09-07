@@ -63,15 +63,19 @@ export const POLICY_MAX_BYTES = 64 * 1024;
  * validateRollout의 MV_POLICY_KILLSWITCH_INSTALL_DENIED 분기가 그 명시 거부다). */
 const KILLSWITCH_PROVIDER_IDS: readonly ProviderId[] = ['agent', 'otel', 'github', 'cloudflare', 'mcp'];
 
-const OTEL_PRIVACY_KEYS = new Set([
+// export하는 이유: `providers/otel/`(W8)가 "정책 로더의 otel.env 검증 경로를 그대로
+// 통과"해야 한다는 요구를 만족하려면 이 세 규칙을 다시 정의하지 않고 그대로 가져다
+// 써야 한다 — 두 곳에서 같은 규칙을 각자 정의하면 한쪽만 바뀌는 사고가 이 프로젝트의
+// 반복된 실패 패턴이었다(sinkGuards.ts 도입 사유와 동형).
+export const OTEL_PRIVACY_KEYS = new Set([
   'OTEL_LOG_USER_PROMPTS',
   'OTEL_LOG_TOOL_CONTENT',
   'OTEL_LOG_TOOL_DETAILS',
   'OTEL_LOG_RAW_API_BODIES',
 ]);
 
-const OTEL_ENDPOINT_KEY_RE = /^OTEL_EXPORTER_OTLP_.*_ENDPOINT$/;
-const OTEL_ENV_KEY_SHAPE_RE = /^(OTEL_|CLAUDE_CODE_ENABLE_TELEMETRY$)/;
+export const OTEL_ENDPOINT_KEY_RE = /^OTEL_EXPORTER_OTLP_.*_ENDPOINT$/;
+export const OTEL_ENV_KEY_SHAPE_RE = /^(OTEL_|CLAUDE_CODE_ENABLE_TELEMETRY$)/;
 
 const AGENT_MARKETPLACE_RE = /^[A-Za-z0-9._-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 const AGENT_PLUGIN_RE = /^[a-z0-9-]{1,64}@[a-z0-9-]{1,64}$/;

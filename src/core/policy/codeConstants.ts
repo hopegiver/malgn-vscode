@@ -125,6 +125,7 @@ export function loadCodeConstants(): CodeConstants {
     allowedKeychainItems: siteConstants.allowedKeychainItems,
     allowedGithubScopes: compatibilityRaw.allowedGithubScopes,
     allowedOtelEnvKeys: compatibilityRaw.allowedOtelEnvKeys,
+    otelDefaultEnv: siteConstants.otelDefaultEnv,
     allowedInstallTargets: valid,
     allowedManagerPaths: managerPathsRaw,
     installEnv: installEnvRaw,

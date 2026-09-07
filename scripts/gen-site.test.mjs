@@ -133,6 +133,7 @@ describe('scripts/gen-site.mjs — 실제 CLI 실행(임시 저장소, MALGN_GEN
       JSON.stringify({
         authorities: { otel: ['198.51.100.5:4318'], extension: ['*.example.net'], identity: ['a.example.net', 'b.example.net'], hub: ['b.example.net'], mcp: ['b.example.net'] },
         keychainItems: ['temp-service'],
+        otelDefaultEnv: { CLAUDE_CODE_ENABLE_TELEMETRY: '1', OTEL_METRICS_EXPORTER: 'otlp', OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf' },
       }),
       'utf8'
     );

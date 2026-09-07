@@ -72,6 +72,13 @@ export interface CodeConstants {
   /** policy-contract.md §2.4 — `otel.env` 알려진 키 화이트리스트의 값 정본(9개).
    * loader.ts의 otel.env 키 검증이 이 값을 소비한다(구 로컬 상수 `KNOWN_OTEL_ENV_KEYS` 대체). */
   readonly allowedOtelEnvKeys: readonly string[];
+  /** W8(otel provider) — 사이트면이 채우는 조직 공통 OTel 토글 3개(enable/exporter/protocol).
+   * `allowed*` 접두가 아니다 — 이 값은 화이트리스트가 아니라 "정책이 없을 때 provider가
+   * 스스로 제안하는 기본값"이라 검사 ⑤A/⑤B/⑤C(allowed* 전용) 대상이 아니다. 엔드포인트
+   * 2개(METRICS/LOGS)는 여기 담지 않는다 — `allowedAuthorities.otel[0]`에서 파생한다
+   * (같은 host:port를 두 곳에 중복해 적지 않기 위해서다). 프라이버시 4키는 코드 상한
+   * (O-6)이라 항상 "0" 고정 — 사이트면이 아니라 provider 코드 상수다. */
+  readonly otelDefaultEnv: Readonly<Record<string, string>>;
   /** PR-11③ 검사를 통과한 행만 담긴다 — 필수 열이 빠진 행은 여기 없다(격자 밖 취급) */
   readonly allowedInstallTargets: readonly InstallTargetRow[];
   readonly allowedManagerPaths: Readonly<Record<string, readonly string[]>>;

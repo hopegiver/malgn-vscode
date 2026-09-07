@@ -1,6 +1,14 @@
 // SIGN-R2 구조적 배선 검사 테스트 — docs/release-gates.md §7.6.2.
 // 두 계층: ① 실제 저장소 대조(오늘은 서명 파이프라인이 없어 skippedNoTarget) ②
 // fixture 위반 주입(서명 파이프라인이 생겼다고 가정했을 때 배선 누락을 실제로 잡는지).
+//
+// [W7 MVP — 판단 근거 기록] 로컬 dev `.app` 빌드 도구로 `electron-builder`가 아니라
+// `@electron/packager`를 선택한 이유 중 하나가 이 검사다: `electron-builder`는
+// `CODESIGN_PACKAGER_DEPENDENCIES`에 있어 devDependency로만 추가해도(실서명을 전혀
+// 하지 않아도) "서명 패키저 등장" 신호를 켜 SIGN-R2 배선을 요구한다. `@electron/packager`는
+// 그 목록에 없어(서명이 아니라 순수 앱 번들링 도구) 신호를 켜지 않는다 — 오늘 여전히
+// 서명 파이프라인이 없다는 사실과 일치한다(다른 이유: 전이 의존이 훨씬 적고
+// deprecated 하위 의존이 없어 `pnpm-lock.yaml` 민감값 스캔 오탐도 만들지 않았다).
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,7 +21,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REAL_REPO_ROOT = join(HERE, '..', '..');
 
 describe('실제 저장소 대조 — 서명 파이프라인이 아직 없는 이 슬라이스 상태', () => {
-  it('신호가 0개라 "대상 없음"으로 통과한다(오늘의 정상 상태)', () => {
+  it('신호가 0개라 "대상 없음"으로 통과한다(오늘의 정상 상태 — @electron/packager는 서명 패키저 목록 밖)', () => {
     const result = checkCodesignSigningWiring(REAL_REPO_ROOT);
     expect(result.skippedNoTarget).toBe(true);
     expect(result.violations).toEqual([]);

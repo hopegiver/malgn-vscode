@@ -6,13 +6,25 @@ import { app } from 'electron';
 import { bootstrapAndRunOnce, installTopLevelExceptionHandler } from './app.js';
 import { createTray } from './electron/trayAdapter.js';
 import { assembleDevUpdateChannelConfig } from './update/devChannel.js';
+import { wireApplyMenu } from './apply/wireApplyMenu.js';
+import type { ActivationStatusReport } from './activation/activationSequence.js';
 
 const TRAY_ICON_PATH = `${app.getAppPath()}/resources/tray-icon-dev.png`;
 
 void assembleDevUpdateChannelConfig(process.env);
 
 app.whenReady().then(async () => {
-  const { setTrayState } = createTray(TRAY_ICON_PATH);
+  const { tray, setTrayState } = createTray(TRAY_ICON_PATH);
   installTopLevelExceptionHandler(setTrayState);
-  await bootstrapAndRunOnce(setTrayState);
+  // `reportStatus`(§2.2 ⑦)는 `bootstrapAndRunOnce`가 resolve되기 **전**, `handles`(journal·
+  // trustLedger)가 아직 없는 시점에 호출된다 — 그래서 report만 여기 잠깐 담아 두고,
+  // `handles`가 준비된 뒤 한 번만 `wireApplyMenu`를 부른다(이 슬라이스는 재수렴 루프가
+  // 없어 활성화당 report가 정확히 1개다).
+  let latestReport: ActivationStatusReport | undefined;
+  const handles = await bootstrapAndRunOnce(setTrayState, (report) => {
+    latestReport = report;
+  });
+  if (latestReport) {
+    wireApplyMenu({ tray, handles, homeDir: app.getPath('home') }, latestReport);
+  }
 });
