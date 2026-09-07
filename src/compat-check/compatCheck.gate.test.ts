@@ -61,6 +61,7 @@ const INSTALL_TARGETS_JSON = join(COMPAT, 'install-targets.json');
 const AGENT_INTERFACE_SPEC_JSON = join(COMPAT, 'agent-interface.spec.json');
 const EVIDENCE_DIR = join(COMPAT, 'verification-evidence');
 const SRC_DIR = join(ROOT, 'src');
+const DIST_EXTENSION_CJS = join(ROOT, 'dist', 'extension.cjs');
 const CHECK3_SOURCE = join(HERE, 'checks', 'check3-fixtureLeafCoverage.ts');
 const FIELD_COVERAGE_TEST_SOURCE = join(ROOT, 'src', 'core', 'policy', 'fieldCoverage.test.ts');
 
@@ -174,8 +175,19 @@ describe(`pnpm compat:check — policy-contract.md §6 검사 ①~⑪ (모드: $
     expect(verifiedCount).toBe(0);
   });
 
-  it('⑨ 민감값 스캔 — 추적 트리 전체, 오프라인 패턴 + allowlist', () => {
-    const result = checkSensitiveValueScan({ repoRoot: ROOT, sensitiveClassesJsonPath: SENSITIVE_CLASSES_JSON });
+  it('⑨ 민감값 스캔 — 추적 트리 전체 + 출하 매체(NT-R21), 오프라인 패턴 + allowlist', () => {
+    // NT-R21(release-gates.md §7.6.6) — dist/extension.cjs가 이미 로컬에서 빌드되어
+    // 있으면(예: `pnpm run build`를 먼저 실행한 로컬 full 검증) 함께 스캔한다. CI는
+    // 문서화된 파이프라인 순서상(tech-stack.md §5.4: "… vitest → compat:check → esbuild
+    // 빌드") 이 단계 시점에 아직 dist/가 없을 수 있다 — 그 경우는 check9가 명시적으로
+    // skip을 로그에 남긴다(조용한 통과가 아니다). 진짜 fail-closed 집행은 패키징
+    // 시점의 scripts/assert-shipped-media-scan.mjs다(그 스크립트는 산출물 부재 자체를
+    // 실패로 취급한다 — codesignSigningWiring.test.ts류의 구조적 보강과 짝을 이룬다).
+    const result = checkSensitiveValueScan({
+      repoRoot: ROOT,
+      sensitiveClassesJsonPath: SENSITIVE_CLASSES_JSON,
+      shippedMediaPaths: [DIST_EXTENSION_CJS],
+    });
     expect(result.violations, reportOf(result)).toEqual([]);
   });
 

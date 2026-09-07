@@ -14,6 +14,15 @@
 // 방어선이 여전히 필요하기 때문이다. 그 밖(.md/.yml/.sh 등 문서·설정 형식)은 전문 스캔—
 // 마크다운 산문·표 셀·링크·무인용 YAML 스칼라가 이전에는 전면 통과했다(X-3). 새 확장자는
 // `scanScopes.default`(wholeText)로 떨어진다 — fail-closed.
+//
+// NT-R21(docs/release-gates.md §7.6.6) — 검사 ⑨의 대상은 `git ls-files`(추적 트리)만이
+// 아니라 **출하되는 모든 매체**다. `scanShippedMedium`이 그 확장이다: 추적 트리 밖의
+// 빌드 산출물(오늘은 `dist/extension.cjs`, 장차 네이티브 바이너리)을 대상으로 하며,
+// 코드 식별자 오탐 방어(quotedOnly)가 필요 없는 대신(출하물은 소스 코드가 아니라
+// 데이터다) **전문을 본다** — 텍스트로 디코딩되면 그대로, 바이너리로 판정되면 `strings`
+// 흉내(연속된 출력 가능 문자 4자 이상)로 추출한 뒤 같은 클래스 집합으로 스캔한다.
+// PUB-C(사이트면 합성 값 — 예: `example-service`)는 `publicAllowlist`를 통해 이미
+// 예외 처리된다(scanText가 공유하는 바로 그 allowlist).
 
 const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d{1,2})\.){3}(?:25[0-5]|2[0-4]\d|1?\d{1,2})\b/g;
 
@@ -610,4 +619,63 @@ export function scanFiles(files, config) {
     violations.push(...scanText(path, text, config));
   }
   return violations;
+}
+
+// ---------------------------------------------------------------------------
+// NT-R21 — 출하되는 모든 매체(추적 트리 밖의 빌드 산출물) 스캔
+// ---------------------------------------------------------------------------
+
+/** 버퍼에 NUL 바이트가 있거나 유효한 UTF-8로 왕복 디코딩되지 않으면 "바이너리"로
+ * 판정한다. `dist/extension.cjs`(esbuild 텍스트 번들)는 이 판정을 통과해 그대로
+ * 전문 스캔되고, 네이티브 실행 파일(Mach-O/PE)은 이 판정에 걸려 `strings` 추출로
+ * 넘어간다. */
+export function looksBinary(buffer) {
+  if (buffer.includes(0)) return true;
+  const text = buffer.toString('utf8');
+  // utf8 디코딩은 잘못된 바이트 시퀀스를 U+FFFD로 조용히 치환한다 — 왕복 인코딩이
+  // 원본과 바이트 단위로 같은지 확인해 "그럴듯하게 디코딩됐지만 사실 바이너리"인
+  // 경우를 잡는다.
+  return !Buffer.from(text, 'utf8').equals(buffer);
+}
+
+/** GNU `strings`의 기본 동작(연속된 출력 가능 ASCII `minLength`자 이상)을 흉내 낸다.
+ * 외부 프로세스를 스폰하지 않는다 — 오프라인 스캔 원칙(§8.6 3차선)을 매체 스캔에도
+ * 그대로 적용하기 위해서다. */
+export function extractPrintableStrings(buffer, minLength = 4) {
+  const out = [];
+  let start = -1;
+  const isPrintable = (byte) => byte >= 0x20 && byte <= 0x7e;
+  for (let i = 0; i <= buffer.length; i += 1) {
+    const byte = i < buffer.length ? buffer[i] : -1;
+    if (byte !== -1 && isPrintable(byte)) {
+      if (start === -1) start = i;
+    } else {
+      if (start !== -1 && i - start >= minLength) {
+        out.push(buffer.toString('latin1', start, i));
+      }
+      start = -1;
+    }
+  }
+  return out;
+}
+
+/**
+ * 출하 매체 하나(경로 + 원본 버퍼)를 스캔한다. `scanText`와 같은 클래스 집합·allowlist를
+ * 재사용하되(규칙 이중 정의 금지), 확장자 기반 quotedOnly 스코프는 강제로 우회한다 —
+ * 소스 코드가 아닌 산출물에는 "코드 식별자 오탐 방지"가 적용될 이유가 없고, 오히려
+ * 전문을 보지 않으면 매체 안에 박힌 값을 놓친다(§7.6.6 "출하되는 모든 매체").
+ * `structural-key-path`·`key-with-literal-value` 클래스(compat/*.json 구조 검사 전용)는
+ * 건너뛴다 — 바이너리/번들 산출물에는 그 구조가 없다.
+ */
+export function scanShippedMedium(filePath, buffer, config) {
+  const binary = looksBinary(buffer);
+  const text = binary ? extractPrintableStrings(buffer).join('\n') : buffer.toString('utf8');
+
+  // scanText를 재사용하되, 이 파일에는 quotedOnly 규칙을 적용하지 않는다 — 확장자
+  // 무관하게 항상 wholeText로 취급되도록 스코프 설정을 이 호출에서만 오버라이드한다.
+  const wholeTextConfig = { ...config, scanScopes: { quotedOnly: [], wholeText: ['**/*'], default: 'wholeText' } };
+  const violations = scanText(filePath, text, wholeTextConfig).filter(
+    (v) => v.classId !== 'secret-bearing-key' && v.classId !== 'site-hole-discipline'
+  );
+  return { violations, binary };
 }

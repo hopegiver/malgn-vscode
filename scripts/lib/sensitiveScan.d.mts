@@ -40,3 +40,12 @@ export function scanFiles(
 
 /** B4(§12.4) — enforcedClasses 중 활성 class로 커버되지 않는 부류 id 목록(빈 배열 = 전부 커버). */
 export function getEnforcedCoverageGaps(config: SensitiveScanClassesConfig): string[];
+
+// NT-R21(release-gates.md §7.6.6) — 출하되는 모든 매체 스캔.
+export function looksBinary(buffer: Buffer): boolean;
+export function extractPrintableStrings(buffer: Buffer, minLength?: number): string[];
+export function scanShippedMedium(
+  filePath: string,
+  buffer: Buffer,
+  config: SensitiveScanClassesConfig
+): { violations: SensitiveScanViolation[]; binary: boolean };

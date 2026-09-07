@@ -31,6 +31,7 @@
     "precompat:check": "pnpm run gen:site",
     "check-types": "tsc --noEmit",
     "compile": "node esbuild.mjs",
+    "postcompile": "node scripts/generate-build-provenance.mjs",
     "watch": "node esbuild.mjs --watch",
     "prebuild": "pnpm run gen:site",
     "build": "pnpm run check-types && pnpm run compile",
@@ -38,7 +39,7 @@
     "test:watch": "vitest",
     "compat:check": "vitest run --config vitest.compat.config.ts",
     "prepackage": "pnpm run gen:site && node scripts/assert-site-profile-for-packaging.mjs",
-    "package": "pnpm run build"
+    "package": "pnpm run build && node scripts/assert-shipped-media-scan.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
