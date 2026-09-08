@@ -3,10 +3,13 @@
 // 각자 중복 구현하지 않는다).
 
 import { app } from 'electron';
+import { join } from 'node:path';
 import { bootstrapAndRunOnce, installTopLevelExceptionHandler } from './app.js';
 import { createTray } from './electron/trayAdapter.js';
 import { DEV_BUNDLE_IDENTIFIER_ENV_VAR, assembleDevUpdateChannelConfig } from './update/devChannel.js';
 import { wireApplyMenu } from './apply/wireApplyMenu.js';
+import { openMainWindow } from './window/createMainWindow.js';
+import { registerProjectIpc } from './window/registerProjectIpc.js';
 import type { ActivationStatusReport } from './activation/activationSequence.js';
 
 const TRAY_ICON_PATH = `${app.getAppPath()}/resources/tray-icon-dev.png`;
@@ -28,9 +31,22 @@ if (process.env[DEV_BUNDLE_IDENTIFIER_ENV_VAR]) {
   );
 }
 
+// W11 — 메인 창(대시보드) 렌더러 정적 자산 경로. `resources/`와 같은 관용구
+// (`app.getAppPath()` 기준 상대경로 — dev 실행(`electron dist/dev-app/host/entry.dev.cjs`)과
+// 패키징된 `.app` 양쪽에서 `build-host.mjs`가 같은 자리(`<outDir>/renderer/`)에
+// 둔다).
+const RENDERER_DIR = `${app.getAppPath()}/renderer`;
+const WORKSPACE_ROOT = join(app.getPath('home'), 'workspace');
+
 app.whenReady().then(async () => {
   const { tray, setTrayState } = createTray(TRAY_ICON_PATH);
   installTopLevelExceptionHandler(setTrayState);
+  // 렌더러가 파일을 직접 읽지 못하게(§2.8 신뢰 경계) 스캔은 항상 메인 프로세스에서
+  // 하고 IPC로만 넘긴다 — 창이 열리기 전에 미리 등록해 둔다.
+  registerProjectIpc(WORKSPACE_ROOT);
+  const openDashboard = (): void => {
+    openMainWindow({ preloadPath: `${RENDERER_DIR}/preload.cjs`, indexHtmlPath: `${RENDERER_DIR}/index.html` });
+  };
   // `reportStatus`(§2.2 ⑦)는 `bootstrapAndRunOnce`가 resolve되기 **전**, `handles`(journal·
   // trustLedger)가 아직 없는 시점에 호출된다 — 그래서 report만 여기 잠깐 담아 두고,
   // `handles`가 준비된 뒤 한 번만 `wireApplyMenu`를 부른다(이 슬라이스는 재수렴 루프가
@@ -40,6 +56,6 @@ app.whenReady().then(async () => {
     latestReport = report;
   });
   if (latestReport) {
-    wireApplyMenu({ tray, handles, homeDir: app.getPath('home') }, latestReport);
+    wireApplyMenu({ tray, handles, homeDir: app.getPath('home'), openMainWindow: openDashboard }, latestReport);
   }
 });

@@ -11,16 +11,22 @@
 // 자체가 없다).
 
 import { app } from 'electron';
+import { join } from 'node:path';
 import { bootstrapAndRunOnce, installTopLevelExceptionHandler } from './app.js';
 import { createTray } from './electron/trayAdapter.js';
 import { assembleProdUpdateChannelConfig } from './update/prodChannel.js';
 import { wireApplyMenu } from './apply/wireApplyMenu.js';
+import { openMainWindow } from './window/createMainWindow.js';
+import { registerProjectIpc } from './window/registerProjectIpc.js';
 import type { ActivationStatusReport } from './activation/activationSequence.js';
 
 // 패키징(W14)이 실제 트레이 아이콘 자산을 리소스 디렉터리에 배치한다 — 이 경로는
 // 그 계약점을 문서화하는 자리다(자산이 없으면 Electron이 빈 아이콘으로 계속 진행할
 // 뿐 앱을 막지 않는다 — PR-8과 같은 정신).
 const TRAY_ICON_PATH = `${app.getAppPath()}/resources/tray-icon.png`;
+// W11 — entry.dev.ts와 동일 관용구(주석 참고).
+const RENDERER_DIR = `${app.getAppPath()}/renderer`;
+const WORKSPACE_ROOT = join(app.getPath('home'), 'workspace');
 
 // U-3 — 채널 조립을 여기서 1회 수행한다(모듈 선택으로만 분기, 런타임 if/switch 없음).
 // 값이 아직 없으면(패키징 이전) 명시적으로 던진다(BundleIdentifierNotConfiguredError) —
@@ -30,12 +36,16 @@ void assembleProdUpdateChannelConfig(process.env);
 app.whenReady().then(async () => {
   const { tray, setTrayState } = createTray(TRAY_ICON_PATH);
   installTopLevelExceptionHandler(setTrayState);
+  registerProjectIpc(WORKSPACE_ROOT);
+  const openDashboard = (): void => {
+    openMainWindow({ preloadPath: `${RENDERER_DIR}/preload.cjs`, indexHtmlPath: `${RENDERER_DIR}/index.html` });
+  };
   // entry.dev.ts와 동일한 이유(주석 참고) — reportStatus가 handles보다 먼저 온다.
   let latestReport: ActivationStatusReport | undefined;
   const handles = await bootstrapAndRunOnce(setTrayState, (report) => {
     latestReport = report;
   });
   if (latestReport) {
-    wireApplyMenu({ tray, handles, homeDir: app.getPath('home') }, latestReport);
+    wireApplyMenu({ tray, handles, homeDir: app.getPath('home'), openMainWindow: openDashboard }, latestReport);
   }
 });

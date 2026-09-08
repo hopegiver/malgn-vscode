@@ -23,7 +23,7 @@
 // 표면도 더 얕다.
 
 import { build } from 'esbuild';
-import { cpSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,12 +31,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = join(HERE, '..');
 
 export function resolveHostBuildPaths(root) {
+  const outDir = join(root, 'dist', 'dev-app', 'host');
   return {
     entryDev: join(root, 'src', 'host', 'entry.dev.ts'),
     entryProd: join(root, 'src', 'host', 'entry.prod.ts'),
-    outDir: join(root, 'dist', 'dev-app', 'host'),
+    outDir,
     resourcesSrc: join(root, 'resources'),
-    resourcesDest: join(root, 'dist', 'dev-app', 'host', 'resources'),
+    resourcesDest: join(outDir, 'resources'),
+    // 메인 창(W11 대시보드) 렌더러 — createMainWindow.ts가 `${app.getAppPath()}/renderer/*`로
+    // 읽는다(§app.getAppPath()는 stage-dev-app.mjs가 package.json을 두는 outDir과 같다,
+    // 기존 tray-icon 리소스 경로 계약과 동일 관용구).
+    preloadEntry: join(root, 'src', 'host', 'window', 'preload.ts'),
+    rendererEntry: join(root, 'src', 'host', 'window', 'renderer', 'main.ts'),
+    rendererStaticSrc: join(root, 'src', 'host', 'window', 'renderer'),
+    rendererDest: join(outDir, 'renderer'),
   };
 }
 
@@ -62,6 +70,28 @@ export async function buildHost(rootOverride) {
 
   await build({ ...shared, entryPoints: [paths.entryDev], outfile: join(paths.outDir, 'entry.dev.cjs') });
   await build({ ...shared, entryPoints: [paths.entryProd], outfile: join(paths.outDir, 'entry.prod.cjs') });
+  // 프리로드는 메인 프로세스와 같은 실행 계약(CJS·Node 대상·`electron` external)이다 —
+  // `contextIsolation:true`에서도 Electron이 프리로드 스크립트에는 `require('electron')`을
+  // 계속 제공한다(렌더러 자신과는 다르다).
+  await build({ ...shared, entryPoints: [paths.preloadEntry], outfile: join(paths.rendererDest, 'preload.cjs') });
+
+  // 렌더러(main.js)는 브라우저 대상이다 — `electron`을 external로 두지 않는다(애초에
+  // import하지 않는다, `preload.ts`가 노출한 `window.malgn`만 쓴다).
+  await build({
+    entryPoints: [paths.rendererEntry],
+    outfile: join(paths.rendererDest, 'main.js'),
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'chrome120',
+    sourcemap: true,
+    minify: false,
+    logLevel: 'info',
+  });
+
+  if (!existsSync(paths.rendererDest)) mkdirSync(paths.rendererDest, { recursive: true });
+  copyFileSync(join(paths.rendererStaticSrc, 'index.html'), join(paths.rendererDest, 'index.html'));
+  copyFileSync(join(paths.rendererStaticSrc, 'styles.css'), join(paths.rendererDest, 'styles.css'));
 
   if (existsSync(paths.resourcesSrc)) {
     cpSync(paths.resourcesSrc, paths.resourcesDest, { recursive: true });

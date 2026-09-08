@@ -50,18 +50,27 @@ export interface WireApplyMenuDeps {
   readonly tray: Tray;
   readonly handles: AppRuntimeHandles;
   readonly homeDir: string;
+  /** W11 — 트레이에서 메인 창(대시보드)을 여는 콜백. `wireApplyMenu`가 매번 트레이
+   * 컨텍스트 메뉴를 통째로 다시 만들기 때문에, "지금 적용" 항목이 없어지는 상황
+   * (변경 없음)에도 창을 여는 경로가 사라지지 않도록 두 분기 모두에 이 항목을
+   * 앞에 붙인다. */
+  readonly openMainWindow: () => void;
 }
 
 /**
  * 최신 `ActivationStatusReport`를 받을 때마다 호출한다 — 변경이 있는 provider마다
  * "지금 적용" 메뉴 항목을 만들고, 클릭 시 `runApplyWithConsent`가 실제 동의→적용→
- * 저널→재확인을 수행한다.
+ * 저널→재확인을 수행한다. "대시보드 열기"는 항상 맨 위에 고정한다(트레이 아이콘
+ * 클릭 시 메인 창을 여는 경로 — 작업 지시 "트레이 아이콘 클릭 시 이 메인 창을
+ * 엽니다").
  */
 export function wireApplyMenu(deps: WireApplyMenuDeps, report: ActivationStatusReport): void {
   const pendingPlans = report.plans.filter((plan) => plan.changes.length > 0);
 
+  const openDashboardItem = { label: '대시보드 열기', click: () => deps.openMainWindow() };
+
   if (pendingPlans.length === 0) {
-    deps.tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Malgn — 변경 없음', enabled: false }]));
+    deps.tray.setContextMenu(Menu.buildFromTemplate([openDashboardItem, { type: 'separator' }, { label: 'Malgn — 변경 없음', enabled: false }]));
     return;
   }
 
@@ -71,7 +80,7 @@ export function wireApplyMenu(deps: WireApplyMenuDeps, report: ActivationStatusR
       void applyOneProvider(deps, report, plan.providerId);
     },
   }));
-  deps.tray.setContextMenu(Menu.buildFromTemplate(items));
+  deps.tray.setContextMenu(Menu.buildFromTemplate([openDashboardItem, { type: 'separator' }, ...items]));
 }
 
 async function applyOneProvider(deps: WireApplyMenuDeps, report: ActivationStatusReport, providerId: string): Promise<void> {
