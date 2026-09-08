@@ -26,7 +26,10 @@ export async function packageDevApp(rootOverride) {
   const paths = resolveHostBuildPaths(root);
 
   await buildHost(root);
-  stageDevApp(root, 'entry.prod.cjs');
+  // dev 번들은 dev 엔트리를 스테이징한다 — prod 엔트리(entry.prod.cjs)를 넣으면
+  // MALGN_PROD_BUNDLE_IDENTIFIER 미설정으로 즉시 크래시한다(prod 쪽 fail-closed는
+  // 의도된 것이지만, "Dev - Local Only" 번들이 그 경로를 타면 안 된다).
+  stageDevApp(root, 'entry.dev.cjs');
 
   const appPaths = await packager({
     dir: paths.outDir,
