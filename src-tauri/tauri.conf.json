@@ -14,7 +14,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "맑은에이전트 (UI 목업)",
+        "title": "맑은에이전트",
         "width": 1180,
         "height": 760
       }
