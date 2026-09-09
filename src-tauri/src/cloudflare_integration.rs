@@ -25,14 +25,24 @@
 // 날 가능성을 배제하지 못한다. 이 불확실성을 코드가 단정하지 않도록 남겨둔다 —
 // wrangler를 설치해 실측할 수 있게 되면 이 가정을 재검증해야 한다.
 
-use crate::cli_launcher::{open_terminal_command, resolve_binary, TerminalLaunchResult};
+use crate::cli_launcher::{
+    open_terminal_command, resolve_binary_expand_home, TerminalLaunchResult,
+};
 use serde::Serialize;
 use std::process::Command;
 
-const WRANGLER_CANDIDATES: [&str; 2] = ["/opt/homebrew/bin/wrangler", "/usr/local/bin/wrangler"];
+// pnpm 전역 설치(`pnpm add -g wrangler`) 시 바이너리가 brew 경로가 아니라 pnpm
+// 전역 bin($PNPM_HOME/bin) 아래에 놓인다 — dev_tools.rs의 Wrangler 후보 목록과
+// 동일하게 맞춘다(그쪽만 고치면 개발 환경 화면과 이 화면의 판정이 어긋난다).
+const WRANGLER_CANDIDATES: [&str; 4] = [
+    "/opt/homebrew/bin/wrangler",
+    "/usr/local/bin/wrangler",
+    "~/Library/pnpm/bin/wrangler",
+    "~/.local/share/pnpm/bin/wrangler",
+];
 
 fn resolve_wrangler() -> Option<String> {
-    resolve_binary(&WRANGLER_CANDIDATES, "wrangler")
+    resolve_binary_expand_home(&WRANGLER_CANDIDATES, "wrangler")
 }
 
 #[derive(Serialize, Clone, Debug, Default)]

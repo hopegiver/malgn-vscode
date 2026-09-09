@@ -98,13 +98,15 @@ static DEV_TOOLS: [DevTool; 6] = [
         label: "Wrangler",
         version_args: &["--version"],
         // pnpm 전역 설치(`pnpm add -g wrangler`) 시 바이너리가 brew 경로가 아니라
-        // pnpm 전역 bin(=$PNPM_HOME, 기본값 두 가지)에 놓인다 — Wrangler 전용 실설치
-        // 기능(§12.5)이 설치 직후 재조회(check_tool_version)로 찾아낼 수 있어야 한다.
+        // pnpm 전역 bin(=$PNPM_HOME/bin, 기본값 두 가지)에 놓인다 — Wrangler 전용
+        // 실설치 기능(§12.5)이 설치 직후 재조회(check_tool_version)로 찾아낼 수
+        // 있어야 한다. pnpm은 shim을 $PNPM_HOME 바로 밑이 아니라 $PNPM_HOME/bin
+        // 아래에 만든다(실측: `which wrangler` → ~/Library/pnpm/bin/wrangler).
         path_candidates: &[
             "/opt/homebrew/bin/wrangler",
             "/usr/local/bin/wrangler",
-            "~/Library/pnpm/wrangler",
-            "~/.local/share/pnpm/wrangler",
+            "~/Library/pnpm/bin/wrangler",
+            "~/.local/share/pnpm/bin/wrangler",
         ],
     },
 ];
