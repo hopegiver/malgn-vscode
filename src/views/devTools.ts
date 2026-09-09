@@ -53,6 +53,29 @@ function stopElapsedTimer(id: string): void {
   }
 }
 
+// 성공(updated/alreadyLatest) 결과 패널은 확인 후 액션이 필요 없으므로 잠시
+// 보여준 뒤 자동으로 치운다. 실패/timedOut/unknownAfter는 로그 확인 등 후속
+// 조치가 필요할 수 있어 그대로 남긴다.
+const resultClearTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const RESULT_AUTO_CLEAR_MS = 5000;
+
+function clearResultClearTimer(id: string): void {
+  const timer = resultClearTimers[id];
+  if (timer) {
+    clearTimeout(timer);
+    delete resultClearTimers[id];
+  }
+}
+
+function scheduleResultClear(id: string): void {
+  clearResultClearTimer(id);
+  resultClearTimers[id] = setTimeout(() => {
+    delete resultClearTimers[id];
+    state.devTools.lastResult[id] = null;
+    notifyChange();
+  }, RESULT_AUTO_CLEAR_MS);
+}
+
 // ---------------- 액션 처리 ----------------
 
 async function copyToClipboard(text: string, label: string): Promise<void> {
@@ -111,6 +134,7 @@ function cancelPreview(toolId: string): void {
 async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<void> {
   state.devTools.updating[tool.id] = true;
   state.devTools.lastResult[tool.id] = null;
+  clearResultClearTimer(tool.id);
   startElapsedTimer(tool.id);
   notifyChange();
   try {
@@ -118,6 +142,7 @@ async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<vo
     state.devTools.lastResult[tool.id] = result;
     notifyOutcome(tool, result);
     if (result.outcome === 'updated' || result.outcome === 'alreadyLatest') {
+      scheduleResultClear(tool.id);
       await loadDevTools();
     }
   } catch (err) {
@@ -366,8 +391,11 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
         ? 'devtool-panel-danger'
         : 'devtool-panel-warn'; // unknownAfter / timedOut / notSupported
 
+  const installedFresh = !result.versionBefore;
   const summary: Record<DevToolActionResult['outcome'], string> = {
-    updated: `✓ v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 업데이트되었습니다`,
+    updated: installedFresh
+      ? `✓ v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 설치되었습니다`
+      : `✓ v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 업데이트되었습니다`,
     alreadyLatest: '✓ 이미 최신입니다',
     unknownAfter: '⚠ 명령은 성공했다고 보고했으나 실제 버전을 확인하지 못했습니다(확인되지 않음)',
     timedOut: '⏱ 상태 불명 — 시간이 초과되었습니다. 다시 확인해주세요',

@@ -97,7 +97,15 @@ static DEV_TOOLS: [DevTool; 6] = [
         key: "wrangler",
         label: "Wrangler",
         version_args: &["--version"],
-        path_candidates: &["/opt/homebrew/bin/wrangler", "/usr/local/bin/wrangler"],
+        // pnpm 전역 설치(`pnpm add -g wrangler`) 시 바이너리가 brew 경로가 아니라
+        // pnpm 전역 bin(=$PNPM_HOME, 기본값 두 가지)에 놓인다 — Wrangler 전용 실설치
+        // 기능(§12.5)이 설치 직후 재조회(check_tool_version)로 찾아낼 수 있어야 한다.
+        path_candidates: &[
+            "/opt/homebrew/bin/wrangler",
+            "/usr/local/bin/wrangler",
+            "~/Library/pnpm/wrangler",
+            "~/.local/share/pnpm/wrangler",
+        ],
     },
 ];
 
@@ -377,6 +385,10 @@ enum Arg {
 enum Runner {
     Brew,
     Npm,
+    // Wrangler 전용 실설치(§12.5)에서만 쓰인다 — pnpm을 "다른 패키지를 설치하는
+    // 도구"로 실행한다. RUN_PNPM_SELF_UPDATE의 SelfBinary(자기 자신을 갱신)와는
+    // 용도가 달라 구분되는 변형이 필요하다.
+    Pnpm,
     SelfBinary,
 }
 
@@ -489,6 +501,28 @@ const RUN_PNPM_SELF_UPDATE: RunPlan = RunPlan {
     args: &[Arg::Lit("self-update")],
     preview_args: None,
     env: &COMMON_ENV,
+    timeout_secs: 300,
+};
+// Wrangler 전용 실설치(§12.5). 다른 5개 도구의 미설치 상태는 여전히
+// install_manual_plan()의 Manual 고정만 따른다 — Wrangler만 npm 레지스트리
+// 패키지명이 "wrangler"로 고정돼 있어 추측 없이 안전하게 실행할 수 있다.
+const WRANGLER_PACKAGE: &str = "wrangler";
+const RUN_PNPM_GLOBAL_ADD: RunPlan = RunPlan {
+    runner: Runner::Pnpm,
+    args: &[Arg::Lit("add"), Arg::Lit("-g"), Arg::Lit(WRANGLER_PACKAGE)],
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 300,
+};
+const RUN_NPM_GLOBAL_INSTALL_WRANGLER: RunPlan = RunPlan {
+    runner: Runner::Npm,
+    args: &[
+        Arg::Lit("install"),
+        Arg::Lit("-g"),
+        Arg::Lit(WRANGLER_PACKAGE),
+    ],
+    preview_args: None,
+    env: &NPM_ENV,
     timeout_secs: 300,
 };
 
@@ -684,6 +718,10 @@ fn resolve_runner_path(runner: Runner, self_binary_path: Option<&str>) -> Option
     match runner {
         Runner::Brew => resolve_binary_expand_home(&BREW_CANDIDATES, "brew"),
         Runner::Npm => resolve_binary_expand_home(&NPM_CANDIDATES, "npm"),
+        // pnpm 자신의 DevTool 정의(path_candidates)를 그대로 재사용한다 — 이미
+        // 검증된 후보 목록(brew Cellar + standalone 두 경로)이 있으므로 별도
+        // PNPM_CANDIDATES 상수를 새로 만들지 않는다(중복 방지).
+        Runner::Pnpm => resolve_tool_path(tool_definition(ToolId::Pnpm)),
         Runner::SelfBinary => self_binary_path.map(|s| s.to_string()),
     }
 }
@@ -1297,7 +1335,13 @@ fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
                 version: None,
                 path: None,
                 install_method: None,
-                action_kind: "none".to_string(),
+                // Wrangler만 예외: 미설치 상태에서도 실제로 설치를 실행할 수 있다
+                // (§12.5) — 다른 5개 도구는 그대로 "none"(버튼 비활성).
+                action_kind: if def.id == ToolId::Wrangler {
+                    "run".to_string()
+                } else {
+                    "none".to_string()
+                },
                 manual_hint: None,
             },
             Some(resolved_path) => {
@@ -1421,6 +1465,9 @@ fn perform_preview(tool_id_str: &str) -> Result<DevToolPreview, String> {
 
     match resolve_tool_path(def) {
         None => {
+            if tool == ToolId::Wrangler {
+                return Ok(build_wrangler_install_preview(def));
+            }
             let plan = install_manual_plan(tool);
             let plan_id = compute_plan_id_for_manual(tool, &plan);
             Ok(DevToolPreview {
@@ -1594,12 +1641,18 @@ pub async fn update_dev_tool(
         .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }
 
-/// v1: INSTALL_TABLE은 항상 Manual만 담는다(install_manual_plan 문서 참조) — 이
-/// 커맨드는 실제로 아무것도 실행하지 않고 planId 대조 후 안내 메시지만 돌려준다.
+/// v1: INSTALL_TABLE은 기본적으로 Manual만 담는다(install_manual_plan 문서 참조) —
+/// 이 커맨드는 실제로 아무것도 실행하지 않고 planId 대조 후 안내 메시지만 돌려준다.
+/// 예외는 Wrangler뿐이다(§12.5) — 패키지명이 고정돼 있어 추측 없이 실행 가능하다.
 fn perform_install(tool_id_str: &str, plan_id: &str) -> Result<DevToolActionResult, String> {
     let tool = ToolId::from_key(tool_id_str)
         .ok_or_else(|| format!("알 수 없는 도구 id입니다: {tool_id_str}"))?;
     let def = tool_definition(tool);
+
+    if tool == ToolId::Wrangler && resolve_tool_path(def).is_none() {
+        return perform_wrangler_install(def, plan_id);
+    }
+
     let manual = install_manual_plan(tool);
     let expected_plan_id = compute_plan_id_for_manual(tool, &manual);
     if expected_plan_id != plan_id {
@@ -1608,6 +1661,192 @@ fn perform_install(tool_id_str: &str, plan_id: &str) -> Result<DevToolActionResu
         );
     }
     Ok(not_supported_result(def, manual_display_message(&manual)))
+}
+
+// ==================== 12.5 Wrangler 전용 실설치(신규 요구사항) ====================
+// install_manual_plan()의 "미설치 도구 = 항상 Manual" 정책은 브루/캐스크 등 이름을
+// 추측해야 하는 위험을 피하기 위한 것이다. Wrangler만 예외로 둔다 — npm 레지스트리
+// 패키지명이 "wrangler"로 고정돼 있어 추측이 필요 없다. 다른 5개 도구는 이 절의
+// 어떤 함수도 거치지 않고 install_manual_plan() 그대로 간다.
+
+struct WranglerInstallChoice {
+    runner_path: String,
+    argv: Vec<String>,
+    plan: RunPlan,
+    installer_label: &'static str,
+}
+
+/// pnpm을 먼저 시도하고(해석 자체가 안 되면 npm으로 폴백), 어느 쪽도 없으면
+/// None(호출부가 Manual로 강등). "해석 실패"와 "실행 실패"를 구분하는 것이
+/// 핵심이다 — pnpm이 존재하는데 설치 명령 자체가 실패하는 경우는 여기서 걸러내지
+/// 않는다(그 판정은 perform_wrangler_install의 실행 결과 처리 몫이다).
+fn resolve_wrangler_install_choice() -> Option<WranglerInstallChoice> {
+    let dummy_method = InstallMethod::Unknown(String::new());
+    if let Some(runner_path) = resolve_runner_path(Runner::Pnpm, None) {
+        let argv = resolve_args(RUN_PNPM_GLOBAL_ADD.args, &dummy_method)
+            .expect("RUN_PNPM_GLOBAL_ADD는 전부 리터럴 인자라 실패할 수 없습니다");
+        return Some(WranglerInstallChoice {
+            runner_path,
+            argv,
+            plan: RUN_PNPM_GLOBAL_ADD,
+            installer_label: "pnpm",
+        });
+    }
+    if let Some(runner_path) = resolve_runner_path(Runner::Npm, None) {
+        let argv = resolve_args(RUN_NPM_GLOBAL_INSTALL_WRANGLER.args, &dummy_method)
+            .expect("RUN_NPM_GLOBAL_INSTALL_WRANGLER는 전부 리터럴 인자라 실패할 수 없습니다");
+        return Some(WranglerInstallChoice {
+            runner_path,
+            argv,
+            plan: RUN_NPM_GLOBAL_INSTALL_WRANGLER,
+            installer_label: "npm",
+        });
+    }
+    None
+}
+
+fn build_wrangler_install_preview(def: &DevTool) -> DevToolPreview {
+    match resolve_wrangler_install_choice() {
+        Some(choice) => {
+            let display = build_command_display(&choice.runner_path, &choice.argv);
+            // 미설치 상태라 "이전 버전"이 없다 — normalized_before는 빈 문자열로
+            // 고정한다(perform_wrangler_install이 실행 직전 같은 값으로 재계산해
+            // 대조하므로 값 자체보다 안정성이 중요하다).
+            let plan_id = compute_plan_id(&choice.runner_path, &choice.argv, "");
+            DevToolPreview {
+                id: def.key.to_string(),
+                plan_id,
+                will_run: true,
+                command_display: display,
+                affected: vec![def.label.to_string()],
+                notes: format!(
+                    "{}(으)로 Wrangler CLI를 전역 설치합니다. 패키지명이 npm 레지스트리에 고정돼 있어 자동 실행이 안전합니다.",
+                    choice.installer_label
+                ),
+            }
+        }
+        None => {
+            let plan = install_manual_plan(ToolId::Wrangler);
+            let plan_id = compute_plan_id_for_manual(ToolId::Wrangler, &plan);
+            DevToolPreview {
+                id: def.key.to_string(),
+                plan_id,
+                will_run: false,
+                command_display: plan.copyable_command.unwrap_or("").to_string(),
+                affected: Vec::new(),
+                notes: manual_display_message(&plan),
+            }
+        }
+    }
+}
+
+/// 결정 4의 "claimed ≠ verified"를 설치에도 그대로 적용한다: exit code 0을 성공
+/// 주장(claim)으로만 보지 않고, 설치 후 check_tool_version()으로 실제 버전을
+/// 다시 조회했을 때만 확인(verify)된 성공으로 본다. Outcome은 기존 update 흐름의
+/// 값(Updated/UnknownAfter/Failed/TimedOut)을 그대로 재사용한다 — 프론트가 이미
+/// Updated 시점에 목록을 새로고침하므로(devTools.ts runPlan) 신규 Outcome 변형을
+/// 추가하지 않아도 설치 직후 상태가 목록에 바로 반영된다.
+fn perform_wrangler_install(def: &DevTool, plan_id: &str) -> Result<DevToolActionResult, String> {
+    let _guard = EXECUTION_LOCK.try_lock().map_err(|_| {
+        "다른 업데이트가 이미 실행 중입니다. 완료 후 다시 시도해주세요.".to_string()
+    })?;
+
+    let Some(choice) = resolve_wrangler_install_choice() else {
+        let manual = install_manual_plan(ToolId::Wrangler);
+        return Ok(not_supported_result(def, manual_display_message(&manual)));
+    };
+
+    let expected_plan_id = compute_plan_id(&choice.runner_path, &choice.argv, "");
+    if expected_plan_id != plan_id {
+        return Err(
+            "실행 계획이 미리보기 이후 바뀌었습니다. 다시 미리보기를 요청해주세요.".to_string(),
+        );
+    }
+
+    let path_env = build_child_path_env(Some(&choice.runner_path));
+    let output = run_process_with_timeout(
+        &choice.runner_path,
+        &choice.argv,
+        &path_env,
+        choice.plan.env,
+        Duration::from_secs(choice.plan.timeout_secs),
+    );
+
+    // pnpm이 해석돼 실행까지 갔다면(성공이든 실패든) 그 결과를 그대로 보고한다 —
+    // npm으로 조용히 폴백하지 않는다(요구사항: 실패를 숨기지 않는다).
+    let resolved_after = resolve_tool_path(def);
+    let version_after = resolved_after
+        .as_deref()
+        .and_then(|p| check_tool_version(def, p));
+    let normalized_after = version_after.as_deref().and_then(normalize_version);
+
+    let installer_label = choice.installer_label;
+    let (outcome, verified, message) = if let Some(spawn_err) = &output.spawn_error {
+        (
+            Outcome::Failed,
+            false,
+            format!("{installer_label} 실행에 실패했습니다: {spawn_err}"),
+        )
+    } else if output.timed_out {
+        (
+            Outcome::TimedOut,
+            false,
+            format!(
+                "{installer_label} 설치 실행이 시간 초과되어 강제 종료했습니다. 상태 불명 — 다시 확인해주세요."
+            ),
+        )
+    } else if output.exit_code == Some(0) {
+        match &normalized_after {
+            Some(after) => (
+                Outcome::Updated,
+                true,
+                format!("Wrangler CLI가 {installer_label}(으)로 설치되었습니다 ({after})."),
+            ),
+            None => (
+                Outcome::UnknownAfter,
+                false,
+                "설치 명령은 성공했다고 보고했으나 설치 확인에 실패했습니다.".to_string(),
+            ),
+        }
+    } else {
+        let code_str = output
+            .exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "알 수 없음".to_string());
+        (
+            Outcome::Failed,
+            false,
+            format!("{installer_label} 설치가 실패했습니다(종료 코드 {code_str})."),
+        )
+    };
+
+    let visibility = match resolved_after.as_deref() {
+        Some(p) => compute_path_visibility(p),
+        None => PathVisibility {
+            visible: false,
+            hint: None,
+            hint_target: None,
+        },
+    };
+
+    Ok(DevToolActionResult {
+        id: def.key.to_string(),
+        outcome,
+        verified,
+        version_before: None,
+        version_after,
+        normalized_before: None,
+        normalized_after,
+        install_method: format!("{installer_label}GlobalAdd({WRANGLER_PACKAGE})"),
+        ran_command: Some(build_command_display(&choice.runner_path, &choice.argv)),
+        exit_code: output.exit_code,
+        duration_ms: output.duration.as_millis() as u64,
+        message,
+        log_tail: truncate_log(&output.stdout, &output.stderr),
+        path_visible: visibility.visible,
+        path_hint: visibility.hint,
+        path_hint_target: visibility.hint_target,
+    })
 }
 
 #[tauri::command]
@@ -2239,5 +2478,86 @@ gh 2.95.0 -> 2.100.0 (14MB)\n";
     fn manual_plan_reasons_are_distinguishable_for_ui_branching() {
         assert_ne!(MANUAL_XCODE_CLT.reason, MANUAL_VERSION_MANAGED.reason);
         assert_ne!(MANUAL_COREPACK_MANAGED.reason, MANUAL_NOT_WRITABLE.reason);
+    }
+
+    // ── Wrangler 전용 실설치(§12.5) ──
+
+    // pnpm/npm RunPlan 둘 다 전부 리터럴 인자라 어떤 InstallMethod를 넘겨도(심지어
+    // 의미 없는 더미여도) 안전하게 고정된 argv로 풀려야 한다.
+    #[test]
+    fn wrangler_run_plans_resolve_to_expected_literal_argv() {
+        let dummy = InstallMethod::Unknown(String::new());
+
+        let pnpm_args = resolve_args(RUN_PNPM_GLOBAL_ADD.args, &dummy).unwrap();
+        assert_eq!(pnpm_args, vec!["add", "-g", "wrangler"]);
+
+        let npm_args = resolve_args(RUN_NPM_GLOBAL_INSTALL_WRANGLER.args, &dummy).unwrap();
+        assert_eq!(npm_args, vec!["install", "-g", "wrangler"]);
+
+        // "wrangler" 토큰 자체는 유효해야 한다("-g"는 리터럴 플래그라
+        // validate_argv_token 대상이 아니다 — resolve_args가 Arg::Lit은 검증을
+        // 건너뛴다).
+        assert!(validate_argv_token(WRANGLER_PACKAGE));
+    }
+
+    // 이 머신에 pnpm/npm이 있든 없든 패닉 없이 안전한 값을 내야 한다 — 있으면
+    // pnpm을 우선하고, 그 argv가 RUN_PNPM_GLOBAL_ADD와 일치해야 한다.
+    #[test]
+    fn wrangler_install_choice_prefers_pnpm_over_npm_when_both_resolve() {
+        match resolve_wrangler_install_choice() {
+            Some(choice) => match choice.installer_label {
+                "pnpm" => assert_eq!(choice.argv, vec!["add", "-g", "wrangler"]),
+                "npm" => assert_eq!(choice.argv, vec!["install", "-g", "wrangler"]),
+                other => panic!("알 수 없는 installer_label: {other}"),
+            },
+            None => {
+                // 이 머신에 pnpm도 npm도 없는 경우 — 정상적인 값(패닉이 아니다).
+            }
+        }
+    }
+
+    // 같은 환경에서 두 번 호출하면 같은 plan_id가 나와야 한다(부록 A의 안정성
+    // 요구 — 미설치 상태에도 동일하게 적용).
+    #[test]
+    fn wrangler_install_preview_plan_id_is_stable_across_calls() {
+        let def = tool_definition(ToolId::Wrangler);
+        let a = build_wrangler_install_preview(def);
+        let b = build_wrangler_install_preview(def);
+        assert_eq!(a.plan_id, b.plan_id);
+        assert_eq!(a.will_run, b.will_run);
+    }
+
+    // check_dev_tools_blocking()에서 "경로 자체를 못 찾은"(path == None, 즉
+    // resolve_tool_path가 None을 반환한) 상태의 action_kind는 Wrangler만 "run"
+    // 이고 나머지 5개는 여전히 "none"이어야 한다(회귀 방지 — 다른 도구의 동작을
+    // 바꾸지 않는다는 요구사항의 핵심 단언). `installed`가 아니라 `path`로
+    // 분기 여부를 판정한다 — 경로는 찾았지만 버전 조회만 실패해 installed가
+    // false인 경우는 Some(resolved_path) 분기(별개 로직)를 타기 때문이다.
+    #[test]
+    fn only_wrangler_gets_run_action_kind_when_path_not_found() {
+        let tools = check_dev_tools_blocking();
+        let wrangler = tools
+            .iter()
+            .find(|t| t.id == "wrangler")
+            .expect("wrangler는 DEV_TOOLS에 있어야 합니다");
+        if wrangler.path.is_none() {
+            assert_eq!(wrangler.action_kind, "run");
+        }
+        for tool in tools.iter().filter(|t| t.id != "wrangler") {
+            if tool.path.is_none() {
+                assert_eq!(
+                    tool.action_kind, "none",
+                    "{}은(는) 경로를 못 찾았을 때도 여전히 none이어야 합니다",
+                    tool.id
+                );
+            }
+        }
+    }
+
+    // planId가 미리보기 이후 계산값과 다르면(위조·상태 변경) 항상 거부되어야
+    // 한다 — Wrangler가 이미 설치돼 있어 매뉴얼 경로로 빠지는 경우까지 포함해서.
+    #[test]
+    fn wrangler_install_rejects_stale_plan_id() {
+        assert!(perform_install("wrangler", "not-a-real-plan-id").is_err());
     }
 }
