@@ -145,6 +145,14 @@ enum InstallMethod {
     // 또는 ~/Library/pnpm, ~/.local/share/pnpm 아래). 이 머신에서는 pnpm이
     // Homebrew Cellar 설치라 이 분류로 떨어지지 않는다(실기 검증 불가, 아래 참고).
     PnpmStandalone,
+    // 조사결과(#3 후속): pnpm이 `pnpm add -g <pkg>`로 다른 CLI를 전역 설치하면
+    // shim이 $PNPM_HOME 바로 밑이 아니라 $PNPM_HOME/bin/<name> 아래에 생긴다
+    // (pnpm 자기 자신의 standalone 설치는 $PNPM_HOME 바로 밑). Wrangler가 실측
+    // 사례(`~/Library/pnpm/bin/wrangler`) — 같은 bin 안에 cf-wrangler/pn/pnpx 등
+    // 다른 전역 패키지도 함께 있다.
+    PnpmGlobalPackage {
+        package: String,
+    },
     NpmGlobal {
         package: String,
     },
@@ -159,6 +167,7 @@ enum MethodKind {
     HomebrewFormula,
     HomebrewCask,
     PnpmStandalone,
+    PnpmGlobalPackage,
     NpmGlobal,
     ClaudeNative,
     SystemManaged,
@@ -172,6 +181,7 @@ impl InstallMethod {
             InstallMethod::HomebrewFormula { .. } => MethodKind::HomebrewFormula,
             InstallMethod::HomebrewCask { .. } => MethodKind::HomebrewCask,
             InstallMethod::PnpmStandalone => MethodKind::PnpmStandalone,
+            InstallMethod::PnpmGlobalPackage { .. } => MethodKind::PnpmGlobalPackage,
             InstallMethod::NpmGlobal { .. } => MethodKind::NpmGlobal,
             InstallMethod::ClaudeNative => MethodKind::ClaudeNative,
             InstallMethod::SystemManaged => MethodKind::SystemManaged,
@@ -197,6 +207,7 @@ fn describe_install_method(method: &InstallMethod) -> String {
         InstallMethod::HomebrewFormula { formula, .. } => format!("homebrewFormula({formula})"),
         InstallMethod::HomebrewCask { cask } => format!("homebrewCask({cask})"),
         InstallMethod::PnpmStandalone => "pnpmStandalone".to_string(),
+        InstallMethod::PnpmGlobalPackage { package } => format!("pnpmGlobalPackage({package})"),
         InstallMethod::NpmGlobal { package } => format!("npmGlobal({package})"),
         InstallMethod::ClaudeNative => "claudeNative".to_string(),
         InstallMethod::SystemManaged => "systemManaged".to_string(),
@@ -241,16 +252,33 @@ fn classify_install_method(
         }
     }
 
-    // 3. PnpmStandalone (신규 요구사항 — pnpm 전용, Cellar/Caskroom과 겹치지 않는다)
+    // 3. PnpmStandalone / PnpmGlobalPackage (신규 요구사항 — pnpm 전용,
+    // Cellar/Caskroom과 겹치지 않는다). pnpm은 자기 자신의 standalone 바이너리를
+    // 루트 바로 밑($PNPM_HOME/pnpm)에 두고, `pnpm add -g <pkg>`로 설치한 다른
+    // 패키지의 shim은 루트/bin 아래($PNPM_HOME/bin/<pkg>)에 둔다 — 이 bin/
+    // 서브디렉터리 유무가 둘을 가르는 구조적 신호다.
+    let mut pnpm_home_roots: Vec<PathBuf> = Vec::new();
     if let Some(ph) = pnpm_home {
-        if !ph.as_os_str().is_empty() && canonical.starts_with(ph) {
-            return InstallMethod::PnpmStandalone;
+        if !ph.as_os_str().is_empty() {
+            pnpm_home_roots.push(ph.to_path_buf());
         }
     }
     if let Some(h) = home {
-        if canonical.starts_with(h.join("Library").join("pnpm"))
-            || canonical.starts_with(h.join(".local").join("share").join("pnpm"))
-        {
+        pnpm_home_roots.push(h.join("Library").join("pnpm"));
+        pnpm_home_roots.push(h.join(".local").join("share").join("pnpm"));
+    }
+    for root in &pnpm_home_roots {
+        let bin_dir = root.join("bin");
+        if canonical.starts_with(&bin_dir) {
+            if let Ok(rest) = canonical.strip_prefix(&bin_dir) {
+                if let Some(std::path::Component::Normal(name)) = rest.components().next() {
+                    return InstallMethod::PnpmGlobalPackage {
+                        package: name.to_string_lossy().to_string(),
+                    };
+                }
+            }
+        }
+        if canonical.starts_with(root) {
             return InstallMethod::PnpmStandalone;
         }
     }
@@ -506,6 +534,16 @@ const RUN_PNPM_SELF_UPDATE: RunPlan = RunPlan {
     env: &COMMON_ENV,
     timeout_secs: 300,
 };
+// pnpm이 전역 설치한 임의 패키지(PnpmGlobalPackage)의 업데이트 — RUN_NPM_GLOBAL의
+// npm 버전과 완전히 같은 모양이되 pnpm으로 설치된 패키지이므로 pnpm으로 갱신한다.
+// 특정 도구에 묶이지 않는 제네릭 행(UPDATE_TABLE의 NpmGlobal 행과 동일 패턴).
+const RUN_PNPM_GLOBAL_UPDATE: RunPlan = RunPlan {
+    runner: Runner::Pnpm,
+    args: &[Arg::Lit("add"), Arg::Lit("-g"), Arg::PackageLatest],
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 300,
+};
 // Wrangler 전용 실설치(§12.5). 다른 5개 도구의 미설치 상태는 여전히
 // install_manual_plan()의 Manual 고정만 따른다 — Wrangler만 npm 레지스트리
 // 패키지명이 "wrangler"로 고정돼 있어 추측 없이 안전하게 실행할 수 있다.
@@ -595,6 +633,11 @@ static UPDATE_TABLE: &[Row] = &[
         tool: None,
         method: MethodKind::NpmGlobal,
         action: Action::Run(RUN_NPM_GLOBAL),
+    },
+    Row {
+        tool: None,
+        method: MethodKind::PnpmGlobalPackage,
+        action: Action::Run(RUN_PNPM_GLOBAL_UPDATE),
     },
     Row {
         tool: Some(ToolId::Claude),
@@ -817,10 +860,12 @@ fn resolve_args(args: &[Arg], method: &InstallMethod) -> Result<Vec<String>, Str
             },
             Arg::Package => match method {
                 InstallMethod::NpmGlobal { package } => package.clone(),
+                InstallMethod::PnpmGlobalPackage { package } => package.clone(),
                 _ => return Err("내부 오류: package 슬롯을 채울 설치방식이 아닙니다".to_string()),
             },
             Arg::PackageLatest => match method {
                 InstallMethod::NpmGlobal { package } => format!("{package}@latest"),
+                InstallMethod::PnpmGlobalPackage { package } => format!("{package}@latest"),
                 _ => return Err("내부 오류: package 슬롯을 채울 설치방식이 아닙니다".to_string()),
             },
         };
@@ -2185,6 +2230,89 @@ mod tests {
             lookup_action(ToolId::Pnpm, MethodKind::PnpmStandalone),
             Action::Run(_)
         ));
+
+        // 회귀 방지: pnpm 자기 자신($PNPM_HOME 바로 밑, bin/ 아님)은 여전히
+        // PnpmStandalone으로 분류되어야 한다 — bin/ 분기 신설이 이 경로를
+        // 건드리면 안 된다.
+        let pnpm_self_via_pnpm_home_env = classify_install_method(
+            &PathBuf::from("/custom/pnpm/pnpm"),
+            Some(&home),
+            Some(Path::new("/custom/pnpm")),
+            &prefixes,
+        );
+        assert_eq!(pnpm_self_via_pnpm_home_env, InstallMethod::PnpmStandalone);
+    }
+
+    // 신규 요구사항: pnpm이 전역 설치한 다른 CLI(Wrangler 등)는 $PNPM_HOME/bin
+    // 아래에 shim이 생기며 PnpmStandalone이 아니라 PnpmGlobalPackage로
+    // 분류되어야 하고, 업데이트 테이블에서 Action::Run(RUN_PNPM_GLOBAL_UPDATE)로
+    // 매칭되어야 한다(이전에는 매칭 행이 없어 Manual(MANUAL_UNKNOWN_METHOD)로
+    // 잘못 떨어졌다).
+    #[test]
+    fn pnpm_global_package_paths_classify_separately_from_pnpm_standalone() {
+        let home = PathBuf::from("/Users/hopegiver");
+        let prefixes = vec!["/opt/homebrew".to_string(), "/usr/local".to_string()];
+
+        // 실측 경로: ~/Library/pnpm/bin/wrangler
+        let wrangler = classify_install_method(
+            &PathBuf::from("/Users/hopegiver/Library/pnpm/bin/wrangler"),
+            Some(&home),
+            None,
+            &prefixes,
+        );
+        assert_eq!(
+            wrangler,
+            InstallMethod::PnpmGlobalPackage {
+                package: "wrangler".to_string()
+            }
+        );
+
+        // $PNPM_HOME 환경변수 경유 + .local/share/pnpm 폴백 경로도 동일하게
+        // bin/ 유무로 구분되어야 한다.
+        let via_pnpm_home_env = classify_install_method(
+            &PathBuf::from("/custom/pnpm/bin/cf-wrangler"),
+            Some(&home),
+            Some(Path::new("/custom/pnpm")),
+            &prefixes,
+        );
+        assert_eq!(
+            via_pnpm_home_env,
+            InstallMethod::PnpmGlobalPackage {
+                package: "cf-wrangler".to_string()
+            }
+        );
+
+        let via_local_share = classify_install_method(
+            &PathBuf::from("/Users/hopegiver/.local/share/pnpm/bin/wrangler"),
+            Some(&home),
+            None,
+            &prefixes,
+        );
+        assert_eq!(
+            via_local_share,
+            InstallMethod::PnpmGlobalPackage {
+                package: "wrangler".to_string()
+            }
+        );
+
+        // Wrangler + PnpmGlobalPackage 조합이 UPDATE_TABLE에서 제네릭 행에
+        // 매칭되어 Action::Run(RUN_PNPM_GLOBAL_UPDATE)로 떨어져야 한다.
+        assert!(matches!(
+            lookup_action(ToolId::Wrangler, MethodKind::PnpmGlobalPackage),
+            Action::Run(plan) if plan.runner == Runner::Pnpm
+                && matches!(plan.args, [Arg::Lit("add"), Arg::Lit("-g"), Arg::PackageLatest])
+        ));
+
+        // resolve_args가 PnpmGlobalPackage에서 실제로 "add -g wrangler@latest"를
+        // 만들어내는지 확인한다.
+        let args = resolve_args(
+            RUN_PNPM_GLOBAL_UPDATE.args,
+            &InstallMethod::PnpmGlobalPackage {
+                package: "wrangler".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(args, vec!["add", "-g", "wrangler@latest"]);
     }
 
     #[test]
