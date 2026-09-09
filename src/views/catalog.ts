@@ -12,6 +12,28 @@ import { state, notifyChange } from '../state';
 import { fetchInstalledPlugins, fetchKnownMarketplaces, updatePlugin } from '../catalogApi';
 import type { InstalledPlugin, CatalogEntryItem, CommandResult } from '../catalogApi';
 
+// 성공 결과 노트는 확인 후 후속 조치가 없으므로 잠시 보여준 뒤 자동으로 치운다.
+// 실패 노트는 메시지를 계속 봐야 하니 그대로 남긴다.
+const resultClearTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const RESULT_AUTO_CLEAR_MS = 5000;
+
+function clearResultClearTimer(id: string): void {
+  const timer = resultClearTimers[id];
+  if (timer) {
+    clearTimeout(timer);
+    delete resultClearTimers[id];
+  }
+}
+
+function scheduleResultClear(id: string): void {
+  clearResultClearTimer(id);
+  resultClearTimers[id] = setTimeout(() => {
+    delete resultClearTimers[id];
+    state.catalog.lastResult[id] = null;
+    notifyChange();
+  }, RESULT_AUTO_CLEAR_MS);
+}
+
 export async function loadCatalog(): Promise<void> {
   state.catalog.loading = true;
   state.catalog.error = null;
@@ -49,6 +71,7 @@ export async function loadMarketplaces(): Promise<void> {
 async function handleUpdatePlugin(plugin: InstalledPlugin): Promise<void> {
   state.catalog.updating[plugin.id] = true;
   state.catalog.lastResult[plugin.id] = null;
+  clearResultClearTimer(plugin.id);
   notifyChange();
   try {
     const result = await updatePlugin(plugin.id);
@@ -58,7 +81,10 @@ async function handleUpdatePlugin(plugin: InstalledPlugin): Promise<void> {
         ? `${plugin.displayName ?? plugin.name} 업데이트 완료 — 적용하려면 Claude Code를 재시작하세요`
         : `${plugin.displayName ?? plugin.name} 업데이트 실패: ${result.message}`
     );
-    if (result.success) await loadCatalog();
+    if (result.success) {
+      scheduleResultClear(plugin.id);
+      await loadCatalog();
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     state.catalog.lastResult[plugin.id] = { success: false, message };
@@ -82,7 +108,10 @@ async function handleUpdateAll(): Promise<void> {
     try {
       const result = await updatePlugin(p.id);
       state.catalog.lastResult[p.id] = result;
-      if (result.success) successCount += 1;
+      if (result.success) {
+        successCount += 1;
+        scheduleResultClear(p.id);
+      }
     } catch (err) {
       state.catalog.lastResult[p.id] = { success: false, message: err instanceof Error ? err.message : String(err) };
     } finally {
