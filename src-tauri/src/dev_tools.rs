@@ -698,8 +698,29 @@ fn compute_action(tool_id: ToolId, method: &InstallMethod) -> Action {
     let action = lookup_action(tool_id, method.kind());
 
     if let (Action::Run(plan), InstallMethod::HomebrewFormula { prefix, .. }) = (&action, method) {
-        if plan.runner == Runner::Brew && !is_writable_by_current_user(Path::new(prefix)) {
-            return Action::Manual(MANUAL_NOT_WRITABLE);
+        if plan.runner == Runner::Brew {
+            // 설계 문언대로 prefix 자체가 아니라 <prefix>/Cellar를 검사한다. prefix는
+            // classify_install_method가 canonical 경로에서 "Cellar" 세그먼트를 찾아
+            // 그 부모로 결정한 값이므로(위 분류 로직 참고), <prefix>/Cellar는 이
+            // InstallMethod가 만들어진 시점에 실제로 존재했던 경로다 —
+            // is_writable_by_current_user(access(W_OK))는 없는 경로에도 false를
+            // 반환하지만 여기서는 그 구조적 보장 덕에 "존재하지만 못 쓴다"만 검사하는
+            // 셈이다. prefix 자체(Apple Silicon /opt/homebrew, Intel /usr/local)는
+            // root:wheel일 수 있어도 brew가 실제로 쓰는 하위 디렉터리 소유권은 다를
+            // 수 있으므로 prefix 대신 이 경로를 본다.
+            //
+            // <prefix>/bin도 함께 본다: brew upgrade는 Cellar에 새 keg를 풀 뿐 아니라
+            // <prefix>/bin에 심볼릭 링크를 다시 건다(unlink+link). 두 디렉터리는 각각
+            // 별도로 chown될 수 있어(설치 스크립트가 자동으로 맞춰주지만, 이후 수동
+            // chmod/사용자 조작으로 어긋나는 사례가 실무에서 보고된다) Cellar만 쓰기
+            // 가능하고 bin은 여전히 root 소유인 조합이 가능하다. 이 경우 keg 압축
+            // 해제는 성공하고 링크 단계에서만 실패해 "부분 실패" 상태가 되므로, 사전에
+            // 두 경로를 모두 확인해 Manual로 강등하는 편이 안전하다.
+            let cellar = Path::new(prefix).join("Cellar");
+            let bin = Path::new(prefix).join("bin");
+            if !is_writable_by_current_user(&cellar) || !is_writable_by_current_user(&bin) {
+                return Action::Manual(MANUAL_NOT_WRITABLE);
+            }
         }
     }
 
@@ -1002,7 +1023,13 @@ fn build_child_path_env(runner_path: Option<&str>) -> String {
     let mut dirs: Vec<String> = Vec::new();
     if let Some(rp) = runner_path {
         if let Some(bin_dir) = Path::new(rp).parent() {
-            dirs.push(bin_dir.to_string_lossy().to_string());
+            let s = bin_dir.to_string_lossy().to_string();
+            // 빈 문자열은 POSIX PATH에서 CWD를 의미한다(예: bare name "brew"의
+            // parent()는 Some("")) — 자식 프로세스가 CWD에서 git/curl 등을
+            // 먼저 찾게 되므로 반드시 배제한다.
+            if !s.is_empty() {
+                dirs.push(s);
+            }
         }
     }
     for d in [
@@ -1266,6 +1293,13 @@ pub struct DevToolPreview {
     pub command_display: String,
     pub affected: Vec<String>,
     pub notes: String,
+    /// 과제 4(fail-open 수정): dry-run 미리보기가 spawn 실패하거나 타임아웃하면
+    /// `affected`는 안전한 기본값(`vec![def.label]`, 길이 1)으로 채워지는데, 이
+    /// 길이만으로는 "실제로 영향 범위가 1개로 확인됨"과 구분이 안 된다. 이 필드가
+    /// false면 `affected`/`notes`를 신뢰할 수 없다는 뜻이며, 프론트는 이 경우
+    /// "전체 업데이트" 배치 자동실행에서 반드시 제외하고 개별 확인 대기로 남겨야
+    /// 한다(개별 실행 경로는 화면에 그대로 노출해 사용자가 판단하게 한다).
+    pub preview_reliable: bool,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -1400,7 +1434,7 @@ fn build_run_preview(
         .and_then(normalize_version)
         .unwrap_or_default();
 
-    let (affected, notes) = match plan.preview_args {
+    let (affected, notes, preview_reliable) = match plan.preview_args {
         Some(preview_args) => {
             let preview_argv = resolve_args(preview_args, &method)?;
             let path_env = build_child_path_env(Some(&runner_path));
@@ -1414,15 +1448,21 @@ fn build_run_preview(
                 Duration::from_secs(120),
             );
             if let Some(err) = output.spawn_error {
+                // spawn 실패 — affected는 안전한 기본값(길이 1)이지만 실제로 확인된
+                // 값이 아니다. preview_reliable=false로 프론트에 "믿지 말라"고 알린다.
                 (
                     vec![def.label.to_string()],
                     format!("미리보기 실행에 실패했습니다: {err}"),
+                    false,
                 )
             } else if output.timed_out {
+                // 타임아웃도 마찬가지로 affected를 신뢰할 수 없다(부록 지시: fail-open
+                // 금지 — 길이 1이라는 사실만으로 "안전"으로 해석되면 안 된다).
                 (
                     vec![def.label.to_string()],
                     "미리보기가 시간 초과되었습니다. 실행 시 실제 범위가 다를 수 있습니다."
                         .to_string(),
+                    false,
                 )
             } else {
                 let parsed = parse_brew_dry_run_affected(&output.stdout);
@@ -1440,10 +1480,10 @@ fn build_run_preview(
                 } else {
                     parsed
                 };
-                (affected, notes)
+                (affected, notes, true)
             }
         }
-        None => (vec![def.label.to_string()], String::new()),
+        None => (vec![def.label.to_string()], String::new(), true),
     };
 
     let plan_id = compute_plan_id(&runner_path, &args, &normalized_before);
@@ -1455,6 +1495,7 @@ fn build_run_preview(
         command_display: display,
         affected,
         notes,
+        preview_reliable,
     })
 }
 
@@ -1477,6 +1518,7 @@ fn perform_preview(tool_id_str: &str) -> Result<DevToolPreview, String> {
                 command_display: plan.copyable_command.unwrap_or("").to_string(),
                 affected: Vec::new(),
                 notes: manual_display_message(&plan),
+                preview_reliable: true,
             })
         }
         Some(resolved_path) => {
@@ -1491,6 +1533,7 @@ fn perform_preview(tool_id_str: &str) -> Result<DevToolPreview, String> {
                         command_display: mp.copyable_command.unwrap_or("").to_string(),
                         affected: Vec::new(),
                         notes: manual_display_message(&mp),
+                        preview_reliable: true,
                     })
                 }
                 ResolvedAction::Run { runner_path, plan } => {
@@ -1723,6 +1766,7 @@ fn build_wrangler_install_preview(def: &DevTool) -> DevToolPreview {
                     "{}(으)로 Wrangler CLI를 전역 설치합니다. 패키지명이 npm 레지스트리에 고정돼 있어 자동 실행이 안전합니다.",
                     choice.installer_label
                 ),
+                preview_reliable: true,
             }
         }
         None => {
@@ -1735,6 +1779,7 @@ fn build_wrangler_install_preview(def: &DevTool) -> DevToolPreview {
                 command_display: plan.copyable_command.unwrap_or("").to_string(),
                 affected: Vec::new(),
                 notes: manual_display_message(&plan),
+                preview_reliable: true,
             }
         }
     }
@@ -1859,8 +1904,15 @@ pub async fn install_dev_tool(
         .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }
 
+// M2: Manual 경로는 Run 경로(preview -> 사용자 확인 -> 실행)와 달리 동의 절차 없이
+// 즉시 실행됐다. `execute` 파라미터로 같은 커맨드를 "미리보기"(false)와
+// "실행"(true) 두 모드로 재사용해, 프론트가 먼저 어떤 명령이 실행될지 보여주고
+// 사용자 확인을 받은 뒤에만 execute:true로 다시 호출하게 한다. 계획 해석 로직을
+// 두 곳에 중복시키지 않기 위해 한 함수 안에서 분기하며, 반환 타입은 기존
+// TerminalLaunchResult를 그대로 재사용한다(필드 추가 없음 — 프론트-백엔드 타입
+// 계약 변경 없음).
 #[tauri::command]
-pub fn open_manual_instruction(tool_id: String) -> Result<TerminalLaunchResult, String> {
+pub fn open_manual_instruction(tool_id: String, execute: bool) -> Result<TerminalLaunchResult, String> {
     let tool =
         ToolId::from_key(&tool_id).ok_or_else(|| format!("알 수 없는 도구 id입니다: {tool_id}"))?;
     let def = tool_definition(tool);
@@ -1875,10 +1927,17 @@ pub fn open_manual_instruction(tool_id: String) -> Result<TerminalLaunchResult, 
 
     match manual.and_then(|mp| mp.copyable_command) {
         Some(cmd) => {
+            if !execute {
+                // 미리보기 전용 — 아직 아무 것도 실행하지 않았다.
+                return Ok(TerminalLaunchResult {
+                    opened: false,
+                    message: format!("다음 명령을 실행합니다: {cmd}"),
+                });
+            }
             open_terminal_command(cmd)?;
             Ok(TerminalLaunchResult {
                 opened: true,
-                message: format!("터미널 창에서 다음 명령을 실행해주세요: {cmd}"),
+                message: format!("터미널에서 다음 명령을 실행했습니다: {cmd}"),
             })
         }
         None => Ok(TerminalLaunchResult {
@@ -2389,6 +2448,22 @@ gh 2.95.0 -> 2.100.0 (14MB)\n";
         assert!(path.contains("/bin"));
     }
 
+    // M1 회귀 테스트: resolve_binary()가 절대경로 후보를 못 찾으면 bare name을
+    // 그대로 반환하고, 그 값이 runner_path로 들어온다. Path::new("brew").parent()는
+    // Some("")를 반환하므로 빈 항목이 PATH 앞머리에 들어가면 안 된다 —
+    // POSIX에서 PATH의 길이 0 항목은 CWD를 의미한다.
+    #[test]
+    fn build_child_path_env_excludes_empty_entry_for_bare_name() {
+        let path = build_child_path_env(Some("brew"));
+        assert!(!path.split(':').any(|p| p.is_empty()));
+    }
+
+    #[test]
+    fn build_child_path_env_excludes_empty_entry_for_none() {
+        let path = build_child_path_env(None);
+        assert!(!path.split(':').any(|p| p.is_empty()));
+    }
+
     // 신규 요구사항: PATH 노출 확인은 셸을 스폰하지 않고 파일 읽기만으로 판정한다.
     #[test]
     fn path_visibility_detects_dir_via_etc_paths_entries() {
@@ -2453,6 +2528,54 @@ gh 2.95.0 -> 2.100.0 (14MB)\n";
             !is_writable_by_current_user(Path::new("/System")),
             "/System은 SIP로 보호되어 일반 사용자가 쓸 수 없어야 합니다"
         );
+    }
+
+    // 과제 2(Major-2): compute_action의 brew 쓰기권한 검사가 prefix 자체가 아니라
+    // <prefix>/Cellar, <prefix>/bin을 보는지 실측으로 확인한다. 홈 디렉터리 아래
+    // 합성 Cellar/bin을 만들어 "쓰기 가능"과 "존재하지 않음"(→ access(W_OK) 실패)
+    // 두 경우 모두 검증한다.
+    #[test]
+    fn compute_action_checks_prefix_cellar_and_bin_not_prefix_itself() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let tmp_prefix = home.join(format!(
+            "malgn_vscode_test_brew_prefix_{}",
+            std::process::id()
+        ));
+        let cellar = tmp_prefix.join("Cellar");
+        let bin = tmp_prefix.join("bin");
+        std::fs::create_dir_all(&cellar).expect("create synthetic Cellar dir");
+        std::fs::create_dir_all(&bin).expect("create synthetic bin dir");
+
+        // 사용자 소유 홈 아래에 만들었으므로 prefix/Cellar, prefix/bin 모두 쓰기
+        // 가능해야 한다 — prefix 경로 조립이 `prefix + "/Cellar"`, `prefix + "/bin"`
+        // 형태로 올바른지가 핵심 확인 대상이다.
+        assert!(is_writable_by_current_user(&cellar));
+        assert!(is_writable_by_current_user(&bin));
+
+        let method = InstallMethod::HomebrewFormula {
+            formula: "example".to_string(),
+            keg_version: "1.0.0".to_string(),
+            prefix: tmp_prefix.to_string_lossy().to_string(),
+        };
+        let action = compute_action(ToolId::Node, &method);
+        assert!(
+            matches!(action, Action::Run(_)),
+            "Cellar·bin 모두 쓰기 가능하면 Manual로 강등되지 않아야 합니다"
+        );
+
+        // bin만 지워 "존재하지 않는 경로"(access(W_OK) 실패)를 흉내내면 Manual로
+        // 강등되어야 한다 — prefix 자체(tmp_prefix, 여전히 쓰기 가능)만 보는 버그였다면
+        // 이 케이스에서 여전히 Action::Run이 나왔을 것이다.
+        std::fs::remove_dir_all(&bin).expect("remove synthetic bin dir");
+        let action_after_bin_removed = compute_action(ToolId::Node, &method);
+        assert!(
+            matches!(action_after_bin_removed, Action::Manual(_)),
+            "bin이 쓰기 불가(부재)면 Manual로 강등되어야 합니다"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_prefix);
     }
 
     #[test]

@@ -1,11 +1,18 @@
 // 개발 환경 — "설정"과는 성격이 다르다(설정은 외부 서비스 연동 자격증명, 이건 로컬
 // 도구 상태). 설치 여부·버전·설치방식은 Rust가 실제로 조회한 실데이터다
 // (devToolsApi.ts). actionKind가 도구별로 무엇을 할 수 있는지 정한다:
-//   - "run"    : 이 앱이 실제로 설치/업데이트 명령을 실행할 수 있다. 실행 전 항상
-//                preview_dev_tool_update로 무엇이 바뀔지 보여주고 사용자 확인을
-//                받은 뒤(plan_id 일치 확인), 그 계획으로만 실제 명령을 실행한다.
-//   - "manual" : 이 앱이 대신 실행하지 않는다(예: git은 macOS 시스템 도구). 실행
-//                버튼 대신 "안내 보기"만 제공해 안내문과 복사 가능한 명령을 보여준다.
+//   - "run"    : 이 앱이 실제로 설치/업데이트 명령을 실행할 수 있다. 개별 실행은
+//                preview_dev_tool_update로 무엇이 바뀔지 화면에 보여주고 사용자
+//                확인을 받은 뒤(plan_id 일치 확인)에만 그 계획으로 실제 명령을
+//                실행한다. "전체 업데이트"는 버튼 클릭 자체를 일괄 동의로 보고
+//                각 도구의 미리보기를 화면 노출·개별 확인 없이 순차 실행하되,
+//                미리보기를 신뢰할 수 없거나(previewReliable === false) 영향
+//                대상이 1개보다 많은 항목은 배치에서 제외하고 개별 확인 대기로
+//                남긴다(handleUpdateAll).
+//   - "manual" : 이 앱이 별도 프로세스로 실행하지 않는다(예: git은 macOS 시스템
+//                도구). "안내 보기"로 안내문과 복사 가능한 명령을 보여주며,
+//                "터미널에서 실행"은 어떤 명령이 실행될지 먼저 보여주고 확인을
+//                받은 뒤에만 터미널 창에서 그 명령을 실행한다(M2).
 //   - "none"   : 설치 경로 자체를 찾지 못해 아무 것도 할 수 없다. 버튼은 비활성이다.
 // 실행 결과는 성공/실패 2상태가 아니라 updated/alreadyLatest/unknownAfter/failed/
 // timedOut/notSupported 3+ 상태로 구분해 보여준다 — exit code만으로 "성공"을
@@ -14,7 +21,7 @@
 import { el, showToast } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
-import type { DevToolStatus, DevToolPreview, DevToolActionResult } from '../devToolsApi';
+import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 
 export async function loadDevTools(): Promise<void> {
   state.devTools.loading = true;
@@ -164,15 +171,60 @@ async function handleConfirmRun(tool: DevToolStatus): Promise<void> {
 
 function toggleManual(toolId: string): void {
   state.devTools.manualOpen[toolId] = !state.devTools.manualOpen[toolId];
+  if (!state.devTools.manualOpen[toolId]) {
+    // 안내 패널을 닫으면 대기 중이던 확인 단계도 함께 정리한다 — 다시 열었을 때
+    // 지난 확인 대상이 그대로 남아있지 않도록.
+    manualPendingCommand[toolId] = null;
+  }
   notifyChange();
 }
 
-async function handleLaunchTerminal(tool: DevToolStatus): Promise<void> {
+// ---------------- Manual "터미널에서 실행" 확인 절차 ----------------
+// M2: 이전에는 이 버튼을 누르는 즉시 `brew install …` 등을 실행했다(동의 없는
+// 실행). Run 경로(preview → 확인 → 실행)와 동일한 2단계로 맞추되, 전역
+// state(state.ts)와 프론트-백엔드 타입 계약(DevToolStatus/DevToolActionResult/
+// DevToolPreview)은 바꾸지 않는다는 제약 때문에, 이 화면 전용 휘발성 상태를
+// elapsedTimers와 같은 방식으로 모듈 스코프에 둔다. 백엔드
+// open_manual_instruction은 execute:false일 때 아무 것도 실행하지 않고 어떤
+// 명령이 실행될지만 반환한다(기존 TerminalLaunchResult 타입 그대로 재사용).
+const manualConfirmLoading: Record<string, boolean> = {};
+const manualPendingCommand: Record<string, TerminalLaunchResult | null> = {};
+// 백엔드가 만드는 두 메시지를 구분하는 표식. "실행할 명령이 없는" 경우(예:
+// copyable_command가 없는 도구)에는 확인할 것이 없으므로 바로 안내만 띄운다.
+const MANUAL_PREVIEW_PREFIX = '다음 명령을 실행합니다: ';
+
+async function handleRequestManualConfirm(tool: DevToolStatus): Promise<void> {
+  manualConfirmLoading[tool.id] = true;
+  notifyChange();
   try {
-    const result = await openManualInstruction(tool.id);
-    showToast(result.opened ? `${tool.name}: 터미널을 열었습니다` : `${tool.name}: 터미널을 열지 못했습니다 — ${result.message}`);
+    const preview = await openManualInstruction(tool.id, false);
+    if (preview.message.startsWith(MANUAL_PREVIEW_PREFIX)) {
+      manualPendingCommand[tool.id] = preview;
+    } else {
+      // 실행할 명령이 없다 — 확인 단계 없이 안내 문구만 보여준다(기존 동작 유지).
+      showToast(`${tool.name}: ${preview.message}`);
+    }
   } catch (err) {
-    showToast(`터미널 실행 중 오류가 발생했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`${tool.name}: 실행 준비 중 오류가 발생했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    manualConfirmLoading[tool.id] = false;
+    notifyChange();
+  }
+}
+
+function cancelManualConfirm(toolId: string): void {
+  manualPendingCommand[toolId] = null;
+  notifyChange();
+}
+
+async function handleConfirmManualExecute(tool: DevToolStatus): Promise<void> {
+  manualPendingCommand[tool.id] = null;
+  notifyChange();
+  try {
+    const result = await openManualInstruction(tool.id, true);
+    showToast(result.opened ? `${tool.name}: ${result.message}` : `${tool.name}: 터미널을 열지 못했습니다 — ${result.message}`);
+  } catch (err) {
+    showToast(`${tool.name}: 실행 중 오류가 발생했습니다 — ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -186,6 +238,13 @@ function toggleLog(toolId: string): void {
 // 먼저 미리보기를 받는다. 미리보기 결과 영향 대상이 1개보다 많으면(brew가 의존성까지
 // 올리는 경우) 자동으로 실행하지 않고 그 항목만 확인 대기 상태로 남겨 사용자가
 // 개별적으로 검토·확인하게 한다.
+//
+// fail-open 방지(과제 4): brew dry-run 미리보기가 spawn 실패하거나 타임아웃하면
+// 백엔드는 안전을 위해 affected를 길이 1(`[def.label]`)로 채워 반환하지만, 이는
+// 실제로 확인된 값이 아니다 — `affected.length > 1` 검사만으로는 이 경우를 걸러내지
+// 못해 무엇이 바뀔지 모르는 채로 배치가 자동 실행될 수 있었다. 그래서
+// previewReliable === false인 항목도 영향 대상이 여럿인 경우와 동일하게 배치에서
+// 제외하고 개별 확인 대기로 남긴다.
 async function handleUpdateAll(): Promise<void> {
   const targets = state.devTools.items.filter((t) => t.actionKind === 'run');
   if (targets.length === 0) return;
@@ -205,6 +264,13 @@ async function handleUpdateAll(): Promise<void> {
       state.devTools.previewLoading[tool.id] = false;
     }
     if (!preview) continue;
+
+    if (!preview.previewReliable) {
+      state.devTools.preview[tool.id] = preview;
+      showToast(`${tool.name}: 미리보기를 확인하지 못했습니다(실패/시간 초과) — 개별 확인이 필요합니다`);
+      notifyChange();
+      continue;
+    }
 
     if (preview.affected.length > 1) {
       state.devTools.preview[tool.id] = preview;
@@ -351,6 +417,14 @@ function renderPreviewPanel(tool: DevToolStatus, preview: DevToolPreview): HTMLE
     );
   }
 
+  if (!preview.previewReliable) {
+    children.push(
+      el('div', { className: 'devtool-panel devtool-panel-warn' }, [
+        '⚠ 미리보기 확인에 실패했거나 시간이 초과되어 위 "영향받는 항목"이 실제 범위를 반영하지 못할 수 있습니다. 신중히 확인 후 실행하세요.',
+      ])
+    );
+  }
+
   if (preview.notes) {
     children.push(el('div', { className: 'devtool-panel-notes' }, [preview.notes]));
   }
@@ -370,11 +444,31 @@ function renderPreviewPanel(tool: DevToolStatus, preview: DevToolPreview): HTMLE
 }
 
 function renderManualPanel(tool: DevToolStatus): HTMLElement {
+  // Run 경로의 프리뷰 확인 패널(renderPreviewPanel)과 동일한 구조 —
+  // devtool-panel-title / devtool-panel-command / devtool-panel-actions —
+  // 를 재사용해 실행 전 무엇이 실행될지 보여주고 [실행]/[취소]를 받는다.
+  const pending = manualPendingCommand[tool.id];
+  if (pending) {
+    return el('div', { className: 'devtool-panel' }, [
+      el('div', { className: 'devtool-panel-title' }, ['실행 전 확인']),
+      el('div', { className: 'devtool-panel-command' }, [pending.message]),
+      el('div', { className: 'devtool-panel-actions' }, [
+        el('button', { className: 'btn btn-primary', onClick: () => void handleConfirmManualExecute(tool) }, ['실행']),
+        el('button', { className: 'btn', onClick: () => cancelManualConfirm(tool.id) }, ['취소']),
+      ]),
+    ]);
+  }
+
+  const confirmLoading = manualConfirmLoading[tool.id] ?? false;
   const children: HTMLElement[] = [
     el('div', { className: 'devtool-panel-title' }, ['안내']),
     el('div', {}, [tool.manualHint ?? '이 도구는 앱이 대신 실행할 수 없습니다. 터미널에서 직접 실행해주세요.']),
     el('div', { className: 'devtool-panel-actions' }, [
-      el('button', { className: 'btn', onClick: () => void handleLaunchTerminal(tool) }, ['터미널에서 열기']),
+      el(
+        'button',
+        { className: 'btn', onClick: () => void handleRequestManualConfirm(tool), disabled: confirmLoading },
+        [confirmLoading ? '확인 준비 중…' : '터미널에서 실행']
+      ),
       ...(tool.manualHint
         ? [el('button', { className: 'btn', onClick: () => void copyToClipboard(tool.manualHint ?? '', '안내 문구') }, ['복사'])]
         : []),
