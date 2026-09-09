@@ -2101,7 +2101,8 @@ mod tests {
     // 실제 개인키는 당연히 우리에게 없다). 이 키로 직접 서명한 토큰을 우리
     // verify_google_id_token_signature()에 통과시켜 서명·iss·aud·exp 검증이 실제로
     // 동작하는지 확인한다.
-    const TEST_RSA_PRIVATE_KEY_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----
+    const TEST_RSA_PRIVATE_KEY_PEM: &str = // pragma: allowlist-secret (테스트 전용 합성 키, 실서비스와 무관)
+        "-----BEGIN RSA PRIVATE KEY-----
 MIIEogIBAAKCAQEAnrvlIKSb3xV5R+JTXVvNsj5cPZWRh9NsV3qfFTeT4IewGBH8
 MNDFlG21tb8PShKamFVgReoSp25X2+WlalGeePP7F8dV9Q7UGKQKpubKIbErYjiO
 lSlB+g5nle5sIlHVZkg6aAkAC1g5hrCgYLun2MpCdaQx2qc846I1RooBFrsMiubj

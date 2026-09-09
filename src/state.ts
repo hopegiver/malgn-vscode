@@ -128,7 +128,7 @@ export interface AppState {
 }
 
 export const state: AppState = {
-  authenticated: true, // TEMP: run-skill 검증용, 확인 후 되돌릴 것
+  authenticated: false,
   auth: { loading: false, error: null, userEmail: null, userName: null },
   // loading을 처음부터 true로 두면 main.ts의 `!state.dashboard.loading` 트리거
   // 가드와 충돌해 loadProjects()가 영원히 호출되지 않는 교착 상태가 된다(실제
