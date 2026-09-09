@@ -1719,7 +1719,15 @@ fn code_challenge_from_verifier(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
-fn build_google_auth_url(redirect_uri: &str, code_challenge: &str, state: &str) -> String {
+/// `prompt`가 `Some("none")`이면 구글이 화면을 아예 띄우지 않고 조용히 통과시키거나
+/// (이미 로그인·승인된 상태) `login_required`류 에러로 즉시 리다이렉트한다(그 경우
+/// 호출자가 `prompt: None`으로 다시 시도해 일반 대화형 플로우로 폴백한다).
+fn build_google_auth_url(
+    redirect_uri: &str,
+    code_challenge: &str,
+    state: &str,
+    prompt: Option<&str>,
+) -> String {
     let mut url =
         url::Url::parse(GOOGLE_AUTH_ENDPOINT).expect("고정 URL 파싱은 항상 성공해야 한다");
     url.query_pairs_mut()
@@ -1732,11 +1740,9 @@ fn build_google_auth_url(redirect_uri: &str, code_challenge: &str, state: &str) 
         .append_pair("state", state)
         // 힌트일 뿐이다 — 실제 강제는 id_token의 hd 클레임을 검증하는 쪽에서 한다.
         .append_pair("hd", GOOGLE_OAUTH_ALLOWED_DOMAIN);
-    // prompt를 일부러 안 붙인다 — select_account를 강제하면 이미 로그인·승인된
-    // 상태에서도 매번 계정 선택+확인 클릭이 필요해진다. 안 붙이면 브라우저에
-    // 로그인된 구글 계정이 있고 전에 이 앱을 승인한 적 있으면 조용히 바로
-    // 로그인된다(구글 계정을 여러 개 쓰는 사람은 매번 마지막 활성 계정으로
-    // 자동 선택되는 게 트레이드오프 — 사용자가 이 방식을 택함).
+    if let Some(p) = prompt {
+        url.query_pairs_mut().append_pair("prompt", p);
+    }
     url.to_string()
 }
 
@@ -1951,17 +1957,18 @@ struct GoogleLoginResult {
     hd: String,
 }
 
-#[tauri::command]
-async fn google_oauth_login(app: tauri::AppHandle) -> Result<GoogleLoginResult, String> {
-    if GOOGLE_OAUTH_CLIENT_ID.starts_with("TODO") {
-        return Err(
-            "Google OAuth Client ID가 아직 설정되지 않았습니다. src-tauri/src/lib.rs의 GOOGLE_OAUTH_CLIENT_ID를 Google Cloud Console에서 발급받은 값으로 채워주세요.".to_string(),
-        );
-    }
-    let client_secret = GOOGLE_OAUTH_CLIENT_SECRET.ok_or_else(|| {
-        "Google OAuth Client Secret이 설정되지 않았습니다. src-tauri/.env에 GOOGLE_OAUTH_CLIENT_SECRET을 설정한 뒤 다시 빌드해주세요(build.rs가 빌드 시점에 주입합니다).".to_string()
-    })?;
+struct OauthAttemptResult {
+    code: String,
+    code_verifier: String,
+    redirect_uri: String,
+}
 
+/// 인가 시도 한 번 — 매번 새 code_verifier/state와 새 루프백 포트를 쓴다(이전 시도의
+/// 서버는 콜백 하나 받으면 바로 닫히므로 재사용할 수 없다).
+async fn attempt_google_oauth_authorization(
+    app: &tauri::AppHandle,
+    prompt: Option<&str>,
+) -> Result<OauthAttemptResult, String> {
     let code_verifier = generate_random_urlsafe(64);
     let code_challenge = code_challenge_from_verifier(&code_verifier);
     let state = generate_random_urlsafe(32);
@@ -1977,7 +1984,7 @@ async fn google_oauth_login(app: tauri::AppHandle) -> Result<GoogleLoginResult, 
         .ok_or_else(|| "루프백 포트를 확인하지 못했습니다.".to_string())?;
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
-    let auth_url = build_google_auth_url(&redirect_uri, &code_challenge, &state);
+    let auth_url = build_google_auth_url(&redirect_uri, &code_challenge, &state, prompt);
 
     {
         use tauri_plugin_opener::OpenerExt;
@@ -1987,11 +1994,59 @@ async fn google_oauth_login(app: tauri::AppHandle) -> Result<GoogleLoginResult, 
     }
 
     let code = wait_for_oauth_callback(server, state).await?;
+    Ok(OauthAttemptResult {
+        code,
+        code_verifier,
+        redirect_uri,
+    })
+}
+
+/// `prompt=none` 시도가 구글의 "화면 없이는 통과 못 시킨다" 신호로 실패했는지
+/// 판별한다(OAuth 2.0 표준 에러 코드). 이때만 대화형 플로우로 폴백한다 — 사용자가
+/// 직접 취소한 경우(`access_denied`)나 다른 오류는 그대로 실패 처리한다.
+fn oauth_error_requires_interactive_fallback(err_message: &str) -> bool {
+    [
+        "login_required",
+        "interaction_required",
+        "consent_required",
+        "account_selection_required",
+    ]
+    .iter()
+    .any(|code| err_message.contains(code))
+}
+
+#[tauri::command]
+async fn google_oauth_login(app: tauri::AppHandle) -> Result<GoogleLoginResult, String> {
+    if GOOGLE_OAUTH_CLIENT_ID.starts_with("TODO") {
+        return Err(
+            "Google OAuth Client ID가 아직 설정되지 않았습니다. src-tauri/src/lib.rs의 GOOGLE_OAUTH_CLIENT_ID를 Google Cloud Console에서 발급받은 값으로 채워주세요.".to_string(),
+        );
+    }
+    let client_secret = GOOGLE_OAUTH_CLIENT_SECRET.ok_or_else(|| {
+        "Google OAuth Client Secret이 설정되지 않았습니다. src-tauri/.env에 GOOGLE_OAUTH_CLIENT_SECRET을 설정한 뒤 다시 빌드해주세요(build.rs가 빌드 시점에 주입합니다).".to_string()
+    })?;
+
+    // 1차: prompt=none으로 조용히 시도한다 — 이미 로그인·승인된 상태면 화면 자체가
+    // 안 뜨고 바로 통과한다. 구글이 화면 상호작용 없이는 못 넘어간다고 판단하면
+    // (첫 로그인, 세션 만료 등) login_required류 에러로 즉시 리다이렉트하는데,
+    // 그때만 화면이 뜨는 일반 플로우로 재시도한다(브라우저가 새로 한 번 더 뜬다).
+    let attempt = match attempt_google_oauth_authorization(&app, Some("none")).await {
+        Ok(a) => a,
+        Err(e) if oauth_error_requires_interactive_fallback(&e) => {
+            attempt_google_oauth_authorization(&app, None).await?
+        }
+        Err(e) => return Err(e),
+    };
 
     let client = reqwest::Client::new();
-    let id_token =
-        exchange_code_for_id_token(&client, &code, &code_verifier, &redirect_uri, client_secret)
-            .await?;
+    let id_token = exchange_code_for_id_token(
+        &client,
+        &attempt.code,
+        &attempt.code_verifier,
+        &attempt.redirect_uri,
+        client_secret,
+    )
+    .await?;
     let jwks = fetch_google_jwks(&client).await?;
     let claims = verify_google_id_token_signature(&id_token, &jwks, GOOGLE_OAUTH_CLIENT_ID)?;
     check_domain_restriction(&claims, GOOGLE_OAUTH_ALLOWED_DOMAIN)?;
@@ -2519,6 +2574,7 @@ mod tests {
             "http://127.0.0.1:54321/callback",
             "challenge123",
             "state123",
+            None,
         );
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
         assert!(
@@ -2529,6 +2585,21 @@ mod tests {
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("code_challenge=challenge123"));
         assert!(url.contains("state=state123"));
+        assert!(
+            !url.contains("prompt="),
+            "prompt는 기본적으로 안 붙어야 합니다: {url}"
+        );
+    }
+
+    #[test]
+    fn builds_google_auth_url_with_silent_prompt_when_requested() {
+        let url = build_google_auth_url(
+            "http://127.0.0.1:54321/callback",
+            "challenge123",
+            "state123",
+            Some("none"),
+        );
+        assert!(url.contains("prompt=none"));
     }
 
     #[test]
@@ -2536,6 +2607,33 @@ mod tests {
         let code = parse_oauth_callback_url("/callback?code=abc123&state=xyz", "xyz")
             .expect("정상 콜백은 성공해야 합니다");
         assert_eq!(code, "abc123");
+    }
+
+    #[test]
+    fn silent_auth_errors_trigger_interactive_fallback() {
+        for code in [
+            "login_required",
+            "interaction_required",
+            "consent_required",
+            "account_selection_required",
+        ] {
+            let err = parse_oauth_callback_url(&format!("/callback?error={code}&state=xyz"), "xyz")
+                .unwrap_err();
+            assert!(
+                oauth_error_requires_interactive_fallback(&err),
+                "{code}는 대화형 폴백을 트리거해야 합니다: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn user_cancelled_login_does_not_trigger_interactive_fallback() {
+        let err =
+            parse_oauth_callback_url("/callback?error=access_denied&state=xyz", "xyz").unwrap_err();
+        assert!(
+            !oauth_error_requires_interactive_fallback(&err),
+            "사용자가 명시적으로 취소한 경우까지 재시도하면 안 됩니다: {err}"
+        );
     }
 
     #[test]
