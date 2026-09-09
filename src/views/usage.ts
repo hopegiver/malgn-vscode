@@ -1,12 +1,11 @@
 // 사용량 통계 — "일별 사용량"은 실제 ~/.claude/projects/**/*.jsonl 집계(최근
 // 30일)이고, 날짜 막대를 클릭하면 그 날짜 하루만 세션/에이전트/툴 단위로
-// 재집계한 상세를 그 자리에 펼친다(dailyDetailApi.ts 참고). 실시간 감시는 하지
-// 않는다 — "사용량 통계" 메뉴를 클릭할 때마다 새로 불러온다(sidebar.ts).
-// 5시간/주간 사용량 패널은 로컬 데이터 소스가 없어 여전히 mockData.ts 샘플이다.
+// 재집계한 상세를 그 자리에 펼친다(dailyDetailApi.ts 참고). 카드 통계(최근 30일
+// 총 토큰/활동일수/일평균 토큰/캐시 히트율)도 이 데이터만으로 계산한 실제 값이다
+// — 비교할 이전 기간 데이터가 없어 전월 대비 등 증감 배지는 두지 않는다. 실시간
+// 감시는 하지 않는다 — "사용량 통계" 메뉴를 클릭할 때마다 새로 불러온다(sidebar.ts).
 import { el } from '../dom';
 import { state, notifyChange } from '../state';
-import { MOCK_USAGE } from '../mockData';
-import type { UsageSummaryStat, UsageWindow } from '../mockData';
 import { fetchDailyUsage } from '../usageApi';
 import type { DailyUsage } from '../usageApi';
 import { fetchDailyDetail } from '../dailyDetailApi';
@@ -18,35 +17,52 @@ function barFillEl(pct: number): HTMLElement {
   return fill;
 }
 
-// 5시간 주기 / 주간 사용량 패널 — 홈 대시보드 축약 위젯과 사용량 통계 전체 화면이
-// 같은 컴포넌트를 재사용한다.
-export function renderUsageWindowCard(w: UsageWindow, title: string, compact = false): HTMLElement {
-  return el('div', { className: `usage-window-card${compact ? ' compact' : ''}` }, [
-    el('div', { className: 'usage-window-head' }, [
-      el('span', { className: 'usage-window-title' }, [title]),
-      el('span', { className: 'usage-window-percent' }, [`${w.usedPercent}%`]),
-    ]),
-    el('div', { className: 'bar-track' }, [barFillEl(w.usedPercent)]),
-    el('div', { className: 'usage-window-foot' }, [el('span', {}, [w.usedLabel]), el('span', {}, [w.resetLabel])]),
-  ]);
+interface UsageStat {
+  readonly label: string;
+  readonly value: string;
 }
 
-function statCardEl(s: UsageSummaryStat): HTMLElement {
+function statCardEl(s: UsageStat): HTMLElement {
   return el('div', { className: 'stat-card' }, [
     el('div', { className: 'stat-card-label' }, [s.label]),
     el('div', { className: 'stat-card-value' }, [s.value]),
-    ...(s.delta ? [el('div', { className: `stat-card-delta ${s.deltaPositive ? 'up' : 'down'}` }, [s.delta])] : []),
   ]);
 }
 
-function formatUsd(v: number): string {
+export function formatUsd(v: number): string {
   return `$${v.toFixed(2)}`;
 }
 
-function formatTokenCount(v: number): string {
+export function formatTokenCount(v: number): string {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
   return String(v);
+}
+
+// 최근 30일 items만으로 정직하게 계산 가능한 지표만 다룬다 — API 호출 수·활성
+// 프로젝트 수처럼 이 데이터로 계산 불가능한 지표는 만들어내지 않는다.
+export interface UsageTotals {
+  readonly totalTokens: number;
+  readonly activeDays: number;
+  readonly avgPerDay: number;
+  readonly cacheHitRate: number | null; // 캐시 생성/읽기 토큰이 전혀 없으면 null
+}
+
+export function computeUsageTotals(items: readonly DailyUsage[]): UsageTotals {
+  if (items.length === 0) return { totalTokens: 0, activeDays: 0, avgPerDay: 0, cacheHitRate: null };
+  let totalTokens = 0;
+  let cacheRead = 0;
+  let cacheCreate = 0;
+  for (const d of items) {
+    totalTokens += dailyUsageTotal(d);
+    cacheRead += d.cacheReadTokens;
+    cacheCreate += d.cacheCreationTokens;
+  }
+  const activeDays = items.length;
+  const avgPerDay = Math.round(totalTokens / activeDays);
+  const cacheDenom = cacheRead + cacheCreate;
+  const cacheHitRate = cacheDenom > 0 ? Math.round((cacheRead / cacheDenom) * 100) : null;
+  return { totalTokens, activeDays, avgPerDay, cacheHitRate };
 }
 
 // ---------------- 일별 사용량 (실제 데이터) ----------------
@@ -206,13 +222,25 @@ function renderDailyUsageSection(): HTMLElement {
   return el('div', { className: 'overview-card' }, [labelRow, body]);
 }
 
+function renderUsageStatCards(): HTMLElement {
+  if (state.dailyUsage.loading && !state.dailyUsage.loaded) {
+    return el('div', { className: 'state-block-desc' }, ['불러오는 중…']);
+  }
+  if (state.dailyUsage.error || state.dailyUsage.items.length === 0) {
+    return el('div', {}, []);
+  }
+  const t = computeUsageTotals(state.dailyUsage.items);
+  const stats: UsageStat[] = [
+    { label: '최근 30일 총 토큰', value: formatTokenCount(t.totalTokens) },
+    { label: '최근 30일 활동일수', value: `${t.activeDays}일` },
+    { label: '일평균 토큰', value: formatTokenCount(t.avgPerDay) },
+    { label: '캐시 히트율', value: t.cacheHitRate !== null ? `${t.cacheHitRate}%` : '—' },
+  ];
+  return el('div', { className: 'stat-grid' }, stats.map(statCardEl));
+}
+
 function renderDailyTab(): HTMLElement {
-  const windowsGrid = el('div', { className: 'usage-window-grid' }, [
-    renderUsageWindowCard(MOCK_USAGE.windows.fiveHour, '5시간 주기 사용량'),
-    renderUsageWindowCard(MOCK_USAGE.windows.weekly, '주간 사용량'),
-  ]);
-  const statCards = el('div', { className: 'stat-grid' }, MOCK_USAGE.summary.map(statCardEl));
-  return el('div', {}, [windowsGrid, statCards, renderDailyUsageSection()]);
+  return el('div', {}, [renderUsageStatCards(), renderDailyUsageSection()]);
 }
 
 // ---------------- 화면 진입점 ----------------
@@ -222,7 +250,7 @@ export function renderUsageView(): HTMLElement {
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['사용량 통계']),
       el('div', { className: 'page-subtitle' }, [
-        '일별 사용량은 실제 로컬 데이터입니다. 날짜를 클릭하면 그날의 세션·에이전트·툴 상세를 볼 수 있습니다 (5시간/주간 패널은 샘플)',
+        '일별 사용량과 카드 통계는 모두 실제 로컬 데이터입니다. 날짜를 클릭하면 그날의 세션·에이전트·툴 상세를 볼 수 있습니다',
       ]),
     ]),
   ]);

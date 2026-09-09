@@ -108,9 +108,9 @@ function renderApp(): void {
 // 자체 안에서 하면 로딩 콜백이 재귀적으로 renderApp()을 다시 부르는 동안 바깥
 // renderApp()이 아직 실행 중인 상태와 겹쳐서 DOM이 꼬일 수 있다).
 //
-// 프로젝트·세션·개발환경·카탈로그·마켓플레이스는 로그인 직후 한 번씩 미리
-// 불러온다 — 홈 대시보드 위젯과 사이드바 펼침 목록이 실제 값을 바로 보여줘야
-// 하기 때문이다(로딩/실패 상태는 각 화면이 loaded/loading 플래그로 알아서 처리).
+// 프로젝트·세션·개발환경·카탈로그·마켓플레이스·사용량 통계는 로그인 직후 한
+// 번씩 미리 불러온다 — 홈 대시보드 위젯과 사이드바 펼침 목록이 실제 값을 바로
+// 보여줘야 하기 때문이다(로딩/실패 상태는 각 화면이 loaded/loading 플래그로 알아서 처리).
 function handleNavigation(): void {
   renderApp();
   if (!state.authenticated) return;
@@ -120,6 +120,7 @@ function handleNavigation(): void {
   if (!state.devTools.loaded && !state.devTools.loading) void loadDevTools();
   if (!state.catalog.loaded && !state.catalog.loading) void loadCatalog();
   if (!state.marketplaces.loaded && !state.marketplaces.loading) void loadMarketplaces();
+  if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
 
   const route = parseRoute();
   if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {

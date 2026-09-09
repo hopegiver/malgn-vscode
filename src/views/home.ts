@@ -1,12 +1,12 @@
 // 홈 대시보드 — 로그인 직후 첫 화면. 다른 화면들의 핵심 정보를 카드/위젯으로 모아
 // 보여준다. 위젯 클릭 시 해당 상세 화면으로 이동한다. 프로젝트·세션·개발환경·
-// 카탈로그 위젯은 실제 로컬 데이터를 쓴다(main.ts가 로그인 직후 한 번씩 미리
-// 불러온다). 사용량 통계·자율업무 진행상황은 순수 목업 샘플 그대로 유지한다.
+// 카탈로그·사용량 통계 위젯은 실제 로컬 데이터를 쓴다(main.ts가 로그인 직후 한
+// 번씩 미리 불러온다). 자율업무 진행상황만 순수 목업 샘플 그대로 유지한다.
 import { el } from '../dom';
 import { state } from '../state';
-import { MOCK_USAGE, MOCK_TASK_RUNS } from '../mockData';
+import { MOCK_TASK_RUNS } from '../mockData';
 import { navigate } from '../route';
-import { renderUsageWindowCard } from './usage';
+import { computeUsageTotals, formatTokenCount } from './usage';
 
 export function renderHomeView(): HTMLElement {
   const header = el('div', { className: 'page-header' }, [
@@ -34,14 +34,6 @@ function widgetShell(title: string, onClick: () => void, children: readonly (Nod
 
 // ---------------- 목업 그대로 유지 (로컬 데이터 없음) ----------------
 
-function usageWidget(): HTMLElement {
-  return widgetShell('사용량 통계', () => navigate('#/usage'), [
-    renderUsageWindowCard(MOCK_USAGE.windows.fiveHour, '5시간 주기', true),
-    renderUsageWindowCard(MOCK_USAGE.windows.weekly, '주간', true),
-    el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
-  ]);
-}
-
 function taskBoardWidget(): HTMLElement {
   const running = MOCK_TASK_RUNS.filter((r) => r.status === '진행중').length;
   const todayFail = MOCK_TASK_RUNS.filter((r) => r.status === '실패' && r.startedAt.startsWith('오늘')).length;
@@ -55,6 +47,29 @@ function taskBoardWidget(): HTMLElement {
 }
 
 // ---------------- 실제 로컬 데이터 ----------------
+
+function usageWidget(): HTMLElement {
+  const usage = state.dailyUsage;
+  if (!usage.loaded && !usage.error) {
+    return widgetShell('사용량 통계', () => navigate('#/usage'), [
+      el('div', { className: 'home-widget-desc' }, ['불러오는 중…']),
+      el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
+    ]);
+  }
+  if (usage.error || usage.items.length === 0) {
+    return widgetShell('사용량 통계', () => navigate('#/usage'), [
+      el('div', { className: 'home-widget-desc' }, ['최근 30일 이내 사용 기록이 없습니다.']),
+      el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
+    ]);
+  }
+  const t = computeUsageTotals(usage.items);
+  return widgetShell('사용량 통계', () => navigate('#/usage'), [
+    el('div', { className: 'home-widget-big-number' }, [formatTokenCount(t.totalTokens)]),
+    el('div', { className: 'home-widget-desc' }, ['최근 30일 총 토큰 (실제 로컬 데이터)']),
+    el('div', { className: 'home-widget-breakdown' }, [el('span', {}, [`활동일수 ${t.activeDays}일`])]),
+    el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
+  ]);
+}
 
 function catalogWidget(): HTMLElement {
   const plugins = state.catalog.plugins;

@@ -59,9 +59,9 @@ export interface AppState {
     live: boolean;
   };
   // 사용량 통계의 "일별 사용량" — 실제 ~/.claude/projects/**/*.jsonl 집계(최근
-  // 30일). 실시간 감시는 안 하고 메뉴 클릭 시점마다 새로 불러온다(main.ts/
-  // sidebar.ts). 5시간/주간 패널은 로컬 데이터 소스가 없어 여전히 mockData.ts
-  // 샘플이다.
+  // 30일). 로그인 직후 한 번 미리 불러오고(main.ts), 이후 "사용량 통계" 메뉴
+  // 진입 시점마다 다시 불러온다(sidebar.ts). 실시간 파일 감시는 하지 않는다.
+  // 카드 통계·홈 위젯도 이 items만으로 계산한다.
   dailyUsage: {
     items: DailyUsage[];
     loading: boolean;

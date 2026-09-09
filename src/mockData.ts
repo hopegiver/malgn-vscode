@@ -1,54 +1,20 @@
 // 하드코딩된 샘플 데이터. "프로젝트"(workspaceApi.ts), "세션목록"(sessionsApi.ts),
 // "카탈로그"(catalogApi.ts), "개발 환경"(devToolsApi.ts), OTel/GitHub/Cloudflare/
-// Jira 설정(otelApi.ts/integrationsApi.ts)은 실제 로컬 데이터를 쓰므로 이 파일에
-// 없다 — 나머지 화면(자율업무·사용량 통계 등)만 여기 값으로 채워진다.
+// Jira 설정(otelApi.ts/integrationsApi.ts), "사용량 통계"(usageApi.ts)는 실제
+// 로컬 데이터를 쓰므로 이 파일에 없다 — 자율업무는 순수 목업이고, 아래
+// MOCK_USAGE.byProject는 프로젝트별 토큰 집계 UI가 아직 없어 어디서도 렌더링하지
+// 않는 죽은 데이터다(건드리지 않고 그대로 유지).
 
-// ---------------- 사용량 통계 ----------------
-
-export interface UsageSummaryStat {
-  readonly label: string;
-  readonly value: string;
-  readonly delta: string | null;
-  readonly deltaPositive: boolean;
-}
+// ---------------- 사용량 통계 (byProject만 남은 죽은 데이터) ----------------
 
 export interface UsageByProject {
   readonly project: string;
   readonly tokens: number;
 }
 
-export interface UsageWindow {
-  readonly usedPercent: number;
-  readonly usedLabel: string;
-  readonly limitLabel: string;
-  readonly resetLabel: string;
-}
-
 export const MOCK_USAGE: {
-  readonly windows: { readonly fiveHour: UsageWindow; readonly weekly: UsageWindow };
-  readonly summary: readonly UsageSummaryStat[];
   readonly byProject: readonly UsageByProject[];
 } = {
-  windows: {
-    fiveHour: {
-      usedPercent: 62,
-      usedLabel: '3.1M / 5.0M 토큰',
-      limitLabel: '5시간 롤링 한도',
-      resetLabel: '리셋까지 1시간 40분 남음',
-    },
-    weekly: {
-      usedPercent: 45,
-      usedLabel: '14.2M / 32M 토큰',
-      limitLabel: '주간 한도',
-      resetLabel: '3일 후 리셋 (일요일 00:00)',
-    },
-  },
-  summary: [
-    { label: '이번 달 총 토큰', value: '12.4M', delta: '+8% 전월 대비', deltaPositive: true },
-    { label: '이번 달 API 호출', value: '8,214회', delta: '+3% 전월 대비', deltaPositive: true },
-    { label: '활성 프로젝트', value: '8개', delta: null, deltaPositive: true },
-    { label: '평균 캐시 히트율', value: '71%', delta: '-2%p 전월 대비', deltaPositive: false },
-  ],
   byProject: [
     { project: 'malgn-agent', tokens: 3820000 },
     { project: 'malgnai-hub', tokens: 2650000 },
