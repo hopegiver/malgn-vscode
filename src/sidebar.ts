@@ -5,6 +5,7 @@ import { navigate } from './route';
 import type { Route } from './route';
 import { sortedSessions, sessionTitle, asString } from './views/sessions';
 import { loadDailyUsage } from './views/usage';
+import { brandMark } from './brand';
 
 const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
@@ -16,27 +17,11 @@ const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: strin
 
 const SIDEBAR_SUBLIST_LIMIT = 6;
 
-// 사용 빈도순 배치. "설정"은 관례상 항상 맨 아래, 구분선으로 나머지와 분리한다.
+// 사용 빈도순 배치. "설정"은 "개발 환경" 바로 아래(로그아웃만 하단에 고정).
 // "프로젝트"·"세션목록"은 펼치면 실제 로컬 데이터(이미 main.ts가 로그인 직후
 // 미리 불러온 state.dashboard.projects/state.sessions.items)를 서브 목록으로
 // 바로 보여준다 — 화면 전환은 항목 본문 클릭, 펼침/접힘은 화살표 클릭으로 분리한다.
 export function renderSidebar(route: Route): HTMLElement {
-  const mainItems: HTMLElement[] = [
-    navItem('대시보드', route.kind === 'home', () => navigate('#/')),
-    renderProjectsGroup(route),
-    renderSessionsGroup(route),
-    navItem('자율업무', route.kind === 'tasks-list' || route.kind === 'tasks-board' || route.kind === 'tasks-detail', () => navigate('#/tasks')),
-    navItem('사용량 통계', route.kind === 'usage', () => {
-      navigate('#/usage');
-      // 실시간 감시를 없앤 대신 이 메뉴를 누르는 시점마다 새로 불러온다. 이미
-      // #/usage에 있으면 해시가 안 바뀌어 라우팅만으로는 재로딩이 안 트리거되니
-      // 여기서 직접 부른다(겹쳐 쌓이지 않게 loading 가드).
-      if (!state.dailyUsage.loading) void loadDailyUsage();
-    }),
-    navItem('카탈로그', route.kind === 'catalog', () => navigate('#/catalog')),
-    navItem('개발 환경', route.kind === 'dev-tools', () => navigate('#/dev-tools')),
-  ];
-
   const settingsGroup = navGroup({
     label: '설정',
     active: route.kind === 'settings',
@@ -51,6 +36,23 @@ export function renderSidebar(route: Route): HTMLElement {
       onClick: () => navigate(`#/settings/${t.key}`),
     })),
   });
+
+  const mainItems: HTMLElement[] = [
+    navItem('대시보드', route.kind === 'home', () => navigate('#/')),
+    renderProjectsGroup(route),
+    renderSessionsGroup(route),
+    navItem('자율업무', route.kind === 'tasks-list' || route.kind === 'tasks-board' || route.kind === 'tasks-detail', () => navigate('#/tasks')),
+    navItem('사용량 통계', route.kind === 'usage', () => {
+      navigate('#/usage');
+      // 실시간 감시를 없앤 대신 이 메뉴를 누르는 시점마다 새로 불러온다. 이미
+      // #/usage에 있으면 해시가 안 바뀌어 라우팅만으로는 재로딩이 안 트리거되니
+      // 여기서 직접 부른다(겹쳐 쌓이지 않게 loading 가드).
+      if (!state.dailyUsage.loading) void loadDailyUsage();
+    }),
+    navItem('카탈로그', route.kind === 'catalog', () => navigate('#/catalog')),
+    navItem('개발 환경', route.kind === 'dev-tools', () => navigate('#/dev-tools')),
+    settingsGroup,
+  ];
 
   const logoutItem = el(
     'div',
@@ -69,11 +71,10 @@ export function renderSidebar(route: Route): HTMLElement {
   );
 
   return el('aside', { className: 'sidebar' }, [
-    el('div', { className: 'sidebar-brand' }, [el('span', { className: 'sidebar-brand-mark' }, ['M']), '맑은에이전트']),
+    el('div', { className: 'sidebar-brand' }, [brandMark(), '맑은에이전트']),
     el('nav', { className: 'sidebar-nav' }, mainItems),
     el('div', { className: 'sidebar-footer' }, [
       ...(state.auth.userEmail ? [el('div', { className: 'sidebar-user-email' }, [state.auth.userEmail])] : []),
-      settingsGroup,
       logoutItem,
     ]),
   ]);

@@ -4,7 +4,9 @@
 // 다음은 실제 로컬 데이터를 Rust 커맨드로 읽어온다(전부 읽기 전용):
 //   - "프로젝트"(views/projects.ts): ~/workspace 스캔 + 폴더 구조/파일 미리보기 — workspaceApi.ts
 //   - "세션목록"(views/sessions.ts): ~/.claude/sessions/*.json + 대화 로그 첫 줄 제목 — sessionsApi.ts
-//   - "개발 환경"(views/devTools.ts): claude/node/gh/git/pnpm/wrangler/docker --version — devToolsApi.ts
+//   - "개발 환경"(views/devTools.ts): claude/node/gh/git/pnpm/wrangler --version + 설치방식
+//     판별 — devToolsApi.ts. actionKind가 "run"인 도구는 dry-run 미리보기 확인 후 실제
+//     설치/업데이트 명령도 실행한다(사용자 명시 승인).
 //   - "카탈로그"(views/catalog.ts): installed_plugins.json(user scope) + 실물 agents/skills/knowledge — catalogApi.ts
 //   - "마켓플레이스 설정": known_marketplaces.json — catalogApi.ts
 //   - "OTel 설정": ~/.claude/settings.json의 env.OTEL_* — otelApi.ts
@@ -56,9 +58,6 @@ function renderApp(): void {
   }
 
   const route = parseRoute();
-  const banner = el('div', { className: 'mock-banner' }, [
-    'UI/UX 검증용 목업 — 로그인(Google OAuth)·프로젝트·세션목록·개발 환경·카탈로그·마켓플레이스·OTel/GitHub/Cloudflare/Jira 설정·사용량 통계(일별 사용량/날짜별 상세)만 실제이고 나머지는 하드코딩된 샘플입니다',
-  ]);
 
   let content: HTMLElement;
   switch (route.kind) {
@@ -100,7 +99,7 @@ function renderApp(): void {
       break;
   }
 
-  const main = el('main', { className: 'content' }, [banner, content]);
+  const main = el('main', { className: 'content' }, [content]);
   root.appendChild(renderSidebar(route));
   root.appendChild(main);
 }

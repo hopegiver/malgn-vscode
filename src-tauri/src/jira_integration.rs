@@ -76,7 +76,10 @@ pub struct JiraConnectionStatus {
 }
 
 fn meta_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| format!("설정 디렉터리를 확인하지 못했습니다: {e}"))?;
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("설정 디렉터리를 확인하지 못했습니다: {e}"))?;
     Ok(dir.join("integrations").join("jira.json"))
 }
 
@@ -89,9 +92,11 @@ fn read_meta(app: &tauri::AppHandle) -> Option<JiraMeta> {
 fn write_meta(app: &tauri::AppHandle, meta: &JiraMeta) -> Result<(), String> {
     let path = meta_file_path(app)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("설정 디렉터리를 만들지 못했습니다: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("설정 디렉터리를 만들지 못했습니다: {e}"))?;
     }
-    let content = serde_json::to_string_pretty(meta).map_err(|e| format!("메타 정보를 직렬화하지 못했습니다: {e}"))?;
+    let content = serde_json::to_string_pretty(meta)
+        .map_err(|e| format!("메타 정보를 직렬화하지 못했습니다: {e}"))?;
     std::fs::write(&path, content).map_err(|e| format!("메타 정보를 저장하지 못했습니다: {e}"))
 }
 
@@ -113,8 +118,11 @@ fn parse_host(site: &str) -> Result<String, String> {
     } else {
         format!("https://{trimmed}")
     };
-    let parsed = url::Url::parse(&with_scheme).map_err(|_| "Jira 사이트 URL 형식이 올바르지 않습니다.".to_string())?;
-    let host = parsed.host_str().ok_or_else(|| "Jira 사이트 URL에서 호스트를 찾을 수 없습니다.".to_string())?;
+    let parsed = url::Url::parse(&with_scheme)
+        .map_err(|_| "Jira 사이트 URL 형식이 올바르지 않습니다.".to_string())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "Jira 사이트 URL에서 호스트를 찾을 수 없습니다.".to_string())?;
     Ok(host.to_lowercase())
 }
 
@@ -163,16 +171,25 @@ pub fn jira_status(app: tauri::AppHandle) -> JiraConnectionStatus {
 
     match keyring::Entry::new(&service_name(&meta.host), &meta.email) {
         Ok(entry) => match entry.get_password() {
-            Ok(_) => JiraConnectionStatus { connected: true, meta: Some(meta) },
+            Ok(_) => JiraConnectionStatus {
+                connected: true,
+                meta: Some(meta),
+            },
             Err(keyring::Error::NoEntry) => {
                 let _ = remove_meta(&app);
                 JiraConnectionStatus::default()
             }
             // 키체인 접근 자체가 불안정한 경우(잠김 등)는 메타는 보존하되 연결
             // 안 됨으로 보수적으로 보고한다 — 섣불리 메타를 지우지 않는다.
-            Err(_) => JiraConnectionStatus { connected: false, meta: Some(meta) },
+            Err(_) => JiraConnectionStatus {
+                connected: false,
+                meta: Some(meta),
+            },
         },
-        Err(_) => JiraConnectionStatus { connected: false, meta: Some(meta) },
+        Err(_) => JiraConnectionStatus {
+            connected: false,
+            meta: Some(meta),
+        },
     }
 }
 
@@ -182,7 +199,12 @@ pub fn jira_status(app: tauri::AppHandle) -> JiraConnectionStatus {
 /// `jira_status`/`jira_disconnect`가 키체인 account와 다른 값으로 조회하게
 /// 되어 방금 저장한 자격증명을 못 찾는 결함(고아 메타 → "연결 안 됨"으로
 /// 되돌아감)이 재발한다.
-fn build_meta(site: &str, host: String, lookup_email: String, body: JiraMyselfResponse) -> JiraMeta {
+fn build_meta(
+    site: &str,
+    host: String,
+    lookup_email: String,
+    body: JiraMyselfResponse,
+) -> JiraMeta {
     JiraMeta {
         site: site.trim().trim_end_matches('/').to_string(),
         host,
@@ -197,7 +219,12 @@ fn build_meta(site: &str, host: String, lookup_email: String, body: JiraMyselfRe
 /// 1회 호출해 200일 때만 키체인에 쓴다. 토큰은 Authorization 헤더로만 싣고
 /// `set_sensitive(true)`로 표시한다 — 쿼리스트링·URL 임베딩은 쓰지 않는다.
 #[tauri::command]
-pub async fn jira_connect(app: tauri::AppHandle, site: String, email: String, token: String) -> Result<JiraConnectionStatus, String> {
+pub async fn jira_connect(
+    app: tauri::AppHandle,
+    site: String,
+    email: String,
+    token: String,
+) -> Result<JiraConnectionStatus, String> {
     let token = SecretToken::new(token);
     let host = parse_host(&site)?;
     let email_lower = email.trim().to_lowercase();
@@ -206,12 +233,17 @@ pub async fn jira_connect(app: tauri::AppHandle, site: String, email: String, to
     }
 
     use base64::Engine;
-    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{email_lower}:{}", token.expose_secret()));
+    let basic = base64::engine::general_purpose::STANDARD
+        .encode(format!("{email_lower}:{}", token.expose_secret()));
 
-    let mut auth_value = reqwest::header::HeaderValue::from_str(&format!("Basic {basic}")).map_err(|e| format!("인증 헤더를 구성하지 못했습니다: {e}"))?;
+    let mut auth_value = reqwest::header::HeaderValue::from_str(&format!("Basic {basic}"))
+        .map_err(|e| format!("인증 헤더를 구성하지 못했습니다: {e}"))?;
     auth_value.set_sensitive(true);
 
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|e| format!("HTTP 클라이언트를 구성하지 못했습니다: {e}"))?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP 클라이언트를 구성하지 못했습니다: {e}"))?;
 
     let url = build_myself_url(&site);
     let response = client
@@ -226,18 +258,27 @@ pub async fn jira_connect(app: tauri::AppHandle, site: String, email: String, to
         return Err(map_jira_status_error(response.status()));
     }
 
-    let body = response.json::<JiraMyselfResponse>().await.map_err(|e| format!("Jira 응답을 해석하지 못했습니다: {e}"))?;
+    let body = response
+        .json::<JiraMyselfResponse>()
+        .await
+        .map_err(|e| format!("Jira 응답을 해석하지 못했습니다: {e}"))?;
 
     // 키체인에는 토큰 원문만 넣는다 — base64(email:token)을 미리 조립해 넣지 않는다.
     // account는 email_lower(사용자 입력값)로 쓴다 — 메타의 조회 키(email)와
     // 반드시 같은 값이어야 하므로, 아래 build_meta에도 같은 email_lower를 넘긴다.
-    let entry = keyring::Entry::new(&service_name(&host), &email_lower).map_err(|e| format!("키체인 항목을 열지 못했습니다: {e}"))?;
-    entry.set_password(token.expose_secret()).map_err(|e| format!("키체인에 토큰을 저장하지 못했습니다: {e}"))?;
+    let entry = keyring::Entry::new(&service_name(&host), &email_lower)
+        .map_err(|e| format!("키체인 항목을 열지 못했습니다: {e}"))?;
+    entry
+        .set_password(token.expose_secret())
+        .map_err(|e| format!("키체인에 토큰을 저장하지 못했습니다: {e}"))?;
 
     let meta = build_meta(&site, host, email_lower, body);
     write_meta(&app, &meta)?;
 
-    Ok(JiraConnectionStatus { connected: true, meta: Some(meta) })
+    Ok(JiraConnectionStatus {
+        connected: true,
+        meta: Some(meta),
+    })
 }
 
 /// ③ 연결 해제. 키체인 삭제 → 메타 제거 순서로 한다(반대로 하면 조회 키인
@@ -266,8 +307,11 @@ pub fn jira_disconnect(app: tauri::AppHandle) -> Result<(), String> {
 /// 노출하지 않는다(토큰이 프론트엔드로 나갈 경로를 만들지 않기 위해서다).
 #[allow(dead_code)]
 pub(crate) fn read_jira_token(host: &str, email: &str) -> Result<SecretToken, String> {
-    let entry = keyring::Entry::new(&service_name(host), &email.to_lowercase()).map_err(|e| format!("키체인 항목을 열지 못했습니다: {e}"))?;
-    let secret = entry.get_password().map_err(|e| format!("키체인에서 토큰을 가져오지 못했습니다: {e}"))?;
+    let entry = keyring::Entry::new(&service_name(host), &email.to_lowercase())
+        .map_err(|e| format!("키체인 항목을 열지 못했습니다: {e}"))?;
+    let secret = entry
+        .get_password()
+        .map_err(|e| format!("키체인에서 토큰을 가져오지 못했습니다: {e}"))?;
     Ok(SecretToken::new(secret))
 }
 
@@ -283,8 +327,14 @@ mod tests {
 
     #[test]
     fn parse_host_lowercases_and_handles_missing_scheme() {
-        assert_eq!(parse_host("MalgnSoft.atlassian.net").unwrap(), "malgnsoft.atlassian.net");
-        assert_eq!(parse_host("https://MalgnSoft.atlassian.net/").unwrap(), "malgnsoft.atlassian.net");
+        assert_eq!(
+            parse_host("MalgnSoft.atlassian.net").unwrap(),
+            "malgnsoft.atlassian.net"
+        );
+        assert_eq!(
+            parse_host("https://MalgnSoft.atlassian.net/").unwrap(),
+            "malgnsoft.atlassian.net"
+        );
     }
 
     #[test]
@@ -294,8 +344,14 @@ mod tests {
 
     #[test]
     fn build_myself_url_appends_path_and_trims_trailing_slash() {
-        assert_eq!(build_myself_url("https://malgnsoft.atlassian.net/"), "https://malgnsoft.atlassian.net/rest/api/3/myself");
-        assert_eq!(build_myself_url("malgnsoft.atlassian.net"), "https://malgnsoft.atlassian.net/rest/api/3/myself");
+        assert_eq!(
+            build_myself_url("https://malgnsoft.atlassian.net/"),
+            "https://malgnsoft.atlassian.net/rest/api/3/myself"
+        );
+        assert_eq!(
+            build_myself_url("malgnsoft.atlassian.net"),
+            "https://malgnsoft.atlassian.net/rest/api/3/myself"
+        );
     }
 
     #[test]
@@ -308,7 +364,10 @@ mod tests {
 
     #[test]
     fn service_name_uses_documented_naming_contract() {
-        assert_eq!(service_name("MalgnSoft.atlassian.net"), "malgn-agent:jira:malgnsoft.atlassian.net");
+        assert_eq!(
+            service_name("MalgnSoft.atlassian.net"),
+            "malgn-agent:jira:malgnsoft.atlassian.net"
+        );
     }
 
     /// 결함 1 회귀 방지: 키체인 account로 쓴 값(lookup_email)과 메타에 저장돼
@@ -325,12 +384,20 @@ mod tests {
             email_address: Some("User@Example.com".to_string()),
         };
 
-        let meta = build_meta("https://example.atlassian.net", "example.atlassian.net".to_string(), lookup_email.clone(), body);
+        let meta = build_meta(
+            "https://example.atlassian.net",
+            "example.atlassian.net".to_string(),
+            lookup_email.clone(),
+            body,
+        );
 
         // 조회 키는 반드시 키체인 account로 쓴 값과 동일해야 한다.
         assert_eq!(meta.email, lookup_email);
         // 이 조회 키로 구성한 키체인 항목이 실제 쓰기에 쓰인 것과 같은 항목을 가리켜야 한다.
-        assert_eq!(service_name(&meta.host), service_name("example.atlassian.net"));
+        assert_eq!(
+            service_name(&meta.host),
+            service_name("example.atlassian.net")
+        );
         // Jira가 돌려준 표시용 이메일은 별도 필드에만 남고 조회 키를 오염시키지 않는다.
         assert_eq!(meta.display_email.as_deref(), Some("User@Example.com"));
     }
@@ -340,9 +407,18 @@ mod tests {
     #[test]
     fn meta_email_matches_lookup_key_when_jira_omits_email_address() {
         let lookup_email = "user@example.com".to_string();
-        let body = JiraMyselfResponse { account_id: None, display_name: None, email_address: None };
+        let body = JiraMyselfResponse {
+            account_id: None,
+            display_name: None,
+            email_address: None,
+        };
 
-        let meta = build_meta("https://example.atlassian.net", "example.atlassian.net".to_string(), lookup_email.clone(), body);
+        let meta = build_meta(
+            "https://example.atlassian.net",
+            "example.atlassian.net".to_string(),
+            lookup_email.clone(),
+            body,
+        );
 
         assert_eq!(meta.email, lookup_email);
         assert_eq!(meta.display_email, None);

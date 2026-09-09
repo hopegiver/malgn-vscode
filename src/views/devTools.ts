@@ -1,19 +1,24 @@
 // 개발 환경 — "설정"과는 성격이 다르다(설정은 외부 서비스 연동 자격증명, 이건 로컬
-// 도구 상태). 설치 여부·버전은 Rust가 실제로 `<tool> --version`을 실행해 조회한
-// 실데이터다(devToolsApi.ts). 설치/업데이트 버튼은 순수 목업 — 실제로 아무것도
-// 설치하지 않는다. 목업 업데이트가 "성공"했을 때 화면에 반영할 버전은
-// state.devTools.mockUpdatedVersion에만 기록한다(실제로 조회된 tool.version은
-// 건드리지 않는다 — "다시 확인"을 누르면 실제 값으로 돌아온다).
+// 도구 상태). 설치 여부·버전·설치방식은 Rust가 실제로 조회한 실데이터다
+// (devToolsApi.ts). actionKind가 도구별로 무엇을 할 수 있는지 정한다:
+//   - "run"    : 이 앱이 실제로 설치/업데이트 명령을 실행할 수 있다. 실행 전 항상
+//                preview_dev_tool_update로 무엇이 바뀔지 보여주고 사용자 확인을
+//                받은 뒤(plan_id 일치 확인), 그 계획으로만 실제 명령을 실행한다.
+//   - "manual" : 이 앱이 대신 실행하지 않는다(예: git은 macOS 시스템 도구). 실행
+//                버튼 대신 "안내 보기"만 제공해 안내문과 복사 가능한 명령을 보여준다.
+//   - "none"   : 설치 경로 자체를 찾지 못해 아무 것도 할 수 없다. 버튼은 비활성이다.
+// 실행 결과는 성공/실패 2상태가 아니라 updated/alreadyLatest/unknownAfter/failed/
+// timedOut/notSupported 3+ 상태로 구분해 보여준다 — exit code만으로 "성공"을
+// 주장하지 않는다(verified=false는 명령이 성공을 보고했지만 버전 재조회로 확인하지
+// 못했다는 뜻이며, 성공으로 표시하지 않는다).
 import { el, showToast } from '../dom';
 import { state, notifyChange } from '../state';
-import { fetchDevTools } from '../devToolsApi';
-import type { DevToolStatus } from '../devToolsApi';
-import { MOCK_DEV_TOOL_META } from '../mockData';
+import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
+import type { DevToolStatus, DevToolPreview, DevToolActionResult } from '../devToolsApi';
 
 export async function loadDevTools(): Promise<void> {
   state.devTools.loading = true;
   state.devTools.error = null;
-  state.devTools.mockUpdatedVersion = {};
   notifyChange();
   try {
     state.devTools.items = await fetchDevTools();
@@ -26,33 +31,187 @@ export async function loadDevTools(): Promise<void> {
   }
 }
 
-// 실제 설치됐지만(readonly) 목업 업데이트가 "적용된 척" 보여줄 항목 — 최신
-// 버전으로 이미 올라간 것으로 판정한다.
-function isUpdateAvailable(tool: DevToolStatus): boolean {
-  if (!tool.installed) return false;
-  if (state.devTools.mockUpdatedVersion[tool.id]) return false;
-  return MOCK_DEV_TOOL_META[tool.id]?.updateAvailable ?? false;
+// ---------------- 실행 경과 시간 타이머 ----------------
+// 상태(state.ts)에는 초 단위 값만 두고, 인터벌 핸들 자체는 모듈 스코프에 둔다
+// (직렬화할 필요도 없고, 재렌더마다 새로 만들 이유도 없다).
+const elapsedTimers: Record<string, ReturnType<typeof setInterval>> = {};
+
+function startElapsedTimer(id: string): void {
+  state.devTools.elapsedSec[id] = 0;
+  stopElapsedTimer(id);
+  elapsedTimers[id] = setInterval(() => {
+    state.devTools.elapsedSec[id] = (state.devTools.elapsedSec[id] ?? 0) + 1;
+    notifyChange();
+  }, 1000);
 }
 
-function displayVersion(tool: DevToolStatus): string | null {
-  return state.devTools.mockUpdatedVersion[tool.id] ?? tool.version;
+function stopElapsedTimer(id: string): void {
+  const timer = elapsedTimers[id];
+  if (timer) {
+    clearInterval(timer);
+    delete elapsedTimers[id];
+  }
 }
+
+// ---------------- 액션 처리 ----------------
+
+async function copyToClipboard(text: string, label: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(`${label}을(를) 복사했습니다`);
+  } catch {
+    showToast('복사에 실패했습니다 — 직접 선택해 복사해주세요');
+  }
+}
+
+function notifyOutcome(tool: DevToolStatus, result: DevToolActionResult): void {
+  switch (result.outcome) {
+    case 'updated':
+      showToast(`${tool.name}: v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 업데이트되었습니다`);
+      break;
+    case 'alreadyLatest':
+      showToast(`${tool.name}: 이미 최신입니다`);
+      break;
+    case 'unknownAfter':
+      showToast(`${tool.name}: 명령은 성공했다고 보고했으나 실제 버전을 확인하지 못했습니다`);
+      break;
+    case 'timedOut':
+      showToast(`${tool.name}: 상태 불명 — 다시 확인이 필요합니다`);
+      break;
+    case 'failed':
+      showToast(`${tool.name}: 실행 실패 — ${result.message}`);
+      break;
+    case 'notSupported':
+      showToast(`${tool.name}: 이 방식으로는 실행할 수 없습니다`);
+      break;
+  }
+}
+
+// dry-run 프리뷰를 가져온다. "run" actionKind 도구는 설치든 업데이트든 실제 명령
+// 실행 전에 반드시 이 단계를 거친다(부록 A). 미리보기 전용 커맨드가
+// preview_dev_tool_update 하나뿐이라 설치 흐름에도 그대로 재사용한다.
+async function handleRequestPreview(tool: DevToolStatus): Promise<void> {
+  state.devTools.previewLoading[tool.id] = true;
+  notifyChange();
+  try {
+    state.devTools.preview[tool.id] = await previewDevToolUpdate(tool.id);
+  } catch (err) {
+    showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.devTools.previewLoading[tool.id] = false;
+    notifyChange();
+  }
+}
+
+function cancelPreview(toolId: string): void {
+  state.devTools.preview[toolId] = null;
+  notifyChange();
+}
+
+async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<void> {
+  state.devTools.updating[tool.id] = true;
+  state.devTools.lastResult[tool.id] = null;
+  startElapsedTimer(tool.id);
+  notifyChange();
+  try {
+    const result = tool.installed ? await updateDevTool(tool.id, preview.planId) : await installDevTool(tool.id, preview.planId);
+    state.devTools.lastResult[tool.id] = result;
+    notifyOutcome(tool, result);
+    if (result.outcome === 'updated' || result.outcome === 'alreadyLatest') {
+      await loadDevTools();
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showToast(`${tool.name}: 실행 중 오류가 발생했습니다 — ${message}`);
+  } finally {
+    stopElapsedTimer(tool.id);
+    state.devTools.updating[tool.id] = false;
+    notifyChange();
+  }
+}
+
+async function handleConfirmRun(tool: DevToolStatus): Promise<void> {
+  const preview = state.devTools.preview[tool.id];
+  if (!preview) return;
+  state.devTools.preview[tool.id] = null;
+  await runPlan(tool, preview);
+}
+
+function toggleManual(toolId: string): void {
+  state.devTools.manualOpen[toolId] = !state.devTools.manualOpen[toolId];
+  notifyChange();
+}
+
+async function handleLaunchTerminal(tool: DevToolStatus): Promise<void> {
+  try {
+    const result = await openManualInstruction(tool.id);
+    showToast(result.opened ? `${tool.name}: 터미널을 열었습니다` : `${tool.name}: 터미널을 열지 못했습니다 — ${result.message}`);
+  } catch (err) {
+    showToast(`터미널 실행 중 오류가 발생했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function toggleLog(toolId: string): void {
+  state.devTools.logExpanded[toolId] = !state.devTools.logExpanded[toolId];
+  notifyChange();
+}
+
+// "전체 업데이트" — actionKind가 "run"인 도구만 순차(await 직렬)로 처리한다(백엔드가
+// 뮤텍스로 1건씩만 받으므로 동시 호출하지 않는다). 각 도구도 개별 실행과 동일하게
+// 먼저 미리보기를 받는다. 미리보기 결과 영향 대상이 1개보다 많으면(brew가 의존성까지
+// 올리는 경우) 자동으로 실행하지 않고 그 항목만 확인 대기 상태로 남겨 사용자가
+// 개별적으로 검토·확인하게 한다.
+async function handleUpdateAll(): Promise<void> {
+  const targets = state.devTools.items.filter((t) => t.actionKind === 'run');
+  if (targets.length === 0) return;
+
+  state.devTools.updatingAll = true;
+  notifyChange();
+
+  for (const tool of targets) {
+    state.devTools.previewLoading[tool.id] = true;
+    notifyChange();
+    let preview: DevToolPreview | null = null;
+    try {
+      preview = await previewDevToolUpdate(tool.id);
+    } catch (err) {
+      showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      state.devTools.previewLoading[tool.id] = false;
+    }
+    if (!preview) continue;
+
+    if (preview.affected.length > 1) {
+      state.devTools.preview[tool.id] = preview;
+      showToast(`${tool.name}: ${preview.affected.length}개 항목이 함께 바뀝니다 — 개별 확인이 필요합니다`);
+      notifyChange();
+      continue;
+    }
+
+    await runPlan(tool, preview);
+  }
+
+  state.devTools.updatingAll = false;
+  notifyChange();
+}
+
+// ---------------- 렌더 ----------------
 
 export function renderDevToolsView(): HTMLElement {
-  const updatableCount = state.devTools.items.filter(isUpdateAvailable).length;
+  const runnableCount = state.devTools.items.filter((t) => t.actionKind === 'run').length;
 
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['개발 환경']),
-      el('div', { className: 'page-subtitle' }, ['로컬에 설치된 CLI 도구 — 버전은 실제 조회값입니다']),
+      el('div', { className: 'page-subtitle' }, ['로컬에 설치된 CLI 도구 — 상태·버전은 실제 조회값이며, 설치/업데이트도 실제로 실행됩니다']),
     ]),
     el('div', { className: 'devtool-header-actions' }, [
-      ...(updatableCount > 0
+      ...(runnableCount > 0
         ? [
             el(
               'button',
-              { className: 'btn btn-primary', onClick: () => void mockUpdateAll(), disabled: state.devTools.updatingAll },
-              [state.devTools.updatingAll ? '모두 업데이트 중…' : `모두 업데이트 (${updatableCount})`]
+              { className: 'btn btn-primary', onClick: () => void handleUpdateAll(), disabled: state.devTools.updatingAll },
+              [state.devTools.updatingAll ? '전체 업데이트 중…' : '전체 업데이트']
             ),
           ]
         : []),
@@ -74,69 +233,179 @@ export function renderDevToolsView(): HTMLElement {
       ])
     );
   } else {
-    body.push(el('div', { className: 'devtool-list' }, state.devTools.items.map(renderDevToolRow)));
+    body.push(el('div', { className: 'devtool-list' }, state.devTools.items.map(renderDevToolItem)));
   }
 
   return el('div', {}, [header, ...body]);
 }
 
-function renderDevToolRow(tool: DevToolStatus): HTMLElement {
-  const meta = MOCK_DEV_TOOL_META[tool.id];
+function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   const updating = state.devTools.updating[tool.id] ?? false;
-  const updateAvailable = isUpdateAvailable(tool);
-
-  let actionBtn: HTMLElement;
-  if (updating) {
-    actionBtn = el('button', { className: 'btn', disabled: true }, [tool.installed ? '업데이트 중…' : '설치 중…']);
-  } else if (!tool.installed) {
-    actionBtn = el('button', { className: 'btn btn-primary', onClick: () => mockInstallOrUpdate(tool, true) }, ['설치 (목업)']);
-  } else if (updateAvailable) {
-    actionBtn = el('button', { className: 'btn btn-primary', onClick: () => mockInstallOrUpdate(tool, false) }, [`업데이트 → v${meta?.latestVersion} (목업)`]);
-  } else {
-    actionBtn = el('button', { className: 'btn', disabled: true }, ['최신 버전']);
-  }
+  const previewLoading = state.devTools.previewLoading[tool.id] ?? false;
+  const pendingPreview = state.devTools.preview[tool.id] ?? null;
+  const lastResult = state.devTools.lastResult[tool.id] ?? null;
 
   const statusBadge = tool.installed
-    ? el('span', { className: 'badge badge-active' }, [displayVersion(tool) ?? '설치됨'])
+    ? el('span', { className: 'badge badge-active' }, [tool.version ?? '설치됨'])
     : el('span', { className: 'badge badge-archived' }, ['설치 안 됨']);
 
-  return el('div', { className: 'devtool-row' }, [
-    el('div', { className: 'devtool-main' }, [el('div', { className: 'devtool-name' }, [tool.name]), el('div', { className: 'devtool-binary' }, [tool.id])]),
+  const metaParts = [tool.id, tool.installMethod, tool.path].filter((v): v is string => !!v);
+  const metaLine = el('div', { className: 'devtool-binary' }, [metaParts.join(' · ')]);
+
+  const row = el('div', { className: 'devtool-row' }, [
+    el('div', { className: 'devtool-main' }, [el('div', { className: 'devtool-name' }, [tool.name]), metaLine]),
     statusBadge,
-    actionBtn,
+    renderActionArea(tool, updating, previewLoading, !!pendingPreview),
+  ]);
+
+  const panels: HTMLElement[] = [];
+  if (updating) panels.push(renderRunningPanel(tool));
+  if (pendingPreview) panels.push(renderPreviewPanel(tool, pendingPreview));
+  if (!updating && !pendingPreview && lastResult) panels.push(renderResultPanel(tool, lastResult));
+  if (tool.actionKind === 'manual' && state.devTools.manualOpen[tool.id]) panels.push(renderManualPanel(tool));
+
+  return el('div', { className: 'devtool-item' }, [row, ...panels]);
+}
+
+function renderActionArea(tool: DevToolStatus, updating: boolean, previewLoading: boolean, hasPendingPreview: boolean): HTMLElement {
+  if (updating) {
+    return el('button', { className: 'btn', disabled: true }, ['실행 중…']);
+  }
+  if (hasPendingPreview) {
+    return el('button', { className: 'btn', disabled: true }, ['확인 대기 중']);
+  }
+  if (previewLoading) {
+    return el('button', { className: 'btn', disabled: true }, ['미리보기 확인 중…']);
+  }
+
+  if (tool.actionKind === 'run') {
+    const label = tool.installed ? '업데이트' : '설치';
+    return el('button', { className: 'btn btn-primary', onClick: () => void handleRequestPreview(tool) }, [label]);
+  }
+  if (tool.actionKind === 'manual') {
+    return el('button', { className: 'btn', onClick: () => toggleManual(tool.id) }, [
+      state.devTools.manualOpen[tool.id] ? '안내 닫기' : '안내 보기',
+    ]);
+  }
+  // actionKind === 'none'
+  return el('button', { className: 'btn', disabled: true }, ['실행 불가']);
+}
+
+function renderRunningPanel(tool: DevToolStatus): HTMLElement {
+  const sec = state.devTools.elapsedSec[tool.id] ?? 0;
+  return el('div', { className: 'devtool-panel devtool-panel-running' }, [
+    el('span', { className: 'devtool-spinner' }, []),
+    el('span', {}, [`${tool.installed ? '업데이트' : '설치'} 실행 중… (${sec}초 경과)`]),
+    el('span', { className: 'devtool-panel-hint' }, ['실행 중에는 창을 닫지 마세요']),
   ]);
 }
 
-// 목업 — 실제로 설치/업데이트 명령을 실행하지 않는다. 로딩 흉내만 낸다.
-function mockInstallOrUpdate(tool: DevToolStatus, isInstall: boolean): void {
-  state.devTools.updating[tool.id] = true;
-  notifyChange();
-  setTimeout(() => {
-    state.devTools.updating[tool.id] = false;
-    const meta = MOCK_DEV_TOOL_META[tool.id];
-    if (meta) state.devTools.mockUpdatedVersion[tool.id] = meta.latestVersion;
-    showToast(`${tool.name} ${isInstall ? '설치' : '업데이트'} 완료 (목업 — 실제로 변경되지 않았습니다)`);
-    notifyChange();
-  }, 900);
+function renderPreviewPanel(tool: DevToolStatus, preview: DevToolPreview): HTMLElement {
+  const warnMultiple = preview.affected.length !== 1;
+  const children: HTMLElement[] = [
+    el('div', { className: 'devtool-panel-title' }, ['실행 전 확인']),
+    el('div', { className: 'devtool-panel-command' }, [preview.commandDisplay]),
+  ];
+
+  if (preview.affected.length > 0) {
+    children.push(
+      el('div', { className: 'devtool-panel-label' }, ['영향받는 항목']),
+      el(
+        'ul',
+        { className: 'devtool-affected-list' },
+        preview.affected.map((a) => el('li', {}, [a]))
+      )
+    );
+  }
+
+  if (warnMultiple) {
+    children.push(
+      el('div', { className: 'devtool-panel devtool-panel-warn' }, [
+        `⚠ ${tool.name} 외 ${Math.max(preview.affected.length - 1, 0)}개 항목이 함께 바뀔 수 있습니다(의존성 연쇄 업그레이드). 신중히 확인 후 실행하세요.`,
+      ])
+    );
+  }
+
+  if (preview.notes) {
+    children.push(el('div', { className: 'devtool-panel-notes' }, [preview.notes]));
+  }
+
+  if (!preview.willRun) {
+    children.push(el('div', { className: 'devtool-panel devtool-panel-warn' }, ['이 계획은 실행 대상이 없습니다(willRun: false). 실행해도 변화가 없을 수 있습니다.']));
+  }
+
+  children.push(
+    el('div', { className: 'devtool-panel-actions' }, [
+      el('button', { className: 'btn btn-primary', onClick: () => void handleConfirmRun(tool) }, ['실행']),
+      el('button', { className: 'btn', onClick: () => cancelPreview(tool.id) }, ['취소']),
+    ])
+  );
+
+  return el('div', { className: 'devtool-panel' }, children);
 }
 
-// "모두 업데이트" — 업데이트 가능한(설치돼 있고 구버전인) 항목만 한 번에 처리한다.
-async function mockUpdateAll(): Promise<void> {
-  const targets = state.devTools.items.filter(isUpdateAvailable);
-  if (targets.length === 0) return;
+function renderManualPanel(tool: DevToolStatus): HTMLElement {
+  const children: HTMLElement[] = [
+    el('div', { className: 'devtool-panel-title' }, ['안내']),
+    el('div', {}, [tool.manualHint ?? '이 도구는 앱이 대신 실행할 수 없습니다. 터미널에서 직접 실행해주세요.']),
+    el('div', { className: 'devtool-panel-actions' }, [
+      el('button', { className: 'btn', onClick: () => void handleLaunchTerminal(tool) }, ['터미널에서 열기']),
+      ...(tool.manualHint
+        ? [el('button', { className: 'btn', onClick: () => void copyToClipboard(tool.manualHint ?? '', '안내 문구') }, ['복사'])]
+        : []),
+    ]),
+  ];
+  return el('div', { className: 'devtool-panel' }, children);
+}
 
-  state.devTools.updatingAll = true;
-  for (const t of targets) state.devTools.updating[t.id] = true;
-  notifyChange();
+function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HTMLElement {
+  const toneClass =
+    result.outcome === 'updated' || result.outcome === 'alreadyLatest'
+      ? 'devtool-panel-success'
+      : result.outcome === 'failed'
+        ? 'devtool-panel-danger'
+        : 'devtool-panel-warn'; // unknownAfter / timedOut / notSupported
 
-  await new Promise((resolve) => setTimeout(resolve, 900));
+  const summary: Record<DevToolActionResult['outcome'], string> = {
+    updated: `✓ v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 업데이트되었습니다`,
+    alreadyLatest: '✓ 이미 최신입니다',
+    unknownAfter: '⚠ 명령은 성공했다고 보고했으나 실제 버전을 확인하지 못했습니다(확인되지 않음)',
+    timedOut: '⏱ 상태 불명 — 시간이 초과되었습니다. 다시 확인해주세요',
+    failed: `✕ 실행 실패: ${result.message}`,
+    notSupported: '이 방식으로는 실행할 수 없습니다',
+  };
 
-  for (const t of targets) {
-    const meta = MOCK_DEV_TOOL_META[t.id];
-    if (meta) state.devTools.mockUpdatedVersion[t.id] = meta.latestVersion;
-    state.devTools.updating[t.id] = false;
+  const children: HTMLElement[] = [
+    el('div', { className: 'devtool-panel-title' }, [summary[result.outcome]]),
+    el('div', { className: 'devtool-panel-verified' }, [result.verified ? '확인됨(verified)' : '확인되지 않음(unverified)']),
+  ];
+
+  if (result.versionBefore || result.versionAfter) {
+    children.push(el('div', { className: 'devtool-panel-notes' }, [`${result.versionBefore ?? '?'} → ${result.versionAfter ?? '?'}`]));
   }
-  state.devTools.updatingAll = false;
-  showToast(`${targets.length}개 도구 업데이트 완료 (목업 — 실제로 변경되지 않았습니다)`);
-  notifyChange();
+
+  if (!result.pathVisible && result.pathHint) {
+    children.push(
+      el('div', { className: 'devtool-panel devtool-panel-warn' }, [
+        el('div', {}, ['설치는 됐지만 터미널에서 바로 쓸 수 없습니다. 아래 줄을 PATH 설정에 추가하세요.']),
+        ...(result.pathHintTarget ? [el('div', { className: 'devtool-panel-notes' }, [`대상 파일: ${result.pathHintTarget}`])] : []),
+        el('div', { className: 'devtool-panel-command' }, [result.pathHint]),
+        el('div', { className: 'devtool-panel-actions' }, [
+          el('button', { className: 'btn', onClick: () => void copyToClipboard(result.pathHint ?? '', 'PATH 설정') }, ['복사']),
+        ]),
+      ])
+    );
+  }
+
+  if (result.outcome === 'failed' || result.outcome === 'timedOut') {
+    const expanded = state.devTools.logExpanded[tool.id] ?? false;
+    children.push(
+      el('div', {}, [
+        el('button', { className: 'btn', onClick: () => toggleLog(tool.id) }, [expanded ? '로그 접기' : '로그 보기']),
+        ...(expanded ? [el('pre', { className: 'devtool-log' }, [result.logTail || '(로그 없음)'])] : []),
+      ])
+    );
+  }
+
+  return el('div', { className: `devtool-panel ${toneClass}` }, children);
 }

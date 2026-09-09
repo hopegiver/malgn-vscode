@@ -5,7 +5,7 @@ import { MOCK_AUTONOMOUS_TASKS } from './mockData';
 import type { AutonomousTask } from './mockData';
 import type { ClaudeSessionRecord } from './sessionsApi';
 import type { WorkspaceProject, ProjectTreeNode, FilePreview } from './workspaceApi';
-import type { DevToolStatus } from './devToolsApi';
+import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devToolsApi';
 import type { InstalledPlugin, MarketplaceInfo, CommandResult } from './catalogApi';
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
@@ -109,9 +109,10 @@ export interface AppState {
     connecting: boolean;
     disconnecting: boolean;
   };
-  // 목업이 아니라 실제 `<tool> --version` 조회 결과가 들어간다. 설치/업데이트
-  // 버튼(updating)은 순수 목업 — 실제로 아무것도 설치하지 않는다(사용자가 이건
-  // 승인하지 않았다).
+  // 실제 `<tool> --version`/설치방식 조회 결과가 들어간다. 설치/업데이트 버튼도
+  // actionKind가 "run"인 도구에 한해 실제로 명령을 실행한다(사용자 명시 승인,
+  // 2026-09-09). 실행 전에는 preview에 dry-run 미리보기를 담아 사용자 확인을
+  // 받고, 확인된 planId로만 update/install을 호출한다.
   devTools: {
     items: DevToolStatus[];
     loading: boolean;
@@ -119,7 +120,12 @@ export interface AppState {
     loaded: boolean;
     updating: Record<string, boolean>;
     updatingAll: boolean;
-    mockUpdatedVersion: Record<string, string>;
+    elapsedSec: Record<string, number>;
+    previewLoading: Record<string, boolean>;
+    preview: Record<string, DevToolPreview | null>;
+    lastResult: Record<string, DevToolActionResult | null>;
+    logExpanded: Record<string, boolean>;
+    manualOpen: Record<string, boolean>;
   };
   // 카탈로그 — 설치된 플러그인은 실제 로컬 데이터(installed_plugins.json + 각
   // installPath 실물). "자동 업데이트" 토글만 순수 목업(로컬 UI 상태). "업데이트"
@@ -181,7 +187,20 @@ export const state: AppState = {
   github: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   cloudflare: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   jira: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
-  devTools: { items: [], loading: false, error: null, loaded: false, updating: {}, updatingAll: false, mockUpdatedVersion: {} },
+  devTools: {
+    items: [],
+    loading: false,
+    error: null,
+    loaded: false,
+    updating: {},
+    updatingAll: false,
+    elapsedSec: {},
+    previewLoading: {},
+    preview: {},
+    lastResult: {},
+    logExpanded: {},
+    manualOpen: {},
+  },
   catalog: { plugins: [], loading: false, error: null, loaded: false, autoUpdate: {}, updating: {}, updatingAll: false, lastResult: {} },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
   otel: { env: {}, loading: false, error: null, loaded: false },

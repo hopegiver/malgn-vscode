@@ -5,6 +5,7 @@
 import { el } from '../dom';
 import { state, notifyChange } from '../state';
 import { loginWithGoogle } from '../authApi';
+import { brandMark } from '../brand';
 
 async function handleGoogleLogin(): Promise<void> {
   state.auth.loading = true;
@@ -26,7 +27,7 @@ async function handleGoogleLogin(): Promise<void> {
 
 export function renderLoginView(): HTMLElement {
   const card = el('div', { className: 'login-card' }, [
-    el('div', { className: 'login-brand' }, [el('span', { className: 'sidebar-brand-mark' }, ['M']), '맑은에이전트']),
+    el('div', { className: 'login-brand' }, [brandMark(), '맑은에이전트']),
     el('h1', { className: 'login-title' }, ['워크스테이션 프로비저닝']),
     el('div', { className: 'login-desc' }, ['Google Workspace 계정으로 로그인합니다.']),
     ...(state.auth.error ? [el('div', { className: 'login-error' }, [`⚠ ${state.auth.error}`])] : []),

@@ -4219,6 +4219,7 @@ dependencies = [
  "dotenvy",
  "jsonwebtoken",
  "keyring",
+ "libc",
  "notify-debouncer-mini",
  "rand 0.8.8",
  "rayon",

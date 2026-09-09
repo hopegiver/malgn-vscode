@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 mod cli_launcher;
 mod cloudflare_integration;
+mod dev_tools;
 mod github_integration;
 mod jira_integration;
 
@@ -25,7 +26,10 @@ fn sanitize_cwd_for_project_dir(cwd: &str) -> String {
 }
 
 fn truncate_title(text: &str, max_chars: usize) -> String {
-    let cleaned: String = text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
     let cleaned = cleaned.trim();
     if cleaned.chars().count() <= max_chars {
         cleaned.to_string()
@@ -71,7 +75,11 @@ fn find_session_title(session: &Value) -> Option<String> {
     let home = dirs::home_dir()?;
 
     let sanitized = sanitize_cwd_for_project_dir(cwd);
-    let jsonl_path = home.join(".claude").join("projects").join(&sanitized).join(format!("{session_id}.jsonl"));
+    let jsonl_path = home
+        .join(".claude")
+        .join("projects")
+        .join(&sanitized)
+        .join(format!("{session_id}.jsonl"));
 
     let file = std::fs::File::open(&jsonl_path).ok()?;
     let reader = BufReader::new(file);
@@ -186,7 +194,9 @@ fn is_heading_line(line: &str) -> bool {
     if hash_count == 0 || hash_count > 6 {
         return false;
     }
-    line.chars().nth(hash_count).is_some_and(|c| c.is_whitespace())
+    line.chars()
+        .nth(hash_count)
+        .is_some_and(|c| c.is_whitespace())
 }
 
 /// STATUS.md의 "🟢 현재 상태 / ✅ 최근 완료 / 🚧 진행 중 / ⛔ 막힌 것" 섹션을
@@ -199,7 +209,10 @@ fn parse_status_markdown(content: &str) -> ProjectStatusSections {
         .iter()
         .enumerate()
         .filter(|(_, line)| is_heading_line(line))
-        .map(|(i, line)| Heading { line_index: i, text: line })
+        .map(|(i, line)| Heading {
+            line_index: i,
+            text: line,
+        })
         .collect();
 
     let mut current: Option<String> = None;
@@ -208,8 +221,14 @@ fn parse_status_markdown(content: &str) -> ProjectStatusSections {
     let mut blocked: Option<String> = None;
 
     for (i, heading) in headings.iter().enumerate() {
-        let body_end = headings.get(i + 1).map(|h| h.line_index).unwrap_or(lines.len());
-        let body = lines[(heading.line_index + 1)..body_end].join("\n").trim().to_string();
+        let body_end = headings
+            .get(i + 1)
+            .map(|h| h.line_index)
+            .unwrap_or(lines.len());
+        let body = lines[(heading.line_index + 1)..body_end]
+            .join("\n")
+            .trim()
+            .to_string();
 
         if current.is_none() && heading.text.contains('🟢') {
             current = Some(body.clone());
@@ -225,7 +244,8 @@ fn parse_status_markdown(content: &str) -> ProjectStatusSections {
         }
     }
 
-    let parsed = current.is_some() || recent_done.is_some() || in_progress.is_some() || blocked.is_some();
+    let parsed =
+        current.is_some() || recent_done.is_some() || in_progress.is_some() || blocked.is_some();
 
     ProjectStatusSections {
         parsed,
@@ -251,7 +271,10 @@ const ARCHIVE_KEYWORDS: [&str; 8] = [
     "deprecated",
 ];
 
-fn classify_archive_status(has_status: bool, current_section_body: &Option<String>) -> &'static str {
+fn classify_archive_status(
+    has_status: bool,
+    current_section_body: &Option<String>,
+) -> &'static str {
     if !has_status {
         return "unknown";
     }
@@ -259,7 +282,10 @@ fn classify_archive_status(has_status: bool, current_section_body: &Option<Strin
         None => "unknown",
         Some(body) => {
             let normalized = body.to_lowercase();
-            if ARCHIVE_KEYWORDS.iter().any(|k| normalized.contains(&k.to_lowercase())) {
+            if ARCHIVE_KEYWORDS
+                .iter()
+                .any(|k| normalized.contains(&k.to_lowercase()))
+            {
                 "archived"
             } else {
                 "active"
@@ -268,58 +294,73 @@ fn classify_archive_status(has_status: bool, current_section_body: &Option<Strin
     }
 }
 
-/// `~/workspace` 바로 아래 1단계 디렉터리만 스캔한다. `CLAUDE.md`가 있으면
+/// 후보 workspace 루트 목록 — 실제로 존재하는 디렉터리만 반환한다. macOS는
+/// `~/workspace` 하나뿐이지만, Windows는 사람마다 `%USERPROFILE%\workspace`와
+/// `C:\workspace` 둘 중 하나를 쓰는 걸로 확인돼 둘 다 후보에 넣는다(둘 다 있으면
+/// 둘 다 스캔해서 합친다 — 어느 쪽이 "맞는" 것인지 앱이 임의로 고르지 않는다).
+fn workspace_roots() -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("workspace"));
+    }
+    #[cfg(windows)]
+    {
+        candidates.push(PathBuf::from("C:\\workspace"));
+    }
+    candidates.into_iter().filter(|p| p.is_dir()).collect()
+}
+
+/// 각 workspace 루트 바로 아래 1단계 디렉터리만 스캔한다. `CLAUDE.md`가 있으면
 /// malgn-agent 프로젝트로 인식한다(STATUS.md 유무는 판별 기준이 아니다 — 없으면
 /// `archiveStatus:"unknown"` + `hasStatus:false`로 접는다, 추측 분류 금지).
 fn scan_workspace_projects() -> Vec<WorkspaceProject> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let workspace_root = home.join("workspace");
-    let Ok(entries) = std::fs::read_dir(&workspace_root) else {
-        return Vec::new();
-    };
-
     let mut results: Vec<WorkspaceProject> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+    for workspace_root in workspace_roots() {
+        let Ok(entries) = std::fs::read_dir(&workspace_root) else {
             continue;
         };
-        if name.starts_with('.') {
-            continue;
-        }
 
-        if !path.join("CLAUDE.md").is_file() {
-            continue;
-        }
-
-        let status_path = path.join("STATUS.md");
-        let has_status = status_path.is_file();
-
-        let (archive_status, sections) = if has_status {
-            match std::fs::read_to_string(&status_path) {
-                Ok(content) => {
-                    let parsed_sections = parse_status_markdown(&content);
-                    let status = classify_archive_status(true, &parsed_sections.current).to_string();
-                    (status, Some(parsed_sections))
-                }
-                Err(_) => ("unknown".to_string(), None),
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
             }
-        } else {
-            ("unknown".to_string(), None)
-        };
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
 
-        results.push(WorkspaceProject {
-            name: name.to_string(),
-            path: path.to_string_lossy().to_string(),
-            has_status,
-            archive_status,
-            sections,
-        });
+            if !path.join("CLAUDE.md").is_file() {
+                continue;
+            }
+
+            let status_path = path.join("STATUS.md");
+            let has_status = status_path.is_file();
+
+            let (archive_status, sections) = if has_status {
+                match std::fs::read_to_string(&status_path) {
+                    Ok(content) => {
+                        let parsed_sections = parse_status_markdown(&content);
+                        let status =
+                            classify_archive_status(true, &parsed_sections.current).to_string();
+                        (status, Some(parsed_sections))
+                    }
+                    Err(_) => ("unknown".to_string(), None),
+                }
+            } else {
+                ("unknown".to_string(), None)
+            };
+
+            results.push(WorkspaceProject {
+                name: name.to_string(),
+                path: path.to_string_lossy().to_string(),
+                has_status,
+                archive_status,
+                sections,
+            });
+        }
     }
 
     results.sort_by(|a, b| a.name.cmp(&b.name));
@@ -331,61 +372,11 @@ fn list_workspace_projects() -> Vec<WorkspaceProject> {
     scan_workspace_projects()
 }
 
-// ---------------- 개발 환경 (로컬 CLI 도구 버전 조회) ----------------
-// 읽기 전용 조회만 한다 — 실행하는 바이너리명·인자가 이 파일 안에 고정돼 있어
-// 프론트엔드가 임의 커맨드를 실행시킬 방법이 없다(세션목록·프로젝트 스캔과 같은
-// "커스텀 커맨드에 인자를 고정한다" 설계 원칙). 그래서 Tauri의 범용 shell
-// 플러그인(`shell:allow-execute` capabilities 필요)을 쓰지 않고 `std::process::Command`를
-// 직접 쓴다 — 오히려 이쪽이 더 좁은 권한 표면이다.
-
-#[derive(Serialize)]
-struct DevToolStatus {
-    id: String,
-    name: String,
-    installed: bool,
-    version: Option<String>,
-}
-
-const DEV_TOOLS: [(&str, &str); 7] = [
-    ("claude", "Claude Code"),
-    ("node", "Node.js"),
-    ("gh", "GitHub CLI"),
-    ("git", "Git"),
-    ("pnpm", "pnpm"),
-    ("wrangler", "Wrangler"),
-    ("docker", "Docker"),
-];
-
-fn check_dev_tool_version(binary: &str) -> Option<String> {
-    let output = std::process::Command::new(binary).arg("--version").output().ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !stdout.is_empty() {
-        return Some(stdout);
-    }
-    // 일부 도구는 버전을 stderr로 낼 수 있다 — 방어적으로 폴백.
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if output.status.success() && !stderr.is_empty() {
-        Some(stderr)
-    } else {
-        None
-    }
-}
-
-#[tauri::command]
-fn check_dev_tools() -> Vec<DevToolStatus> {
-    DEV_TOOLS
-        .iter()
-        .map(|(binary, label)| {
-            let version = check_dev_tool_version(binary);
-            DevToolStatus {
-                id: (*binary).to_string(),
-                name: (*label).to_string(),
-                installed: version.is_some(),
-                version,
-            }
-        })
-        .collect()
-}
+// ---------------- 개발 환경 실설치/업데이트 ----------------
+// `check_dev_tools`(읽기 전용 버전 조회) + 실제 install/update 실행 엔진은
+// `dev_tools` 모듈로 분리했다 — 정본은 프로젝트 루트
+// `scratch-design-devtools-update.md`(결정 1~6 + 부록 A/B/C). 이 파일에는
+// 커맨드 재노출(아래 invoke_handler)만 남긴다.
 
 // ---------------- 카탈로그: 설치된 플러그인 (실제 로컬 데이터) ----------------
 // ~/.claude/plugins/installed_plugins.json에서 scope가 "user"인 항목만 "설치된
@@ -437,7 +428,12 @@ fn list_md_file_stems(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
-        .filter_map(|e| e.path().file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+        .filter_map(|e| {
+            e.path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        })
         .collect();
     names.sort();
     names
@@ -446,7 +442,11 @@ fn list_md_file_stems(dir: &Path) -> Vec<String> {
 fn entry_items(names: Vec<String>, prefix: &str) -> Vec<CatalogEntryItem> {
     names
         .into_iter()
-        .map(|n| CatalogEntryItem { id: format!("{prefix}-{n}"), name: n, description: String::new() })
+        .map(|n| CatalogEntryItem {
+            id: format!("{prefix}-{n}"),
+            name: n,
+            description: String::new(),
+        })
         .collect()
 }
 
@@ -454,7 +454,10 @@ fn read_installed_plugins() -> Vec<InstalledPlugin> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let path = home.join(".claude").join("plugins").join("installed_plugins.json");
+    let path = home
+        .join(".claude")
+        .join("plugins")
+        .join("installed_plugins.json");
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
@@ -470,7 +473,10 @@ fn read_installed_plugins() -> Vec<InstalledPlugin> {
         let Some(entries) = entries_value.as_array() else {
             continue;
         };
-        let Some(user_entry) = entries.iter().find(|e| e.get("scope").and_then(|s| s.as_str()) == Some("user")) else {
+        let Some(user_entry) = entries
+            .iter()
+            .find(|e| e.get("scope").and_then(|s| s.as_str()) == Some("user"))
+        else {
             continue;
         };
         let Some(install_path_str) = user_entry.get("installPath").and_then(|v| v.as_str()) else {
@@ -486,15 +492,26 @@ fn read_installed_plugins() -> Vec<InstalledPlugin> {
             continue;
         };
 
-        let name = plugin_json.get("name").and_then(|v| v.as_str()).unwrap_or(plugin_id).to_string();
-        let display_name = plugin_json.get("displayName").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let name = plugin_json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(plugin_id)
+            .to_string();
+        let display_name = plugin_json
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let version = plugin_json
             .get("version")
             .and_then(|v| v.as_str())
             .or_else(|| user_entry.get("version").and_then(|v| v.as_str()))
             .unwrap_or("알 수 없음")
             .to_string();
-        let description = plugin_json.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let description = plugin_json
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let agents = entry_items(list_md_file_stems(&install_dir.join("agents")), "agent");
         let skills = entry_items(list_dir_names(&install_dir.join("skills")), "skill");
@@ -536,7 +553,10 @@ fn read_known_marketplaces() -> Vec<MarketplaceInfo> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let path = home.join(".claude").join("plugins").join("known_marketplaces.json");
+    let path = home
+        .join(".claude")
+        .join("plugins")
+        .join("known_marketplaces.json");
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
@@ -554,8 +574,15 @@ fn read_known_marketplaces() -> Vec<MarketplaceInfo> {
             .and_then(|s| s.get("repo"))
             .and_then(|r| r.as_str())
             .map(|s| s.to_string());
-        let last_updated = value.get("lastUpdated").and_then(|v| v.as_str()).map(|s| s.to_string());
-        results.push(MarketplaceInfo { id: id.clone(), repo, last_updated });
+        let last_updated = value
+            .get("lastUpdated")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        results.push(MarketplaceInfo {
+            id: id.clone(),
+            repo,
+            last_updated,
+        });
     }
     results.sort_by(|a, b| a.id.cmp(&b.id));
     results
@@ -623,7 +650,11 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
             if output.status.success() {
                 CommandResult {
                     success: true,
-                    message: if stdout.is_empty() { "완료되었습니다.".to_string() } else { stdout },
+                    message: if stdout.is_empty() {
+                        "완료되었습니다.".to_string()
+                    } else {
+                        stdout
+                    },
                 }
             } else {
                 let msg = if !stderr.is_empty() {
@@ -633,10 +664,16 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
                 } else {
                     "알 수 없는 오류로 실패했습니다.".to_string()
                 };
-                CommandResult { success: false, message: msg }
+                CommandResult {
+                    success: false,
+                    message: msg,
+                }
             }
         }
-        Err(e) => CommandResult { success: false, message: format!("claude 명령을 실행할 수 없습니다: {e}") },
+        Err(e) => CommandResult {
+            success: false,
+            message: format!("claude 명령을 실행할 수 없습니다: {e}"),
+        },
     }
 }
 
@@ -674,10 +711,11 @@ fn is_direct_child_of_workspace_root(workspace_root: &Path, candidate: &Path) ->
 }
 
 fn resolve_validated_project_root(project_path: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let workspace_root = home.join("workspace");
     let candidate = PathBuf::from(project_path);
-    if !is_direct_child_of_workspace_root(&workspace_root, &candidate) {
+    let is_child_of_any_root = workspace_roots()
+        .iter()
+        .any(|root| is_direct_child_of_workspace_root(root, &candidate));
+    if !is_child_of_any_root {
         return None;
     }
     candidate.canonicalize().ok()
@@ -694,7 +732,17 @@ struct TreeNode {
     truncated: bool,
 }
 
-const EXCLUDED_DIR_NAMES: [&str; 9] = ["node_modules", ".git", "dist", "target", ".next", "build", ".venv", "__pycache__", ".cache"];
+const EXCLUDED_DIR_NAMES: [&str; 9] = [
+    "node_modules",
+    ".git",
+    "dist",
+    "target",
+    ".next",
+    "build",
+    ".venv",
+    "__pycache__",
+    ".cache",
+];
 const MAX_TREE_DEPTH: usize = 4;
 
 fn build_tree(dir: &Path, rel_prefix: &str, depth: usize) -> Vec<TreeNode> {
@@ -710,22 +758,50 @@ fn build_tree(dir: &Path, rel_prefix: &str, depth: usize) -> Vec<TreeNode> {
         if name.starts_with('.') && name != ".gitignore" {
             continue;
         }
-        let relative_path = if rel_prefix.is_empty() { name.to_string() } else { format!("{rel_prefix}/{name}") };
+        let relative_path = if rel_prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
         let is_dir = path.is_dir();
 
         if is_dir {
             if EXCLUDED_DIR_NAMES.contains(&name) {
-                nodes.push(TreeNode { name: name.to_string(), relative_path, is_directory: true, children: Some(Vec::new()), truncated: true });
+                nodes.push(TreeNode {
+                    name: name.to_string(),
+                    relative_path,
+                    is_directory: true,
+                    children: Some(Vec::new()),
+                    truncated: true,
+                });
                 continue;
             }
             if depth >= MAX_TREE_DEPTH {
-                nodes.push(TreeNode { name: name.to_string(), relative_path, is_directory: true, children: None, truncated: true });
+                nodes.push(TreeNode {
+                    name: name.to_string(),
+                    relative_path,
+                    is_directory: true,
+                    children: None,
+                    truncated: true,
+                });
                 continue;
             }
             let children = build_tree(&path, &relative_path, depth + 1);
-            nodes.push(TreeNode { name: name.to_string(), relative_path, is_directory: true, children: Some(children), truncated: false });
+            nodes.push(TreeNode {
+                name: name.to_string(),
+                relative_path,
+                is_directory: true,
+                children: Some(children),
+                truncated: false,
+            });
         } else {
-            nodes.push(TreeNode { name: name.to_string(), relative_path, is_directory: false, children: None, truncated: false });
+            nodes.push(TreeNode {
+                name: name.to_string(),
+                relative_path,
+                is_directory: false,
+                children: None,
+                truncated: false,
+            });
         }
     }
     nodes.sort_by(|a, b| match (a.is_directory, b.is_directory) {
@@ -761,8 +837,8 @@ enum FilePreview {
 
 const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
 const BINARY_EXTENSIONS: [&str; 20] = [
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "pdf", "zip", "gz", "tar", "woff", "woff2", "ttf", "eot", "exe", "dll", "so",
-    "dylib",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "pdf", "zip", "gz", "tar", "woff",
+    "woff2", "ttf", "eot", "exe", "dll", "so", "dylib",
 ];
 
 #[tauri::command]
@@ -786,7 +862,9 @@ fn read_project_file(project_path: String, relative_path: String) -> FilePreview
         return FilePreview::NotFound;
     };
     if metadata.len() > MAX_PREVIEW_BYTES {
-        return FilePreview::TooLarge { size: metadata.len() };
+        return FilePreview::TooLarge {
+            size: metadata.len(),
+        };
     }
 
     let looks_binary_ext = canon_candidate
@@ -842,7 +920,9 @@ struct DailyUsage {
 }
 
 fn parse_iso_timestamp(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
 fn local_date_key(dt: &DateTime<Utc>) -> String {
@@ -850,7 +930,11 @@ fn local_date_key(dt: &DateTime<Utc>) -> String {
     local.format("%Y-%m-%d").to_string()
 }
 
-fn find_recent_jsonl_files(dir: &Path, cutoff_mtime: std::time::SystemTime, out: &mut Vec<PathBuf>) {
+fn find_recent_jsonl_files(
+    dir: &Path,
+    cutoff_mtime: std::time::SystemTime,
+    out: &mut Vec<PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -880,8 +964,13 @@ fn find_recent_jsonl_files(dir: &Path, cutoff_mtime: std::time::SystemTime, out:
 // 독립이라 rayon으로 파일 단위 병렬화하기 좋다). `skip_date`가 있으면 그 날짜
 // 줄은 제외한다 — "오늘"은 매번 별도로 실시간 스캔하므로 과거분 캐시 계산에서는
 // 오늘 줄을 빼서 이중 집계를 막는다.
-fn scan_file_daily_usage(path: &Path, cutoff_dt: DateTime<Utc>, skip_date: Option<&str>) -> std::collections::BTreeMap<String, DailyUsage> {
-    let mut buckets: std::collections::BTreeMap<String, DailyUsage> = std::collections::BTreeMap::new();
+fn scan_file_daily_usage(
+    path: &Path,
+    cutoff_dt: DateTime<Utc>,
+    skip_date: Option<&str>,
+) -> std::collections::BTreeMap<String, DailyUsage> {
+    let mut buckets: std::collections::BTreeMap<String, DailyUsage> =
+        std::collections::BTreeMap::new();
     let Ok(f) = std::fs::File::open(path) else {
         return buckets;
     };
@@ -901,13 +990,19 @@ fn scan_file_daily_usage(path: &Path, cutoff_dt: DateTime<Utc>, skip_date: Optio
         if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
             continue;
         }
-        let Some(ts) = value.get("timestamp").and_then(|t| t.as_str()).and_then(parse_iso_timestamp) else {
+        let Some(ts) = value
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(parse_iso_timestamp)
+        else {
             continue;
         };
         if ts < cutoff_dt {
             continue;
         }
-        let Some(msg) = value.get("message") else { continue };
+        let Some(msg) = value.get("message") else {
+            continue;
+        };
         if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
             if !seen_message_ids.insert(id.to_string()) {
                 continue;
@@ -921,11 +1016,26 @@ fn scan_file_daily_usage(path: &Path, cutoff_dt: DateTime<Utc>, skip_date: Optio
         if skip_date.is_some_and(|d| d == key) {
             continue;
         }
-        let entry = buckets.entry(key.clone()).or_insert_with(|| DailyUsage { date: key, ..Default::default() });
-        entry.input_tokens += usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        entry.output_tokens += usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        entry.cache_creation_tokens += usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        entry.cache_read_tokens += usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let entry = buckets.entry(key.clone()).or_insert_with(|| DailyUsage {
+            date: key,
+            ..Default::default()
+        });
+        entry.input_tokens += usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        entry.output_tokens += usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        entry.cache_creation_tokens += usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        entry.cache_read_tokens += usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
     }
     buckets
 }
@@ -935,7 +1045,10 @@ fn merge_daily_usage_maps(
     b: std::collections::BTreeMap<String, DailyUsage>,
 ) -> std::collections::BTreeMap<String, DailyUsage> {
     for (key, v) in b {
-        let entry = a.entry(key.clone()).or_insert_with(|| DailyUsage { date: key, ..Default::default() });
+        let entry = a.entry(key.clone()).or_insert_with(|| DailyUsage {
+            date: key,
+            ..Default::default()
+        });
         entry.input_tokens += v.input_tokens;
         entry.output_tokens += v.output_tokens;
         entry.cache_creation_tokens += v.cache_creation_tokens;
@@ -957,7 +1070,8 @@ struct HistoricalUsageCache {
     days: Vec<DailyUsage>,
 }
 
-static HISTORICAL_USAGE_CACHE: std::sync::Mutex<Option<HistoricalUsageCache>> = std::sync::Mutex::new(None);
+static HISTORICAL_USAGE_CACHE: std::sync::Mutex<Option<HistoricalUsageCache>> =
+    std::sync::Mutex::new(None);
 
 // 30일 룩백 범위에서 "오늘"을 뺀 나머지(어제까지)를 파일 단위로 병렬 스캔한다.
 // 파일이 서로 독립이라 rayon의 파일별 par_iter + reduce로 코어 수만큼 나눠
@@ -974,7 +1088,9 @@ fn compute_historical_daily_usage(today: &str) -> Vec<DailyUsage> {
     }
 
     let lookback = std::time::Duration::from_secs(USAGE_LOOKBACK_DAYS as u64 * 24 * 60 * 60);
-    let cutoff_mtime = std::time::SystemTime::now().checked_sub(lookback).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let cutoff_mtime = std::time::SystemTime::now()
+        .checked_sub(lookback)
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let cutoff_dt = Utc::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS);
 
     let mut files = Vec::new();
@@ -999,7 +1115,10 @@ fn get_or_refresh_historical_daily_usage() -> Vec<DailyUsage> {
         }
     }
     let days = compute_historical_daily_usage(&today);
-    *HISTORICAL_USAGE_CACHE.lock().unwrap() = Some(HistoricalUsageCache { cached_as_of: today, days: days.clone() });
+    *HISTORICAL_USAGE_CACHE.lock().unwrap() = Some(HistoricalUsageCache {
+        cached_as_of: today,
+        days: days.clone(),
+    });
     days
 }
 
@@ -1016,7 +1135,8 @@ fn compute_today_daily_usage(today: &str) -> Option<DailyUsage> {
     if !projects_dir.is_dir() {
         return None;
     }
-    let cutoff_mtime = local_midnight_as_system_time(today).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let cutoff_mtime =
+        local_midnight_as_system_time(today).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let cutoff_dt = Utc::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS);
 
     let mut files = Vec::new();
@@ -1027,13 +1147,19 @@ fn compute_today_daily_usage(today: &str) -> Option<DailyUsage> {
         .map(|file| scan_file_daily_usage(file, cutoff_dt, None))
         .reduce(std::collections::BTreeMap::new, merge_daily_usage_maps);
 
-    buckets.into_iter().find(|(date, _)| date == today).map(|(_, v)| v)
+    buckets
+        .into_iter()
+        .find(|(date, _)| date == today)
+        .map(|(_, v)| v)
 }
 
 fn aggregate_daily_usage() -> Vec<DailyUsage> {
     let today = today_local_date_key();
     let mut buckets: std::collections::BTreeMap<String, DailyUsage> =
-        get_or_refresh_historical_daily_usage().into_iter().map(|d| (d.date.clone(), d)).collect();
+        get_or_refresh_historical_daily_usage()
+            .into_iter()
+            .map(|d| (d.date.clone(), d))
+            .collect();
     if let Some(today_bucket) = compute_today_daily_usage(&today) {
         buckets.insert(today.clone(), today_bucket);
     }
@@ -1087,16 +1213,40 @@ fn model_family(model: &str) -> &'static str {
 
 fn price_for_family(family: &str) -> ModelPrice {
     match family {
-        "opus" => ModelPrice { input: 15.0, output: 75.0, cache_write: 18.75, cache_read: 1.5 },
-        "haiku" => ModelPrice { input: 1.0, output: 5.0, cache_write: 1.25, cache_read: 0.1 },
-        _ => ModelPrice { input: 3.0, output: 15.0, cache_write: 3.75, cache_read: 0.3 },
+        "opus" => ModelPrice {
+            input: 15.0,
+            output: 75.0,
+            cache_write: 18.75,
+            cache_read: 1.5,
+        },
+        "haiku" => ModelPrice {
+            input: 1.0,
+            output: 5.0,
+            cache_write: 1.25,
+            cache_read: 0.1,
+        },
+        _ => ModelPrice {
+            input: 3.0,
+            output: 15.0,
+            cache_write: 3.75,
+            cache_read: 0.3,
+        },
     }
 }
 
-fn cost_for_usage(model: &str, input: u64, output: u64, cache_creation: u64, cache_read: u64) -> f64 {
+fn cost_for_usage(
+    model: &str,
+    input: u64,
+    output: u64,
+    cache_creation: u64,
+    cache_read: u64,
+) -> f64 {
     let p = price_for_family(model_family(model));
     const M: f64 = 1_000_000.0;
-    (input as f64 / M) * p.input + (output as f64 / M) * p.output + (cache_creation as f64 / M) * p.cache_write + (cache_read as f64 / M) * p.cache_read
+    (input as f64 / M) * p.input
+        + (output as f64 / M) * p.output
+        + (cache_creation as f64 / M) * p.cache_write
+        + (cache_read as f64 / M) * p.cache_read
 }
 
 #[derive(Default)]
@@ -1129,18 +1279,37 @@ fn scan_usage_lines(path: &Path, tally: &mut UsageTally) {
         if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
             continue;
         }
-        let Some(msg) = value.get("message") else { continue };
+        let Some(msg) = value.get("message") else {
+            continue;
+        };
         if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
             if !seen_message_ids.insert(id.to_string()) {
                 continue;
             }
         }
-        let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
-        let Some(usage) = msg.get("usage") else { continue };
-        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let cache_creation = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let model = msg
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown");
+        let Some(usage) = msg.get("usage") else {
+            continue;
+        };
+        let input = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cache_creation = usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cache_read = usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
         tally.turns += 1;
         tally.tokens += input + output + cache_creation + cache_read;
@@ -1224,7 +1393,12 @@ const DAILY_DETAIL_TOP_TOOLS: usize = 10;
 /// 날짜와 일치하는 줄만 집계하고 tool_use 블록 사용 횟수도 함께 센다(같은
 /// 파일 안에서 세션의 메인 트랜스크립트와 서브에이전트 트랜스크립트를 모두
 /// 이 함수로 훑어 `tool_counts`에 합산한다).
-fn scan_usage_lines_for_date(path: &Path, date: &str, tally: &mut UsageTally, tool_counts: &mut std::collections::HashMap<String, u32>) {
+fn scan_usage_lines_for_date(
+    path: &Path,
+    date: &str,
+    tally: &mut UsageTally,
+    tool_counts: &mut std::collections::HashMap<String, u32>,
+) {
     let Ok(f) = std::fs::File::open(path) else {
         return;
     };
@@ -1240,13 +1414,19 @@ fn scan_usage_lines_for_date(path: &Path, date: &str, tally: &mut UsageTally, to
         if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
             continue;
         }
-        let Some(ts) = value.get("timestamp").and_then(|t| t.as_str()).and_then(parse_iso_timestamp) else {
+        let Some(ts) = value
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(parse_iso_timestamp)
+        else {
             continue;
         };
         if local_date_key(&ts) != date {
             continue;
         }
-        let Some(msg) = value.get("message") else { continue };
+        let Some(msg) = value.get("message") else {
+            continue;
+        };
         // 스트리밍 응답이 여러 줄로 쪼개져 usage/tool_use가 반복 기록되는 것을
         // 막는다 — id당 한 번만 usage와 tool_use를 센다.
         if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
@@ -1256,11 +1436,26 @@ fn scan_usage_lines_for_date(path: &Path, date: &str, tally: &mut UsageTally, to
         }
 
         if let Some(usage) = msg.get("usage") {
-            let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
-            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let cache_creation = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let model = msg
+                .get("model")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            let input = usage
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let output = usage
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_creation = usage
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_read = usage
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
             tally.turns += 1;
             tally.tokens += input + output + cache_creation + cache_read;
@@ -1295,7 +1490,10 @@ fn local_midnight_as_system_time(date: &str) -> Option<std::time::SystemTime> {
 }
 
 fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
-    let mut report = DailyDetailReport { date: date.to_string(), ..Default::default() };
+    let mut report = DailyDetailReport {
+        date: date.to_string(),
+        ..Default::default()
+    };
 
     let Some(home) = dirs::home_dir() else {
         return report;
@@ -1309,7 +1507,10 @@ fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
     };
 
     let is_recent_enough = |path: &Path| -> bool {
-        std::fs::metadata(path).and_then(|m| m.modified()).map(|modified| modified >= cutoff_mtime).unwrap_or(true)
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .map(|modified| modified >= cutoff_mtime)
+            .unwrap_or(true)
     };
 
     let mut sessions: Vec<SessionDetail> = Vec::new();
@@ -1322,7 +1523,11 @@ fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
         if !project_path.is_dir() {
             continue;
         }
-        let Some(project_key) = project_path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()) else {
+        let Some(project_key) = project_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+        else {
             continue;
         };
 
@@ -1336,18 +1541,27 @@ fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
             if session_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Some(session_id) = session_path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()) else {
+            let Some(session_id) = session_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+            else {
                 continue;
             };
 
-            let mut tool_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-            let mut agent_accum: std::collections::BTreeMap<String, (u32, u64, f64)> = std::collections::BTreeMap::new();
+            let mut tool_counts: std::collections::HashMap<String, u32> =
+                std::collections::HashMap::new();
+            let mut agent_accum: std::collections::BTreeMap<String, (u32, u64, f64)> =
+                std::collections::BTreeMap::new();
 
             if is_recent_enough(&session_path) {
                 let mut main_tally = UsageTally::default();
                 scan_usage_lines_for_date(&session_path, date, &mut main_tally, &mut tool_counts);
                 if main_tally.turns > 0 {
-                    agent_accum.insert("main".to_string(), (main_tally.turns, main_tally.tokens, main_tally.cost));
+                    agent_accum.insert(
+                        "main".to_string(),
+                        (main_tally.turns, main_tally.tokens, main_tally.cost),
+                    );
                 }
             }
 
@@ -1362,7 +1576,11 @@ fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
                         if !is_recent_enough(&agent_path) {
                             continue;
                         }
-                        let Some(agent_stem) = agent_path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()) else {
+                        let Some(agent_stem) = agent_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string())
+                        else {
                             continue;
                         };
 
@@ -1370,11 +1588,20 @@ fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
                         let agent_type = std::fs::read_to_string(&meta_path)
                             .ok()
                             .and_then(|c| serde_json::from_str::<Value>(&c).ok())
-                            .and_then(|v| v.get("agentType").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                            .and_then(|v| {
+                                v.get("agentType")
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s.to_string())
+                            })
                             .unwrap_or_else(|| "unknown".to_string());
 
                         let mut agent_tally = UsageTally::default();
-                        scan_usage_lines_for_date(&agent_path, date, &mut agent_tally, &mut tool_counts);
+                        scan_usage_lines_for_date(
+                            &agent_path,
+                            date,
+                            &mut agent_tally,
+                            &mut tool_counts,
+                        );
                         if agent_tally.turns == 0 {
                             continue;
                         }
@@ -1394,11 +1621,19 @@ fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
 
             let mut agents: Vec<AgentUsage> = agent_accum
                 .into_iter()
-                .map(|(agent_type, (turns, total_tokens, cost_usd))| AgentUsage { agent_type, turns, total_tokens, cost_usd })
+                .map(|(agent_type, (turns, total_tokens, cost_usd))| AgentUsage {
+                    agent_type,
+                    turns,
+                    total_tokens,
+                    cost_usd,
+                })
                 .collect();
             agents.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
 
-            let mut tools: Vec<ToolUsage> = tool_counts.into_iter().map(|(tool_name, count)| ToolUsage { tool_name, count }).collect();
+            let mut tools: Vec<ToolUsage> = tool_counts
+                .into_iter()
+                .map(|(tool_name, count)| ToolUsage { tool_name, count })
+                .collect();
             tools.sort_by(|a, b| b.count.cmp(&a.count));
             tools.truncate(DAILY_DETAIL_TOP_TOOLS);
 
@@ -1409,7 +1644,11 @@ fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
             sessions.push(SessionDetail {
                 session_id,
                 project_key: project_key.clone(),
-                title: if title.is_empty() { "(제목 없음)".to_string() } else { title },
+                title: if title.is_empty() {
+                    "(제목 없음)".to_string()
+                } else {
+                    title
+                },
                 total_tokens,
                 cost_usd,
                 agents,
@@ -1481,7 +1720,8 @@ fn code_challenge_from_verifier(verifier: &str) -> String {
 }
 
 fn build_google_auth_url(redirect_uri: &str, code_challenge: &str, state: &str) -> String {
-    let mut url = url::Url::parse(GOOGLE_AUTH_ENDPOINT).expect("고정 URL 파싱은 항상 성공해야 한다");
+    let mut url =
+        url::Url::parse(GOOGLE_AUTH_ENDPOINT).expect("고정 URL 파싱은 항상 성공해야 한다");
     url.query_pairs_mut()
         .append_pair("client_id", GOOGLE_OAUTH_CLIENT_ID)
         .append_pair("redirect_uri", redirect_uri)
@@ -1491,17 +1731,25 @@ fn build_google_auth_url(redirect_uri: &str, code_challenge: &str, state: &str) 
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state)
         // 힌트일 뿐이다 — 실제 강제는 id_token의 hd 클레임을 검증하는 쪽에서 한다.
-        .append_pair("hd", GOOGLE_OAUTH_ALLOWED_DOMAIN)
-        .append_pair("prompt", "select_account");
+        .append_pair("hd", GOOGLE_OAUTH_ALLOWED_DOMAIN);
+    // prompt를 일부러 안 붙인다 — select_account를 강제하면 이미 로그인·승인된
+    // 상태에서도 매번 계정 선택+확인 클릭이 필요해진다. 안 붙이면 브라우저에
+    // 로그인된 구글 계정이 있고 전에 이 앱을 승인한 적 있으면 조용히 바로
+    // 로그인된다(구글 계정을 여러 개 쓰는 사람은 매번 마지막 활성 계정으로
+    // 자동 선택되는 게 트레이드오프 — 사용자가 이 방식을 택함).
     url.to_string()
 }
 
 /// 루프백 콜백 요청의 경로+쿼리(`request.url()`이 주는 형태, 예:
 /// "/callback?code=...&state=...")를 파싱해 code를 뽑는다. state 불일치·error
 /// 파라미터·code 없음은 전부 로그인 거부 사유다.
-fn parse_oauth_callback_url(raw_path_and_query: &str, expected_state: &str) -> Result<String, String> {
+fn parse_oauth_callback_url(
+    raw_path_and_query: &str,
+    expected_state: &str,
+) -> Result<String, String> {
     let full = format!("http://127.0.0.1{raw_path_and_query}");
-    let parsed = url::Url::parse(&full).map_err(|e| format!("콜백 URL을 해석하지 못했습니다: {e}"))?;
+    let parsed =
+        url::Url::parse(&full).map_err(|e| format!("콜백 URL을 해석하지 못했습니다: {e}"))?;
 
     let mut code: Option<String> = None;
     let mut state: Option<String> = None;
@@ -1526,14 +1774,19 @@ fn parse_oauth_callback_url(raw_path_and_query: &str, expected_state: &str) -> R
 }
 
 /// 루프백 서버 하나로 딱 한 번의 콜백 요청만 받고 즉시 닫는다. 최대 5분 대기.
-async fn wait_for_oauth_callback(server: tiny_http::Server, expected_state: String) -> Result<String, String> {
+async fn wait_for_oauth_callback(
+    server: tiny_http::Server,
+    expected_state: String,
+) -> Result<String, String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
 
     std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {
             if std::time::Instant::now() > deadline {
-                let _ = tx.send(Err("로그인 대기 시간이 초과되었습니다(5분). 다시 시도해주세요.".to_string()));
+                let _ = tx.send(Err(
+                    "로그인 대기 시간이 초과되었습니다(5분). 다시 시도해주세요.".to_string(),
+                ));
                 return;
             }
             match server.recv_timeout(std::time::Duration::from_secs(1)) {
@@ -1545,7 +1798,10 @@ async fn wait_for_oauth_callback(server: tiny_http::Server, expected_state: Stri
                     } else {
                         "<html><body><h3>로그인 실패 — 앱으로 돌아가 오류 메시지를 확인하세요.</h3></body></html>"
                     };
-                    if let Ok(header) = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]) {
+                    if let Ok(header) = tiny_http::Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"text/html; charset=utf-8"[..],
+                    ) {
                         let response = tiny_http::Response::from_string(body).with_header(header);
                         let _ = request.respond(response);
                     }
@@ -1598,7 +1854,10 @@ async fn exchange_code_for_id_token(
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("토큰 교환이 거부되었습니다: {text}"));
     }
-    let token_response = resp.json::<GoogleTokenResponse>().await.map_err(|e| format!("토큰 응답을 해석하지 못했습니다: {e}"))?;
+    let token_response = resp
+        .json::<GoogleTokenResponse>()
+        .await
+        .map_err(|e| format!("토큰 응답을 해석하지 못했습니다: {e}"))?;
     Ok(token_response.id_token)
 }
 
@@ -1615,8 +1874,14 @@ struct GoogleJwks {
 }
 
 async fn fetch_google_jwks(client: &reqwest::Client) -> Result<GoogleJwks, String> {
-    let resp = client.get(GOOGLE_JWKS_ENDPOINT).send().await.map_err(|e| format!("Google JWKS를 가져오지 못했습니다: {e}"))?;
-    resp.json::<GoogleJwks>().await.map_err(|e| format!("JWKS 응답을 해석하지 못했습니다: {e}"))
+    let resp = client
+        .get(GOOGLE_JWKS_ENDPOINT)
+        .send()
+        .await
+        .map_err(|e| format!("Google JWKS를 가져오지 못했습니다: {e}"))?;
+    resp.json::<GoogleJwks>()
+        .await
+        .map_err(|e| format!("JWKS 응답을 해석하지 못했습니다: {e}"))
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -1636,12 +1901,24 @@ struct GoogleIdTokenClaims {
 /// 서명·`iss`·`aud`·`exp`를 `jsonwebtoken`으로 검증한다(`exp`는 라이브러리가 기본
 /// 켜져 있는 검증이라 별도 수동 체크가 필요 없다). JWKS에서 토큰 헤더의 `kid`와
 /// 일치하는 키를 못 찾으면 실패시킨다 — 서명 검증 없이 클레임만 믿지 않는다.
-fn verify_google_id_token_signature(id_token: &str, jwks: &GoogleJwks, client_id: &str) -> Result<GoogleIdTokenClaims, String> {
-    let header = jsonwebtoken::decode_header(id_token).map_err(|e| format!("토큰 헤더를 해석하지 못했습니다: {e}"))?;
-    let kid = header.kid.ok_or_else(|| "토큰 헤더에 kid가 없습니다.".to_string())?;
-    let jwk = jwks.keys.iter().find(|k| k.kid == kid).ok_or_else(|| "JWKS에서 일치하는 키를 찾지 못했습니다.".to_string())?;
+fn verify_google_id_token_signature(
+    id_token: &str,
+    jwks: &GoogleJwks,
+    client_id: &str,
+) -> Result<GoogleIdTokenClaims, String> {
+    let header = jsonwebtoken::decode_header(id_token)
+        .map_err(|e| format!("토큰 헤더를 해석하지 못했습니다: {e}"))?;
+    let kid = header
+        .kid
+        .ok_or_else(|| "토큰 헤더에 kid가 없습니다.".to_string())?;
+    let jwk = jwks
+        .keys
+        .iter()
+        .find(|k| k.kid == kid)
+        .ok_or_else(|| "JWKS에서 일치하는 키를 찾지 못했습니다.".to_string())?;
 
-    let decoding_key = jsonwebtoken::DecodingKey::from_rsa_components(&jwk.n, &jwk.e).map_err(|e| format!("공개키를 구성하지 못했습니다: {e}"))?;
+    let decoding_key = jsonwebtoken::DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
+        .map_err(|e| format!("공개키를 구성하지 못했습니다: {e}"))?;
 
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
     validation.set_audience(&[client_id]);
@@ -1656,7 +1933,10 @@ fn verify_google_id_token_signature(id_token: &str, jwks: &GoogleJwks, client_id
 /// URL 파라미터가 아니라 여기, 서명 검증을 통과한 토큰의 클레임에서만 신뢰한다.
 fn check_domain_restriction(claims: &GoogleIdTokenClaims, required_hd: &str) -> Result<(), String> {
     if claims.hd.as_deref() != Some(required_hd) {
-        return Err(format!("허용되지 않은 조직 도메인입니다(hd={:?}, 필요값={required_hd}).", claims.hd));
+        return Err(format!(
+            "허용되지 않은 조직 도메인입니다(hd={:?}, 필요값={required_hd}).",
+            claims.hd
+        ));
     }
     if claims.email_verified != Some(true) {
         return Err("이메일이 인증되지 않았습니다(email_verified가 true가 아닙니다).".to_string());
@@ -1688,7 +1968,8 @@ async fn google_oauth_login(app: tauri::AppHandle) -> Result<GoogleLoginResult, 
 
     // 포트를 먼저 확보해야 redirect_uri를 만들 수 있다 — 고정 포트 대신 OS가 배정한
     // 임시 포트를 쓴다(RFC 8252 권고: 다른 앱과의 포트 충돌을 피한다).
-    let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| format!("루프백 서버를 열지 못했습니다: {e}"))?;
+    let server = tiny_http::Server::http("127.0.0.1:0")
+        .map_err(|e| format!("루프백 서버를 열지 못했습니다: {e}"))?;
     let port = server
         .server_addr()
         .to_ip()
@@ -1700,13 +1981,17 @@ async fn google_oauth_login(app: tauri::AppHandle) -> Result<GoogleLoginResult, 
 
     {
         use tauri_plugin_opener::OpenerExt;
-        app.opener().open_url(&auth_url, None::<&str>).map_err(|e| format!("브라우저를 열지 못했습니다: {e}"))?;
+        app.opener()
+            .open_url(&auth_url, None::<&str>)
+            .map_err(|e| format!("브라우저를 열지 못했습니다: {e}"))?;
     }
 
     let code = wait_for_oauth_callback(server, state).await?;
 
     let client = reqwest::Client::new();
-    let id_token = exchange_code_for_id_token(&client, &code, &code_verifier, &redirect_uri, client_secret).await?;
+    let id_token =
+        exchange_code_for_id_token(&client, &code, &code_verifier, &redirect_uri, client_secret)
+            .await?;
     let jwks = fetch_google_jwks(&client).await?;
     let claims = verify_google_id_token_signature(&id_token, &jwks, GOOGLE_OAUTH_CLIENT_ID)?;
     check_domain_restriction(&claims, GOOGLE_OAUTH_ALLOWED_DOMAIN)?;
@@ -1727,8 +2012,8 @@ async fn google_oauth_login(app: tauri::AppHandle) -> Result<GoogleLoginResult, 
 // 500ms로 묶어준다(디바운스) — setInterval 폴링이 아니라 OS 파일시스템 이벤트
 // 기반이다.
 fn watch_claude_sessions_dir(app_handle: tauri::AppHandle) {
-    use notify_debouncer_mini::notify::RecursiveMode;
     use notify_debouncer_mini::new_debouncer;
+    use notify_debouncer_mini::notify::RecursiveMode;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1746,7 +2031,11 @@ fn watch_claude_sessions_dir(app_handle: tauri::AppHandle) {
     let Ok(mut debouncer) = new_debouncer(Duration::from_millis(500), tx) else {
         return;
     };
-    if debouncer.watcher().watch(&sessions_dir, RecursiveMode::NonRecursive).is_err() {
+    if debouncer
+        .watcher()
+        .watch(&sessions_dir, RecursiveMode::NonRecursive)
+        .is_err()
+    {
         return;
     }
 
@@ -1782,7 +2071,11 @@ pub fn run() {
             greet,
             list_claude_sessions,
             list_workspace_projects,
-            check_dev_tools,
+            dev_tools::check_dev_tools,
+            dev_tools::preview_dev_tool_update,
+            dev_tools::update_dev_tool,
+            dev_tools::install_dev_tool,
+            dev_tools::open_manual_instruction,
             list_installed_plugins,
             list_known_marketplaces,
             read_otel_env,
@@ -1828,13 +2121,10 @@ mod tests {
         );
     }
 
-    // node/pnpm 기반 저장소에서 도는 테스트이니 최소 하나는 설치되어 있어야 한다.
-    #[test]
-    fn checks_dev_tools_without_panicking() {
-        let tools = check_dev_tools();
-        assert_eq!(tools.len(), 7);
-        assert!(tools.iter().any(|t| t.installed), "claude/node/gh 중 설치된 도구가 하나도 없습니다");
-    }
+    // dev_tools 모듈로 이전됨(check_dev_tools_blocking, docker 삭제로 7→6) —
+    // 여기서는 크레이트가 async 커맨드를 정상적으로 노출하는지만 남겨둔다.
+    // 실제 판정 테스트는 src/dev_tools.rs의
+    // devtool_table_has_exactly_six_entries_without_docker 등을 참조.
 
     // 세션목록 실시간 감시의 핵심 메커니즘(디바운서로 감싼 notify 워처가 디렉터리
     // 변경을 실제로 잡아내는지)만 격리해서 검증한다 — app_handle.emit()까지 엮인
@@ -1847,12 +2137,14 @@ mod tests {
         use std::sync::mpsc;
         use std::time::Duration;
 
-        let tmp_dir = std::env::temp_dir().join(format!("malgn-vscode-watch-test-{}", std::process::id()));
+        let tmp_dir =
+            std::env::temp_dir().join(format!("malgn-vscode-watch-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir).expect("임시 디렉터리를 만들지 못했습니다");
 
         let (tx, rx) = mpsc::channel();
-        let mut debouncer = new_debouncer(Duration::from_millis(200), tx).expect("디바운서 생성 실패");
+        let mut debouncer =
+            new_debouncer(Duration::from_millis(200), tx).expect("디바운서 생성 실패");
         debouncer
             .watcher()
             .watch(&tmp_dir, RecursiveMode::NonRecursive)
@@ -1861,9 +2153,16 @@ mod tests {
         std::fs::write(tmp_dir.join("test.json"), "{}").expect("테스트 파일 쓰기 실패");
 
         let event = rx.recv_timeout(Duration::from_secs(5));
-        assert!(event.is_ok(), "디렉터리 변경 이벤트를 감지하지 못했습니다(타임아웃)");
+        assert!(
+            event.is_ok(),
+            "디렉터리 변경 이벤트를 감지하지 못했습니다(타임아웃)"
+        );
         let events = event.unwrap();
-        assert!(events.is_ok(), "워처가 에러를 반환했습니다: {:?}", events.err());
+        assert!(
+            events.is_ok(),
+            "워처가 에러를 반환했습니다: {:?}",
+            events.err()
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -1884,10 +2183,16 @@ mod tests {
 
         let today = Local::now().format("%Y-%m-%d").to_string();
         let today_entry = daily.iter().find(|d| d.date == today);
-        assert!(today_entry.is_some(), "오늘({today}) 날짜의 사용량 항목이 없습니다");
+        assert!(
+            today_entry.is_some(),
+            "오늘({today}) 날짜의 사용량 항목이 없습니다"
+        );
 
         let today_entry = today_entry.unwrap();
-        let total = today_entry.input_tokens + today_entry.output_tokens + today_entry.cache_creation_tokens + today_entry.cache_read_tokens;
+        let total = today_entry.input_tokens
+            + today_entry.output_tokens
+            + today_entry.cache_creation_tokens
+            + today_entry.cache_read_tokens;
         assert!(total > 0, "오늘 사용량 합계가 0입니다");
     }
 
@@ -1898,17 +2203,32 @@ mod tests {
     fn historical_daily_usage_cache_is_consistent_across_calls() {
         let today = today_local_date_key();
         let first = get_or_refresh_historical_daily_usage();
-        let cached = HISTORICAL_USAGE_CACHE.lock().unwrap().as_ref().map(|c| c.cached_as_of.clone());
-        assert_eq!(cached, Some(today.clone()), "캐시가 오늘 날짜로 채워지지 않았습니다");
+        let cached = HISTORICAL_USAGE_CACHE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.cached_as_of.clone());
+        assert_eq!(
+            cached,
+            Some(today.clone()),
+            "캐시가 오늘 날짜로 채워지지 않았습니다"
+        );
 
         let second = get_or_refresh_historical_daily_usage();
-        assert_eq!(first.len(), second.len(), "캐시 히트 결과의 항목 수가 달라졌습니다");
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "캐시 히트 결과의 항목 수가 달라졌습니다"
+        );
         for (a, b) in first.iter().zip(second.iter()) {
             assert_eq!(a.date, b.date);
             assert_eq!(a.input_tokens, b.input_tokens);
             assert_eq!(a.output_tokens, b.output_tokens);
         }
-        assert!(!first.iter().any(|d| d.date == today), "과거분 캐시에 오늘 날짜가 섞여 있습니다");
+        assert!(
+            !first.iter().any(|d| d.date == today),
+            "과거분 캐시에 오늘 날짜가 섞여 있습니다"
+        );
     }
 
     // "토큰 도둑" 단가 계산 — pricing.js PRICING 표를 정확히 옮겼는지 결정론적으로
@@ -1916,18 +2236,48 @@ mod tests {
     // 단가 합과 정확히 같아야 한다.
     #[test]
     fn calculates_cost_using_ported_pricing_table() {
-        let opus_cost = cost_for_usage("claude-opus-4-8", 1_000_000, 1_000_000, 1_000_000, 1_000_000);
-        assert!((opus_cost - (15.0 + 75.0 + 18.75 + 1.5)).abs() < 1e-9, "opus 단가 계산이 pricing.js와 다릅니다: {opus_cost}");
+        let opus_cost = cost_for_usage(
+            "claude-opus-4-8",
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+        );
+        assert!(
+            (opus_cost - (15.0 + 75.0 + 18.75 + 1.5)).abs() < 1e-9,
+            "opus 단가 계산이 pricing.js와 다릅니다: {opus_cost}"
+        );
 
-        let sonnet_cost = cost_for_usage("claude-sonnet-4-6", 1_000_000, 1_000_000, 1_000_000, 1_000_000);
-        assert!((sonnet_cost - (3.0 + 15.0 + 3.75 + 0.3)).abs() < 1e-9, "sonnet 단가 계산이 pricing.js와 다릅니다: {sonnet_cost}");
+        let sonnet_cost = cost_for_usage(
+            "claude-sonnet-4-6",
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+        );
+        assert!(
+            (sonnet_cost - (3.0 + 15.0 + 3.75 + 0.3)).abs() < 1e-9,
+            "sonnet 단가 계산이 pricing.js와 다릅니다: {sonnet_cost}"
+        );
 
-        let haiku_cost = cost_for_usage("claude-haiku-4-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000);
-        assert!((haiku_cost - (1.0 + 5.0 + 1.25 + 0.1)).abs() < 1e-9, "haiku 단가 계산이 pricing.js와 다릅니다: {haiku_cost}");
+        let haiku_cost = cost_for_usage(
+            "claude-haiku-4-5",
+            1_000_000,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+        );
+        assert!(
+            (haiku_cost - (1.0 + 5.0 + 1.25 + 0.1)).abs() < 1e-9,
+            "haiku 단가 계산이 pricing.js와 다릅니다: {haiku_cost}"
+        );
 
         // 미매칭 모델명은 pricing.js의 modelFamily()처럼 sonnet으로 폴백해야 한다.
         let unknown_cost = cost_for_usage("some-unreleased-model", 1_000_000, 0, 0, 0);
-        assert!((unknown_cost - 3.0).abs() < 1e-9, "미매칭 모델 폴백이 sonnet 단가가 아닙니다: {unknown_cost}");
+        assert!(
+            (unknown_cost - 3.0).abs() < 1e-9,
+            "미매칭 모델 폴백이 sonnet 단가가 아닙니다: {unknown_cost}"
+        );
     }
 
     // 회귀 방지 — 실제로 겪은 버그: 스트리밍 응답이 여러 JSONL 줄로 쪼개져 기록되며
@@ -1937,7 +2287,10 @@ mod tests {
     // 합성 fixture로 재현해 scan_usage_lines()가 id당 한 번만 세는지 고정한다.
     #[test]
     fn deduplicates_repeated_message_id_when_scanning_usage() {
-        let tmp = std::env::temp_dir().join(format!("malgn-vscode-usage-dedup-test-{}.jsonl", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "malgn-vscode-usage-dedup-test-{}.jsonl",
+            std::process::id()
+        ));
         let content = concat!(
             r#"{"type":"assistant","timestamp":"2026-09-08T10:00:00.000Z","message":{"id":"msg_dup1","model":"claude-sonnet-4-6","usage":{"input_tokens":2,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":10000}}}"#,
             "\n",
@@ -1954,7 +2307,11 @@ mod tests {
 
         // msg_dup1은 한 번만, msg_unique2는 한 번 — 총 2턴이어야 한다(3이면 중복 제거 실패).
         assert_eq!(tally.turns, 2, "중복 message.id가 두 번 세어졌습니다");
-        assert_eq!(tally.tokens, (2 + 100 + 10000) + (1 + 50 + 5000), "중복 제거 후 토큰 합계가 예상과 다릅니다");
+        assert_eq!(
+            tally.tokens,
+            (2 + 100 + 10000) + (1 + 50 + 5000),
+            "중복 제거 후 토큰 합계가 예상과 다릅니다"
+        );
     }
 
     // 이 세션 자체가 지금 malgn-vscode 프로젝트에서 오늘 날짜의 활동을 만들어내고
@@ -1965,14 +2322,23 @@ mod tests {
         let today = Local::now().format("%Y-%m-%d").to_string();
         let report = aggregate_daily_detail(&today);
         assert_eq!(report.date, today);
-        assert!(!report.sessions.is_empty(), "오늘 날짜 상세 집계가 비어 있습니다");
+        assert!(
+            !report.sessions.is_empty(),
+            "오늘 날짜 상세 집계가 비어 있습니다"
+        );
         assert!(report.total_tokens > 0, "오늘 날짜 총 토큰이 0입니다");
         assert!(
-            report.sessions.iter().any(|s| s.project_key == "-Users-hopegiver-workspace-malgn-vscode"),
+            report
+                .sessions
+                .iter()
+                .any(|s| s.project_key == "-Users-hopegiver-workspace-malgn-vscode"),
             "이 프로젝트(malgn-vscode) 세션이 오늘 상세 집계에 없습니다"
         );
         // 하루치만 봤으니 각 세션의 tools는 상위 10개를 넘지 않아야 한다.
-        assert!(report.sessions.iter().all(|s| s.tools.len() <= 10), "tools 상위 개수 제한이 지켜지지 않았습니다");
+        assert!(
+            report.sessions.iter().all(|s| s.tools.len() <= 10),
+            "tools 상위 개수 제한이 지켜지지 않았습니다"
+        );
     }
 
     // 실제 세션 중 최소 하나는 대화 로그(jsonl)에서 제목을 뽑아낼 수 있어야 한다 —
@@ -1982,9 +2348,10 @@ mod tests {
     fn extracts_title_for_at_least_one_real_session() {
         let sessions = read_claude_sessions();
         assert!(
-            sessions
-                .iter()
-                .any(|s| s.get("title").and_then(|t| t.as_str()).is_some_and(|t| !t.is_empty())),
+            sessions.iter().any(|s| s
+                .get("title")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| !t.is_empty())),
             "실제 세션 중 제목을 추출한 것이 하나도 없습니다"
         );
     }
@@ -1994,7 +2361,10 @@ mod tests {
     #[test]
     fn finds_this_project_in_workspace() {
         let projects = scan_workspace_projects();
-        assert!(!projects.is_empty(), "~/workspace 아래에서 프로젝트를 하나도 찾지 못했습니다");
+        assert!(
+            !projects.is_empty(),
+            "~/workspace 아래에서 프로젝트를 하나도 찾지 못했습니다"
+        );
         assert!(
             projects.iter().any(|p| p.name == "malgn-vscode"),
             "malgn-vscode 자기 자신이 목록에 없습니다"
@@ -2036,7 +2406,10 @@ mod tests {
     #[test]
     fn finds_known_marketplaces() {
         let marketplaces = read_known_marketplaces();
-        assert!(!marketplaces.is_empty(), "마켓플레이스를 하나도 찾지 못했습니다");
+        assert!(
+            !marketplaces.is_empty(),
+            "마켓플레이스를 하나도 찾지 못했습니다"
+        );
         assert!(marketplaces.iter().any(|m| m.id == "malgnsoft-plugins"));
     }
 
@@ -2044,21 +2417,33 @@ mod tests {
     #[test]
     fn reads_only_otel_prefixed_keys() {
         let env = collect_otel_env();
-        assert!(env.keys().all(|k| k.starts_with("OTEL_")), "OTEL_ 접두사가 아닌 키가 섞여 있습니다");
+        assert!(
+            env.keys().all(|k| k.starts_with("OTEL_")),
+            "OTEL_ 접두사가 아닌 키가 섞여 있습니다"
+        );
     }
 
     #[test]
     fn rejects_project_path_outside_workspace_root() {
         let tree = list_project_tree("/etc".to_string());
-        assert!(tree.is_empty(), "워크스페이스 바깥 경로가 거부되지 않았습니다");
+        assert!(
+            tree.is_empty(),
+            "워크스페이스 바깥 경로가 거부되지 않았습니다"
+        );
     }
 
     // 경로 트래버설 차단 — 보안 관련이라 회귀 방지용으로 고정해둔다.
     #[test]
     fn blocks_path_traversal_in_file_preview() {
         let projects = scan_workspace_projects();
-        let project = projects.iter().find(|p| p.name == "malgn-vscode").expect("malgn-vscode 프로젝트가 없습니다");
-        let result = read_project_file(project.path.clone(), "../../../../../../../etc/passwd".to_string());
+        let project = projects
+            .iter()
+            .find(|p| p.name == "malgn-vscode")
+            .expect("malgn-vscode 프로젝트가 없습니다");
+        let result = read_project_file(
+            project.path.clone(),
+            "../../../../../../../etc/passwd".to_string(),
+        );
         assert!(
             matches!(result, FilePreview::Denied | FilePreview::NotFound),
             "경로 트래버설이 차단되지 않았습니다: {:?}",
@@ -2069,7 +2454,10 @@ mod tests {
     #[test]
     fn reads_a_real_text_file_from_this_project() {
         let projects = scan_workspace_projects();
-        let project = projects.iter().find(|p| p.name == "malgn-vscode").expect("malgn-vscode 프로젝트가 없습니다");
+        let project = projects
+            .iter()
+            .find(|p| p.name == "malgn-vscode")
+            .expect("malgn-vscode 프로젝트가 없습니다");
         let result = read_project_file(project.path.clone(), "package.json".to_string());
         match result {
             FilePreview::Text { content } => assert!(content.contains("\"name\"")),
@@ -2080,7 +2468,10 @@ mod tests {
     #[test]
     fn builds_tree_excluding_node_modules() {
         let projects = scan_workspace_projects();
-        let project = projects.iter().find(|p| p.name == "malgn-vscode").expect("malgn-vscode 프로젝트가 없습니다");
+        let project = projects
+            .iter()
+            .find(|p| p.name == "malgn-vscode")
+            .expect("malgn-vscode 프로젝트가 없습니다");
         let tree = list_project_tree(project.path.clone());
         assert!(!tree.is_empty(), "파일 트리가 비어 있습니다");
         if let Some(nm) = tree.iter().find(|n| n.name == "node_modules") {
@@ -2111,18 +2502,29 @@ mod tests {
     fn generates_random_urlsafe_strings_that_differ_and_are_urlsafe() {
         let a = generate_random_urlsafe(32);
         let b = generate_random_urlsafe(32);
-        assert_ne!(a, b, "매번 다른 무작위 값이어야 합니다(state/verifier 재사용 방지)");
+        assert_ne!(
+            a, b,
+            "매번 다른 무작위 값이어야 합니다(state/verifier 재사용 방지)"
+        );
         assert!(
-            a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "URL-safe base64 문자만 포함해야 합니다: {a}"
         );
     }
 
     #[test]
     fn builds_google_auth_url_with_required_params() {
-        let url = build_google_auth_url("http://127.0.0.1:54321/callback", "challenge123", "state123");
+        let url = build_google_auth_url(
+            "http://127.0.0.1:54321/callback",
+            "challenge123",
+            "state123",
+        );
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
-        assert!(url.contains("hd=malgnsoft.com"), "hd 힌트가 빠졌습니다: {url}");
+        assert!(
+            url.contains("hd=malgnsoft.com"),
+            "hd 힌트가 빠졌습니다: {url}"
+        );
         assert!(url.contains("response_type=code"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("code_challenge=challenge123"));
@@ -2131,20 +2533,27 @@ mod tests {
 
     #[test]
     fn parses_valid_oauth_callback() {
-        let code = parse_oauth_callback_url("/callback?code=abc123&state=xyz", "xyz").expect("정상 콜백은 성공해야 합니다");
+        let code = parse_oauth_callback_url("/callback?code=abc123&state=xyz", "xyz")
+            .expect("정상 콜백은 성공해야 합니다");
         assert_eq!(code, "abc123");
     }
 
     #[test]
     fn rejects_oauth_callback_with_mismatched_state() {
         let result = parse_oauth_callback_url("/callback?code=abc123&state=WRONG", "xyz");
-        assert!(result.is_err(), "state 불일치는 CSRF 의심으로 거부되어야 합니다");
+        assert!(
+            result.is_err(),
+            "state 불일치는 CSRF 의심으로 거부되어야 합니다"
+        );
     }
 
     #[test]
     fn rejects_oauth_callback_with_error_param() {
         let result = parse_oauth_callback_url("/callback?error=access_denied&state=xyz", "xyz");
-        assert!(result.is_err(), "Google이 보낸 error 파라미터는 거부 사유여야 합니다");
+        assert!(
+            result.is_err(),
+            "Google이 보낸 error 파라미터는 거부 사유여야 합니다"
+        );
     }
 
     #[test]
@@ -2175,26 +2584,38 @@ mod tests {
     #[test]
     fn rejects_wrong_hd_domain() {
         let claims = sample_claims(Some("gmail.com"), Some(true));
-        assert!(check_domain_restriction(&claims, "malgnsoft.com").is_err(), "다른 조직 도메인은 거부되어야 합니다");
+        assert!(
+            check_domain_restriction(&claims, "malgnsoft.com").is_err(),
+            "다른 조직 도메인은 거부되어야 합니다"
+        );
     }
 
     #[test]
     fn rejects_missing_hd_claim() {
         // 개인 Gmail 계정 등 Workspace가 아닌 계정은 hd 클레임 자체가 없다.
         let claims = sample_claims(None, Some(true));
-        assert!(check_domain_restriction(&claims, "malgnsoft.com").is_err(), "hd 클레임이 없으면 거부되어야 합니다");
+        assert!(
+            check_domain_restriction(&claims, "malgnsoft.com").is_err(),
+            "hd 클레임이 없으면 거부되어야 합니다"
+        );
     }
 
     #[test]
     fn rejects_unverified_email() {
         let claims = sample_claims(Some("malgnsoft.com"), Some(false));
-        assert!(check_domain_restriction(&claims, "malgnsoft.com").is_err(), "email_verified가 false면 거부되어야 합니다");
+        assert!(
+            check_domain_restriction(&claims, "malgnsoft.com").is_err(),
+            "email_verified가 false면 거부되어야 합니다"
+        );
     }
 
     #[test]
     fn rejects_missing_email_verified() {
         let claims = sample_claims(Some("malgnsoft.com"), None);
-        assert!(check_domain_restriction(&claims, "malgnsoft.com").is_err(), "email_verified 클레임이 없으면 거부되어야 합니다");
+        assert!(
+            check_domain_restriction(&claims, "malgnsoft.com").is_err(),
+            "email_verified 클레임이 없으면 거부되어야 합니다"
+        );
     }
 
     // ---- 서명 검증 (합성 RSA 키쌍으로 실제 서명된 JWT를 만들어 검증) ----
@@ -2202,7 +2623,8 @@ mod tests {
     // 실제 개인키는 당연히 우리에게 없다). 이 키로 직접 서명한 토큰을 우리
     // verify_google_id_token_signature()에 통과시켜 서명·iss·aud·exp 검증이 실제로
     // 동작하는지 확인한다.
-    const TEST_RSA_PRIVATE_KEY_PEM: &str = // pragma: allowlist-secret (테스트 전용 합성 키, 실서비스와 무관)
+    const TEST_RSA_PRIVATE_KEY_PEM: &str =
+        // pragma: allowlist-secret (테스트 전용 합성 키, 실서비스와 무관)
         "-----BEGIN RSA PRIVATE KEY-----
 MIIEogIBAAKCAQEAnrvlIKSb3xV5R+JTXVvNsj5cPZWRh9NsV3qfFTeT4IewGBH8
 MNDFlG21tb8PShKamFVgReoSp25X2+WlalGeePP7F8dV9Q7UGKQKpubKIbErYjiO
@@ -2234,7 +2656,13 @@ PZjgfX70Iyke1LFgmwoh3Mq4Yicc57EBfPpH5WAGMtPlrpf1NDM=
     const TEST_RSA_E: &str = "AQAB";
 
     fn build_test_jwks() -> GoogleJwks {
-        GoogleJwks { keys: vec![GoogleJwk { kid: "test-kid-1".to_string(), n: TEST_RSA_N.to_string(), e: TEST_RSA_E.to_string() }] }
+        GoogleJwks {
+            keys: vec![GoogleJwk {
+                kid: "test-kid-1".to_string(),
+                n: TEST_RSA_N.to_string(),
+                e: TEST_RSA_E.to_string(),
+            }],
+        }
     }
 
     #[derive(serde::Serialize)]
@@ -2249,18 +2677,28 @@ PZjgfX70Iyke1LFgmwoh3Mq4Yicc57EBfPpH5WAGMtPlrpf1NDM=
     }
 
     fn sign_test_token(claims: &TestClaims, kid: &str) -> String {
-        let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY_PEM.as_bytes()).expect("테스트 RSA 개인키 파싱 실패");
+        let encoding_key =
+            jsonwebtoken::EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY_PEM.as_bytes())
+                .expect("테스트 RSA 개인키 파싱 실패");
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some(kid.to_string());
         jsonwebtoken::encode(&header, claims, &encoding_key).expect("테스트 토큰 서명 실패")
     }
 
     fn future_exp() -> usize {
-        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600) as usize
+        (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600) as usize
     }
 
     fn past_exp() -> usize {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().saturating_sub(3600) as usize
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(3600) as usize
     }
 
     #[test]
@@ -2277,7 +2715,8 @@ PZjgfX70Iyke1LFgmwoh3Mq4Yicc57EBfPpH5WAGMtPlrpf1NDM=
         };
         let token = sign_test_token(&claims, "test-kid-1");
 
-        let verified = verify_google_id_token_signature(&token, &jwks, "test-client-id").expect("정상 서명 토큰은 검증을 통과해야 합니다");
+        let verified = verify_google_id_token_signature(&token, &jwks, "test-client-id")
+            .expect("정상 서명 토큰은 검증을 통과해야 합니다");
         assert_eq!(verified.email.as_deref(), Some("dev@malgnsoft.com"));
         assert_eq!(verified.hd.as_deref(), Some("malgnsoft.com"));
         assert!(check_domain_restriction(&verified, "malgnsoft.com").is_ok());
@@ -2297,7 +2736,10 @@ PZjgfX70Iyke1LFgmwoh3Mq4Yicc57EBfPpH5WAGMtPlrpf1NDM=
         };
         let token = sign_test_token(&claims, "test-kid-1");
         let result = verify_google_id_token_signature(&token, &jwks, "test-client-id");
-        assert!(result.is_err(), "우리 client_id가 아닌 aud는 거부되어야 합니다(다른 앱 발급 토큰 재사용 방지)");
+        assert!(
+            result.is_err(),
+            "우리 client_id가 아닌 aud는 거부되어야 합니다(다른 앱 발급 토큰 재사용 방지)"
+        );
     }
 
     #[test]
@@ -2348,7 +2790,9 @@ PZjgfX70Iyke1LFgmwoh3Mq4Yicc57EBfPpH5WAGMtPlrpf1NDM=
         };
         let token = sign_test_token(&claims, "unknown-kid-999");
         let result = verify_google_id_token_signature(&token, &jwks, "test-client-id");
-        assert!(result.is_err(), "JWKS에 없는 kid로 서명된 토큰은 검증할 방법이 없어 거부되어야 합니다");
+        assert!(
+            result.is_err(),
+            "JWKS에 없는 kid로 서명된 토큰은 검증할 방법이 없어 거부되어야 합니다"
+        );
     }
-
 }

@@ -178,17 +178,3 @@ export const MOCK_TASK_RUNS: readonly TaskRun[] = [
   { id: 'run-9', taskName: '오늘 업무 성과관리 등록', status: '성공', startedAt: '어제 18:00', endedAt: '어제 18:01' },
   { id: 'run-10', taskName: '오늘 업무 성과관리 등록', status: '성공', startedAt: '2일 전 18:00', endedAt: '2일 전 18:01' },
 ];
-
-// ---------------- 개발 환경: "최신 버전" 비교값 ----------------
-// 실제 설치 버전은 devToolsApi.ts가 로컬에서 조회하지만, 그 버전과 비교할 "최신
-// 버전"은 실제 배포 채널을 조회하지 않는다 — 순수 목업 샘플 값이다(업데이트 가능
-// 여부를 보여주기 위한 것일 뿐, 정확한 최신 버전 숫자가 아니다).
-export const MOCK_DEV_TOOL_META: Readonly<Record<string, { readonly latestVersion: string; readonly updateAvailable: boolean }>> = {
-  claude: { latestVersion: '2.2.0', updateAvailable: true },
-  node: { latestVersion: '22.14.0', updateAvailable: false },
-  gh: { latestVersion: '2.65.0', updateAvailable: true },
-  git: { latestVersion: '2.47.0', updateAvailable: false },
-  pnpm: { latestVersion: '11.10.0', updateAvailable: true },
-  wrangler: { latestVersion: '3.90.0', updateAvailable: true },
-  docker: { latestVersion: '27.4.0', updateAvailable: false },
-};

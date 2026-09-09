@@ -67,7 +67,10 @@ fn extract_email_from_whoami(stdout: &str) -> Option<String> {
 #[tauri::command]
 pub fn cloudflare_status() -> CloudflareStatus {
     let Some(wrangler) = resolve_wrangler() else {
-        return CloudflareStatus { installed: false, ..Default::default() };
+        return CloudflareStatus {
+            installed: false,
+            ..Default::default()
+        };
     };
 
     let output = Command::new(&wrangler).arg("whoami").output();
@@ -75,9 +78,17 @@ pub fn cloudflare_status() -> CloudflareStatus {
         Ok(o) if o.status.success() => {
             let stdout = String::from_utf8_lossy(&o.stdout);
             let email = extract_email_from_whoami(&stdout);
-            CloudflareStatus { installed: true, connected: true, email }
+            CloudflareStatus {
+                installed: true,
+                connected: true,
+                email,
+            }
         }
-        _ => CloudflareStatus { installed: true, connected: false, email: None },
+        _ => CloudflareStatus {
+            installed: true,
+            connected: false,
+            email: None,
+        },
     }
 }
 
@@ -93,7 +104,10 @@ pub fn cloudflare_connect() -> Result<TerminalLaunchResult, String> {
         });
     };
     open_terminal_command(&format!("{wrangler} login"))?;
-    Ok(TerminalLaunchResult { opened: true, message: "터미널 창에서 Cloudflare 로그인 절차를 진행해주세요.".to_string() })
+    Ok(TerminalLaunchResult {
+        opened: true,
+        message: "터미널 창에서 Cloudflare 로그인 절차를 진행해주세요.".to_string(),
+    })
 }
 
 /// ③ 연결 해제. 같은 이유로 `wrangler logout`도 터미널 창을 열어 사용자가 직접
@@ -101,10 +115,16 @@ pub fn cloudflare_connect() -> Result<TerminalLaunchResult, String> {
 #[tauri::command]
 pub fn cloudflare_disconnect() -> Result<TerminalLaunchResult, String> {
     let Some(wrangler) = resolve_wrangler() else {
-        return Ok(TerminalLaunchResult { opened: false, message: "Wrangler CLI가 설치되어 있지 않습니다.".to_string() });
+        return Ok(TerminalLaunchResult {
+            opened: false,
+            message: "Wrangler CLI가 설치되어 있지 않습니다.".to_string(),
+        });
     };
     open_terminal_command(&format!("{wrangler} logout"))?;
-    Ok(TerminalLaunchResult { opened: true, message: "터미널 창에서 Cloudflare 로그아웃 절차를 진행해주세요.".to_string() })
+    Ok(TerminalLaunchResult {
+        opened: true,
+        message: "터미널 창에서 Cloudflare 로그아웃 절차를 진행해주세요.".to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -114,7 +134,10 @@ mod tests {
     #[test]
     fn extracts_email_from_typical_whoami_output() {
         let sample = "You are logged in with an OAuth Token, associated with the email test@malgnsoft.com.\n";
-        assert_eq!(extract_email_from_whoami(sample), Some("test@malgnsoft.com".to_string()));
+        assert_eq!(
+            extract_email_from_whoami(sample),
+            Some("test@malgnsoft.com".to_string())
+        );
     }
 
     #[test]

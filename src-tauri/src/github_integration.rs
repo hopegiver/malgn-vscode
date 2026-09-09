@@ -33,12 +33,23 @@ pub struct GithubStatus {
 #[tauri::command]
 pub fn github_status() -> GithubStatus {
     let Some(gh) = resolve_gh() else {
-        return GithubStatus { installed: false, ..Default::default() };
+        return GithubStatus {
+            installed: false,
+            ..Default::default()
+        };
     };
 
-    let logged_in = Command::new(&gh).args(["auth", "status"]).output().map(|o| o.status.success()).unwrap_or(false);
+    let logged_in = Command::new(&gh)
+        .args(["auth", "status"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     if !logged_in {
-        return GithubStatus { installed: true, connected: false, ..Default::default() };
+        return GithubStatus {
+            installed: true,
+            connected: false,
+            ..Default::default()
+        };
     }
 
     let profile = Command::new(&gh)
@@ -52,12 +63,20 @@ pub fn github_status() -> GithubStatus {
         Some(v) => (
             v.get("login").and_then(|x| x.as_str()).map(String::from),
             v.get("name").and_then(|x| x.as_str()).map(String::from),
-            v.get("avatar_url").and_then(|x| x.as_str()).map(String::from),
+            v.get("avatar_url")
+                .and_then(|x| x.as_str())
+                .map(String::from),
         ),
         None => (None, None, None),
     };
 
-    GithubStatus { installed: true, connected: true, login, name, avatar_url }
+    GithubStatus {
+        installed: true,
+        connected: true,
+        login,
+        name,
+        avatar_url,
+    }
 }
 
 /// ② 연결 시작. `gh auth login`을 앱이 대신 실행하지 않고, 사용자가 직접 보는
@@ -71,7 +90,10 @@ pub fn github_connect() -> Result<TerminalLaunchResult, String> {
         });
     };
     open_terminal_command(&format!("{gh} auth login"))?;
-    Ok(TerminalLaunchResult { opened: true, message: "터미널 창에서 GitHub 로그인 절차를 진행해주세요.".to_string() })
+    Ok(TerminalLaunchResult {
+        opened: true,
+        message: "터미널 창에서 GitHub 로그인 절차를 진행해주세요.".to_string(),
+    })
 }
 
 /// ③ 연결 해제. 같은 이유로 `gh auth logout`도 앱이 조용히 실행하지 않고 터미널
@@ -79,8 +101,14 @@ pub fn github_connect() -> Result<TerminalLaunchResult, String> {
 #[tauri::command]
 pub fn github_disconnect() -> Result<TerminalLaunchResult, String> {
     let Some(gh) = resolve_gh() else {
-        return Ok(TerminalLaunchResult { opened: false, message: "GitHub CLI(gh)가 설치되어 있지 않습니다.".to_string() });
+        return Ok(TerminalLaunchResult {
+            opened: false,
+            message: "GitHub CLI(gh)가 설치되어 있지 않습니다.".to_string(),
+        });
     };
     open_terminal_command(&format!("{gh} auth logout"))?;
-    Ok(TerminalLaunchResult { opened: true, message: "터미널 창에서 GitHub 로그아웃 절차를 진행해주세요.".to_string() })
+    Ok(TerminalLaunchResult {
+        opened: true,
+        message: "터미널 창에서 GitHub 로그아웃 절차를 진행해주세요.".to_string(),
+    })
 }

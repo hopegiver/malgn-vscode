@@ -30,6 +30,23 @@ pub fn resolve_binary(absolute_candidates: &[&str], bare_name: &str) -> Option<S
     None
 }
 
+/// `candidates`에 `~/`로 시작하는 항목이 있으면 `dirs::home_dir()`로 확장한 뒤
+/// `resolve_binary`에 넘기는 얇은 래퍼. `resolve_binary`의 시그니처(`&[&str]`)를
+/// 바꾸지 않고 GUI PATH 문제 해법을 그대로 재사용하기 위함(개발 환경 실설치/
+/// 업데이트 결정 5.5 — claude/pnpm 후보 경로에 `~`가 필요하다).
+pub fn resolve_binary_expand_home(candidates: &[&str], bare_name: &str) -> Option<String> {
+    let home = dirs::home_dir();
+    let expanded: Vec<String> = candidates
+        .iter()
+        .map(|c| match (c.strip_prefix("~/"), &home) {
+            (Some(rest), Some(h)) => h.join(rest).to_string_lossy().to_string(),
+            _ => (*c).to_string(),
+        })
+        .collect();
+    let refs: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
+    resolve_binary(&refs, bare_name)
+}
+
 /// 프론트엔드에 그대로 돌려줄 결과 — "앱이 대신 로그인/로그아웃을 실행했는가"가
 /// 아니라 "사용자가 조작할 터미널 창을 여는 데 성공했는가"를 뜻한다.
 #[derive(serde::Serialize, Clone, Debug)]
@@ -48,7 +65,8 @@ pub struct TerminalLaunchResult {
 /// 그럼에도 방어적으로 처리한다.
 pub fn open_terminal_command(shell_command: &str) -> Result<(), String> {
     let escaped = shell_command.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!("tell application \"Terminal\"\n  activate\n  do script \"{escaped}\"\nend tell");
+    let script =
+        format!("tell application \"Terminal\"\n  activate\n  do script \"{escaped}\"\nend tell");
     Command::new("osascript")
         .arg("-e")
         .arg(script)
