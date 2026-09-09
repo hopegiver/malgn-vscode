@@ -1,8 +1,6 @@
 // 앱 전역 상태 — 단일 상태 객체 + 아주 단순한 구독자 목록(pub/sub)만 제공한다.
 // 순환 import를 피하려고 render() 자체는 여기 두지 않는다: main.ts가 `onStateChange(render)`로
 // 한 번 구독하고, 다른 모듈들은 상태를 바꾼 뒤 `notifyChange()`만 호출해 재렌더를 요청한다.
-import { MOCK_AUTONOMOUS_TASKS } from './mockData';
-import type { AutonomousTask } from './mockData';
 import type { ClaudeSessionRecord } from './sessionsApi';
 import type { WorkspaceProject, ProjectTreeNode, FilePreview } from './workspaceApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devToolsApi';
@@ -10,11 +8,34 @@ import type { InstalledPlugin, MarketplaceInfo, CommandResult } from './catalogA
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
 import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsApi';
+import type { AutonomyLastStatus, AutonomyHistoryEntry } from './autonomyApi';
 
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
 export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace';
+
+// "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 ProjectAutonomyGroup[]을
+// (프로젝트, 태스크) 평면 목록으로 펼치고, scheduleLabel/lastRunLabel/nextRunLabel은
+// intervalMinutes·lastRunAt에서 프론트가 계산해 채운다(views/autonomousTasks.ts).
+export interface AutonomousTask {
+  id: string;
+  projectPath: string;
+  projectName: string;
+  name: string;
+  prompt: string;
+  subagent: string | null;
+  intervalMinutes: number;
+  enabled: boolean;
+  preventOverlap: boolean;
+  lastRunAt: string | null;
+  lastStatus: AutonomyLastStatus | null;
+  lastSummary: string | null;
+  history: readonly AutonomyHistoryEntry[];
+  scheduleLabel: string;
+  lastRunLabel: string;
+  nextRunLabel: string;
+}
 
 export interface AppState {
   authenticated: boolean;
@@ -78,8 +99,15 @@ export interface AppState {
     loading: boolean;
     error: string | null;
   };
-  // 순수 목업 — 실제 스케줄 실행 엔진 없음. on/off·추가는 이 배열만 바꾼다.
-  autonomousTasks: AutonomousTask[];
+  // 실제 프로젝트별 자율업무 설정(autonomyApi.ts) — 로그인 직후 전체 프로젝트를
+  // 훑어 한 번 불러온다. on/off·추가·삭제는 각각 Rust 커맨드 호출이 성공한 뒤에만
+  // 이 배열을 갱신한다(낙관적 갱신 금지 — 실행 엔진 상태의 정본은 백엔드).
+  autonomousTasks: {
+    items: AutonomousTask[];
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+  };
   // GitHub 연동 — 이 앱은 토큰을 취급하지 않는다. 상태는 `gh` CLI를 읽기 전용으로
   // 조회한 실물이고, 연결/해제는 터미널 창을 여는 것뿐이다(integrationsApi.ts).
   github: {
@@ -185,7 +213,7 @@ export const state: AppState = {
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
-  autonomousTasks: MOCK_AUTONOMOUS_TASKS.map((t) => ({ ...t, history: t.history ? [...t.history] : undefined })),
+  autonomousTasks: { items: [], loading: false, error: null, loaded: false },
   github: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   cloudflare: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   jira: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },

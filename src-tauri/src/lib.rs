@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+mod autonomy;
 mod cli_launcher;
 mod cloudflare_integration;
 mod dev_tools;
@@ -300,7 +301,7 @@ fn classify_archive_status(
 /// `~/workspace` 하나뿐이지만, Windows는 사람마다 `%USERPROFILE%\workspace`와
 /// `C:\workspace` 둘 중 하나를 쓰는 걸로 확인돼 둘 다 후보에 넣는다(둘 다 있으면
 /// 둘 다 스캔해서 합친다 — 어느 쪽이 "맞는" 것인지 앱이 임의로 고르지 않는다).
-fn workspace_roots() -> Vec<PathBuf> {
+pub(crate) fn workspace_roots() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(home) = dirs::home_dir() {
         candidates.push(home.join("workspace"));
@@ -736,7 +737,7 @@ fn is_direct_child_of_workspace_root(workspace_root: &Path, candidate: &Path) ->
     !rel.as_os_str().is_empty() && rel.components().count() == 1
 }
 
-fn resolve_validated_project_root(project_path: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_validated_project_root(project_path: &str) -> Option<PathBuf> {
     let candidate = PathBuf::from(project_path);
     let is_child_of_any_root = workspace_roots()
         .iter()
@@ -2112,6 +2113,9 @@ pub fn run() {
             std::thread::spawn(|| {
                 get_or_refresh_historical_daily_usage();
             });
+            // 자율업무 스케줄러 — 60초 tick으로 워크스페이스 전체를 훑어 due한
+            // task를 `claude -p`로 무인 실행한다. 앱이 켜져 있는 동안만 돈다.
+            autonomy::spawn_scheduler(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2141,7 +2145,11 @@ pub fn run() {
             cloudflare_integration::cloudflare_disconnect,
             jira_integration::jira_status,
             jira_integration::jira_connect,
-            jira_integration::jira_disconnect
+            jira_integration::jira_disconnect,
+            autonomy::autonomy_list,
+            autonomy::autonomy_save_task,
+            autonomy::autonomy_delete_task,
+            autonomy::autonomy_set_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

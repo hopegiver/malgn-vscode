@@ -1,10 +1,9 @@
 // 홈 대시보드 — 로그인 직후 첫 화면. 다른 화면들의 핵심 정보를 카드/위젯으로 모아
 // 보여준다. 위젯 클릭 시 해당 상세 화면으로 이동한다. 프로젝트·세션·개발환경·
-// 카탈로그·사용량 통계 위젯은 실제 로컬 데이터를 쓴다(main.ts가 로그인 직후 한
-// 번씩 미리 불러온다). 자율업무 진행상황만 순수 목업 샘플 그대로 유지한다.
+// 카탈로그·사용량 통계·자율업무 위젯은 전부 실제 로컬 데이터를 쓴다(main.ts가
+// 로그인 직후 한 번씩 미리 불러온다).
 import { el } from '../dom';
 import { state } from '../state';
-import { MOCK_TASK_RUNS } from '../mockData';
 import { navigate } from '../route';
 import { computeTodayTokens, formatTokenCount } from './usage';
 
@@ -32,15 +31,21 @@ function widgetShell(title: string, onClick: () => void, children: readonly (Nod
   return widget;
 }
 
-// ---------------- 목업 그대로 유지 (로컬 데이터 없음) ----------------
+function isToday(iso: string | null): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+}
 
 function taskBoardWidget(): HTMLElement {
-  const running = MOCK_TASK_RUNS.filter((r) => r.status === '진행중').length;
-  const todayFail = MOCK_TASK_RUNS.filter((r) => r.status === '실패' && r.startedAt.startsWith('오늘')).length;
+  const tasks = state.autonomousTasks.items;
+  const running = tasks.filter((t) => t.lastStatus === 'running').length;
+  const todayFail = tasks.filter((t) => t.lastStatus === 'failed' && isToday(t.lastRunAt)).length;
 
   return widgetShell('자율업무 진행상황', () => navigate('#/tasks/board'), [
     el('div', { className: 'home-widget-big-number' }, [`${running}개`]),
-    el('div', { className: 'home-widget-desc' }, ['현재 실행 중']),
+    el('div', { className: 'home-widget-desc' }, ['현재 실행 중 (실제 로컬 데이터)']),
     el('div', { className: 'home-widget-breakdown' }, [el('span', {}, [`오늘 실패 ${todayFail}건`])]),
     el('div', { className: 'home-widget-link' }, ['진행상황판 보기 →']),
   ]);

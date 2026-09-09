@@ -1109,7 +1109,7 @@ fn run_process_with_timeout(
 /// `<brew_prefix>/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` — 절대경로
 /// 실행만으로는 부족하다(brew/npm 내부에서 git/curl/ruby/node를 셔뱅으로 부른다).
 /// runner_path의 bin 디렉터리를 최우선으로 넣고 표준 경로를 뒤에 덧붙인다.
-fn build_child_path_env(runner_path: Option<&str>) -> String {
+pub(crate) fn build_child_path_env(runner_path: Option<&str>) -> String {
     let mut dirs: Vec<String> = Vec::new();
     if let Some(rp) = runner_path {
         if let Some(bin_dir) = Path::new(rp).parent() {

@@ -16,6 +16,9 @@
 //     것뿐이다 — integrationsApi.ts.
 //   - "Jira 설정": 사이트 URL·이메일·API 토큰을 실제로 검증(/rest/api/3/myself)한
 //     뒤 macOS 키체인에 저장한다 — integrationsApi.ts.
+//   - "자율업무"(views/autonomousTasks.ts): 프로젝트별 자율업무 설정(프롬프트·주기·
+//     서브에이전트 등) — autonomyApi.ts. 실제 스케줄 실행 엔진은 Rust 쪽에 있고,
+//     이 화면은 조회/추가/수정/삭제/on-off만 한다.
 // 카탈로그의 "업데이트"·마켓플레이스의 "새로고침" 버튼은 사용자가 명시적으로
 // 승인해 실제로 `claude plugin update`/`claude plugin marketplace update`를
 // 실행한다(catalogApi.ts 참고).
@@ -43,7 +46,7 @@ import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus
 import { renderUsageView, loadDailyUsage } from './views/usage';
 import { renderSessionsListView, renderSessionDetailView, loadSessions } from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
-import { renderAutonomousTasksListView, renderAutonomousTaskBoardView, renderAutonomousTaskDetailView } from './views/autonomousTasks';
+import { renderAutonomousTasksListView, renderAutonomousTaskBoardView, renderAutonomousTaskDetailView, loadAutonomousTasks } from './views/autonomousTasks';
 
 // 순수 렌더 — 상태를 바꾸지 않는다. onStateChange(renderApp)로 구독되어 있어
 // notifyChange() 한 번으로 항상 최신 상태가 반영된다.
@@ -121,6 +124,7 @@ function handleNavigation(): void {
   if (!state.catalog.loaded && !state.catalog.loading) void loadCatalog();
   if (!state.marketplaces.loaded && !state.marketplaces.loading) void loadMarketplaces();
   if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
+  if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
 
   const route = parseRoute();
   if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {
