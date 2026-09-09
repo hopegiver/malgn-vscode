@@ -14,9 +14,13 @@
 #     "확인되지 않은 개발자" 경고를 띄우므로 받은 사람은 우클릭 → 열기로 처음 한 번
 #     예외 처리해야 한다. 서명/공증은 이번 범위가 아니다(사내 목업 단계, 별도 결정 필요).
 #
-# 트리거를 workflow_dispatch로만 둔 이유: 오늘 하루 만에 Electron→Tauri로 갈아탄
-# 목업 단계라 push마다 macOS+Windows 매트릭스를 도는 건 낭비다. 안정화되면 태그
-# push 등으로 확장을 검토한다.
+# 트리거: workflow_dispatch(항상 가능) + main push(빌드에 영향 주는 경로만).
+#   - 활발히 개발 중이라 main push가 잦다 — 문서/설정만 바뀐 push까지 무거운
+#     macOS+Windows 매트릭스를 매번 돌리면 낭비이므로 `paths`로 실제 빌드 입력
+#     (프런트엔드 소스, Rust 소스, 매니페스트, 이 워크플로 자체)만 걸렀다.
+#   - 연속 push가 몰릴 때 이전 커밋의 빌드가 아직 안 끝났으면 `concurrency`로
+#     취소한다 — 어차피 최신 커밋 결과만 보면 되고, macOS/Windows 러너 분당 비용이
+#     Linux보다 훨씬 비싸다.
 #
 # 보안 원칙(기존 워크플로에서 계승):
 #   - 액션은 sha로 고정한다(가변 태그 `@v4` 금지).
@@ -30,6 +34,19 @@ name: tauri-portable-build
 
 on:
   workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'index.html'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/tauri-portable-build.yml'
+
+concurrency:
+  group: tauri-portable-build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
