@@ -21,8 +21,15 @@ function badge(status: ArchiveStatus): HTMLSpanElement {
 }
 
 function filteredProjects(): readonly WorkspaceProject[] {
-  if (state.dashboard.filter === 'all') return state.dashboard.projects;
-  return state.dashboard.projects.filter((p) => p.archiveStatus === state.dashboard.filter);
+  const filtered =
+    state.dashboard.filter === 'all' ? state.dashboard.projects : state.dashboard.projects.filter((p) => p.archiveStatus === state.dashboard.filter);
+  const sorted = [...filtered];
+  if (state.dashboard.sort === 'name') {
+    sorted.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  } else {
+    sorted.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+  return sorted;
 }
 
 export async function loadProjects(): Promise<void> {
@@ -119,7 +126,29 @@ export function renderProjectsListView(): HTMLElement {
         )
       );
     }
-    body.push(filterGroup);
+
+    const sortGroup = el('div', { className: 'filter-group' });
+    const sorts: readonly { readonly key: typeof state.dashboard.sort; readonly label: string }[] = [
+      { key: 'updated', label: '최신 업데이트' },
+      { key: 'name', label: '이름순' },
+    ];
+    for (const s of sorts) {
+      sortGroup.appendChild(
+        el(
+          'button',
+          {
+            className: `filter-btn${state.dashboard.sort === s.key ? ' active' : ''}`,
+            onClick: () => {
+              state.dashboard.sort = s.key;
+              notifyChange();
+            },
+          },
+          [s.label]
+        )
+      );
+    }
+
+    body.push(el('div', { className: 'filter-row' }, [filterGroup, sortGroup]));
   }
 
   if (state.dashboard.loading) {
@@ -145,14 +174,6 @@ export function renderProjectsListView(): HTMLElement {
   return el('div', {}, [header, ...body]);
 }
 
-function overviewSection(label: string, body: string | null, danger = false): HTMLElement | null {
-  if (!body) return null;
-  return el('div', { className: 'overview-section' }, [
-    el('div', { className: `overview-label${danger ? ' danger' : ''}` }, [label]),
-    el('div', { className: 'overview-body' }, [body]),
-  ]);
-}
-
 export function renderProjectsDetailView(path: string): HTMLElement {
   const back = el('a', { className: 'back-link', onClick: () => navigate('#/projects') }, ['← 프로젝트']);
 
@@ -169,6 +190,8 @@ export function renderProjectsDetailView(path: string): HTMLElement {
     badge(hasStatus ? (sections?.parsed ? project.archiveStatus : 'unknown') : 'unknown'),
   ]);
 
+  // STATUS.md 요약은 오른쪽 트리 미리보기 패널에 기본으로 열리므로(loadProjectTree
+  // 참고) 여기서는 STATUS.md 자체가 없는 프로젝트에 대한 짧은 안내만 남긴다.
   const statusEls: HTMLElement[] = [];
   if (!hasStatus) {
     statusEls.push(
@@ -176,21 +199,6 @@ export function renderProjectsDetailView(path: string): HTMLElement {
         el('div', { className: 'state-block-title' }, ['상태 없음']),
         el('div', { className: 'state-block-desc' }, ['이 프로젝트에는 STATUS.md가 없습니다(gitignore 대상일 수 있습니다).']),
       ])
-    );
-  } else if (!sections || !sections.parsed) {
-    statusEls.push(
-      el('div', { className: 'raw-fallback-note' }, ['STATUS.md 구조를 인식하지 못해 원문을 그대로 표시합니다.']),
-      el('pre', { className: 'raw-fallback-pre' }, [sections?.raw ?? ''])
-    );
-  } else {
-    const sectionEls = [
-      overviewSection('현재 상태', sections.current),
-      overviewSection('최근 완료', sections.recentDone),
-      overviewSection('진행 중', sections.inProgress),
-      overviewSection('막힌 것', sections.blocked, true),
-    ].filter((n): n is HTMLElement => n !== null);
-    statusEls.push(
-      el('div', { className: 'overview-card' }, sectionEls.length > 0 ? sectionEls : [el('div', { className: 'overview-body' }, ['표시할 섹션이 없습니다.'])])
     );
   }
 
@@ -216,6 +224,15 @@ export async function loadProjectTree(projectPath: string): Promise<void> {
   } finally {
     state.projectTree.loading = false;
     notifyChange();
+  }
+
+  // 상세보기 기본 미리보기: 루트 레벨(depth 0)에 STATUS.md 파일이 있으면 자동으로
+  // 한 번 열어둔다. 이 로드 함수가 진입/새로고침 시 selectedPath를 이미 null로
+  // 리셋해두었으므로, 사용자가 이후 다른 파일을 수동으로 클릭해도 이 호출로
+  // 덮어써지지 않는다(loadProjectTree가 다시 호출되기 전까지는 1회성).
+  const statusNode = state.projectTree.nodes.find((n) => !n.isDirectory && n.name === 'STATUS.md');
+  if (statusNode) {
+    await loadFilePreview(projectPath, statusNode.relativePath);
   }
 }
 

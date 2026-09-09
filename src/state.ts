@@ -13,6 +13,7 @@ import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsA
 
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
+export type DashboardSort = 'updated' | 'name';
 export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace';
 
 export interface AppState {
@@ -30,6 +31,7 @@ export interface AppState {
     loading: boolean;
     error: string | null;
     filter: DashboardFilter;
+    sort: DashboardSort;
   };
   // 프로젝트 상세의 폴더 구조 + 파일 미리보기 — 실제 로컬 파일(읽기 전용).
   projectTree: {
@@ -167,7 +169,7 @@ export const state: AppState = {
   // 재현된 버그 — 프로젝트 목록이 "새로고침 중…" 스켈레톤에서 멈춰 있었다).
   // loadProjects() 자신이 시작하자마자 loading을 true로 바꾸므로 스켈레톤은
   // 여전히 짧게 보인다.
-  dashboard: { projects: [], loading: false, error: null, filter: 'all' },
+  dashboard: { projects: [], loading: false, error: null, filter: 'all', sort: 'updated' },
   projectTree: {
     projectPath: null,
     nodes: [],

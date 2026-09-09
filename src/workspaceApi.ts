@@ -20,6 +20,8 @@ export interface WorkspaceProject {
   readonly hasStatus: boolean;
   readonly archiveStatus: ArchiveStatus;
   readonly sections: ProjectStatusSections | null;
+  // UNIX epoch 밀리초 — STATUS.md/CLAUDE.md 중 더 최근 mtime.
+  readonly updatedAt: number;
 }
 
 export async function fetchWorkspaceProjects(): Promise<WorkspaceProject[]> {

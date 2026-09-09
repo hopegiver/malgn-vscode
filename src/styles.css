@@ -93,6 +93,8 @@ html, body {
 .btn-primary { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
 .btn-primary:hover { background: #4338ca; }
 
+.filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.filter-row .filter-group { margin-bottom: 0; }
 .filter-group { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; }
 .filter-btn {
   padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 500;

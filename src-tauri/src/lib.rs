@@ -181,6 +181,8 @@ struct WorkspaceProject {
     #[serde(rename = "archiveStatus")]
     archive_status: String,
     sections: Option<ProjectStatusSections>,
+    #[serde(rename = "updatedAt")]
+    updated_at: i64,
 }
 
 struct Heading<'a> {
@@ -310,6 +312,17 @@ fn workspace_roots() -> Vec<PathBuf> {
     candidates.into_iter().filter(|p| p.is_dir()).collect()
 }
 
+/// 주어진 경로의 수정시각(mtime)을 UNIX epoch 밀리초로 반환한다. 메타데이터
+/// 조회 실패, `modified()` 미지원, 또는 `SystemTime`이 UNIX_EPOCH보다 이전인
+/// 클럭 이상 등 어떤 이유로든 값을 구할 수 없으면 패닉 대신 `None`을 반환한다
+/// (호출자가 조용히 폴백한다).
+fn mtime_millis(path: &std::path::Path) -> Option<i64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_millis()).ok()
+}
+
 /// 각 workspace 루트 바로 아래 1단계 디렉터리만 스캔한다. `CLAUDE.md`가 있으면
 /// malgn-agent 프로젝트로 인식한다(STATUS.md 유무는 판별 기준이 아니다 — 없으면
 /// `archiveStatus:"unknown"` + `hasStatus:false`로 접는다, 추측 분류 금지).
@@ -353,12 +366,25 @@ fn scan_workspace_projects() -> Vec<WorkspaceProject> {
                 ("unknown".to_string(), None)
             };
 
+            let claude_md_mtime = mtime_millis(&path.join("CLAUDE.md"));
+            let status_mtime = if has_status {
+                mtime_millis(&status_path)
+            } else {
+                None
+            };
+            let updated_at = claude_md_mtime
+                .into_iter()
+                .chain(status_mtime)
+                .max()
+                .unwrap_or(0);
+
             results.push(WorkspaceProject {
                 name: name.to_string(),
                 path: path.to_string_lossy().to_string(),
                 has_status,
                 archive_status,
                 sections,
+                updated_at,
             });
         }
     }
