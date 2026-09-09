@@ -471,7 +471,6 @@ textarea.settings-input { resize: vertical; }
 .file-preview-pre { max-height: 480px; }
 
 /* ---------------- 세션 상세: Claude.ai/ChatGPT 스타일 채팅 화면 ---------------- */
-.chat-page { max-width: 760px; margin: 0 auto; }
 .chat-header { margin-bottom: 24px; }
 .chat-title { font-size: 21px; font-weight: 700; margin: 10px 0 8px 0; }
 .chat-meta-row { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--color-ink-muted); }
