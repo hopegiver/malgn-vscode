@@ -4,6 +4,7 @@ import type { SettingsTab } from './state';
 import { navigate } from './route';
 import type { Route } from './route';
 import { sortedSessions, sessionTitle, asString } from './views/sessions';
+import { loadDailyUsage } from './views/usage';
 
 const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
@@ -25,7 +26,13 @@ export function renderSidebar(route: Route): HTMLElement {
     renderProjectsGroup(route),
     renderSessionsGroup(route),
     navItem('자율업무', route.kind === 'tasks-list' || route.kind === 'tasks-board' || route.kind === 'tasks-detail', () => navigate('#/tasks')),
-    navItem('사용량 통계', route.kind === 'usage', () => navigate('#/usage')),
+    navItem('사용량 통계', route.kind === 'usage', () => {
+      navigate('#/usage');
+      // 실시간 감시를 없앤 대신 이 메뉴를 누르는 시점마다 새로 불러온다. 이미
+      // #/usage에 있으면 해시가 안 바뀌어 라우팅만으로는 재로딩이 안 트리거되니
+      // 여기서 직접 부른다(겹쳐 쌓이지 않게 loading 가드).
+      if (!state.dailyUsage.loading) void loadDailyUsage();
+    }),
     navItem('카탈로그', route.kind === 'catalog', () => navigate('#/catalog')),
     navItem('개발 환경', route.kind === 'dev-tools', () => navigate('#/dev-tools')),
   ];

@@ -23,8 +23,11 @@
 // 설정되지 않은 동안은 로그인 버튼을 눌러도 브라우저가 열리지 않고 명확한 에러만
 // 뜬다 — src-tauri/src/lib.rs의 GOOGLE_OAUTH_CLIENT_ID를 채워야 실제로 동작한다.
 //
-// 세션목록·사용량 통계는 파일시스템 이벤트로도 갱신된다(폴링 아님) —
-// initLiveWatchers()가 앱 시작 시 한 번 구독한다.
+// 세션목록은 파일시스템 이벤트로도 갱신된다(폴링 아님) — initLiveWatchers()가
+// 앱 시작 시 한 번 구독한다. 사용량 통계는 실시간 감시를 하지 않는다 — 이
+// 컴퓨터처럼 여러 프로젝트에서 계속 쓰고 있으면 재계산이 끝나기도 전에 다음
+// 이벤트가 쌓여 오히려 계속 느려졌다. 대신 메뉴 클릭 시점에만 새로 불러온다
+// (sidebar.ts).
 import { el } from './dom';
 import { state, onStateChange, notifyChange } from './state';
 import { parseRoute } from './route';
@@ -35,10 +38,9 @@ import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadPro
 import { renderCatalogView, loadCatalog, loadMarketplaces } from './views/catalog';
 import { renderDevToolsView, loadDevTools } from './views/devTools';
 import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus } from './views/settings';
-import { renderUsageView, loadDailyUsage, loadDailyDetail } from './views/usage';
+import { renderUsageView, loadDailyUsage } from './views/usage';
 import { renderSessionsListView, renderSessionDetailView, loadSessions } from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
-import { onUsageChanged } from './usageApi';
 import { renderAutonomousTasksListView, renderAutonomousTaskBoardView, renderAutonomousTaskDetailView } from './views/autonomousTasks';
 
 // 순수 렌더 — 상태를 바꾸지 않는다. onStateChange(renderApp)로 구독되어 있어
@@ -137,7 +139,9 @@ function handleNavigation(): void {
     void loadProjectTree(route.path);
   }
   if (route.kind === 'usage') {
-    if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
+    // 실시간 감시 대신 메뉴 클릭(=이 라우트 진입) 시점마다 새로 불러온다 — 이미
+    // 불러오는 중이면 겹쳐 쌓이지 않게 건너뛴다.
+    if (!state.dailyUsage.loading) void loadDailyUsage();
   }
 }
 
@@ -158,18 +162,6 @@ function initLiveWatchers(): void {
     })
     .catch(() => {
       /* Tauri IPC 브리지가 없는 환경 — live 상태를 false로 둔 채 조용히 넘어간다 */
-    });
-
-  onUsageChanged(() => {
-    if (state.dailyUsage.loaded) void loadDailyUsage();
-    if (state.dailyDetail.selectedDate) void loadDailyDetail(state.dailyDetail.selectedDate);
-  })
-    .then(() => {
-      state.dailyUsage.live = true;
-      notifyChange();
-    })
-    .catch(() => {
-      /* 위와 동일 — 조용히 넘어간다 */
     });
 }
 

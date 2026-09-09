@@ -820,6 +820,11 @@ fn read_project_file(project_path: String, relative_path: String) -> FilePreview
 // 오래 전에 마지막으로 수정된 파일은 통째로 건너뛴다(열지도 않는다) — 그 다음
 // 줄 단위 필터(타임스탬프 30일 이전이면 스킵)로 범위를 다시 좁힌다. `BufReader`로
 // 줄 단위 스트리밍한다 — 파일 전체를 메모리에 올리지 않는다.
+//
+// 어제까지는 다시 바뀔 수 없는 확정값이라 HISTORICAL_USAGE_CACHE에 담아 날짜가
+// 바뀌기 전까지 재사용하고(앱 시작 시 백그라운드로 미리 채워둠), 오늘만 호출마다
+// 새로 스캔한다(대상 파일이 훨씬 적어 가볍다). 두 경우 다 파일 단위로 rayon
+// 병렬 스캔한다 — 파일마다 독립이라 합치기 쉽다.
 
 const USAGE_LOOKBACK_DAYS: i64 = 30;
 
@@ -871,7 +876,95 @@ fn find_recent_jsonl_files(dir: &Path, cutoff_mtime: std::time::SystemTime, out:
     }
 }
 
-fn aggregate_daily_usage() -> Vec<DailyUsage> {
+// 파일 하나를 스캔해 그 파일 안에서 나온 날짜별 부분합을 반환한다(다른 파일과
+// 독립이라 rayon으로 파일 단위 병렬화하기 좋다). `skip_date`가 있으면 그 날짜
+// 줄은 제외한다 — "오늘"은 매번 별도로 실시간 스캔하므로 과거분 캐시 계산에서는
+// 오늘 줄을 빼서 이중 집계를 막는다.
+fn scan_file_daily_usage(path: &Path, cutoff_dt: DateTime<Utc>, skip_date: Option<&str>) -> std::collections::BTreeMap<String, DailyUsage> {
+    let mut buckets: std::collections::BTreeMap<String, DailyUsage> = std::collections::BTreeMap::new();
+    let Ok(f) = std::fs::File::open(path) else {
+        return buckets;
+    };
+    // 스트리밍 응답이 여러 JSONL 줄로 쪼개져 기록될 때 같은 message.id가 반복
+    // 등장하며 매번 그 턴의 usage를 그대로 다시 실어 나른다(실측: 한 세션에서
+    // 고유 메시지 124개인데 usage가 실린 줄은 238개 — 거의 2배 중복). id별로
+    // 파일 안에서 한 번만 센다 — 안 세면 토큰이 최대 ~2배 부풀려진다.
+    let mut seen_message_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in BufReader::new(f).lines() {
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(ts) = value.get("timestamp").and_then(|t| t.as_str()).and_then(parse_iso_timestamp) else {
+            continue;
+        };
+        if ts < cutoff_dt {
+            continue;
+        }
+        let Some(msg) = value.get("message") else { continue };
+        if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+            if !seen_message_ids.insert(id.to_string()) {
+                continue;
+            }
+        }
+        let Some(usage) = msg.get("usage") else {
+            continue;
+        };
+
+        let key = local_date_key(&ts);
+        if skip_date.is_some_and(|d| d == key) {
+            continue;
+        }
+        let entry = buckets.entry(key.clone()).or_insert_with(|| DailyUsage { date: key, ..Default::default() });
+        entry.input_tokens += usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        entry.output_tokens += usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        entry.cache_creation_tokens += usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        entry.cache_read_tokens += usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    }
+    buckets
+}
+
+fn merge_daily_usage_maps(
+    mut a: std::collections::BTreeMap<String, DailyUsage>,
+    b: std::collections::BTreeMap<String, DailyUsage>,
+) -> std::collections::BTreeMap<String, DailyUsage> {
+    for (key, v) in b {
+        let entry = a.entry(key.clone()).or_insert_with(|| DailyUsage { date: key, ..Default::default() });
+        entry.input_tokens += v.input_tokens;
+        entry.output_tokens += v.output_tokens;
+        entry.cache_creation_tokens += v.cache_creation_tokens;
+        entry.cache_read_tokens += v.cache_read_tokens;
+    }
+    a
+}
+
+fn today_local_date_key() -> String {
+    local_date_key(&Utc::now())
+}
+
+// 어제까지의 집계는 성격상 다시는 안 바뀐다(과거 날짜로 새 줄이 추가될 리 없다)
+// — 그래서 무효화 로직 없이 "오늘 날짜가 바뀌기 전까지" 그냥 재사용해도 된다.
+// 앱을 오래 켜둔 채 자정을 넘기면 다음 호출에서 cached_as_of가 어긋난 걸 감지해
+// 하루 한 번만 다시 계산한다.
+struct HistoricalUsageCache {
+    cached_as_of: String,
+    days: Vec<DailyUsage>,
+}
+
+static HISTORICAL_USAGE_CACHE: std::sync::Mutex<Option<HistoricalUsageCache>> = std::sync::Mutex::new(None);
+
+// 30일 룩백 범위에서 "오늘"을 뺀 나머지(어제까지)를 파일 단위로 병렬 스캔한다.
+// 파일이 서로 독립이라 rayon의 파일별 par_iter + reduce로 코어 수만큼 나눠
+// 읽는다 — 이 부분이 전체 스캔 시간의 대부분을 차지했다.
+fn compute_historical_daily_usage(today: &str) -> Vec<DailyUsage> {
+    use rayon::prelude::*;
+
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
@@ -887,53 +980,63 @@ fn aggregate_daily_usage() -> Vec<DailyUsage> {
     let mut files = Vec::new();
     find_recent_jsonl_files(&projects_dir, cutoff_mtime, &mut files);
 
-    let mut buckets: std::collections::BTreeMap<String, DailyUsage> = std::collections::BTreeMap::new();
+    let buckets = files
+        .par_iter()
+        .map(|file| scan_file_daily_usage(file, cutoff_dt, Some(today)))
+        .reduce(std::collections::BTreeMap::new, merge_daily_usage_maps);
 
-    for file in files {
-        let Ok(f) = std::fs::File::open(&file) else {
-            continue;
-        };
-        // 스트리밍 응답이 여러 JSONL 줄로 쪼개져 기록될 때 같은 message.id가 반복
-        // 등장하며 매번 그 턴의 usage를 그대로 다시 실어 나른다(실측: 한 세션에서
-        // 고유 메시지 124개인데 usage가 실린 줄은 238개 — 거의 2배 중복). id별로
-        // 파일 안에서 한 번만 센다 — 안 세면 토큰이 최대 ~2배 부풀려진다.
-        let mut seen_message_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for line in BufReader::new(f).lines() {
-            let Ok(line) = line else { continue };
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
-                continue;
-            }
-            let Some(ts) = value.get("timestamp").and_then(|t| t.as_str()).and_then(parse_iso_timestamp) else {
-                continue;
-            };
-            if ts < cutoff_dt {
-                continue;
-            }
-            let Some(msg) = value.get("message") else { continue };
-            if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-                if !seen_message_ids.insert(id.to_string()) {
-                    continue;
-                }
-            }
-            let Some(usage) = msg.get("usage") else {
-                continue;
-            };
+    buckets.into_values().collect()
+}
 
-            let key = local_date_key(&ts);
-            let entry = buckets.entry(key.clone()).or_insert_with(|| DailyUsage { date: key, ..Default::default() });
-            entry.input_tokens += usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            entry.output_tokens += usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            entry.cache_creation_tokens += usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            entry.cache_read_tokens += usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+fn get_or_refresh_historical_daily_usage() -> Vec<DailyUsage> {
+    let today = today_local_date_key();
+    {
+        let guard = HISTORICAL_USAGE_CACHE.lock().unwrap();
+        if let Some(cache) = guard.as_ref() {
+            if cache.cached_as_of == today {
+                return cache.days.clone();
+            }
         }
     }
+    let days = compute_historical_daily_usage(&today);
+    *HISTORICAL_USAGE_CACHE.lock().unwrap() = Some(HistoricalUsageCache { cached_as_of: today, days: days.clone() });
+    days
+}
 
+// "오늘"만 매번 새로 스캔한다 — mtime 컷오프를 오늘 자정으로 좁혀서 대상 파일
+// 자체가 훨씬 적다(과거분처럼 캐싱하면 방금 쓴 토큰이 안 보이니 여기만 캐시하지
+// 않는다).
+fn compute_today_daily_usage(today: &str) -> Option<DailyUsage> {
+    use rayon::prelude::*;
+
+    let Some(home) = dirs::home_dir() else {
+        return None;
+    };
+    let projects_dir = home.join(".claude").join("projects");
+    if !projects_dir.is_dir() {
+        return None;
+    }
+    let cutoff_mtime = local_midnight_as_system_time(today).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let cutoff_dt = Utc::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS);
+
+    let mut files = Vec::new();
+    find_recent_jsonl_files(&projects_dir, cutoff_mtime, &mut files);
+
+    let buckets = files
+        .par_iter()
+        .map(|file| scan_file_daily_usage(file, cutoff_dt, None))
+        .reduce(std::collections::BTreeMap::new, merge_daily_usage_maps);
+
+    buckets.into_iter().find(|(date, _)| date == today).map(|(_, v)| v)
+}
+
+fn aggregate_daily_usage() -> Vec<DailyUsage> {
+    let today = today_local_date_key();
+    let mut buckets: std::collections::BTreeMap<String, DailyUsage> =
+        get_or_refresh_historical_daily_usage().into_iter().map(|d| (d.date.clone(), d)).collect();
+    if let Some(today_bucket) = compute_today_daily_usage(&today) {
+        buckets.insert(today.clone(), today_bucket);
+    }
     buckets.into_values().collect()
 }
 
@@ -1659,43 +1762,6 @@ fn watch_claude_sessions_dir(app_handle: tauri::AppHandle) {
     }
 }
 
-// ~/.claude/projects/ 전체를 재귀적으로 감시한다(사용량 통계 일별 집계의 데이터
-// 소스). 세션목록 워처와 같은 패턴이지만 대상이 재귀적이고 훨씬 넓어서(모든
-// 프로젝트의 대화 로그) 디바운스를 1초로 더 길게 잡는다 — 재계산 비용(파일들을
-// 다시 스캔)이 더 크기 때문이다. macOS에서는 notify가 FSEvents를 쓰므로 재귀
-// 감시라도 서브디렉터리마다 개별 워처를 두지 않는다(OS 레벨 단일 구독).
-fn watch_claude_projects_dir(app_handle: tauri::AppHandle) {
-    use notify_debouncer_mini::notify::RecursiveMode;
-    use notify_debouncer_mini::new_debouncer;
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let projects_dir = home.join(".claude").join("projects");
-    if !projects_dir.is_dir() {
-        return;
-    }
-
-    let (tx, rx) = mpsc::channel();
-    let Ok(mut debouncer) = new_debouncer(Duration::from_millis(1000), tx) else {
-        return;
-    };
-    if debouncer.watcher().watch(&projects_dir, RecursiveMode::Recursive).is_err() {
-        return;
-    }
-
-    for result in rx {
-        if let Ok(events) = result {
-            if !events.is_empty() {
-                use tauri::Emitter;
-                let _ = app_handle.emit("claude-usage-changed", ());
-            }
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1705,9 +1771,10 @@ pub fn run() {
             std::thread::spawn(move || {
                 watch_claude_sessions_dir(sessions_handle);
             });
-            let usage_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                watch_claude_projects_dir(usage_handle);
+            // 어제까지의 사용량 캐시를 앱 시작과 동시에 백그라운드에서 미리 채워둔다
+            // — 사용자가 "사용량 통계"를 처음 열었을 때부터 이미 준비돼 있게.
+            std::thread::spawn(|| {
+                get_or_refresh_historical_daily_usage();
             });
             Ok(())
         })
@@ -1822,6 +1889,26 @@ mod tests {
         let today_entry = today_entry.unwrap();
         let total = today_entry.input_tokens + today_entry.output_tokens + today_entry.cache_creation_tokens + today_entry.cache_read_tokens;
         assert!(total > 0, "오늘 사용량 합계가 0입니다");
+    }
+
+    // 어제까지의 집계는 캐시에서 그대로 재사용되고, 다시 계산해도 같은 결과가
+    // 나와야 한다(캐시가 틀린 값을 굳혀버리면 안 된다) — 캐시 히트/미스 두 경로
+    // 모두 검증한다.
+    #[test]
+    fn historical_daily_usage_cache_is_consistent_across_calls() {
+        let today = today_local_date_key();
+        let first = get_or_refresh_historical_daily_usage();
+        let cached = HISTORICAL_USAGE_CACHE.lock().unwrap().as_ref().map(|c| c.cached_as_of.clone());
+        assert_eq!(cached, Some(today.clone()), "캐시가 오늘 날짜로 채워지지 않았습니다");
+
+        let second = get_or_refresh_historical_daily_usage();
+        assert_eq!(first.len(), second.len(), "캐시 히트 결과의 항목 수가 달라졌습니다");
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(a.date, b.date);
+            assert_eq!(a.input_tokens, b.input_tokens);
+            assert_eq!(a.output_tokens, b.output_tokens);
+        }
+        assert!(!first.iter().any(|d| d.date == today), "과거분 캐시에 오늘 날짜가 섞여 있습니다");
     }
 
     // "토큰 도둑" 단가 계산 — pricing.js PRICING 표를 정확히 옮겼는지 결정론적으로

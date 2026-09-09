@@ -59,13 +59,14 @@ export interface AppState {
     live: boolean;
   };
   // 사용량 통계의 "일별 사용량" — 실제 ~/.claude/projects/**/*.jsonl 집계(최근
-  // 30일). 5시간/주간 패널은 로컬 데이터 소스가 없어 여전히 mockData.ts 샘플이다.
+  // 30일). 실시간 감시는 안 하고 메뉴 클릭 시점마다 새로 불러온다(main.ts/
+  // sidebar.ts). 5시간/주간 패널은 로컬 데이터 소스가 없어 여전히 mockData.ts
+  // 샘플이다.
   dailyUsage: {
     items: DailyUsage[];
     loading: boolean;
     error: string | null;
     loaded: boolean;
-    live: boolean;
   };
   // "일별 사용량" 날짜 행을 클릭했을 때 펼치는 상세 — 실제 로컬 데이터(그 날짜
   // 하루만 세션/서브에이전트/툴 단위로 재집계). dailyDetailApi.ts 주석 참고.
@@ -174,7 +175,7 @@ export const state: AppState = {
   },
   sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false },
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
-  dailyUsage: { items: [], loading: false, error: null, loaded: false, live: false },
+  dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
   autonomousTasks: MOCK_AUTONOMOUS_TASKS.map((t) => ({ ...t, history: t.history ? [...t.history] : undefined })),
   github: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },

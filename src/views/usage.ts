@@ -1,9 +1,9 @@
 // 사용량 통계 — "일별 사용량"은 실제 ~/.claude/projects/**/*.jsonl 집계(최근
 // 30일)이고, 날짜 막대를 클릭하면 그 날짜 하루만 세션/에이전트/툴 단위로
-// 재집계한 상세를 그 자리에 펼친다(dailyDetailApi.ts 참고). 일별 사용량은
-// ~/.claude/projects/ 재귀 감시 이벤트로 자동 갱신된다(실시간 인디케이터).
+// 재집계한 상세를 그 자리에 펼친다(dailyDetailApi.ts 참고). 실시간 감시는 하지
+// 않는다 — "사용량 통계" 메뉴를 클릭할 때마다 새로 불러온다(sidebar.ts).
 // 5시간/주간 사용량 패널은 로컬 데이터 소스가 없어 여전히 mockData.ts 샘플이다.
-import { el, liveIndicator } from '../dom';
+import { el } from '../dom';
 import { state, notifyChange } from '../state';
 import { MOCK_USAGE } from '../mockData';
 import type { UsageSummaryStat, UsageWindow } from '../mockData';
@@ -165,7 +165,6 @@ function renderDailyDetailPanel(date: string): HTMLElement {
 function renderDailyUsageSection(): HTMLElement {
   const labelRow = el('div', { className: 'overview-label-row' }, [
     el('div', { className: 'overview-label' }, ['일별 사용량 (최근 30일, 실제 로컬 데이터)']),
-    ...(state.dailyUsage.live ? [liveIndicator()] : []),
   ]);
 
   let body: HTMLElement;

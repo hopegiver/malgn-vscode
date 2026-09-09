@@ -35,6 +35,7 @@ url = "2"
 tokio = { version = "1", features = ["sync", "rt"] }
 sha2 = "0.10"
 keyring = "4"
+rayon = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -44,3 +45,10 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# 사용량 통계가 jsonl 수백~수천 개를 파싱하는 CPU 바운드 작업이라 dev(디버그)
+# 빌드에서 유독 느리다(release 대비 ~3.5배). 우리 크레이트 자체는 최적화하지
+# 않아 증분 컴파일은 그대로 빠르게 유지하고, 실제 핫루프를 도는 의존성
+# (serde_json 등)만 최적화한다.
+[profile.dev.package."*"]
+opt-level = 3
