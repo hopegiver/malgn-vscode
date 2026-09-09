@@ -113,7 +113,10 @@ jobs:
             exit 1
           fi
           echo "Found app bundle: $APP_PATH"
-          APP_BASENAME=$(basename "$APP_PATH")
+          # 번들 폴더명은 productName("맑은에이전트")을 그대로 따라가므로, 배포
+          # 산출물 이름만 플랫폼 공통 ASCII 식별자(malgn-agent)로 맞춰 스테이징한다
+          # — 앱 내부 표시 이름/Dock 라벨은 건드리지 않는다.
+          APP_BASENAME="malgn-agent.app"
 
           STAGE_DIR="$RUNNER_TEMP/malgn-agent-macos-stage"
           rm -rf "$STAGE_DIR"
