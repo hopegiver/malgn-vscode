@@ -16,6 +16,7 @@ use crate::cli_launcher::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -679,6 +680,7 @@ fn is_corepack_managed(corepack_root: Option<&str>) -> bool {
 
 /// 대상 디렉터리에 현재 uid로 쓰기 권한이 있는지 확인한다(부록 B.2 사전 쓰기권한
 /// 검사). `libc::access`는 읽기 전용 syscall이다 — 파일을 만들거나 지우지 않는다.
+#[cfg(unix)]
 fn is_writable_by_current_user(path: &Path) -> bool {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
@@ -686,6 +688,30 @@ fn is_writable_by_current_user(path: &Path) -> bool {
         return false;
     };
     unsafe { libc::access(c_path.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// Windows에는 `access(W_OK)`에 대응하는 직접적인 std API가 없다 — 대신 대상
+/// 디렉터리 안에 고유한 이름의 프로브 임시 파일을 만들어보고 즉시 지운다. 생성
+/// 시도 자체의 부작용이 적고 성공 시 바로 정리되므로 read-only 검사와 실질적으로
+/// 동등하다(부록 B.2 사전 쓰기권한 검사의 Windows 대응).
+#[cfg(windows)]
+fn is_writable_by_current_user(path: &Path) -> bool {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let probe = path.join(format!(
+        ".malgn_vscode_write_probe_{}_{}",
+        std::process::id(),
+        nanos
+    ));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// 결정 1~3을 조합해 tool_id + 이미 resolve된 바이너리 경로로부터 (설치방식,
@@ -917,6 +943,7 @@ fn wait_up_to(
 /// 프로세스 그룹 kill: SIGTERM → 3초 유예(try_wait 폴링) → SIGKILL. brew가 낳는
 /// curl/git/ruby 손자 프로세스까지 함께 죽인다(`child.kill()`은 직속 자식만 죽여
 /// 손자가 다운로드를 계속하는 문제가 있다 — 그래서 group kill이 필수).
+#[cfg(unix)]
 fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option<i32> {
     unsafe {
         libc::kill(-pid, libc::SIGTERM);
@@ -940,6 +967,19 @@ fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option
     }
 }
 
+/// Windows에는 POSIX 프로세스 그룹이 없다. 이 앱이 Windows에서 실제로 쓰는
+/// 러너(Npm/Pnpm/SelfBinary)는 손자 프로세스를 남기는 경우가 드물어, 직속
+/// 자식만 종료(`Child::kill` → `TerminateProcess`)하는 것으로 MVP 범위에서는
+/// 충분하다고 판단했다(50인 미만 내부 도구, Job Object 등 고급 처리는 과설계).
+/// 손자 프로세스는 정리되지 않을 수 있다는 제약을 감수한다. pid 인자는 unix
+/// 버전과 시그니처를 맞추기 위해서만 존재하며 사용하지 않는다.
+#[cfg(windows)]
+fn force_kill_process_group(_pid: i32, child: &mut std::process::Child) -> Option<i32> {
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
 /// stdin=null(부록 B.1 — 프롬프트가 즉시 EOF를 받아 정지 대신 실패한다) +
 /// stdout/stderr 리더 스레드(파이프 64KB 버퍼가 차서 자식이 write에서 멈추는
 /// 교착을 막는다) + try_wait() 100ms 폴링 타임아웃 + 프로세스 그룹 kill.
@@ -961,6 +1001,9 @@ fn run_process_with_timeout(
         command.env(k, v);
     }
     // HOME은 상속(brew/npm 캐시·설정이 필요) — PATH만 명시적으로 덮어쓴다.
+    // 새 프로세스 그룹으로 스폰(force_kill_process_group의 그룹 kill이 작동하려면
+    // 필요) — Windows에는 이 개념 자체가 없어 이 호출도 없다(CommandExt는 unix 전용).
+    #[cfg(unix)]
     command.process_group(0);
 
     let mut child = match command.spawn() {
