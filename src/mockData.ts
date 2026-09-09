@@ -1,7 +1,7 @@
 // 하드코딩된 샘플 데이터. "프로젝트"(workspaceApi.ts), "세션목록"(sessionsApi.ts),
-// "카탈로그"(catalogApi.ts), "개발 환경"(devToolsApi.ts), OTel 설정(otelApi.ts)은
-// 실제 로컬 데이터를 쓰므로 이 파일에 없다 — 나머지 화면(자율업무·사용량 통계·
-// GitHub/Cloudflare/Jira/Google Workspace 설정 등)만 여기 값으로 채워진다.
+// "카탈로그"(catalogApi.ts), "개발 환경"(devToolsApi.ts), OTel/GitHub/Cloudflare/
+// Jira 설정(otelApi.ts/integrationsApi.ts)은 실제 로컬 데이터를 쓰므로 이 파일에
+// 없다 — 나머지 화면(자율업무·사용량 통계 등)만 여기 값으로 채워진다.
 
 // ---------------- 사용량 통계 ----------------
 

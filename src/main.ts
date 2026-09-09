@@ -9,6 +9,11 @@
 //   - "마켓플레이스 설정": known_marketplaces.json — catalogApi.ts
 //   - "OTel 설정": ~/.claude/settings.json의 env.OTEL_* — otelApi.ts
 //   - "사용량 통계"의 일별 사용량과 날짜별 상세: ~/.claude/projects/**/*.jsonl 집계 — usageApi.ts/dailyDetailApi.ts
+//   - "GitHub/Cloudflare 설정": 이 앱은 토큰을 취급하지 않는다. 상태는 `gh`/`wrangler`
+//     CLI를 읽기 전용으로 조회하고, 연결/해제는 사용자가 조작할 터미널 창을 여는
+//     것뿐이다 — integrationsApi.ts.
+//   - "Jira 설정": 사이트 URL·이메일·API 토큰을 실제로 검증(/rest/api/3/myself)한
+//     뒤 macOS 키체인에 저장한다 — integrationsApi.ts.
 // 카탈로그의 "업데이트"·마켓플레이스의 "새로고침" 버튼은 사용자가 명시적으로
 // 승인해 실제로 `claude plugin update`/`claude plugin marketplace update`를
 // 실행한다(catalogApi.ts 참고).
@@ -29,7 +34,7 @@ import { renderHomeView } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree } from './views/projects';
 import { renderCatalogView, loadCatalog, loadMarketplaces } from './views/catalog';
 import { renderDevToolsView, loadDevTools } from './views/devTools';
-import { renderSettingsView, loadOtelEnv } from './views/settings';
+import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus } from './views/settings';
 import { renderUsageView, loadDailyUsage, loadDailyDetail } from './views/usage';
 import { renderSessionsListView, renderSessionDetailView, loadSessions } from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
@@ -50,7 +55,7 @@ function renderApp(): void {
 
   const route = parseRoute();
   const banner = el('div', { className: 'mock-banner' }, [
-    'UI/UX 검증용 목업 — 로그인(Google OAuth)·프로젝트·세션목록·개발 환경·카탈로그·마켓플레이스·OTel 설정·사용량 통계(일별 사용량/날짜별 상세)만 실제이고 나머지는 하드코딩된 샘플입니다',
+    'UI/UX 검증용 목업 — 로그인(Google OAuth)·프로젝트·세션목록·개발 환경·카탈로그·마켓플레이스·OTel/GitHub/Cloudflare/Jira 설정·사용량 통계(일별 사용량/날짜별 상세)만 실제이고 나머지는 하드코딩된 샘플입니다',
   ]);
 
   let content: HTMLElement;
@@ -118,6 +123,15 @@ function handleNavigation(): void {
   const route = parseRoute();
   if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {
     void loadOtelEnv();
+  }
+  if (route.kind === 'settings' && route.tab === 'github' && !state.github.loaded && !state.github.loading) {
+    void loadGithubStatus();
+  }
+  if (route.kind === 'settings' && route.tab === 'cloudflare' && !state.cloudflare.loaded && !state.cloudflare.loading) {
+    void loadCloudflareStatus();
+  }
+  if (route.kind === 'settings' && route.tab === 'jira' && !state.jira.loaded && !state.jira.loading) {
+    void loadJiraStatus();
   }
   if (route.kind === 'projects-detail' && state.projectTree.projectPath !== route.path && !state.projectTree.loading) {
     void loadProjectTree(route.path);

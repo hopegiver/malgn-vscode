@@ -4,6 +4,17 @@ import type { SettingsTab } from '../state';
 import { fetchOtelEnv } from '../otelApi';
 import { loadCatalog, loadMarketplaces } from './catalog';
 import { refreshMarketplaces } from '../catalogApi';
+import {
+  fetchGithubStatus,
+  connectGithub,
+  disconnectGithub,
+  fetchCloudflareStatus,
+  connectCloudflare,
+  disconnectCloudflare,
+  fetchJiraStatus,
+  connectJira,
+  disconnectJira,
+} from '../integrationsApi';
 import { navigate } from '../route';
 
 interface FieldSpec {
@@ -14,45 +25,11 @@ interface FieldSpec {
   readonly value?: string;
 }
 
-const GITHUB_FIELDS: readonly FieldSpec[] = [
-  { id: 'gh-org', label: '조직/계정', placeholder: 'malgnsoft', value: 'malgnsoft' },
-  { id: 'gh-repo', label: '기본 레포지토리', placeholder: 'malgn-vscode', value: 'malgn-vscode' },
-  { id: 'gh-token', label: 'Personal Access Token', placeholder: 'ghp_****', type: 'password' },
-  { id: 'gh-branch', label: '기본 브랜치', placeholder: 'main', value: 'main' },
-];
-
-const CLOUDFLARE_FIELDS: readonly FieldSpec[] = [
-  { id: 'cf-account', label: '계정 ID', placeholder: 'a1b2c3d4e5f6...' },
-  { id: 'cf-token', label: 'API 토큰', placeholder: '****', type: 'password' },
-  { id: 'cf-zone', label: 'Zone ID (선택)', placeholder: 'zone id (옵션)' },
-];
-
-const JIRA_FIELDS: readonly FieldSpec[] = [
-  { id: 'jira-site', label: 'Jira 사이트 URL', placeholder: 'https://malgnsoft.atlassian.net', value: 'https://malgnsoft.atlassian.net' },
-  { id: 'jira-email', label: '계정 이메일', placeholder: 'dev@malgnsoft.com' },
-  { id: 'jira-token', label: 'API 토큰', placeholder: '****', type: 'password' },
-];
-
-interface FormTabSpec {
-  readonly key: SettingsTab;
-  readonly label: string;
-  readonly fields: readonly FieldSpec[];
-  readonly hint: string;
-}
-
-// 일반 폼 패턴(입력 필드 + 저장 버튼, 전부 목업 값)을 쓰는 탭들. "otel"·"google"·
-// "marketplace"는 각자 성격이 달라 별도 패널로 그린다 — TAB_META에는 같이 들어가지만
-// FORM_TABS에는 넣지 않는다.
-const FORM_TABS: readonly FormTabSpec[] = [
-  { key: 'github', label: 'GitHub 설정', fields: GITHUB_FIELDS, hint: '조직 리포지토리 접근에 사용할 자격 증명을 설정합니다.' },
-  { key: 'cloudflare', label: 'Cloudflare 설정', fields: CLOUDFLARE_FIELDS, hint: '배포·DNS 자동화에 사용할 Cloudflare 자격 증명을 설정합니다.' },
-  { key: 'jira', label: 'Jira 설정', fields: JIRA_FIELDS, hint: '자율업무·이슈 연동에 사용할 Jira 자격 증명을 설정합니다.' },
-];
-
 const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
-  ...FORM_TABS.map((t) => ({ key: t.key, label: t.label })),
-  { key: 'google', label: 'Google Workspace 설정' },
+  { key: 'github', label: 'GitHub 설정' },
+  { key: 'cloudflare', label: 'Cloudflare 설정' },
+  { key: 'jira', label: 'Jira 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
 ];
 
@@ -69,27 +46,12 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
 
   let body: HTMLElement;
   if (tab === 'otel') body = renderOtelPanel();
-  else if (tab === 'google') body = renderGoogleWorkspacePanel();
-  else if (tab === 'marketplace') body = renderMarketplacePanel();
-  else body = renderFormPanel(tab);
+  else if (tab === 'github') body = renderGithubPanel();
+  else if (tab === 'cloudflare') body = renderCloudflarePanel();
+  else if (tab === 'jira') body = renderJiraPanel();
+  else body = renderMarketplacePanel();
 
   return el('div', {}, [header, tabsRow, body]);
-}
-
-function renderFormPanel(tab: SettingsTab): HTMLElement {
-  const current = FORM_TABS.find((t) => t.key === tab) ?? FORM_TABS[0];
-
-  const form = el('form', { className: 'settings-form' }, [el('div', { className: 'settings-form-hint' }, [current.hint]), ...current.fields.map(renderField)]);
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    showToast(`${current.label} 저장됨 (목업 — 실제로 저장되지 않습니다)`);
-  });
-
-  const saveBtn = el('button', { className: 'btn btn-primary' }, ['저장']);
-  saveBtn.type = 'submit';
-  form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
-
-  return el('div', { className: 'settings-card' }, [form]);
 }
 
 function renderField(spec: FieldSpec): HTMLElement {
@@ -157,68 +119,356 @@ function renderOtelPanel(): HTMLElement {
   return el('div', { className: 'settings-card' }, [form]);
 }
 
-// ---------------- Google Workspace (OAuth 스타일 목업) ----------------
-// 실제 OAuth 플로우는 없다 — 버튼을 누르면 그냥 "연결됨" 상태로 바뀐다.
+// ---------------- 공용 로딩/에러 블록 ----------------
+// otel 패널이 먼저 쓰던 패턴(loading/error/loaded 3상태)을 github/cloudflare/jira
+// 패널도 동일하게 따른다.
 
-function renderGoogleWorkspacePanel(): HTMLElement {
-  if (!state.google.connected) {
-    return el('div', { className: 'settings-card google-panel' }, [
+function renderLoadingBlock(): HTMLElement {
+  return el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]);
+}
+
+function renderErrorBlock(message: string, onRetry: () => void): HTMLElement {
+  return el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${message}`]), el('button', { className: 'btn', onClick: onRetry }, ['다시 시도'])]);
+}
+
+// ---------------- GitHub 설정 (CLI 위임, 이 앱은 토큰을 취급하지 않는다) ----------------
+// 상태는 `gh` CLI를 읽기 전용으로 조회한 실물이다. "연결하기"/"연결 해제"는 앱이
+// 대신 로그인/로그아웃을 완료하지 않는다 — 사용자가 조작할 터미널 창을 여는
+// 데까지만 관여한다. 그래서 버튼을 누른 직후 낙관적으로 "연결됨"으로 바꾸지
+// 않고, 터미널에서 절차를 마친 뒤 "상태 새로고침"으로 실제 상태를 다시 읽는다.
+
+export async function loadGithubStatus(): Promise<void> {
+  state.github.loading = true;
+  state.github.error = null;
+  notifyChange();
+  try {
+    state.github.status = await fetchGithubStatus();
+    state.github.loaded = true;
+  } catch (err) {
+    state.github.error = err instanceof Error ? err.message : 'GitHub 연동 상태를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+  } finally {
+    state.github.loading = false;
+    notifyChange();
+  }
+}
+
+async function handleGithubConnect(): Promise<void> {
+  state.github.connecting = true;
+  notifyChange();
+  try {
+    const result = await connectGithub();
+    showToast(result.message);
+  } catch (err) {
+    showToast(`GitHub 연결을 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.github.connecting = false;
+    notifyChange();
+  }
+}
+
+async function handleGithubDisconnect(): Promise<void> {
+  state.github.disconnecting = true;
+  notifyChange();
+  try {
+    const result = await disconnectGithub();
+    showToast(result.message);
+  } catch (err) {
+    showToast(`GitHub 연결 해제를 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.github.disconnecting = false;
+    notifyChange();
+  }
+}
+
+function renderGithubPanel(): HTMLElement {
+  if (state.github.loading && !state.github.loaded) return renderLoadingBlock();
+  if (state.github.error) return renderErrorBlock(state.github.error, () => void loadGithubStatus());
+
+  const status = state.github.status;
+  const refreshBtn = el('button', { className: 'btn', onClick: () => void loadGithubStatus() }, ['상태 새로고침']);
+
+  if (!status || !status.installed) {
+    return el('div', { className: 'settings-card integration-panel' }, [
       el('div', { className: 'settings-form-hint' }, [
-        'Gmail(업무 이메일 가져오기/처리)과 Google Drive(자료 저장) 연동에 사용할 Google 계정을 연결합니다.',
+        'GitHub CLI(gh)가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
       ]),
-      el(
-        'button',
-        {
-          className: 'btn btn-primary',
-          onClick: () => {
-            state.google.connected = true;
-            state.google.email = state.google.email ?? 'dev@malgnsoft.com';
-            showToast('Google 계정이 연결되었습니다 (목업 — 실제 OAuth 연동 없음)');
-            notifyChange();
-          },
-        },
-        ['Google 계정으로 연결하기']
-      ),
+      el('div', { className: 'settings-form-actions' }, [
+        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/dev-tools') }, ['개발 환경 화면으로 이동']),
+        refreshBtn,
+      ]),
     ]);
   }
 
-  const account = el('div', { className: 'google-account-row' }, [
-    el('div', { className: 'google-account-avatar' }, ['G']),
-    el('div', { className: 'google-account-info' }, [
-      el('div', { className: 'google-account-email' }, [state.google.email ?? '']),
-      el('div', { className: 'google-account-status' }, ['연결됨']),
+  if (!status.connected) {
+    return el('div', { className: 'settings-card integration-panel' }, [
+      el('div', { className: 'settings-form-hint' }, [
+        '조직 리포지토리 접근에 사용할 GitHub 계정을 연결합니다. 버튼을 누르면 터미널 창이 열리고, 그 창에서 로그인 절차를 직접 진행합니다. 로그인을 마친 뒤 "상태 새로고침"으로 확인하세요.',
+      ]),
+      el('div', { className: 'settings-form-actions' }, [
+        el(
+          'button',
+          { className: 'btn btn-primary', disabled: state.github.connecting, onClick: () => void handleGithubConnect() },
+          [state.github.connecting ? '터미널 여는 중…' : 'GitHub 계정 연결하기']
+        ),
+        refreshBtn,
+      ]),
+    ]);
+  }
+
+  return el('div', { className: 'settings-card integration-panel' }, [
+    el('div', { className: 'integration-account-row' }, [
+      el('div', { className: 'integration-account-avatar' }, [(status.login ?? '?').charAt(0).toUpperCase()]),
+      el('div', { className: 'integration-account-info' }, [
+        el('div', { className: 'integration-account-name' }, [status.name ?? status.login ?? '']),
+        el('div', { className: 'integration-account-status' }, [`@${status.login ?? '?'} · 연결됨`]),
+      ]),
     ]),
-    el(
-      'button',
-      {
-        className: 'btn',
-        onClick: () => {
-          state.google.connected = false;
-          showToast('Google 계정 연결이 해제되었습니다');
-          notifyChange();
-        },
-      },
-      ['연결 해제']
-    ),
+    el('div', { className: 'settings-form-actions' }, [
+      el(
+        'button',
+        { className: 'btn', disabled: state.github.disconnecting, onClick: () => void handleGithubDisconnect() },
+        [state.github.disconnecting ? '터미널 여는 중…' : '연결 해제']
+      ),
+      refreshBtn,
+    ]),
   ]);
-
-  const gmailRow = googleServiceRow('Gmail 연동', '업무 이메일을 가져와 처리합니다.', state.google.gmailEnabled, () => {
-    state.google.gmailEnabled = !state.google.gmailEnabled;
-    notifyChange();
-  });
-  const driveRow = googleServiceRow('Drive 연동', '자료를 Google Drive에 저장합니다.', state.google.driveEnabled, () => {
-    state.google.driveEnabled = !state.google.driveEnabled;
-    notifyChange();
-  });
-
-  return el('div', { className: 'settings-card google-panel' }, [account, gmailRow, driveRow]);
 }
 
-function googleServiceRow(name: string, desc: string, enabled: boolean, onToggle: () => void): HTMLElement {
-  return el('div', { className: 'google-service-row' }, [
-    el('div', {}, [el('div', { className: 'google-service-name' }, [name]), el('div', { className: 'google-service-desc' }, [desc])]),
-    toggleSwitch(enabled, onToggle),
+// ---------------- Cloudflare 설정 (CLI 위임, wrangler) ----------------
+// wrangler가 설치되어 있지 않은 것(installed:false)은 에러가 아니라 정상 상태다
+// — 이 개발 머신에는 실제로 설치되어 있지 않다. 에러 알림이 아니라 "개발 환경
+// 화면에서 확인" 안내로 처리한다. 나머지 흐름은 GitHub 패널과 동일하다.
+
+export async function loadCloudflareStatus(): Promise<void> {
+  state.cloudflare.loading = true;
+  state.cloudflare.error = null;
+  notifyChange();
+  try {
+    state.cloudflare.status = await fetchCloudflareStatus();
+    state.cloudflare.loaded = true;
+  } catch (err) {
+    state.cloudflare.error = err instanceof Error ? err.message : 'Cloudflare 연동 상태를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+  } finally {
+    state.cloudflare.loading = false;
+    notifyChange();
+  }
+}
+
+async function handleCloudflareConnect(): Promise<void> {
+  state.cloudflare.connecting = true;
+  notifyChange();
+  try {
+    const result = await connectCloudflare();
+    showToast(result.message);
+  } catch (err) {
+    showToast(`Cloudflare 연결을 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.cloudflare.connecting = false;
+    notifyChange();
+  }
+}
+
+async function handleCloudflareDisconnect(): Promise<void> {
+  state.cloudflare.disconnecting = true;
+  notifyChange();
+  try {
+    const result = await disconnectCloudflare();
+    showToast(result.message);
+  } catch (err) {
+    showToast(`Cloudflare 연결 해제를 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.cloudflare.disconnecting = false;
+    notifyChange();
+  }
+}
+
+function renderCloudflarePanel(): HTMLElement {
+  if (state.cloudflare.loading && !state.cloudflare.loaded) return renderLoadingBlock();
+  if (state.cloudflare.error) return renderErrorBlock(state.cloudflare.error, () => void loadCloudflareStatus());
+
+  const status = state.cloudflare.status;
+  const refreshBtn = el('button', { className: 'btn', onClick: () => void loadCloudflareStatus() }, ['상태 새로고침']);
+
+  if (!status || !status.installed) {
+    return el('div', { className: 'settings-card integration-panel' }, [
+      el('div', { className: 'settings-form-hint' }, [
+        'Wrangler CLI가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
+      ]),
+      el('div', { className: 'settings-form-actions' }, [
+        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/dev-tools') }, ['개발 환경 화면으로 이동']),
+        refreshBtn,
+      ]),
+    ]);
+  }
+
+  if (!status.connected) {
+    return el('div', { className: 'settings-card integration-panel' }, [
+      el('div', { className: 'settings-form-hint' }, [
+        '배포·DNS 자동화에 사용할 Cloudflare 계정을 연결합니다. 버튼을 누르면 터미널 창이 열리고, 그 창에서 로그인 절차를 직접 진행합니다. 로그인을 마친 뒤 "상태 새로고침"으로 확인하세요.',
+      ]),
+      el('div', { className: 'settings-form-actions' }, [
+        el(
+          'button',
+          { className: 'btn btn-primary', disabled: state.cloudflare.connecting, onClick: () => void handleCloudflareConnect() },
+          [state.cloudflare.connecting ? '터미널 여는 중…' : 'Cloudflare 계정 연결하기']
+        ),
+        refreshBtn,
+      ]),
+    ]);
+  }
+
+  return el('div', { className: 'settings-card integration-panel' }, [
+    el('div', { className: 'integration-account-row' }, [
+      el('div', { className: 'integration-account-avatar' }, [(status.email ?? '?').charAt(0).toUpperCase()]),
+      el('div', { className: 'integration-account-info' }, [
+        el('div', { className: 'integration-account-name' }, [status.email ?? '']),
+        el('div', { className: 'integration-account-status' }, ['연결됨']),
+      ]),
+    ]),
+    el('div', { className: 'settings-form-actions' }, [
+      el(
+        'button',
+        { className: 'btn', disabled: state.cloudflare.disconnecting, onClick: () => void handleCloudflareDisconnect() },
+        [state.cloudflare.disconnecting ? '터미널 여는 중…' : '연결 해제']
+      ),
+      refreshBtn,
+    ]),
   ]);
+}
+
+// ---------------- Jira 설정 (개인별 자격증명, 실제 저장) ----------------
+// 위임할 CLI가 없어 사이트 URL·이메일·API 토큰을 직접 받는다. "저장"은 실제로
+// jira_connect를 호출해 /rest/api/3/myself로 검증한 뒤 macOS 키체인에 담는다.
+// 토큰 입력란에는 절대 value를 주지 않는다(이미 저장된 상태에서도 placeholder로만
+// 표시) — 빈 값으로 제출하면 "변경 없음"으로 해석해 API를 호출하지 않는다.
+// 토큰은 제출 시점에만 읽어 connectJira()에 넘기고 그 뒤로 어떤 변수에도 남기지
+// 않는다("눈 아이콘"으로 보이게 하지 않는다 — 화면 공유가 잦은 사내 환경 위험).
+
+export async function loadJiraStatus(): Promise<void> {
+  state.jira.loading = true;
+  state.jira.error = null;
+  notifyChange();
+  try {
+    state.jira.status = await fetchJiraStatus();
+    state.jira.loaded = true;
+  } catch (err) {
+    state.jira.error = err instanceof Error ? err.message : 'Jira 연동 상태를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+  } finally {
+    state.jira.loading = false;
+    notifyChange();
+  }
+}
+
+async function handleJiraDisconnect(): Promise<void> {
+  state.jira.disconnecting = true;
+  notifyChange();
+  try {
+    await disconnectJira();
+    state.jira.status = { connected: false };
+    showToast('Jira 연결이 해제되었습니다.');
+  } catch (err) {
+    showToast(`Jira 연결 해제에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.jira.disconnecting = false;
+    notifyChange();
+  }
+}
+
+function renderJiraPanel(): HTMLElement {
+  if (state.jira.loading && !state.jira.loaded) return renderLoadingBlock();
+  if (state.jira.error) return renderErrorBlock(state.jira.error, () => void loadJiraStatus());
+
+  const status = state.jira.status;
+  const connected = status?.connected ?? false;
+
+  const siteInput = document.createElement('input');
+  siteInput.id = 'jira-site';
+  siteInput.name = 'jira-site';
+  siteInput.type = 'text';
+  siteInput.placeholder = 'https://malgnsoft.atlassian.net';
+  siteInput.value = status?.site ?? '';
+  siteInput.className = 'settings-input';
+  siteInput.autocomplete = 'off';
+
+  const emailInput = document.createElement('input');
+  emailInput.id = 'jira-email';
+  emailInput.name = 'jira-email';
+  emailInput.type = 'text';
+  emailInput.placeholder = 'dev@malgnsoft.com';
+  emailInput.value = status?.email ?? '';
+  emailInput.className = 'settings-input';
+  emailInput.autocomplete = 'off';
+
+  // 토큰 입력란 — value를 절대 주지 않는다. 이미 연결된 상태면 placeholder로만
+  // "저장되어 있다"는 사실을 알린다.
+  const tokenInput = document.createElement('input');
+  tokenInput.id = 'jira-token';
+  tokenInput.name = 'jira-token';
+  tokenInput.type = 'password';
+  tokenInput.placeholder = connected ? '변경하려면 새 토큰을 입력하세요' : '****';
+  tokenInput.className = 'settings-input';
+  tokenInput.autocomplete = 'off';
+
+  const form = el('form', { className: 'settings-form' }, [
+    el('div', { className: 'settings-form-hint' }, [
+      connected
+        ? `${status?.displayName ?? status?.email ?? ''} 계정으로 연결되어 있습니다. 토큰을 바꾸려면 새 토큰을 입력한 뒤 저장하세요.`
+        : '자율업무·이슈 연동에 사용할 Jira 계정을 연결합니다. API 토큰은 https://id.atlassian.com/manage-profile/security/api-tokens 에서 발급받을 수 있습니다.',
+    ]),
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['Jira 사이트 URL']), siteInput]),
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['계정 이메일']), emailInput]),
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['API 토큰']), tokenInput]),
+  ]);
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const site = siteInput.value.trim();
+    const email = emailInput.value.trim();
+    const token = tokenInput.value;
+
+    if (!token) {
+      if (connected) {
+        showToast('토큰을 입력하지 않아 변경 사항이 없습니다.');
+      } else {
+        showToast('API 토큰을 입력해주세요.');
+      }
+      return;
+    }
+    if (!site || !email) {
+      showToast('Jira 사이트 URL과 계정 이메일을 입력해주세요.');
+      return;
+    }
+
+    void (async () => {
+      state.jira.connecting = true;
+      notifyChange();
+      try {
+        state.jira.status = await connectJira(site, email, token);
+        showToast('Jira 계정이 연결되었습니다.');
+      } catch (err) {
+        showToast(`Jira 연결에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        state.jira.connecting = false;
+        notifyChange();
+      }
+    })();
+  });
+
+  const saveBtn = el('button', { className: 'btn btn-primary', disabled: state.jira.connecting }, [state.jira.connecting ? '저장 중…' : '저장']);
+  saveBtn.type = 'submit';
+  const actions: HTMLElement[] = [saveBtn];
+  if (connected) {
+    const disconnectBtn = el('button', { className: 'btn', disabled: state.jira.disconnecting, onClick: () => void handleJiraDisconnect() }, [
+      state.jira.disconnecting ? '해제 중…' : '연결 해제',
+    ]);
+    // <form> 안의 <button>은 type을 명시하지 않으면 기본값이 "submit"이라 이
+    // 버튼을 눌러도 저장 폼이 함께 제출된다 — 명시적으로 "button"으로 막는다.
+    disconnectBtn.type = 'button';
+    actions.push(disconnectBtn);
+  }
+  form.appendChild(el('div', { className: 'settings-form-actions' }, actions));
+
+  return el('div', { className: 'settings-card' }, [form]);
 }
 
 // ---------------- 마켓플레이스 설정 (실제 로컬 데이터 + 실제 새로고침 실행) ----------------

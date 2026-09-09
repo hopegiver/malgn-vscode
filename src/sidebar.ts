@@ -10,7 +10,6 @@ const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: strin
   { key: 'github', label: 'GitHub 설정' },
   { key: 'cloudflare', label: 'Cloudflare 설정' },
   { key: 'jira', label: 'Jira 설정' },
-  { key: 'google', label: 'Google Workspace 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
 ];
 

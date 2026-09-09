@@ -9,10 +9,11 @@ import type { DevToolStatus } from './devToolsApi';
 import type { InstalledPlugin, MarketplaceInfo, CommandResult } from './catalogApi';
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
+import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsApi';
 
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
-export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'google' | 'marketplace';
+export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace';
 
 export interface AppState {
   authenticated: boolean;
@@ -76,12 +77,36 @@ export interface AppState {
   };
   // 순수 목업 — 실제 스케줄 실행 엔진 없음. on/off·추가는 이 배열만 바꾼다.
   autonomousTasks: AutonomousTask[];
-  // Google Workspace 연동 — 순수 목업. 실제 OAuth 없이 "연결됨" 상태만 흉내낸다.
-  google: {
-    connected: boolean;
-    email: string | null;
-    gmailEnabled: boolean;
-    driveEnabled: boolean;
+  // GitHub 연동 — 이 앱은 토큰을 취급하지 않는다. 상태는 `gh` CLI를 읽기 전용으로
+  // 조회한 실물이고, 연결/해제는 터미널 창을 여는 것뿐이다(integrationsApi.ts).
+  github: {
+    status: GithubStatus | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+    connecting: boolean;
+    disconnecting: boolean;
+  };
+  // Cloudflare 연동 — wrangler CLI 위임. wrangler 미설치(installed:false)는
+  // 이 개발 머신의 정상 상태이지 에러가 아니다.
+  cloudflare: {
+    status: CloudflareStatus | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+    connecting: boolean;
+    disconnecting: boolean;
+  };
+  // Jira 연동 — 위임할 CLI가 없어 사이트 URL·이메일·API 토큰을 직접 받아 검증 후
+  // macOS 키체인에 저장한다. 토큰 원문은 절대 이 state에 보관하지 않는다 — 제출
+  // 시점에만 함수 인자로 넘어가고 그 뒤로는 참조가 남지 않는다.
+  jira: {
+    status: JiraStatus | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+    connecting: boolean;
+    disconnecting: boolean;
   };
   // 목업이 아니라 실제 `<tool> --version` 조회 결과가 들어간다. 설치/업데이트
   // 버튼(updating)은 순수 목업 — 실제로 아무것도 설치하지 않는다(사용자가 이건
@@ -152,7 +177,9 @@ export const state: AppState = {
   dailyUsage: { items: [], loading: false, error: null, loaded: false, live: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
   autonomousTasks: MOCK_AUTONOMOUS_TASKS.map((t) => ({ ...t, history: t.history ? [...t.history] : undefined })),
-  google: { connected: false, email: null, gmailEnabled: true, driveEnabled: true },
+  github: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
+  cloudflare: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
+  jira: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   devTools: { items: [], loading: false, error: null, loaded: false, updating: {}, updatingAll: false, mockUpdatedVersion: {} },
   catalog: { plugins: [], loading: false, error: null, loaded: false, autoUpdate: {}, updating: {}, updatingAll: false, lastResult: {} },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },

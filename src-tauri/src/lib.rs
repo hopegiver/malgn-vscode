@@ -4,6 +4,11 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+mod cli_launcher;
+mod cloudflare_integration;
+mod github_integration;
+mod jira_integration;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -1720,7 +1725,16 @@ pub fn run() {
             read_project_file,
             get_daily_usage,
             get_daily_detail,
-            google_oauth_login
+            google_oauth_login,
+            github_integration::github_status,
+            github_integration::github_connect,
+            github_integration::github_disconnect,
+            cloudflare_integration::cloudflare_status,
+            cloudflare_integration::cloudflare_connect,
+            cloudflare_integration::cloudflare_disconnect,
+            jira_integration::jira_status,
+            jira_integration::jira_connect,
+            jira_integration::jira_disconnect
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

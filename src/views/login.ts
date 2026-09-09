@@ -28,14 +28,14 @@ export function renderLoginView(): HTMLElement {
   const card = el('div', { className: 'login-card' }, [
     el('div', { className: 'login-brand' }, [el('span', { className: 'sidebar-brand-mark' }, ['M']), '맑은에이전트']),
     el('h1', { className: 'login-title' }, ['워크스테이션 프로비저닝']),
-    el('div', { className: 'login-desc' }, ['malgnsoft.com Google Workspace 계정으로 로그인합니다.']),
+    el('div', { className: 'login-desc' }, ['Google Workspace 계정으로 로그인합니다.']),
     ...(state.auth.error ? [el('div', { className: 'login-error' }, [`⚠ ${state.auth.error}`])] : []),
     el(
       'button',
       { className: 'btn btn-primary login-btn', disabled: state.auth.loading, onClick: () => void handleGoogleLogin() },
       [state.auth.loading ? '브라우저에서 로그인 대기 중…' : 'Google 계정으로 로그인']
     ),
-    el('div', { className: 'login-note' }, ['malgnsoft.com 조직 계정만 허용됩니다 — 다른 도메인 계정은 로그인이 거부됩니다.']),
+    el('div', { className: 'login-note' }, ['malgnsoft.com 조직 계정만 허용됩니다.']),
   ]);
   return el('div', { className: 'login-screen' }, [card]);
 }

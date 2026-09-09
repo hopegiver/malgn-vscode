@@ -399,24 +399,19 @@ textarea.settings-input { resize: vertical; }
 .task-run-name { font-weight: 600; margin-bottom: 4px; }
 .task-run-time { color: var(--color-ink-faint); font-size: 11px; }
 
-/* ---------------- Google Workspace 설정 (OAuth 스타일 목업) ---------------- */
-.google-panel { display: flex; flex-direction: column; gap: 4px; }
-.google-account-row {
+/* ---------------- 연동 설정 공용 (GitHub/Cloudflare 연결 상태 표시) ---------------- */
+.integration-panel { display: flex; flex-direction: column; gap: 4px; }
+.integration-account-row {
   display: flex; align-items: center; gap: 12px;
-  padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--color-hairline);
 }
-.google-account-avatar {
+.integration-account-avatar {
   width: 36px; height: 36px; border-radius: 50%; background: var(--color-brand);
   color: #fff; font-weight: 700; font-size: 15px;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
-.google-account-info { flex: 1; min-width: 0; }
-.google-account-email { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.google-account-status { font-size: 11.5px; color: var(--color-success-text); font-weight: 600; }
-.google-service-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; }
-.google-service-row + .google-service-row { border-top: 1px solid var(--color-hairline); }
-.google-service-name { font-size: 13px; font-weight: 600; }
-.google-service-desc { font-size: 11.5px; color: var(--color-ink-muted); margin-top: 2px; }
+.integration-account-info { flex: 1; min-width: 0; }
+.integration-account-name { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.integration-account-status { font-size: 11.5px; color: var(--color-success-text); font-weight: 600; }
 
 /* ---------------- 개발 환경 (실제 CLI 버전 조회) ---------------- */
 .devtool-header-actions { display: flex; gap: 8px; }
