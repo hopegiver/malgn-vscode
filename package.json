@@ -1,57 +1,22 @@
 {
-  "name": "malgn-vscode",
-  "displayName": "Malgn",
-  "description": "개발자 워크스테이션의 선언적 원하는 상태를 사람의 동의 아래 수렴시키는 리컨실러이며, malgn-agent의 설치·구동 표면(GUI)이다.",
-  "version": "0.1.0",
+  "name": "malgn-vscode-mockup",
   "private": true,
+  "version": "0.1.0",
   "type": "module",
-  "engines": {
-    "vscode": "^1.85.0"
-  },
-  "categories": [
-    "Other"
-  ],
-  "main": "./dist/extension.cjs",
-  "activationEvents": [
-    "onStartupFinished"
-  ],
-  "extensionKind": [
-    "workspace"
-  ],
-  "capabilities": {
-    "untrustedWorkspaces": {
-      "supported": "limited"
-    }
-  },
   "scripts": {
-    "gen:site": "node scripts/gen-site.mjs",
-    "contract:snapshot": "node scripts/gen-contract-snapshot.mjs",
-    "pretest": "pnpm run gen:site",
-    "precheck-types": "pnpm run gen:site",
-    "precompat:check": "pnpm run gen:site",
-    "check-types": "tsc --noEmit",
-    "compile": "node esbuild.mjs",
-    "postcompile": "node scripts/generate-build-provenance.mjs",
-    "watch": "node esbuild.mjs --watch",
-    "prebuild": "pnpm run gen:site",
-    "build": "pnpm run check-types && pnpm run compile",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "compat:check": "vitest run --config vitest.compat.config.ts",
-    "prepackage": "pnpm run gen:site && node scripts/assert-site-profile-for-packaging.mjs",
-    "package": "pnpm run build && node scripts/assert-shipped-media-scan.mjs",
-    "build:host": "node scripts/build-host.mjs",
-    "app:dev": "pnpm run build:host && electron dist/dev-app/host/entry.dev.cjs",
-    "stage:dev-app": "node scripts/stage-dev-app.mjs",
-    "package:dev-app": "node scripts/package-dev-app.mjs"
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2"
   },
   "devDependencies": {
-    "@electron/packager": "^20.3.0",
-    "@types/node": "^22.10.0",
-    "@types/vscode": "^1.85.0",
-    "electron": "^44.2.0",
-    "esbuild": "^0.24.0",
-    "typescript": "~5.6.0",
-    "vitest": "^2.1.0"
+    "@tauri-apps/cli": "^2",
+    "playwright": "^1.63.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
   }
 }

@@ -1,4 +1,0 @@
-{
-  "brew": ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"],
-  "winget": ["%LOCALAPPDATA%\\Microsoft\\WindowsApps\\winget.exe"]
-}

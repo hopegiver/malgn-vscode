@@ -7,3 +7,4 @@ out/
 dist/
 .dev.vars
 site/
+src-tauri/.env

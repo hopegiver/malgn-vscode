@@ -1,10 +1,14 @@
-# 차단성 CI — docs/tech-stack.md §5.4 파이프라인의 로컬·오프라인 갈래만 구현한다:
-# install(frozen) → tsc --noEmit → vitest → compat:check → esbuild 빌드.
+# 가벼운 push/PR 상시 CI — 프런트엔드(타입체크+빌드)만 검사한다.
 #
-# 설계 원칙(docs/architecture.md §7.3.1 "회귀 금지 항목" / docs/policy-contract.md §6):
-#   - 차단성 검사는 로컬·오프라인만이다 — 이 워크플로는 상위 저장소(malgnsoft/claude-plugins)를
-#     조회하지 않는다. 인터페이스 지문 대조(§3.5.2)는 **비차단성 스케줄 잡**이고 이
-#     워크플로의 범위가 아니다(W6 작업 지시 "비차단 스케줄 잡은 이번 범위가 아닙니다").
+# 왜 Rust 쪽을 여기서 검사하지 않는가:
+#   - Tauri는 Linux 타깃에서 webkit2gtk 시스템 라이브러리가 필요해 ubuntu-latest에서
+#     `cargo check`를 돌리려면 apt 패키지 설치가 추가로 필요하다. 이 프로젝트의 배포
+#     타깃은 macOS/Windows뿐이라(Linux 미지원) 그 비용을 들여 검사할 대상이 없다.
+#   - macOS/Windows 러너로 Rust를 매 push마다 컴파일하면 비용이 크다(GitHub 호스티드
+#     macOS 분당 과금이 Linux의 약 10배). Rust 컴파일 검증은 수동 트리거인
+#     `tauri-portable-build.yml`(실제 빌드가 곧 검증)에 맡긴다.
+#
+# 보안 원칙(기존 워크플로에서 계승):
 #   - 액션은 sha로 고정한다(가변 태그 `@v4` 금지).
 #   - `permissions`는 최소(`contents: read`)로 둔다.
 #   - 시크릿을 쓰지 않는다.
@@ -20,7 +24,7 @@ permissions:
   contents: read
 
 jobs:
-  compat-check:
+  frontend-check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -40,22 +44,8 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
-      # docs/policy-contract.md §8.7 S7 — 민감값 분리(§8.4) 이후 compat/compatibility.json은
-      # {"$site":"..."} 구멍을 갖는다. CI 러너에는 site/site.json이 없으므로(사이트면은
-      # 영구 비추적) 이 단계는 항상 compat/site.example.json(예약 네임스페이스 전용)으로
-      # 구멍을 채운다 — siteProfile=example. 시크릿 0 회귀 금지선(§7.3.1)을 지키기 위해
-      # 이 단계는 CI 시크릿을 쓰지 않는다(architect가 이미 기각한 대안).
-      - name: Generate site constants (gen:site, example face)
-        run: pnpm run gen:site
-
       - name: Type check
-        run: pnpm run check-types
+        run: pnpm exec tsc --noEmit
 
-      - name: Unit tests
-        run: pnpm test
-
-      - name: Contract gate — compat:check
-        run: pnpm compat:check
-
-      - name: Build (esbuild bundle sanity check)
-        run: pnpm run compile
+      - name: Frontend build (vite)
+        run: pnpm build

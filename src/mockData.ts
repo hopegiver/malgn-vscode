@@ -1,0 +1,194 @@
+// 하드코딩된 샘플 데이터. "프로젝트"(workspaceApi.ts), "세션목록"(sessionsApi.ts),
+// "카탈로그"(catalogApi.ts), "개발 환경"(devToolsApi.ts), OTel 설정(otelApi.ts)은
+// 실제 로컬 데이터를 쓰므로 이 파일에 없다 — 나머지 화면(자율업무·사용량 통계·
+// GitHub/Cloudflare/Jira/Google Workspace 설정 등)만 여기 값으로 채워진다.
+
+// ---------------- 사용량 통계 ----------------
+
+export interface UsageSummaryStat {
+  readonly label: string;
+  readonly value: string;
+  readonly delta: string | null;
+  readonly deltaPositive: boolean;
+}
+
+export interface UsageByProject {
+  readonly project: string;
+  readonly tokens: number;
+}
+
+export interface UsageWindow {
+  readonly usedPercent: number;
+  readonly usedLabel: string;
+  readonly limitLabel: string;
+  readonly resetLabel: string;
+}
+
+export const MOCK_USAGE: {
+  readonly windows: { readonly fiveHour: UsageWindow; readonly weekly: UsageWindow };
+  readonly summary: readonly UsageSummaryStat[];
+  readonly byProject: readonly UsageByProject[];
+} = {
+  windows: {
+    fiveHour: {
+      usedPercent: 62,
+      usedLabel: '3.1M / 5.0M 토큰',
+      limitLabel: '5시간 롤링 한도',
+      resetLabel: '리셋까지 1시간 40분 남음',
+    },
+    weekly: {
+      usedPercent: 45,
+      usedLabel: '14.2M / 32M 토큰',
+      limitLabel: '주간 한도',
+      resetLabel: '3일 후 리셋 (일요일 00:00)',
+    },
+  },
+  summary: [
+    { label: '이번 달 총 토큰', value: '12.4M', delta: '+8% 전월 대비', deltaPositive: true },
+    { label: '이번 달 API 호출', value: '8,214회', delta: '+3% 전월 대비', deltaPositive: true },
+    { label: '활성 프로젝트', value: '8개', delta: null, deltaPositive: true },
+    { label: '평균 캐시 히트율', value: '71%', delta: '-2%p 전월 대비', deltaPositive: false },
+  ],
+  byProject: [
+    { project: 'malgn-agent', tokens: 3820000 },
+    { project: 'malgnai-hub', tokens: 2650000 },
+    { project: 'malgn-vscode', tokens: 2190000 },
+    { project: 'malgnuniv', tokens: 1540000 },
+    { project: 'malgnsales', tokens: 980000 },
+    { project: 'malgn-billing', tokens: 640000 },
+  ],
+};
+
+// ---------------- 자율업무 ----------------
+// 순수 목업 — 실제 스케줄 실행 엔진은 붙어 있지 않다. on/off 토글·새 항목 추가는
+// 세션 안 메모리 상태만 바꾸고 새로고침하면 사라진다.
+
+export interface AutonomousTaskHistoryEntry {
+  readonly at: string;
+  readonly result: '성공' | '실패';
+}
+
+export interface AutonomousTask {
+  id: string;
+  name: string;
+  description: string;
+  scheduleLabel: string;
+  lastRunLabel: string | null;
+  nextRunLabel: string;
+  enabled: boolean;
+  jiraSpace?: string;
+  history?: readonly AutonomousTaskHistoryEntry[];
+}
+
+export const MOCK_AUTONOMOUS_TASKS: readonly AutonomousTask[] = [
+  {
+    id: 'task-status-check',
+    name: '프로젝트 상태 점검',
+    description: '등록된 프로젝트의 STATUS.md를 훑어 오래 갱신되지 않은 항목을 알려줍니다.',
+    scheduleLabel: '매 1시간마다',
+    lastRunLabel: '10분 전',
+    nextRunLabel: '50분 후',
+    enabled: true,
+    jiraSpace: 'DEV',
+    history: [
+      { at: '오늘 14:00', result: '성공' },
+      { at: '오늘 13:00', result: '성공' },
+      { at: '오늘 12:00', result: '실패' },
+    ],
+  },
+  {
+    id: 'task-dep-update',
+    name: '의존성 업데이트 확인',
+    description: '카탈로그의 에이전트·스킬·지식 중 구버전 항목을 찾아 알려줍니다.',
+    scheduleLabel: '매일 09:00',
+    lastRunLabel: '어제 09:00',
+    nextRunLabel: '내일 09:00',
+    enabled: true,
+    history: [
+      { at: '어제 09:00', result: '성공' },
+      { at: '2일 전 09:00', result: '성공' },
+    ],
+  },
+  {
+    id: 'task-otel-health',
+    name: 'OTel 헬스체크',
+    description: '설정된 OTLP 엔드포인트로 핑을 보내 수집기 상태를 확인합니다.',
+    scheduleLabel: '매 30분마다',
+    lastRunLabel: '5분 전',
+    nextRunLabel: '25분 후',
+    enabled: false,
+    jiraSpace: 'OPS',
+  },
+  {
+    id: 'task-usage-report',
+    name: '주간 사용량 리포트',
+    description: '프로젝트별 토큰 사용량을 집계해 요약을 만듭니다.',
+    scheduleLabel: '매주 월요일 09:00',
+    lastRunLabel: '지난주 월요일',
+    nextRunLabel: '다음주 월요일',
+    enabled: true,
+  },
+  {
+    id: 'task-session-cleanup',
+    name: '세션 메타데이터 정리',
+    description: '오래된 로컬 세션 메타데이터 파일을 정리 대상으로 표시합니다.',
+    scheduleLabel: '매일 03:00',
+    lastRunLabel: '오늘 03:00',
+    nextRunLabel: '내일 03:00',
+    enabled: false,
+  },
+  {
+    id: 'task-performance-log',
+    name: '오늘 업무 성과관리 등록',
+    description: '그날 수행한 작업을 사내 성과관리시스템(performance 프로젝트)에 자동으로 등록·업데이트합니다.',
+    scheduleLabel: '매일 18:00',
+    lastRunLabel: '어제 18:00',
+    nextRunLabel: '오늘 18:00',
+    enabled: true,
+    history: [
+      { at: '어제 18:00', result: '성공' },
+      { at: '2일 전 18:00', result: '성공' },
+    ],
+  },
+];
+
+// ---------------- 자율업무 진행상황판 ----------------
+// 진행중/대기중/성공/실패 상태별 최근 실행 이력 샘플. 실제 실행기가 없으므로
+// 시각 표기도 "오늘/어제" 같은 사람이 읽는 문자열로만 하드코딩한다.
+
+export type TaskRunStatus = '진행중' | '성공' | '실패' | '대기중';
+
+export interface TaskRun {
+  readonly id: string;
+  readonly taskName: string;
+  readonly status: TaskRunStatus;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+}
+
+export const MOCK_TASK_RUNS: readonly TaskRun[] = [
+  { id: 'run-1', taskName: '프로젝트 상태 점검', status: '진행중', startedAt: '오늘 14:32', endedAt: null },
+  { id: 'run-2', taskName: '의존성 업데이트 확인', status: '성공', startedAt: '오늘 09:00', endedAt: '오늘 09:02' },
+  { id: 'run-3', taskName: 'OTel 헬스체크', status: '실패', startedAt: '오늘 08:30', endedAt: '오늘 08:31' },
+  { id: 'run-4', taskName: '주간 사용량 리포트', status: '대기중', startedAt: '다음주 월요일 09:00 예정', endedAt: null },
+  { id: 'run-5', taskName: '세션 메타데이터 정리', status: '성공', startedAt: '오늘 03:00', endedAt: '오늘 03:01' },
+  { id: 'run-6', taskName: '프로젝트 상태 점검', status: '성공', startedAt: '오늘 13:00', endedAt: '오늘 13:00' },
+  { id: 'run-7', taskName: '프로젝트 상태 점검', status: '실패', startedAt: '오늘 12:00', endedAt: '오늘 12:00' },
+  { id: 'run-8', taskName: '의존성 업데이트 확인', status: '성공', startedAt: '어제 09:00', endedAt: '어제 09:02' },
+  { id: 'run-9', taskName: '오늘 업무 성과관리 등록', status: '성공', startedAt: '어제 18:00', endedAt: '어제 18:01' },
+  { id: 'run-10', taskName: '오늘 업무 성과관리 등록', status: '성공', startedAt: '2일 전 18:00', endedAt: '2일 전 18:01' },
+];
+
+// ---------------- 개발 환경: "최신 버전" 비교값 ----------------
+// 실제 설치 버전은 devToolsApi.ts가 로컬에서 조회하지만, 그 버전과 비교할 "최신
+// 버전"은 실제 배포 채널을 조회하지 않는다 — 순수 목업 샘플 값이다(업데이트 가능
+// 여부를 보여주기 위한 것일 뿐, 정확한 최신 버전 숫자가 아니다).
+export const MOCK_DEV_TOOL_META: Readonly<Record<string, { readonly latestVersion: string; readonly updateAvailable: boolean }>> = {
+  claude: { latestVersion: '2.2.0', updateAvailable: true },
+  node: { latestVersion: '22.14.0', updateAvailable: false },
+  gh: { latestVersion: '2.65.0', updateAvailable: true },
+  git: { latestVersion: '2.47.0', updateAvailable: false },
+  pnpm: { latestVersion: '11.10.0', updateAvailable: true },
+  wrangler: { latestVersion: '3.90.0', updateAvailable: true },
+  docker: { latestVersion: '27.4.0', updateAvailable: false },
+};

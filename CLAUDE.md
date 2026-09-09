@@ -14,17 +14,16 @@ This file provides guidance to Claude Code when working with code in this reposi
 **필수 규율:** 주요 결정/이슈/교훈은 malgnai-hub에 기록.
 
 ## Project Overview
-malgn-vscode — 사내 개발자 워크스테이션 프로비저닝 VSCode 확장. malgn-agent의 GUI 프론트엔드.
-설계 정본은 `docs/architecture.md`(**통독 금지** — 목차로 필요한 절만).
+malgn-vscode("맑은에이전트") — 사내 개발자 워크스테이션 프로비저닝 **Tauri 데스크톱 앱**(macOS/Windows). malgn-agent의 GUI 프론트엔드.
+2026-09-08 Electron 기반에서 Tauri로 전면 전환했다 — 이전 Electron 구현 전체는 `electron` 브랜치에 보존돼 있다.
+설계 문서(`docs/`)는 전환 과정의 스캐폴딩 사고로 유실되어 아직 없다 — malgnai-hub 결정/이슈 기록이 당분간의 정본이다(project_id: `01m1gng9ppnm67283p189pq3t7`).
 
 ## Tech Stack
-TypeScript + esbuild + Vitest, pnpm 전용. 정본은 `docs/tech-stack.md`.
-
-## Architecture
-- `src/providers/` — 모든 provider가 `detect/plan/apply/verify` 4단계 균일 인터페이스를 따른다. `apply()`는 `ConsentToken`을 **타입으로** 요구한다 — 동의 없는 변경 금지를 코드리뷰가 아니라 타입체커가 지킨다. 이 시그니처를 느슨하게 만들면 그 위의 안전장치가 전부 무의미해진다.
-- `src/core/policy/` — 원격 정책의 **신뢰 경계**. 정책은 제안만 하고(PR-4) 좁히기만 가능하며(PR-9) 권능 상한은 코드 상수다(PR-10). **키·행·값의 부재는 통과가 아니라 차단이다** — 이 결함이 세 번 재발했다.
-- `compat/` — 코드 상수 fixture(빌드에 번들). 정본은 `docs/policy-contract.md`이며 정책이 이 값을 넓힐 수 없다.
+- 프론트엔드: TypeScript + Vite, `src/`에 뷰(`src/views/`)와 각 실기능별 API 모듈(`*Api.ts`)이 있다.
+- 백엔드: Rust(`src-tauri/src/lib.rs`) — Tauri 커맨드로 로컬 파일시스템 읽기(`~/workspace`, `~/.claude/*`), 프로세스 실행(`claude`/`node`/`gh` 등 버전조회, 플러그인 업데이트), Google OAuth(PKCE+JWKS 검증) 등을 구현한다.
+- `capabilities/default.json`은 fs/shell 플러그인을 쓰지 않고 커스텀 Rust 커맨드만 노출한다 — 권한 표면을 의도적으로 좁게 유지한다. 새 실기능을 추가할 때도 이 패턴을 기본으로 삼는다.
+- pnpm 전용.
 
 ## git 워크플로
 - 로컬에서 검토·병합 후 `origin main`에 직접 push한다. GitHub 강제 브랜치 보호·CODEOWNERS를 쓰지 않는다.
-- 고위험 표면의 게이트는 HRS(서명·표면검사 CI·force-push 금지·증거 바인딩)로 집행한다 → `docs/architecture.md` §0.3.1·§7.3.1.
+- 이 저장소는 **public**이다 — 시크릿(API 토큰 등)은 절대 소스에 리터럴로 커밋하지 않는다. 빌드타임에 필요한 값은 `src-tauri/.env`(gitignore됨, 로컬 전용) + `build.rs`의 `option_env!()` 패턴으로 주입하고, CI는 GitHub Actions repo secret을 쓴다(`google_oauth_login` 관련 값이 실례).
