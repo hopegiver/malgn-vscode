@@ -19,6 +19,10 @@
 //   - "자율업무"(views/autonomousTasks.ts): 프로젝트별 자율업무 설정(프롬프트·주기·
 //     서브에이전트 등) — autonomyApi.ts. 실제 스케줄 실행 엔진은 Rust 쪽에 있고,
 //     이 화면은 조회/추가/수정/삭제/on-off만 한다.
+//   - "MCP 관리"(views/settings.ts): `claude mcp` CLI를 위임 실행해 등록된 MCP
+//     서버 목록/연결 상태를 조회하고 추가/삭제한다 — mcpApi.ts. 모델을 호출하지
+//     않는 순수 헬스체크라 빠르고 무료다. 홈 대시보드의 malgnai-hub 위젯도 이
+//     목록에서 이름으로 필터링해 보여준다.
 // 카탈로그의 "업데이트"·마켓플레이스의 "새로고침" 버튼은 사용자가 명시적으로
 // 승인해 실제로 `claude plugin update`/`claude plugin marketplace update`를
 // 실행한다(catalogApi.ts 참고).
@@ -42,7 +46,7 @@ import { renderHomeView } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree } from './views/projects';
 import { renderCatalogView, loadCatalog, loadMarketplaces } from './views/catalog';
 import { renderDevToolsView, loadDevTools } from './views/devTools';
-import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus } from './views/settings';
+import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus, loadMcp } from './views/settings';
 import { renderUsageView, loadDailyUsage } from './views/usage';
 import { renderSessionsListView, renderSessionDetailView, loadSessions } from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
@@ -125,6 +129,7 @@ function handleNavigation(): void {
   if (!state.marketplaces.loaded && !state.marketplaces.loading) void loadMarketplaces();
   if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
   if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
+  if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
 
   const route = parseRoute();
   if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {

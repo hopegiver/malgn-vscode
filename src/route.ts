@@ -29,7 +29,7 @@ export type Route =
   | { readonly kind: 'tasks-board' }
   | { readonly kind: 'tasks-detail'; readonly taskId: string };
 
-const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'jira', 'marketplace'];
+const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'jira', 'marketplace', 'mcp'];
 
 export function parseRoute(): Route {
   const hash = window.location.hash;

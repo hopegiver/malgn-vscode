@@ -7,6 +7,8 @@ import { state } from '../state';
 import { navigate } from '../route';
 import { computeTodayTokens, formatTokenCount } from './usage';
 
+const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
+
 export function renderHomeView(): HTMLElement {
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [el('h1', { className: 'page-title' }, ['대시보드']), el('div', { className: 'page-subtitle' }, ['전체 요약'])]),
@@ -19,6 +21,7 @@ export function renderHomeView(): HTMLElement {
     sessionsWidget(),
     devToolsWidget(),
     taskBoardWidget(),
+    mcpHubWidget(),
   ]);
 
   return el('div', {}, [header, grid]);
@@ -48,6 +51,40 @@ function taskBoardWidget(): HTMLElement {
     el('div', { className: 'home-widget-desc' }, ['현재 실행 중 (실제 로컬 데이터)']),
     el('div', { className: 'home-widget-breakdown' }, [el('span', {}, [`오늘 실패 ${todayFail}건`])]),
     el('div', { className: 'home-widget-link' }, ['진행상황판 보기 →']),
+  ]);
+}
+
+// malgnai-hub MCP 서버 상태 — 이 조직이 가장 많이 쓰는 핵심 MCP 서버(모든
+// 결정/이슈/작업이력을 기록하는 곳)만 골라 연결 여부를 보여준다. mcp_list()
+// 결과에 그 이름의 서버가 없으면(예: 아직 등록 전) 에러를 던지지 않고
+// "미설정"으로 조용히 처리한다.
+function mcpHubWidget(): HTMLElement {
+  if (!state.mcp.loaded && !state.mcp.error) {
+    return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
+      el('div', { className: 'home-widget-desc' }, ['불러오는 중…']),
+      el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
+    ]);
+  }
+  if (state.mcp.error) {
+    return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
+      el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
+      el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
+    ]);
+  }
+
+  const hub = state.mcp.items.find((s) => s.name === MALGNAI_HUB_MCP_NAME);
+  if (!hub) {
+    return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
+      el('span', { className: 'badge badge-unknown' }, ['미설정']),
+      el('div', { className: 'home-widget-desc' }, ['malgnai-hub MCP 서버가 등록되어 있지 않습니다.']),
+      el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
+    ]);
+  }
+
+  return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
+    el('span', { className: `badge ${hub.connected ? 'badge-active' : 'badge-archived'}` }, [hub.connected ? '연결됨' : '미연결']),
+    el('div', { className: 'home-widget-desc' }, [hub.statusLabel]),
+    el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
   ]);
 }
 

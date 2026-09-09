@@ -9,11 +9,12 @@ import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
 import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsApi';
 import type { AutonomyLastStatus, AutonomyHistoryEntry } from './autonomyApi';
+import type { McpServerSummary } from './mcpApi';
 
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
-export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace';
+export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp';
 
 // "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 ProjectAutonomyGroup[]을
 // (프로젝트, 태스크) 평면 목록으로 펼치고, scheduleLabel/lastRunLabel/nextRunLabel은
@@ -187,6 +188,16 @@ export interface AppState {
     error: string | null;
     loaded: boolean;
   };
+  // MCP 관리 — `claude mcp` CLI를 위임 실행해 등록된 MCP 서버 목록/연결 상태를
+  // 읽는다(mcpApi.ts). 모델을 호출하지 않는 순수 헬스체크라 빠르고 무료다.
+  // 로그인 직후 한 번 미리 불러온다 — 홈 대시보드의 malgnai-hub 상태 위젯이
+  // 바로 값을 보여줘야 한다.
+  mcp: {
+    items: McpServerSummary[];
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+  };
 }
 
 export const state: AppState = {
@@ -234,6 +245,7 @@ export const state: AppState = {
   catalog: { plugins: [], loading: false, error: null, loaded: false, autoUpdate: {}, updating: {}, updatingAll: false, lastResult: {} },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
   otel: { env: {}, loading: false, error: null, loaded: false },
+  mcp: { items: [], loading: false, error: null, loaded: false },
 };
 
 type Listener = () => void;

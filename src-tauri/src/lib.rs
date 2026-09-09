@@ -10,6 +10,7 @@ mod cloudflare_integration;
 mod dev_tools;
 mod github_integration;
 mod jira_integration;
+mod mcp_manager;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -2149,7 +2150,11 @@ pub fn run() {
             autonomy::autonomy_list,
             autonomy::autonomy_save_task,
             autonomy::autonomy_delete_task,
-            autonomy::autonomy_set_enabled
+            autonomy::autonomy_set_enabled,
+            mcp_manager::mcp_list,
+            mcp_manager::mcp_get,
+            mcp_manager::mcp_add,
+            mcp_manager::mcp_remove
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -15,6 +15,8 @@ import {
   connectJira,
   disconnectJira,
 } from '../integrationsApi';
+import { fetchMcpServers, addMcpServer, removeMcpServer } from '../mcpApi';
+import type { McpTransport, McpServerSummary } from '../mcpApi';
 import { navigate } from '../route';
 
 interface FieldSpec {
@@ -31,6 +33,7 @@ const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[]
   { key: 'cloudflare', label: 'Cloudflare 설정' },
   { key: 'jira', label: 'Jira 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
+  { key: 'mcp', label: 'MCP 관리' },
 ];
 
 export function renderSettingsView(tab: SettingsTab): HTMLElement {
@@ -49,7 +52,8 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
   else if (tab === 'github') body = renderGithubPanel();
   else if (tab === 'cloudflare') body = renderCloudflarePanel();
   else if (tab === 'jira') body = renderJiraPanel();
-  else body = renderMarketplacePanel();
+  else if (tab === 'marketplace') body = renderMarketplacePanel();
+  else body = renderMcpPanel();
 
   return el('div', {}, [header, tabsRow, body]);
 }
@@ -558,4 +562,188 @@ function renderMarketplacePanel(): HTMLElement {
     pluginList,
     form,
   ]);
+}
+
+// ---------------- MCP 관리 (claude mcp CLI 위임, 읽기+추가/삭제) ----------------
+// 목록/상세는 `claude mcp` CLI를 실제로 위임 실행한 결과다(mcpApi.ts). 모델을
+// 호출하지 않는 순수 헬스체크라 빠르고 무료다. 삭제는 실제로 서버 등록을
+// 지우므로 확인(window.confirm) 후에만 실행한다. 추가 폼 펼침 상태는 다른
+// 화면 탭 전환과 무관한 순수 UI 상태라 자율업무 화면의 showAddForm과 같은
+// 방식으로 모듈 스코프 변수에 둔다.
+
+export async function loadMcp(): Promise<void> {
+  state.mcp.loading = true;
+  state.mcp.error = null;
+  notifyChange();
+  try {
+    state.mcp.items = await fetchMcpServers();
+    state.mcp.loaded = true;
+  } catch (err) {
+    state.mcp.error = err instanceof Error ? err.message : 'MCP 서버 목록을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+  } finally {
+    state.mcp.loading = false;
+    notifyChange();
+  }
+}
+
+let mcpAddFormOpen = false;
+
+async function handleRemoveMcp(server: McpServerSummary): Promise<void> {
+  if (!window.confirm(`"${server.name}" MCP 서버를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
+  try {
+    await removeMcpServer(server.name);
+    showToast(`"${server.name}" 서버를 삭제했습니다`);
+    await loadMcp();
+  } catch (err) {
+    showToast(`삭제에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function renderMcpRow(server: McpServerSummary): HTMLElement {
+  const deleteBtn = el('button', { className: 'btn', onClick: () => void handleRemoveMcp(server) }, ['삭제']);
+  deleteBtn.style.color = 'var(--color-danger)';
+
+  return el('div', { className: 'mcp-row' }, [
+    el('div', { className: 'mcp-row-main' }, [
+      el('div', { className: 'mcp-row-top' }, [
+        el('span', { className: 'mcp-row-name' }, [server.name]),
+        el('span', { className: 'badge badge-unknown' }, [server.transport]),
+        el('span', { className: `badge ${server.connected ? 'badge-active' : 'badge-archived'}` }, [server.connected ? '연결됨' : '미연결']),
+      ]),
+      el('div', { className: 'mcp-row-target' }, [server.target]),
+      el('div', { className: 'mcp-row-status-label' }, [server.statusLabel]),
+    ]),
+    el('div', { className: 'mcp-row-actions' }, [deleteBtn]),
+  ]);
+}
+
+function renderMcpAddForm(): HTMLElement {
+  const nameInput = document.createElement('input');
+  nameInput.className = 'settings-input';
+  nameInput.placeholder = '예: plugin:malgn-agent:malgnai-hub';
+  nameInput.autocomplete = 'off';
+
+  const transportSelect = document.createElement('select');
+  transportSelect.className = 'settings-input';
+  for (const t of ['stdio', 'http', 'sse'] as const) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    transportSelect.appendChild(opt);
+  }
+
+  const targetInput = document.createElement('input');
+  targetInput.className = 'settings-input';
+  targetInput.autocomplete = 'off';
+
+  const argsInput = document.createElement('input');
+  argsInput.className = 'settings-input';
+  argsInput.placeholder = '예: run server.js --port 3000 (공백으로 구분해 args 배열로 변환)';
+  argsInput.autocomplete = 'off';
+  const argsField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['실행 인자 (args)']), argsInput]);
+
+  const headerInput = document.createElement('input');
+  headerInput.className = 'settings-input';
+  headerInput.placeholder = 'Authorization: Bearer xxx (비워두면 헤더 없음)';
+  headerInput.autocomplete = 'off';
+  const headerField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['헤더 (선택)']), headerInput]);
+
+  // stdio/http/sse에 따라 target placeholder와 args/header 필드 노출 여부가
+  // 달라진다 — select를 바꿀 때마다 전체 재렌더(notifyChange)를 하면 이미
+  // 입력한 다른 필드 값이 날아가므로, 이 폼 안에서는 DOM을 직접 갱신한다.
+  function syncTransportFields(): void {
+    const t = transportSelect.value as McpTransport;
+    if (t === 'stdio') {
+      targetInput.placeholder = '실행 파일 경로 또는 명령어';
+      argsField.style.display = '';
+      headerField.style.display = 'none';
+    } else {
+      targetInput.placeholder = 'URL';
+      argsField.style.display = 'none';
+      headerField.style.display = '';
+    }
+  }
+  transportSelect.addEventListener('change', syncTransportFields);
+  syncTransportFields();
+
+  const form = el('form', { className: 'settings-form mcp-add-form' }, [
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['이름']), nameInput]),
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['transport']), transportSelect]),
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['target']), targetInput]),
+    argsField,
+    headerField,
+  ]);
+
+  const saveBtn = el('button', { className: 'btn btn-primary' }, ['저장']);
+  saveBtn.type = 'submit';
+  form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = nameInput.value.trim();
+    const target = targetInput.value.trim();
+    const transport = transportSelect.value as McpTransport;
+    if (!name || !target) {
+      showToast('이름과 target을 입력하세요.');
+      return;
+    }
+    const args = transport === 'stdio' ? argsInput.value.trim().split(/\s+/).filter(Boolean) : [];
+    const header = transport === 'stdio' ? null : headerInput.value.trim() || null;
+
+    saveBtn.disabled = true;
+    void (async () => {
+      try {
+        await addMcpServer({ name, transport, target, args, header });
+        showToast(`"${name}" MCP 서버가 추가되었습니다`);
+        mcpAddFormOpen = false;
+        await loadMcp();
+      } catch (err) {
+        showToast(`추가에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+        saveBtn.disabled = false;
+        notifyChange();
+      }
+    })();
+  });
+
+  return el('div', { className: 'settings-card mcp-add-card' }, [form]);
+}
+
+function renderMcpPanel(): HTMLElement {
+  if (state.mcp.loading && !state.mcp.loaded) return renderLoadingBlock();
+  if (state.mcp.error) return renderErrorBlock(state.mcp.error, () => void loadMcp());
+
+  const refreshBtn = el('button', { className: 'btn', onClick: () => void loadMcp() }, ['↻ 새로고침']);
+  const addToggleBtn = el(
+    'button',
+    {
+      className: 'btn btn-primary',
+      onClick: () => {
+        mcpAddFormOpen = !mcpAddFormOpen;
+        notifyChange();
+      },
+    },
+    [mcpAddFormOpen ? '취소' : '+ 새 MCP 서버']
+  );
+
+  const body: HTMLElement[] = [
+    el('div', { className: 'settings-form-hint' }, [
+      'claude mcp CLI로 연결 상태만 확인합니다 — 모델을 호출하지 않는 순수 헬스체크라 빠르고 비용이 들지 않습니다.',
+    ]),
+    el('div', { className: 'mcp-toolbar' }, [refreshBtn, addToggleBtn]),
+  ];
+
+  if (mcpAddFormOpen) body.push(renderMcpAddForm());
+
+  if (state.mcp.items.length === 0) {
+    body.push(
+      el('div', { className: 'state-block' }, [
+        el('div', { className: 'state-block-title' }, ['등록된 MCP 서버가 없습니다']),
+        el('div', { className: 'state-block-desc' }, ['"+ 새 MCP 서버"로 등록하세요.']),
+      ])
+    );
+  } else {
+    body.push(el('div', { className: 'mcp-list' }, state.mcp.items.map(renderMcpRow)));
+  }
+
+  return el('div', {}, body);
 }
