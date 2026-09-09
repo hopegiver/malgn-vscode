@@ -13,6 +13,12 @@
 `docs/`는 `.gitignore`에 있어 **다른 PC에서 클론하면 존재하지 않는다.** 신선 클론에서도
 `pnpm install && pnpm run build`는 그대로 돌아간다(아래 사이트면 참고).
 
+## macOS 포터블 빌드 실행
+
+`tauri-portable-build` CI 아티팩트의 macOS `.app`은 아직 서명/공증이 안 돼 있어
+"확인되지 않은 개발자"/"손상됨" 경고가 뜬다 — 터미널에서 `xattr -cr 맑은에이전트.app`
+실행 후 다시 열면 된다(zip 안 `실행방법.txt`에 동일 안내 동봉).
+
 ---
 
 ## ⚠️ `site/site.json` — 백업은 사람의 몫이다

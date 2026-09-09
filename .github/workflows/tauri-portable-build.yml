@@ -11,8 +11,9 @@
 #     — 오래된 Windows나 WebView2가 제거된 환경이면 실행 시 WebView2 설치가 필요할 수
 #     있다.
 #   - macOS 산출물은 코드서명/공증(notarization)을 하지 않는다. Gatekeeper가
-#     "확인되지 않은 개발자" 경고를 띄우므로 받은 사람은 우클릭 → 열기로 처음 한 번
-#     예외 처리해야 한다. 서명/공증은 이번 범위가 아니다(사내 목업 단계, 별도 결정 필요).
+#     "확인되지 않은 개발자"/"손상됨" 경고를 띄우므로, 받은 사람이 바로 대응할 수
+#     있도록 우회 방법(`xattr -cr`)을 안내하는 `실행방법.txt`를 `.app`과 함께 zip에
+#     동봉한다(서명/공증 자체는 이번 범위가 아니다 — 사내 목업 단계, 별도 결정 필요).
 #
 # 트리거: workflow_dispatch(항상 가능) + main push(빌드에 영향 주는 경로만).
 #   - 활발히 개발 중이라 main push가 잦다 — 문서/설정만 바뀐 push까지 무거운
@@ -95,6 +96,12 @@ jobs:
         if: runner.os == 'macOS'
         run: pnpm tauri build --bundles app
 
+      # 서명/공증을 아직 안 하므로(§0 참고) zip 안에 .app과 나란히 실행방법.txt를
+      # 넣는다 — xattr -cr로 quarantine 속성을 지우는 우회법 안내.
+      # 스테이징 디렉터리를 만들어 그 "내용물"을 zip에 담는 이유: ditto는 소스가
+      # 디렉터리이고 --keepParent가 없으면 그 디렉터리 자체가 아니라 안의 파일들을
+      # 최상위에 바로 담는다(로컬 실험으로 확인) — .app과 txt가 압축 해제 시 같은
+      # 위치에 나란히 있어야 안내문의 상대 경로(`xattr -cr <앱이름>.app`)가 맞는다.
       - name: Zip .app bundle (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -106,7 +113,25 @@ jobs:
             exit 1
           fi
           echo "Found app bundle: $APP_PATH"
-          ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/malgn-agent-macos-app.zip"
+          APP_BASENAME=$(basename "$APP_PATH")
+
+          STAGE_DIR="$RUNNER_TEMP/malgn-agent-macos-stage"
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR"
+          ditto "$APP_PATH" "$STAGE_DIR/$APP_BASENAME"
+
+          {
+            echo '맑은에이전트 실행 방법'
+            echo '======================'
+            echo 'macOS가 "확인되지 않은 개발자" 또는 "손상됨" 경고를 띄우면, 터미널에서 아래 명령을'
+            echo '한 번 실행한 뒤 다시 열어보세요 (이 폴더에 압축을 푼 상태 기준):'
+            echo ''
+            echo "  xattr -cr $APP_BASENAME"
+            echo ''
+            echo '그래도 안 열리면 우클릭(또는 control+클릭) → "열기"를 시도해보세요.'
+          } > "$STAGE_DIR/실행방법.txt"
+
+          ditto -c -k "$STAGE_DIR" "$RUNNER_TEMP/malgn-agent-macos-app.zip"
 
       - name: Upload macOS artifact
         if: runner.os == 'macOS'
