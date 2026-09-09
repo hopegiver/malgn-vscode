@@ -6,7 +6,7 @@ import { el } from '../dom';
 import { state } from '../state';
 import { MOCK_TASK_RUNS } from '../mockData';
 import { navigate } from '../route';
-import { computeUsageTotals, formatTokenCount } from './usage';
+import { computeTodayTokens, formatTokenCount } from './usage';
 
 export function renderHomeView(): HTMLElement {
   const header = el('div', { className: 'page-header' }, [
@@ -62,11 +62,10 @@ function usageWidget(): HTMLElement {
       el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
     ]);
   }
-  const t = computeUsageTotals(usage.items);
+  const todayTokens = computeTodayTokens(usage.items);
   return widgetShell('사용량 통계', () => navigate('#/usage'), [
-    el('div', { className: 'home-widget-big-number' }, [formatTokenCount(t.totalTokens)]),
-    el('div', { className: 'home-widget-desc' }, ['최근 30일 총 토큰 (실제 로컬 데이터)']),
-    el('div', { className: 'home-widget-breakdown' }, [el('span', {}, [`활동일수 ${t.activeDays}일`])]),
+    el('div', { className: 'home-widget-big-number' }, [formatTokenCount(todayTokens)]),
+    el('div', { className: 'home-widget-desc' }, ['오늘 총 토큰 (실제 로컬 데이터)']),
     el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
   ]);
 }

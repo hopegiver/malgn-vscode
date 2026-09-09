@@ -86,6 +86,17 @@ function dailyUsageTotal(d: DailyUsage): number {
   return d.inputTokens + d.outputTokens + d.cacheCreationTokens + d.cacheReadTokens;
 }
 
+function localDateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// 대시보드 홈 위젯 전용 — 30일 총합이 아니라 "오늘" 하루치 토큰만 뽑는다.
+export function computeTodayTokens(items: readonly DailyUsage[]): number {
+  const todayKey = localDateKey(new Date());
+  const today = items.find((d) => d.date === todayKey);
+  return today ? dailyUsageTotal(today) : 0;
+}
+
 // ---------------- 날짜별 상세 (실제 데이터) ----------------
 
 export async function loadDailyDetail(date: string): Promise<void> {
