@@ -32,6 +32,14 @@ function filteredProjects(): readonly WorkspaceProject[] {
   return sorted;
 }
 
+// 사이드바 서브목록 전용 — 사용자가 프로젝트 화면에서 고른 정렬(state.dashboard.sort,
+// 이름순일 수도 있음)과 무관하게 항상 최신 업데이트순으로 보여준다(세션목록
+// 사이드바의 sortedSessions()와 같은 성격). updatedAt은 Rust list_workspace_projects()가
+// CLAUDE.md/STATUS.md 중 더 최근 mtime으로 채우는 실측 필드다(src-tauri/src/lib.rs).
+export function sortedProjectsByRecency(): readonly WorkspaceProject[] {
+  return [...state.dashboard.projects].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
 export async function loadProjects(): Promise<void> {
   state.dashboard.loading = true;
   state.dashboard.error = null;

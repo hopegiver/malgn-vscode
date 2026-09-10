@@ -4,6 +4,7 @@ import type { SettingsTab } from './state';
 import { navigate } from './route';
 import type { Route } from './route';
 import { sortedSessions, sessionTitle, asString } from './views/sessions';
+import { sortedProjectsByRecency } from './views/projects';
 import { loadDailyUsage } from './views/usage';
 import { brandMark } from './brand';
 
@@ -92,7 +93,7 @@ function renderProjectsGroup(route: Route): HTMLElement {
 
   const children: HTMLElement[] = [header];
   if (expanded) {
-    const items = state.dashboard.projects.slice(0, SIDEBAR_SUBLIST_LIMIT).map((p) => ({
+    const items = sortedProjectsByRecency().slice(0, SIDEBAR_SUBLIST_LIMIT).map((p) => ({
       label: p.name,
       active: route.kind === 'projects-detail' && route.path === p.path,
       onClick: () => navigate(`#/project/${encodeURIComponent(p.path)}`),

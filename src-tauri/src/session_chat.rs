@@ -578,17 +578,6 @@ fn is_session_live(session_id: &str) -> bool {
     false
 }
 
-/// §6-① 확정: 라이브 세션(다른 창에서 지금 쓰는 중)은 읽기 전용이고, **pid가
-/// 이미 죽은 세션에만 전송을 허용**한다. 판정(`is_session_live`)과 거부 문구
-/// 조립을 분리해 둬 이 결정 로직만 단위 테스트할 수 있다.
-fn reject_if_live(is_live: bool) -> Result<(), String> {
-    if is_live {
-        Err("이 세션은 다른 창에서 실행 중입니다. 종료된 세션에서만 메시지를 보낼 수 있습니다.".to_string())
-    } else {
-        Ok(())
-    }
-}
-
 // ==================== (a) read_session_transcript ====================
 
 #[tauri::command]
@@ -960,12 +949,13 @@ pub fn send_session_message(
         return Err(format!("세션의 작업 폴더를 찾을 수 없습니다: {cwd}"));
     }
 
-    // §6-① 확정: spawn 직전(=레지스트리 등록 직전) 최종 게이트. 화면 조회
-    // 시점과 이 전송 시점 사이에 그 세션이 다른 창에서 다시 열릴 수 있으므로
-    // 프론트의 입력창 차단과 별개로 여기서 다시 확인한다. register_turn보다
-    // 먼저 거부해 ACTIVE_TURNS에는 아무것도 남기지 않는다.
-    reject_if_live(is_session_live(&session_id))?;
-
+    // §6-① 갱신: 세션목록에 뜨는 세션은 §1-E 실측대로 예외 없이 전부 "지금
+    // 다른 창에서 실행 중"이라 원래의 하드 게이트(live면 무조건 거부)를 두면
+    // 입력창이 항상 비활성化되어 재개 기능 자체가 성립하지 않았다(문서 §6-①
+    // 트레이드오프 표의 B안 단점 그대로 재현됨). 그래서 차단을 제거하고
+    // read_session_transcript가 돌려주는 `live` 플래그로 화면에 경고만
+    // 띄운다(docs/design/session-chat.md §6-① 결정 갱신 참조) — 다른 창이
+    // 모르는 채 같은 jsonl에 이어붙는 대화 분기(§1-E, 손상은 아님)는 감수한다.
     let claude_path = crate::cli_launcher::resolve_binary_expand_home(&CLAUDE_PATH_CANDIDATES, "claude")
         .ok_or_else(|| {
             "claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패).".to_string()
@@ -1200,38 +1190,6 @@ mod tests {
         assert_eq!(second.unwrap_err(), "이 세션에 이미 진행 중인 요청이 있습니다.");
         // 정리
         finish_turn(turn1);
-    }
-
-    // §6-① 확정: live 판정이면 전송이 거부된다. `is_session_live`의 실제
-    // registry 스캔은 그대로(수정 없음) 재사용하며 이 머신 의존 검증은 기존
-    // `live_flag_matches_sessions_registry`(#[ignore])가 담당한다 — 여기서는
-    // "live=true → 거부 / live=false → 통과"라는 결정 로직만 고정한다.
-    #[test]
-    fn reject_if_live_blocks_sending_when_session_is_live() {
-        let err = reject_if_live(true);
-        assert!(err.is_err(), "live 세션이면 전송이 거부되어야 합니다");
-        assert_eq!(
-            err.unwrap_err(),
-            "이 세션은 다른 창에서 실행 중입니다. 종료된 세션에서만 메시지를 보낼 수 있습니다."
-        );
-    }
-
-    #[test]
-    fn reject_if_live_allows_sending_when_session_is_not_live() {
-        assert!(reject_if_live(false).is_ok(), "종료된(pid가 죽은) 세션은 전송을 허용해야 합니다");
-    }
-
-    // send_session_message의 순서 보증(구조 검증): 이 게이트는 register_turn보다
-    // 먼저 실행되므로, 거부 경로에서는 ACTIVE_TURNS에 아무것도 등록되지 않는다.
-    // 코드 순서(§6-① 구현부)가 그 보증의 근거이며, 여기서는 reject_if_live 자체가
-    // ACTIVE_TURNS를 건드리지 않는다는 것만 방어적으로 확인한다.
-    #[test]
-    fn reject_if_live_does_not_touch_active_turns_registry() {
-        let before = active_turns().lock().unwrap().len();
-        let _ = reject_if_live(true);
-        let _ = reject_if_live(false);
-        let after = active_turns().lock().unwrap().len();
-        assert_eq!(before, after, "reject_if_live는 ACTIVE_TURNS를 건드리면 안 됩니다");
     }
 
     // ==================== QA 실데이터 검증(#[ignore] — 이 머신 의존, CI에서 실행 안 함) ====================

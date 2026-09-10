@@ -62,8 +62,13 @@ export async function loadSessions(): Promise<void> {
   }
 }
 
+// 실제 세션 메타데이터(~/.claude/sessions/*.json)에는 "updatedAt" 필드가 없다
+// (있는 시각 필드는 세션 시작 시각인 "startedAt" 뿐 — 실측 확인, 이 파일이 다시
+// 갱신되지도 않는다). 존재하지 않는 필드로 비교하면 항상 0-0 동률이라 실제로는
+// 정렬이 되지 않고 디렉터리 읽기 순서가 그대로 노출됐다. 그래서 실제로 존재하는
+// startedAt 내림차순(가장 최근에 시작된 세션이 맨 위)으로 정렬한다.
 export function sortedSessions(): ClaudeSessionRecord[] {
-  return [...state.sessions.items].sort((a, b) => (asNumber(b.updatedAt) ?? 0) - (asNumber(a.updatedAt) ?? 0));
+  return [...state.sessions.items].sort((a, b) => (asNumber(b.startedAt) ?? 0) - (asNumber(a.startedAt) ?? 0));
 }
 
 export function renderSessionsListView(): HTMLElement {
@@ -431,13 +436,14 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
   const chat = state.sessionChat;
   const body: HTMLElement[] = [header];
 
-  // live=true(다른 창에서 이 세션이 실행 중) — §6-① 확정: 경고 배지만이 아니라
-  // 입력창·전송 자체를 막는다(읽기 전용). 종료된 세션(live=false)만 전송 가능.
+  // live=true(다른 창에서 이 세션이 실행 중) — §6-① 갱신: 더 이상 전송을 막지
+  // 않는다(세션목록에 뜨는 세션은 §1-E 실측대로 예외 없이 항상 live라 막으면
+  // 재개 기능 자체가 성립하지 않는다). 대신 대화가 갈라질 수 있다는 경고만 띄운다.
   const isLive = chat.sessionId === sessionId && chat.transcript?.live === true;
   if (isLive) {
     body.push(
       el('div', { className: 'alert' }, [
-        el('span', {}, ['⚠ 이 세션은 다른 창에서 실행 중이라 여기서는 이어서 대화할 수 없습니다']),
+        el('span', {}, ['⚠ 이 세션은 다른 창에서도 실행 중입니다 — 여기서 보낸 메시지는 그 창에 표시되지 않고 대화가 갈라질 수 있습니다']),
       ])
     );
   }
@@ -525,39 +531,36 @@ function renderMetaModal(session: ClaudeSessionRecord): HTMLElement {
 function renderChatInputArea(sessionId: string, isLive: boolean, cwd: string): HTMLElement {
   const chat = state.sessionChat;
   const sending = chat.turnId !== null;
-  // 라이브 세션(다른 창에서 실행 중)은 읽기 전용 — 전송 중(sending)이면 그건 이
-  // 창 스스로 시작한 턴이니 취소는 계속 허용한다.
-  const blocked = isLive && !sending;
-
+  // §6-① 갱신: live 여부와 무관하게 항상 입력을 허용한다(전송 중일 때만
+  // 재전송을 막는다). claude.ai 스타일 단순 입력창 — 버튼 없이 Enter로만 전송.
   const textarea = document.createElement('textarea');
-  textarea.className = 'settings-input';
-  textarea.placeholder = blocked ? '종료된 세션에서만 이어서 대화할 수 있습니다' : '메시지를 입력하세요 (Enter 전송 / Shift+Enter 줄바꿈)';
+  textarea.className = 'settings-input chat-input-textarea';
+  textarea.placeholder = sending ? '응답을 기다리는 중…' : '메시지를 입력하세요 (Enter 전송 / Shift+Enter 줄바꿈)';
   textarea.rows = 2;
   textarea.value = chat.input;
-  textarea.disabled = sending || blocked;
-  textarea.style.flex = '1';
+  textarea.disabled = sending;
   textarea.addEventListener('input', () => {
     state.sessionChat.input = textarea.value; // 렌더를 트리거하지 않는다(키 입력마다 포커스가 끊기지 않도록)
   });
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!blocked) void sendChatMessage(sessionId, textarea.value);
+      if (!sending) void sendChatMessage(sessionId, textarea.value);
     }
   });
 
-  const actionButton = sending
-    ? el('button', { className: 'btn', onClick: () => void cancelChatTurn() }, ['취소 ■'])
-    : el('button', { className: 'btn btn-primary', onClick: () => void sendChatMessage(sessionId, textarea.value), disabled: blocked }, ['전송 ▶']);
-
-  const row = el('div', {}, [textarea, actionButton]);
-  row.style.display = 'flex';
-  row.style.gap = '8px';
-  row.style.alignItems = 'flex-start';
-  row.style.marginTop = '12px';
+  const row = el('div', { className: 'chat-input-row' }, [textarea]);
+  if (sending) {
+    row.appendChild(el('button', { className: 'btn', onClick: () => void cancelChatTurn() }, ['취소 ■']));
+  }
 
   const children: HTMLElement[] = [row];
-  if (!sending && !blocked) {
+  if (isLive) {
+    children.push(
+      el('div', { className: 'chat-sample-note' }, ['⚠ 다른 창에서도 실행 중인 세션입니다 — 대화가 갈라질 수 있습니다'])
+    );
+  }
+  if (!sending) {
     children.push(
       el('div', { className: 'chat-sample-note' }, [`⚠ 전송한 메시지는 실제로 파일을 변경하거나 명령을 실행할 수 있습니다 (실행 폴더: ${cwd || '(알 수 없음)'})`])
     );
@@ -568,13 +571,18 @@ function renderChatInputArea(sessionId: string, isLive: boolean, cwd: string): H
   return el('div', {}, children);
 }
 
+// claude.ai 웹 스타일: 사용자 메시지는 말풍선(배경 있는 박스, 오른쪽 정렬)으로
+// 감싸고, 어시스턴트 메시지는 말풍선 없이 일반 본문 텍스트(왼쪽 정렬, 전체 폭)로
+// 그대로 렌더한다 — 감싸는 박스 자체를 두지 않는다(styles.css `.chat-message`).
 function chatMessage(kind: ChatMessageKind, text: string): HTMLElement {
   if (kind === 'tool') {
     return el('div', { className: 'chat-tool-line' }, [text]);
   }
-  return el('div', { className: `chat-message ${kind}` }, [
-    el('div', { className: 'chat-bubble' }, [el('div', { className: 'chat-message-text' }, [text])]),
-  ]);
+  const textEl = el('div', { className: 'chat-message-text' }, [text]);
+  if (kind === 'user') {
+    return el('div', { className: 'chat-message user' }, [el('div', { className: 'chat-bubble' }, [textEl])]);
+  }
+  return el('div', { className: 'chat-message assistant' }, [textEl]);
 }
 
 function renderFieldRow(key: string, value: unknown): HTMLElement {

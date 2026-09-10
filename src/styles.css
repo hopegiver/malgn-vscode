@@ -507,20 +507,25 @@ textarea.settings-input { resize: vertical; }
   display: flex; flex-direction: column; gap: 2px;
   flex: 1; min-height: 0; overflow-y: auto; padding: 4px 4px 16px 4px; margin-bottom: 0;
 }
-.chat-message { display: flex; gap: 12px; padding: 12px 6px; border-radius: 10px; }
-.chat-message.user { background: var(--color-canvas); }
-.chat-message.assistant { background: transparent; }
-.chat-avatar {
-  width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700;
+/* claude.ai 웹 스타일: 사용자 메시지만 오른쪽 정렬 말풍선(배경 있는 박스)이고,
+   어시스턴트 메시지는 말풍선 없이 왼쪽 정렬 + 전체 폭을 쓰는 일반 본문이다. */
+.chat-message { display: flex; padding: 6px 6px; }
+.chat-message.user { justify-content: flex-end; }
+.chat-message.assistant { justify-content: flex-start; }
+.chat-message.user .chat-bubble {
+  max-width: 70%;
+  background: var(--color-brand-soft);
+  border-radius: 16px;
+  padding: 10px 16px;
 }
-.chat-message.user .chat-avatar { background: #e5e7eb; color: #374151; }
-.chat-message.assistant .chat-avatar { background: var(--color-brand); color: #fff; }
-.chat-bubble { flex: 1; min-width: 0; padding-top: 2px; }
+.chat-message.assistant .chat-message-text { width: 100%; }
 .chat-message-text { font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 .chat-sample-note { font-size: 11.5px; color: var(--color-ink-faint); text-align: center; padding: 10px 0 0 0; }
 .chat-bottom-fixed { flex-shrink: 0; padding-top: 4px; }
+/* 입력창 자체만 두는 단순한 형태(claude.ai 스타일) — 전송 버튼은 없다. 취소
+   버튼은 전송 중일 때만 곁에 붙는다(별도 "전송" 버튼과는 다른, 진행 중 제어). */
+.chat-input-row { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; }
+.chat-input-textarea { flex: 1; }
 
 /* ---------------- 세션 상세: 메타데이터 모달 (배경 클릭/ESC/닫기 버튼) ---------------- */
 .modal-overlay {
