@@ -43,8 +43,8 @@ function isToday(iso: string | null): boolean {
 
 function taskBoardWidget(): HTMLElement {
   const tasks = state.autonomousTasks.items;
-  const running = tasks.filter((t) => t.lastStatus === 'running').length;
-  const todayFail = tasks.filter((t) => t.lastStatus === 'failed' && isToday(t.lastRunAt)).length;
+  const running = tasks.filter((t) => t.running).length;
+  const todayFail = tasks.filter((t) => t.status === 'failed' && isToday(t.lastFinishedAt)).length;
 
   return widgetShell('자율업무 진행상황', () => navigate('#/tasks/board'), [
     el('div', { className: 'home-widget-big-number' }, [`${running}개`]),

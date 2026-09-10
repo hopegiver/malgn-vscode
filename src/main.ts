@@ -46,9 +46,9 @@ import { renderHomeView } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree } from './views/projects';
 import { renderCatalogView, loadCatalog, loadMarketplaces } from './views/catalog';
 import { renderDevToolsView, loadDevTools } from './views/devTools';
-import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus, loadMcp } from './views/settings';
+import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus, loadMcp, loadMcpCatalog } from './views/settings';
 import { renderUsageView, loadDailyUsage } from './views/usage';
-import { renderSessionsListView, renderSessionDetailView, loadSessions } from './views/sessions';
+import { renderSessionsListView, renderSessionDetailView, loadSessions, enterSessionChatView, leaveSessionChatView } from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
 import { renderAutonomousTasksListView, renderAutonomousTaskBoardView, renderAutonomousTaskDetailView, loadAutonomousTasks } from './views/autonomousTasks';
 
@@ -106,7 +106,11 @@ function renderApp(): void {
       break;
   }
 
-  const main = el('main', { className: 'content' }, [content]);
+  // 세션 상세(채팅) 화면만 보조 클래스를 얹어 헤더/입력창 고정 + 메시지 목록
+  // 자체 스크롤 레이아웃을 쓴다(styles.css `.content.chat-route`). 다른 라우트는
+  // 기존 전체 페이지 스크롤(`.content` 단독)을 그대로 쓴다.
+  const contentClassName = route.kind === 'sessions-detail' ? 'content chat-route' : 'content';
+  const main = el('main', { className: contentClassName }, [content]);
   root.appendChild(renderSidebar(route));
   root.appendChild(main);
 }
@@ -130,6 +134,7 @@ function handleNavigation(): void {
   if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
   if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
   if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
+  if (!state.mcpCatalog.loaded && !state.mcpCatalog.loading) void loadMcpCatalog();
 
   const route = parseRoute();
   if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {
@@ -146,6 +151,16 @@ function handleNavigation(): void {
   }
   if (route.kind === 'projects-detail' && state.projectTree.projectPath !== route.path && !state.projectTree.loading) {
     void loadProjectTree(route.path);
+  }
+  // 세션 상세 = 실제 대화 + 이어쓰기 (docs/design/session-chat.md). 다른 세션으로
+  // 옮기거나 이 라우트를 완전히 떠나면 항상 먼저 리스너를 해제한다(UnlistenFn 누수 방지).
+  if (route.kind === 'sessions-detail') {
+    if (state.sessionChat.sessionId !== route.sessionId) {
+      leaveSessionChatView();
+      void enterSessionChatView(route.sessionId);
+    }
+  } else if (state.sessionChat.sessionId !== null) {
+    leaveSessionChatView();
   }
   if (route.kind === 'usage') {
     // 실시간 감시 대신 메뉴 클릭(=이 라우트 진입) 시점마다 새로 불러온다 — 이미

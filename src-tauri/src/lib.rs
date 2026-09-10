@@ -7,10 +7,13 @@ use std::path::{Path, PathBuf};
 mod autonomy;
 mod cli_launcher;
 mod cloudflare_integration;
+mod config;
 mod dev_tools;
 mod github_integration;
 mod jira_integration;
 mod mcp_manager;
+mod otel_settings;
+mod session_chat;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -298,20 +301,16 @@ fn classify_archive_status(
     }
 }
 
-/// 후보 workspace 루트 목록 — 실제로 존재하는 디렉터리만 반환한다. macOS는
-/// `~/workspace` 하나뿐이지만, Windows는 사람마다 `%USERPROFILE%\workspace`와
-/// `C:\workspace` 둘 중 하나를 쓰는 걸로 확인돼 둘 다 후보에 넣는다(둘 다 있으면
-/// 둘 다 스캔해서 합친다 — 어느 쪽이 "맞는" 것인지 앱이 임의로 고르지 않는다).
+/// 후보 workspace 루트 목록 — 전역 설정 파일(`~/.claude/malgn-agent.json`)의
+/// `workspaces` 항목을 정본으로 위임한다(설계
+/// `docs/design/autonomy-runtime-and-config.md` §5). 시그니처는 그대로
+/// 유지하되(호출부 4곳이 바뀌지 않도록) 손상된 설정은 **빈 목록**으로 흡수한다
+/// (fail-closed — `~/workspace` 하드코딩으로 되돌아가지 않는다. 빈 목록이면
+/// 스캔 결과가 0건이고 스케줄러도 아무것도 실행하지 않는다). 손상 상태를
+/// 사용자에게 보이는 오류로 드러내는 것은 `config::malgn_agent_config_get()`·
+/// `autonomy::autonomy_list()`·스케줄러 tick 3곳의 몫이다.
 pub(crate) fn workspace_roots() -> Vec<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join("workspace"));
-    }
-    #[cfg(windows)]
-    {
-        candidates.push(PathBuf::from("C:\\workspace"));
-    }
-    candidates.into_iter().filter(|p| p.is_dir()).collect()
+    config::workspace_roots_checked().unwrap_or_default()
 }
 
 /// 주어진 경로의 수정시각(mtime)을 UNIX epoch 밀리초로 반환한다. 메타데이터
@@ -621,43 +620,11 @@ fn list_known_marketplaces() -> Vec<MarketplaceInfo> {
     read_known_marketplaces()
 }
 
-// ---------------- OTel 설정 (읽기 전용 실데이터) ----------------
-// ~/.claude/settings.json은 권한·훅 등 OTel과 무관한 설정도 담고 있어 파일 전체를
-// 읽어 보여주지 않는다 — env 객체에서 키 이름이 "OTEL_"로 시작하는 것만 골라
-// 반환한다. 읽기 전용이고, 프론트엔드의 "저장" 버튼은 이 값을 이 파일에 다시 쓰지
-// 않는다(그 화면은 여전히 목업 — 전역 설정 파일을 잘못 건드리면 Claude Code 자체
-// 동작에 영향을 준다).
-fn collect_otel_env() -> std::collections::BTreeMap<String, String> {
-    let Some(home) = dirs::home_dir() else {
-        return Default::default();
-    };
-    let path = home.join(".claude").join("settings.json");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return Default::default();
-    };
-    let Ok(root) = serde_json::from_str::<Value>(&content) else {
-        return Default::default();
-    };
-    let Some(env) = root.get("env").and_then(|v| v.as_object()) else {
-        return Default::default();
-    };
-
-    let mut result = std::collections::BTreeMap::new();
-    for (key, value) in env {
-        if !key.starts_with("OTEL_") {
-            continue;
-        }
-        if let Some(s) = value.as_str() {
-            result.insert(key.clone(), s.to_string());
-        }
-    }
-    result
-}
-
-#[tauri::command]
-fn read_otel_env() -> std::collections::BTreeMap<String, String> {
-    collect_otel_env()
-}
+// ---------------- OTel 설정 ----------------
+// 읽기(`otel_settings_get`)·저장(`otel_settings_save`)은 `otel_settings.rs`로
+// 이전됐다 — allowlist(`MANAGED_OTEL_KEYS`) 하나가 "OTEL_" 접두사만 보다가
+// `CLAUDE_CODE_ENABLE_TELEMETRY`를 놓치던 옛 필터의 버그를 구조적으로
+// 없앤다(설계 §7). 이 파일에는 더 이상 OTel 관련 로직이 없다.
 
 // ---------------- 플러그인 실제 업데이트 (사용자 명시 승인) ----------------
 // `claude` CLI를 셸을 거치지 않고 프로그램명+인자 배열로 직접 실행한다(인젝션
@@ -2114,8 +2081,10 @@ pub fn run() {
             std::thread::spawn(|| {
                 get_or_refresh_historical_daily_usage();
             });
-            // 자율업무 스케줄러 — 60초 tick으로 워크스페이스 전체를 훑어 due한
+            // 자율업무 스케줄러 — 10초 tick으로 워크스페이스 전체를 훑어 due한
             // task를 `claude -p`로 무인 실행한다. 앱이 켜져 있는 동안만 돈다.
+            // 리로드가 곧 tick 본체다(설계 §1) — 별도 워처 없이 설정 변경에
+            // 최대 10초 안에 반응한다.
             autonomy::spawn_scheduler(app.handle().clone());
             Ok(())
         })
@@ -2130,7 +2099,8 @@ pub fn run() {
             dev_tools::open_manual_instruction,
             list_installed_plugins,
             list_known_marketplaces,
-            read_otel_env,
+            otel_settings::otel_settings_get,
+            otel_settings::otel_settings_save,
             update_plugin,
             refresh_marketplaces,
             list_project_tree,
@@ -2151,13 +2121,30 @@ pub fn run() {
             autonomy::autonomy_save_task,
             autonomy::autonomy_delete_task,
             autonomy::autonomy_set_enabled,
+            autonomy::autonomy_runtime_status,
+            config::malgn_agent_config_get,
             mcp_manager::mcp_list,
             mcp_manager::mcp_get,
             mcp_manager::mcp_add,
-            mcp_manager::mcp_remove
+            mcp_manager::mcp_remove,
+            mcp_manager::mcp_catalog_list,
+            mcp_manager::mcp_install,
+            mcp_manager::mcp_login,
+            session_chat::read_session_transcript,
+            session_chat::send_session_message,
+            session_chat::cancel_session_turn
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // 앱 종료 시 자식 프로세스 정리(설계 §1-4) — 진행 중인 자율업무
+            // `claude -p`가 고아 프로세스로 남지 않도록, 종료 요청 시점에
+            // 최대 2초만 대기하며 정리한다(그 이상 앱 종료를 붙잡지 않는다).
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                session_chat::request_shutdown();
+                autonomy::request_shutdown_and_wait(std::time::Duration::from_secs(2));
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2473,15 +2460,8 @@ mod tests {
         assert!(marketplaces.iter().any(|m| m.id == "malgnsoft-plugins"));
     }
 
-    // env에서 OTEL_ 접두사가 아닌 키가 섞여 나오면 안 된다(범위 밖 설정 노출 방지).
-    #[test]
-    fn reads_only_otel_prefixed_keys() {
-        let env = collect_otel_env();
-        assert!(
-            env.keys().all(|k| k.starts_with("OTEL_")),
-            "OTEL_ 접두사가 아닌 키가 섞여 있습니다"
-        );
-    }
+    // OTel 읽기/저장 테스트는 `otel_settings.rs`로 이전됐다(allowlist
+    // 기반이라 "OTEL_ 접두사만 본다"는 옛 불변식 자체가 더 이상 없다).
 
     #[test]
     fn rejects_project_path_outside_workspace_root() {

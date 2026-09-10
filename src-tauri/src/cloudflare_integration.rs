@@ -19,11 +19,11 @@
 // `github_status`(종료코드 기반)와 판정 방식을 맞춰 두 탭의 신뢰 기준을
 // 일관되게 유지한다.
 //
-// 다만 이 신호도 완전하지는 않다: wrangler는 미인증 상태에서도 whoami가
-// 종료코드 0을 낼 수 있다는 보고가 있어(이 머신에 wrangler가 없어 실측 불가),
-// 종료코드만으로 오탐(false positive: 실제로는 미인증인데 connected:true)이
-// 날 가능성을 배제하지 못한다. 이 불확실성을 코드가 단정하지 않도록 남겨둔다 —
-// wrangler를 설치해 실측할 수 있게 되면 이 가정을 재검증해야 한다.
+// wrangler는 미인증 상태에서도 whoami가 종료코드 0을 내면서 stdout에
+// "You are not authenticated. Please run `wrangler login`." 문구를 출력할 수
+// 있다(wrangler의 알려진 동작). 그래서 종료코드만으로는 오탐(실제로는
+// 미인증인데 connected:true)이 날 수 있어, stdout에 인증 실패 문구가 있는지도
+// 함께 확인해 그 경우 종료코드와 무관하게 connected:false로 판정한다.
 
 use crate::cli_launcher::{
     open_terminal_command, resolve_binary_expand_home, TerminalLaunchResult,
@@ -69,11 +69,28 @@ fn extract_email_from_whoami(stdout: &str) -> Option<String> {
     }
 }
 
-/// ① 현재 연동 상태 조회. `wrangler whoami`의 종료코드**로만** 로그인 여부를
-/// 판단한다(이메일 파싱 성공 여부는 판정에 관여하지 않는다 — API 토큰 인증처럼
-/// whoami가 이메일을 출력하지 않는 경우에도 종료코드가 성공이면 connected는
-/// true다). 가능하면 stdout에서 이메일만 부가 표시값으로 덧붙인다. wrangler
-/// 미설치는 정상 경로다.
+/// stdout에 wrangler의 미인증 안내 문구("You are not authenticated...")가
+/// 있는지 대소문자 무관하게 확인한다. 이 문구가 있으면 종료코드가 성공이어도
+/// 로그아웃 상태로 봐야 한다.
+fn stdout_reports_unauthenticated(stdout: &str) -> bool {
+    stdout.to_lowercase().contains("not authenticated")
+}
+
+/// `wrangler whoami`의 종료코드와 stdout으로 connected 여부를 판정하는 순수
+/// 함수. stdout에 미인증 문구가 있으면 종료코드와 무관하게 false, 그 외에는
+/// 종료코드 성공 여부를 따른다(이메일 파싱 성공 여부는 판정에 관여하지 않는다
+/// — API 토큰 인증처럼 whoami가 이메일을 출력하지 않는 경우에도 종료코드가
+/// 성공이고 미인증 문구가 없으면 connected는 true다).
+fn determine_connected(exit_success: bool, stdout: &str) -> bool {
+    if stdout_reports_unauthenticated(stdout) {
+        return false;
+    }
+    exit_success
+}
+
+/// ① 현재 연동 상태 조회. `wrangler whoami`의 종료코드와 stdout의 인증 실패
+/// 문구를 함께 확인해 로그인 여부를 판단한다. 가능하면 stdout에서 이메일만
+/// 부가 표시값으로 덧붙인다. wrangler 미설치는 정상 경로다.
 #[tauri::command]
 pub fn cloudflare_status() -> CloudflareStatus {
     let Some(wrangler) = resolve_wrangler() else {
@@ -85,16 +102,21 @@ pub fn cloudflare_status() -> CloudflareStatus {
 
     let output = Command::new(&wrangler).arg("whoami").output();
     match output {
-        Ok(o) if o.status.success() => {
+        Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
-            let email = extract_email_from_whoami(&stdout);
+            let connected = determine_connected(o.status.success(), &stdout);
+            let email = if connected {
+                extract_email_from_whoami(&stdout)
+            } else {
+                None
+            };
             CloudflareStatus {
                 installed: true,
-                connected: true,
+                connected,
                 email,
             }
         }
-        _ => CloudflareStatus {
+        Err(_) => CloudflareStatus {
             installed: true,
             connected: false,
             email: None,
@@ -139,7 +161,7 @@ pub fn cloudflare_disconnect() -> Result<TerminalLaunchResult, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_email_from_whoami;
+    use super::{determine_connected, extract_email_from_whoami};
 
     #[test]
     fn extracts_email_from_typical_whoami_output() {
@@ -154,5 +176,35 @@ mod tests {
     fn returns_none_when_no_email_present() {
         let sample = "You are not authenticated. Please run `wrangler login`.\n";
         assert_eq!(extract_email_from_whoami(sample), None);
+    }
+
+    #[test]
+    fn not_connected_when_exit_success_but_stdout_reports_unauthenticated() {
+        let sample = "You are not authenticated. Please run `wrangler login`.\n";
+        assert!(!determine_connected(true, sample));
+    }
+
+    #[test]
+    fn not_connected_when_stdout_reports_unauthenticated_case_insensitive() {
+        let sample = "you ARE NOT Authenticated. Please run `wrangler login`.\n";
+        assert!(!determine_connected(true, sample));
+    }
+
+    #[test]
+    fn connected_when_exit_success_and_no_unauthenticated_message() {
+        let sample = "You are logged in with an OAuth Token, associated with the email test@malgnsoft.com.\n";
+        assert!(determine_connected(true, sample));
+    }
+
+    #[test]
+    fn connected_when_exit_success_and_email_missing_api_token_case() {
+        // API 토큰 인증 시 이메일 없이도 성공 종료코드만 반환할 수 있다.
+        let sample = "";
+        assert!(determine_connected(true, sample));
+    }
+
+    #[test]
+    fn not_connected_when_exit_failure_and_no_message() {
+        assert!(!determine_connected(false, ""));
     }
 }

@@ -1,7 +1,7 @@
 import { el, showToast, toggleSwitch } from '../dom';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
-import { fetchOtelEnv } from '../otelApi';
+import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
 import { loadCatalog, loadMarketplaces } from './catalog';
 import { refreshMarketplaces } from '../catalogApi';
 import {
@@ -15,17 +15,9 @@ import {
   connectJira,
   disconnectJira,
 } from '../integrationsApi';
-import { fetchMcpServers, addMcpServer, removeMcpServer } from '../mcpApi';
-import type { McpTransport, McpServerSummary } from '../mcpApi';
+import { fetchMcpServers, addMcpServer, removeMcpServer, loginMcpServer, fetchMcpCatalog, installMcpCatalogEntry } from '../mcpApi';
+import type { McpTransport, McpServerSummary, McpCatalogEntry } from '../mcpApi';
 import { navigate } from '../route';
-
-interface FieldSpec {
-  readonly id: string;
-  readonly label: string;
-  readonly placeholder: string;
-  readonly type?: 'text' | 'password';
-  readonly value?: string;
-}
 
 const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
@@ -58,34 +50,48 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
   return el('div', {}, [header, tabsRow, body]);
 }
 
-function renderField(spec: FieldSpec): HTMLElement {
-  const input = document.createElement('input');
-  input.id = spec.id;
-  input.name = spec.id;
-  input.type = spec.type ?? 'text';
-  input.placeholder = spec.placeholder;
-  if (spec.value) input.value = spec.value;
-  input.className = 'settings-input';
-  input.autocomplete = 'off';
-  return el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, [spec.label]), input]);
-}
-
-// ---------------- OTel 설정 (읽기 전용 실데이터 + 저장은 목업) ----------------
-// ~/.claude/settings.json의 env.OTEL_* 값을 실제로 읽어 필드를 채운다. "저장"은
-// 여전히 목업이다 — 이 화면에서 실제 설정 파일을 덮어쓰지 않는다(Claude Code
-// 자체 전역 설정이라 잘못 건드리면 동작에 영향을 준다).
+// ---------------- OTel 설정 (실제 저장) ----------------
+// ~/.claude/settings.json의 관리대상(allowlist) 14키를 otel_settings_get()으로
+// 읽고 otel_settings_save()로 실제 파일에 기록한다. 화면 진입만으로는 절대
+// 저장을 호출하지 않는다(저장 버튼을 눌렀을 때만).
+//
+// 폼 초기값 우선순위: values(실제 저장값) → defaults(기본값) → 빈 값. 이미
+// 저장된 값과 "아직 저장 안 된 기본값"을 구분해 보여준다(기본값만 있는 필드에
+// "기본값(저장 안 됨)" 힌트를 붙인다) — 그래야 사용자가 "저장을 눌러야 이 값이
+// 실제로 기록된다"는 사실을 오해하지 않는다.
+//
+// readOnlyKeys(프라이버시 4키)는 입력을 비활성화하고 저장 payload에도 포함하지
+// 않는다(백엔드가 Err를 던진다). OTEL_RESOURCE_ATTRIBUTES는 employee.* 조립이
+// 전적으로 Rust 책임이라(§8) 편집 불가한 읽기 전용 안내로만 보여준다.
 
 export async function loadOtelEnv(): Promise<void> {
   state.otel.loading = true;
   state.otel.error = null;
   notifyChange();
   try {
-    state.otel.env = await fetchOtelEnv();
+    state.otel.settings = await fetchOtelSettings();
     state.otel.loaded = true;
   } catch (err) {
     state.otel.error = err instanceof Error ? err.message : 'OTel 설정을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
   } finally {
     state.otel.loading = false;
+    notifyChange();
+  }
+}
+
+async function handleSaveOtelSettings(values: Record<string, string>): Promise<void> {
+  state.otel.saving = true;
+  notifyChange();
+  try {
+    // 비로그인이면 identity: null — 백엔드가 이 경우 OTEL_RESOURCE_ATTRIBUTES를
+    // 손대지 않는다(기존 귀속 정보를 지우는 것이 가장 나쁜 결과라서).
+    const identity = state.auth.userEmail ? { email: state.auth.userEmail, name: state.auth.userName } : null;
+    state.otel.settings = await saveOtelSettings({ values, identity });
+    showToast('OTel 설정을 저장했습니다.');
+  } catch (err) {
+    showToast(`OTel 설정 저장에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.otel.saving = false;
     notifyChange();
   }
 }
@@ -101,22 +107,95 @@ function renderOtelPanel(): HTMLElement {
     ]);
   }
 
-  const keys = Object.keys(state.otel.env).sort();
+  const settings = state.otel.settings;
+  if (!settings) {
+    return el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['OTel 설정을 불러오지 못했습니다'])]);
+  }
+
+  // settings.json 자체가 파싱 불가면 폼 전체를 잠그고 오류만 보여준다 — 파싱
+  // 못 하는 파일을 저장 시도로 덮어쓰는 사고를 막는다(백엔드도 이 경우 저장을
+  // 거부하지만, 프론트도 폼 자체를 아예 그리지 않는다).
+  if (settings.parseError) {
+    return el('div', { className: 'settings-card' }, [
+      el('div', { className: 'alert' }, [`⚠ ${settings.settingsPath} 파싱 실패: ${settings.parseError}`]),
+      el('div', { className: 'settings-form-hint' }, ['파일을 직접 열어 문법 오류를 고친 뒤 "다시 시도"를 누르세요.']),
+      el('button', { className: 'btn', onClick: () => void loadOtelEnv() }, ['다시 시도']),
+    ]);
+  }
+
+  const inputs = new Map<string, HTMLInputElement>();
+  const fields: HTMLElement[] = [];
+
+  for (const key of settings.managedKeys) {
+    if (key === 'OTEL_RESOURCE_ATTRIBUTES') {
+      const hasValue = key in settings.values;
+      const currentValue = hasValue ? settings.values[key] : key in settings.defaults ? settings.defaults[key] : '(없음)';
+      fields.push(
+        el('div', { className: 'settings-field' }, [
+          el('span', { className: 'settings-field-label' }, [key]),
+          el('div', { className: 'settings-form-hint' }, [
+            `${currentValue} — 로그인 계정 정보(이메일/이름)에서 저장 시 자동으로 조립됩니다. 여기서 직접 입력할 수 없습니다.`,
+          ]),
+        ])
+      );
+      continue;
+    }
+
+    const readOnly = settings.readOnlyKeys.includes(key);
+    const hasValue = key in settings.values;
+    const hasDefault = key in settings.defaults;
+    const initialValue = hasValue ? settings.values[key] : hasDefault ? settings.defaults[key] : '';
+    const isDefaultOnly = !hasValue && hasDefault;
+    const isEndpoint = key.endsWith('_ENDPOINT');
+
+    const input = document.createElement('input');
+    input.id = `otel-${key}`;
+    input.name = key;
+    input.type = 'text';
+    input.value = initialValue;
+    input.className = 'settings-input';
+    input.autocomplete = 'off';
+    input.disabled = readOnly;
+    if (isEndpoint && !settings.endpointDefaultsInjected) {
+      input.placeholder = 'https://collector.example.com:4318';
+    }
+    inputs.set(key, input);
+
+    const hints: HTMLElement[] = [];
+    if (readOnly) {
+      hints.push(
+        el('div', { className: 'settings-form-hint' }, ['프라이버시 보호를 위해 이 값은 여기서 바꿀 수 없습니다. 필요하면 ~/.claude/settings.json을 직접 편집하세요.'])
+      );
+    } else if (isDefaultOnly) {
+      hints.push(
+        el('div', { className: 'settings-form-hint' }, ['기본값(저장 안 됨) — 지금 표시된 값은 아직 settings.json에 기록되지 않았습니다. 저장을 누르면 이 값 그대로 기록됩니다.'])
+      );
+    }
+    if (isEndpoint && !settings.endpointDefaultsInjected) {
+      hints.push(el('div', { className: 'settings-form-hint' }, ['사내 collector 주소는 배포 빌드에 주입됩니다. 비어 있으면 직접 입력하세요.']));
+    }
+
+    fields.push(el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, [key]), input, ...hints]));
+  }
 
   const form = el('form', { className: 'settings-form' }, [
     el('div', { className: 'settings-form-hint' }, [
-      '~/.claude/settings.json의 env.OTEL_* 값을 실제로 읽어와 표시합니다. 저장은 목업입니다 — 이 화면에서 저장해도 실제 설정 파일은 바뀌지 않습니다.',
+      '~/.claude/settings.json의 관리대상 OTel 키를 실제로 읽고 저장합니다. 저장 시 파일 형식이 정규화됩니다(키가 알파벳순으로 재정렬되고, 저장 직전 원본이 settings.json.malgn-bak으로 백업됩니다).',
     ]),
-    ...(keys.length > 0
-      ? keys.map((key) => renderField({ id: `otel-${key}`, label: key, placeholder: key, value: state.otel.env[key] }))
-      : [el('div', { className: 'state-block-desc' }, ['~/.claude/settings.json에 OTEL_ 로 시작하는 값이 없습니다.'])]),
+    ...fields,
   ]);
+
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    showToast('OTel 설정 저장됨 (목업 — ~/.claude/settings.json은 건드리지 않습니다)');
+    const values: Record<string, string> = {};
+    for (const [key, input] of inputs) {
+      if (settings.readOnlyKeys.includes(key)) continue;
+      values[key] = input.value;
+    }
+    void handleSaveOtelSettings(values);
   });
 
-  const saveBtn = el('button', { className: 'btn btn-primary' }, ['저장']);
+  const saveBtn = el('button', { className: 'btn btn-primary', disabled: state.otel.saving }, [state.otel.saving ? '저장 중…' : '저장']);
   saveBtn.type = 'submit';
   form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
 
@@ -586,7 +665,105 @@ export async function loadMcp(): Promise<void> {
   }
 }
 
+// ---------------- MCP 카탈로그 (잘 알려진 공개 MCP 서버 원클릭 설치) ----------------
+// 넷 다 OAuth 로그인이 필요해서 이 앱이 로그인을 대신 처리하지 않는다 — GitHub/
+// Cloudflare 연동과 동일한 정책으로, "설치" 버튼은 백엔드가 `claude mcp add`+
+// `claude mcp login`을 이어서 실행할 터미널 창을 여는 데까지만 관여한다. 그래서
+// 버튼을 누른 직후 낙관적으로 "연결됨"으로 바꾸지 않고, 안내 토스트만 띄운 뒤
+// 사용자가 터미널에서 로그인을 마치고 기존 "새로고침"(mcp_list 재조회)을 눌러야
+// 실제 연결 여부가 반영된다.
+
+export async function loadMcpCatalog(): Promise<void> {
+  state.mcpCatalog.loading = true;
+  state.mcpCatalog.error = null;
+  notifyChange();
+  try {
+    state.mcpCatalog.items = await fetchMcpCatalog();
+    state.mcpCatalog.loaded = true;
+  } catch (err) {
+    state.mcpCatalog.error = err instanceof Error ? err.message : 'MCP 카탈로그를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+  } finally {
+    state.mcpCatalog.loading = false;
+    notifyChange();
+  }
+}
+
+async function handleInstallMcpCatalogEntry(entry: McpCatalogEntry): Promise<void> {
+  state.mcpCatalog.installingId = entry.id;
+  notifyChange();
+  try {
+    const result = await installMcpCatalogEntry(entry.id);
+    showToast(result.message);
+  } catch (err) {
+    showToast(`"${entry.label}" 설치를 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.mcpCatalog.installingId = null;
+    notifyChange();
+  }
+}
+
+// 카탈로그 행은 이미 설치된 항목을 걸러낸 뒤(buildMcpRows) 전달받으므로 여기서는
+// "설치" 액션 하나만 그린다.
+function renderMcpCatalogRow(entry: McpCatalogEntry): HTMLElement {
+  const installing = state.mcpCatalog.installingId === entry.id;
+
+  const actionEl = el(
+    'button',
+    { className: 'btn btn-primary', disabled: installing, onClick: () => void handleInstallMcpCatalogEntry(entry) },
+    [installing ? '터미널 여는 중…' : '설치']
+  );
+
+  return el('div', { className: 'mcp-row' }, [
+    el('div', { className: 'mcp-row-main' }, [
+      el('div', { className: 'mcp-row-top' }, [
+        el('span', { className: 'mcp-row-name' }, [entry.label]),
+        el('span', { className: 'badge badge-unknown' }, [entry.transport]),
+      ]),
+      el('div', { className: 'mcp-row-target' }, [entry.target]),
+    ]),
+    el('div', { className: 'mcp-row-actions' }, [actionEl]),
+  ]);
+}
+
+// ---------------- GitHub 공식 MCP 빠른시작 (PAT 방식, OAuth 카탈로그와 별개) ----------------
+// GitHub 공식 원격 MCP(https://api.githubcopilot.com/mcp/)는 OAuth가 아니라
+// 사용자가 직접 발급한 Personal Access Token을 Authorization 헤더로 넣는
+// 방식이다. 그래서 원클릭 설치(mcp_install)가 아니라, 기존 "새 MCP 서버" 폼을
+// 미리 채워서 열어주고 사용자는 토큰만 입력해 기존 mcp_add(addMcpServer)로
+// 저장하게 한다 — 새 백엔드 커맨드는 필요 없다.
+
+const GITHUB_MCP_TARGET = 'https://api.githubcopilot.com/mcp/';
+
+// 이미 등록된 경우(state.mcp.items에 target이 있음)에는 buildMcpRows가 이 행 자체를
+// 만들지 않는다 — 그래서 "이미 등록됨" 분기가 필요 없다.
+function renderGithubMcpQuickstartRow(): HTMLElement {
+  const actionEl = el(
+    'button',
+    {
+      className: 'btn btn-primary',
+      onClick: () => {
+        mcpAddPrefill = { name: 'GitHub', transport: 'http', target: GITHUB_MCP_TARGET };
+        mcpAddFormOpen = true;
+        notifyChange();
+      },
+    },
+    ['설치']
+  );
+
+  return el('div', { className: 'mcp-row' }, [
+    el('div', { className: 'mcp-row-main' }, [
+      el('div', { className: 'mcp-row-top' }, [
+        el('span', { className: 'mcp-row-name' }, ['GitHub']),
+        el('span', { className: 'badge badge-unknown' }, ['http']),
+      ]),
+      el('div', { className: 'mcp-row-target' }, [GITHUB_MCP_TARGET]),
+    ]),
+    el('div', { className: 'mcp-row-actions' }, [actionEl]),
+  ]);
+}
+
 let mcpAddFormOpen = false;
+let mcpAddPrefill: McpAddPrefill | null = null;
 
 async function handleRemoveMcp(server: McpServerSummary): Promise<void> {
   if (!window.confirm(`"${server.name}" MCP 서버를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
@@ -599,9 +776,37 @@ async function handleRemoveMcp(server: McpServerSummary): Promise<void> {
   }
 }
 
+async function handleLoginMcp(server: McpServerSummary): Promise<void> {
+  state.mcp.loggingInName = server.name;
+  notifyChange();
+  try {
+    const result = await loginMcpServer(server.name);
+    showToast(result.message);
+  } catch (err) {
+    showToast(`"${server.name}" 로그인을 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.mcp.loggingInName = null;
+    notifyChange();
+  }
+}
+
 function renderMcpRow(server: McpServerSummary): HTMLElement {
   const deleteBtn = el('button', { className: 'btn', onClick: () => void handleRemoveMcp(server) }, ['삭제']);
   deleteBtn.style.color = 'var(--color-danger)';
+
+  const actions: HTMLElement[] = [];
+  // stdio 서버는 OAuth 로그인 개념이 없다 — http/sse에만 노출한다. 이미 연결된
+  // 서버든 아니든(재로그인 필요할 수 있다) 항상 보여준다.
+  if (server.transport !== 'stdio') {
+    const loggingIn = state.mcp.loggingInName === server.name;
+    const loginBtn = el(
+      'button',
+      { className: 'btn', disabled: loggingIn, onClick: () => void handleLoginMcp(server) },
+      [loggingIn ? '터미널 여는 중…' : '인증']
+    );
+    actions.push(loginBtn);
+  }
+  actions.push(deleteBtn);
 
   return el('div', { className: 'mcp-row' }, [
     el('div', { className: 'mcp-row-main' }, [
@@ -613,15 +818,58 @@ function renderMcpRow(server: McpServerSummary): HTMLElement {
       el('div', { className: 'mcp-row-target' }, [server.target]),
       el('div', { className: 'mcp-row-status-label' }, [server.statusLabel]),
     ]),
-    el('div', { className: 'mcp-row-actions' }, [deleteBtn]),
+    el('div', { className: 'mcp-row-actions' }, actions),
   ]);
 }
 
-function renderMcpAddForm(): HTMLElement {
+// ---------------- 통합 목록 (등록된 서버 + 미설치 카탈로그 + GitHub 퀵스타트) ----------------
+// 세 데이터 소스를 하나의 전체폭 .mcp-list로 합친다 — 박스 구분 없이 행 단위로만
+// 나열한다. malgn-agent 관련 항목(malgnai-hub 등)은 항상 맨 위로 올리고, 나머지는
+// 등록된 서버 → 미설치 카탈로그 → GitHub 퀵스타트 순서를 유지한다(Array.sort는
+// ES2019+ 스펙상 안정 정렬이라 동순위 항목의 상대 순서가 보존된다).
+
+function isMalgnAgentEntry(name: string): boolean {
+  return name.includes('malgn-agent');
+}
+
+function buildMcpRows(): HTMLElement[] {
+  const rows: { name: string; el: HTMLElement }[] = [];
+
+  for (const server of state.mcp.items) {
+    rows.push({ name: server.name, el: renderMcpRow(server) });
+  }
+
+  for (const entry of state.mcpCatalog.items) {
+    if (!entry.installed) rows.push({ name: entry.label, el: renderMcpCatalogRow(entry) });
+  }
+
+  const githubAlreadyRegistered = state.mcp.items.some((item) => item.target === GITHUB_MCP_TARGET);
+  if (!githubAlreadyRegistered) {
+    rows.push({ name: 'GitHub', el: renderGithubMcpQuickstartRow() });
+  }
+
+  rows.sort((a, b) => {
+    const aTop = isMalgnAgentEntry(a.name);
+    const bTop = isMalgnAgentEntry(b.name);
+    if (aTop === bTop) return 0;
+    return aTop ? -1 : 1;
+  });
+
+  return rows.map((r) => r.el);
+}
+
+interface McpAddPrefill {
+  readonly name: string;
+  readonly transport: McpTransport;
+  readonly target: string;
+}
+
+function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
   const nameInput = document.createElement('input');
   nameInput.className = 'settings-input';
   nameInput.placeholder = '예: plugin:malgn-agent:malgnai-hub';
   nameInput.autocomplete = 'off';
+  if (prefill) nameInput.value = prefill.name;
 
   const transportSelect = document.createElement('select');
   transportSelect.className = 'settings-input';
@@ -631,10 +879,12 @@ function renderMcpAddForm(): HTMLElement {
     opt.textContent = t;
     transportSelect.appendChild(opt);
   }
+  if (prefill) transportSelect.value = prefill.transport;
 
   const targetInput = document.createElement('input');
   targetInput.className = 'settings-input';
   targetInput.autocomplete = 'off';
+  if (prefill) targetInput.value = prefill.target;
 
   const argsInput = document.createElement('input');
   argsInput.className = 'settings-input';
@@ -648,7 +898,45 @@ function renderMcpAddForm(): HTMLElement {
   headerInput.autocomplete = 'off';
   const headerField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['헤더 (선택)']), headerInput]);
 
-  // stdio/http/sse에 따라 target placeholder와 args/header 필드 노출 여부가
+  // 내부(사내) MCP 서버용 OAuth 설정 — http/sse 전용. Client Secret은 실제
+  // 인증서버 발급 비밀값이라 반드시 마스킹한다(env textarea와 달리).
+  const oauthClientIdInput = document.createElement('input');
+  oauthClientIdInput.className = 'settings-input';
+  oauthClientIdInput.placeholder = '내부 MCP 서버의 OAuth Client ID';
+  oauthClientIdInput.autocomplete = 'off';
+  const oauthClientIdField = el('label', { className: 'settings-field' }, [
+    el('span', { className: 'settings-field-label' }, ['OAuth Client ID (선택)']),
+    oauthClientIdInput,
+  ]);
+
+  const oauthClientSecretInput = document.createElement('input');
+  oauthClientSecretInput.className = 'settings-input';
+  oauthClientSecretInput.type = 'password';
+  oauthClientSecretInput.placeholder = '내부 MCP 서버의 OAuth Client Secret';
+  oauthClientSecretInput.autocomplete = 'off';
+  const oauthClientSecretField = el('label', { className: 'settings-field' }, [
+    el('span', { className: 'settings-field-label' }, ['OAuth Client Secret (선택)']),
+    oauthClientSecretInput,
+  ]);
+
+  const oauthCallbackPortInput = document.createElement('input');
+  oauthCallbackPortInput.className = 'settings-input';
+  oauthCallbackPortInput.type = 'number';
+  oauthCallbackPortInput.placeholder = '예: 51000';
+  oauthCallbackPortInput.autocomplete = 'off';
+  const oauthCallbackPortField = el('label', { className: 'settings-field' }, [
+    el('span', { className: 'settings-field-label' }, ['OAuth Callback Port (선택)']),
+    oauthCallbackPortInput,
+  ]);
+
+  const envInput = document.createElement('textarea');
+  envInput.className = 'settings-input';
+  envInput.rows = 3;
+  envInput.placeholder = '한 줄에 KEY=VALUE 하나씩 입력\n예: GRAFANA_URL=http://localhost:3000\nGRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_xxx';
+  envInput.autocomplete = 'off';
+  const envField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['환경변수 (선택)']), envInput]);
+
+  // stdio/http/sse에 따라 target placeholder와 args/header/env 필드 노출 여부가
   // 달라진다 — select를 바꿀 때마다 전체 재렌더(notifyChange)를 하면 이미
   // 입력한 다른 필드 값이 날아가므로, 이 폼 안에서는 DOM을 직접 갱신한다.
   function syncTransportFields(): void {
@@ -656,11 +944,19 @@ function renderMcpAddForm(): HTMLElement {
     if (t === 'stdio') {
       targetInput.placeholder = '실행 파일 경로 또는 명령어';
       argsField.style.display = '';
+      envField.style.display = '';
       headerField.style.display = 'none';
+      oauthClientIdField.style.display = 'none';
+      oauthClientSecretField.style.display = 'none';
+      oauthCallbackPortField.style.display = 'none';
     } else {
       targetInput.placeholder = 'URL';
       argsField.style.display = 'none';
+      envField.style.display = 'none';
       headerField.style.display = '';
+      oauthClientIdField.style.display = '';
+      oauthClientSecretField.style.display = '';
+      oauthCallbackPortField.style.display = '';
     }
   }
   transportSelect.addEventListener('change', syncTransportFields);
@@ -671,7 +967,11 @@ function renderMcpAddForm(): HTMLElement {
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['transport']), transportSelect]),
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['target']), targetInput]),
     argsField,
+    envField,
     headerField,
+    oauthClientIdField,
+    oauthClientSecretField,
+    oauthCallbackPortField,
   ]);
 
   const saveBtn = el('button', { className: 'btn btn-primary' }, ['저장']);
@@ -689,13 +989,35 @@ function renderMcpAddForm(): HTMLElement {
     }
     const args = transport === 'stdio' ? argsInput.value.trim().split(/\s+/).filter(Boolean) : [];
     const header = transport === 'stdio' ? null : headerInput.value.trim() || null;
+    const env =
+      transport === 'stdio'
+        ? envInput.value
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => {
+              const idx = line.indexOf('=');
+              return idx === -1 ? null : { key: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() };
+            })
+            .filter((pair): pair is { key: string; value: string } => pair !== null && pair.key !== '')
+        : [];
+
+    const oauthClientId = transport === 'stdio' ? null : oauthClientIdInput.value.trim() || null;
+    const oauthClientSecret = transport === 'stdio' ? null : oauthClientSecretInput.value.trim() || null;
+    const oauthCallbackPortRaw = transport === 'stdio' ? '' : oauthCallbackPortInput.value.trim();
+    const oauthCallbackPort = oauthCallbackPortRaw ? Number(oauthCallbackPortRaw) : null;
+    if (oauthCallbackPort !== null && (!Number.isInteger(oauthCallbackPort) || oauthCallbackPort <= 0)) {
+      showToast('OAuth Callback Port는 양의 정수로 입력하세요.');
+      return;
+    }
 
     saveBtn.disabled = true;
     void (async () => {
       try {
-        await addMcpServer({ name, transport, target, args, header });
+        await addMcpServer({ name, transport, target, args, header, env, oauthClientId, oauthClientSecret, oauthCallbackPort });
         showToast(`"${name}" MCP 서버가 추가되었습니다`);
         mcpAddFormOpen = false;
+        mcpAddPrefill = null;
         await loadMcp();
       } catch (err) {
         showToast(`추가에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
@@ -719,6 +1041,7 @@ function renderMcpPanel(): HTMLElement {
       className: 'btn btn-primary',
       onClick: () => {
         mcpAddFormOpen = !mcpAddFormOpen;
+        if (!mcpAddFormOpen) mcpAddPrefill = null;
         notifyChange();
       },
     },
@@ -727,23 +1050,34 @@ function renderMcpPanel(): HTMLElement {
 
   const body: HTMLElement[] = [
     el('div', { className: 'settings-form-hint' }, [
-      'claude mcp CLI로 연결 상태만 확인합니다 — 모델을 호출하지 않는 순수 헬스체크라 빠르고 비용이 들지 않습니다.',
+      'claude mcp CLI로 연결 상태만 확인합니다 — 모델을 호출하지 않는 순수 헬스체크라 빠르고 비용이 들지 않습니다. 카탈로그 항목은 OAuth 로그인이, GitHub 공식 MCP는 Personal Access Token이 필요합니다. "설치"/"인증"을 누르면 터미널 창이 열리고, 그 창에서 절차를 직접 마친 뒤 "↻ 새로고침"으로 반영하세요.',
     ]),
     el('div', { className: 'mcp-toolbar' }, [refreshBtn, addToggleBtn]),
   ];
 
-  if (mcpAddFormOpen) body.push(renderMcpAddForm());
+  if (mcpAddFormOpen) body.push(renderMcpAddForm(mcpAddPrefill ?? undefined));
 
-  if (state.mcp.items.length === 0) {
+  if (state.mcpCatalog.error) {
+    body.push(renderErrorBlock(`MCP 카탈로그를 불러오지 못했습니다: ${state.mcpCatalog.error}`, () => void loadMcpCatalog()));
+  }
+
+  const rows = buildMcpRows();
+  const catalogStillLoading = state.mcpCatalog.loading && !state.mcpCatalog.loaded;
+
+  if (rows.length > 0) {
+    body.push(el('div', { className: 'mcp-list' }, rows));
+  } else if (!catalogStillLoading) {
     body.push(
       el('div', { className: 'state-block' }, [
         el('div', { className: 'state-block-title' }, ['등록된 MCP 서버가 없습니다']),
         el('div', { className: 'state-block-desc' }, ['"+ 새 MCP 서버"로 등록하세요.']),
       ])
     );
-  } else {
-    body.push(el('div', { className: 'mcp-list' }, state.mcp.items.map(renderMcpRow)));
   }
+
+  // 카탈로그는 등록된 서버와 별도로 로딩된다 — 등록된 서버(및 GitHub 퀵스타트)는
+  // 위 mcp-list에 먼저 보이고, 카탈로그 항목은 로딩이 끝나면 같은 목록에 합류한다.
+  if (catalogStillLoading) body.push(renderLoadingBlock());
 
   return el('div', {}, body);
 }

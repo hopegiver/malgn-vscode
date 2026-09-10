@@ -1,24 +1,28 @@
 // 앱 전역 상태 — 단일 상태 객체 + 아주 단순한 구독자 목록(pub/sub)만 제공한다.
 // 순환 import를 피하려고 render() 자체는 여기 두지 않는다: main.ts가 `onStateChange(render)`로
 // 한 번 구독하고, 다른 모듈들은 상태를 바꾼 뒤 `notifyChange()`만 호출해 재렌더를 요청한다.
-import type { ClaudeSessionRecord } from './sessionsApi';
+import type { ClaudeSessionRecord, SessionTranscript } from './sessionsApi';
 import type { WorkspaceProject, ProjectTreeNode, FilePreview } from './workspaceApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devToolsApi';
 import type { InstalledPlugin, MarketplaceInfo, CommandResult } from './catalogApi';
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
 import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsApi';
-import type { AutonomyLastStatus, AutonomyHistoryEntry } from './autonomyApi';
-import type { McpServerSummary } from './mcpApi';
+import type { AutonomyRunStatus } from './autonomyApi';
+import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
+import type { OtelSettings } from './otelApi';
+import type { MalgnAgentConfigStatus } from './configApi';
 
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
 export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp';
 
-// "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 ProjectAutonomyGroup[]을
-// (프로젝트, 태스크) 평면 목록으로 펼치고, scheduleLabel/lastRunLabel/nextRunLabel은
-// intervalMinutes·lastRunAt에서 프론트가 계산해 채운다(views/autonomousTasks.ts).
+// "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 두 조회를 (projectPath, id)
+// 키로 병합한 결과다. id~enabled까지는 설정(autonomy.json, upsert 대상 그대로),
+// running~logPath는 메모리 런타임 상태(autonomy_runtime_status, 읽기 전용 — 저장
+// 대상이 아니다). scheduleLabel/lastRunLabel/nextRunLabel은 그 둘에서 프론트가
+// 계산해 채운다(views/autonomousTasks.ts).
 export interface AutonomousTask {
   id: string;
   projectPath: string;
@@ -26,13 +30,17 @@ export interface AutonomousTask {
   name: string;
   prompt: string;
   subagent: string | null;
-  intervalMinutes: number;
+  interval: number; // 분 — 이전 실행이 "끝난 뒤" 대기하는 시간
   enabled: boolean;
-  preventOverlap: boolean;
-  lastRunAt: string | null;
-  lastStatus: AutonomyLastStatus | null;
-  lastSummary: string | null;
-  history: readonly AutonomyHistoryEntry[];
+  timeout: number | null; // 분. null이면 전역 기본값 사용.
+  running: boolean;
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  nextRunAt: string | null;
+  status: AutonomyRunStatus | null;
+  summary: string | null;
+  durationMs: number | null;
+  logPath: string | null;
   scheduleLabel: string;
   lastRunLabel: string;
   nextRunLabel: string;
@@ -81,6 +89,22 @@ export interface AppState {
     error: string | null;
     loaded: boolean;
     live: boolean;
+  };
+  // 세션 상세 = 실제 대화 + 이어쓰기 (docs/design/session-chat.md §4-4). 세션
+  // 상세 화면에 들어갈 때만 채워지고 나가면 초기화된다(views/sessions.ts의
+  // enterSessionChatView/leaveSessionChatView).
+  sessionChat: {
+    sessionId: string | null;
+    transcript: SessionTranscript | null;
+    loading: boolean;
+    error: string | null;
+    /** 전송 중인 턴. null이면 입력 가능 */
+    turnId: string | null;
+    /** 스트리밍으로 쌓는 임시 assistant 말풍선 */
+    streamingText: string;
+    /** 스트리밍 중 도착한 도구 한 줄들 */
+    streamingTools: string[];
+    input: string;
   };
   // 사용량 통계의 "일별 사용량" — 실제 ~/.claude/projects/**/*.jsonl 집계(최근
   // 30일). 로그인 직후 한 번 미리 불러오고(main.ts), 이후 "사용량 통계" 메뉴
@@ -180,10 +204,24 @@ export interface AppState {
     loaded: boolean;
     refreshing: boolean;
   };
-  // OTel 설정 — ~/.claude/settings.json의 env.OTEL_* 만 읽기 전용으로 채운다.
-  // "저장"은 여전히 목업 — 이 값을 실제 설정 파일에 다시 쓰지 않는다.
+  // OTel 설정 — otel_settings_get()으로 ~/.claude/settings.json의 관리대상
+  // 14키를 allowlist 기반으로 읽고, otel_settings_save()로 실제로 저장한다(더
+  // 이상 목업이 아니다). settings는 그 응답을 그대로 보관 — 폼 초기값(values→
+  // defaults→빈값)과 "기본값(저장 안 됨)" 구분 표시는 views/settings.ts가 매번
+  // 이 값에서 계산한다.
   otel: {
-    env: Record<string, string>;
+    settings: OtelSettings | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+    saving: boolean;
+  };
+  // 전역 설정 파일(~/.claude/malgn-agent.json) 상태 — workspaces가 자율업무·
+  // 프로젝트 스캔 범위 그 자체라, 자율업무 화면(views/autonomousTasks.ts) 상단에
+  // 상시 표시한다("이 프로젝트가 왜 안 보이지"를 설명하는 근거). 쓰기 UI는 없다
+  // (범위 밖) — 읽기 전용.
+  malgnAgentConfig: {
+    status: MalgnAgentConfigStatus | null;
     loading: boolean;
     error: string | null;
     loaded: boolean;
@@ -192,11 +230,27 @@ export interface AppState {
   // 읽는다(mcpApi.ts). 모델을 호출하지 않는 순수 헬스체크라 빠르고 무료다.
   // 로그인 직후 한 번 미리 불러온다 — 홈 대시보드의 malgnai-hub 상태 위젯이
   // 바로 값을 보여줘야 한다.
+  // loggingInName은 등록된 서버 행의 "로그인" 버튼(mcp_login)을 누른 동안만
+  // 해당 행 버튼을 잠그는 용도다 — GitHub/카탈로그 설치와 동일하게, 이 버튼도
+  // 터미널 창을 여는 데까지만 관여하고 로그인 완료 여부는 알 수 없다.
   mcp: {
     items: McpServerSummary[];
     loading: boolean;
     error: string | null;
     loaded: boolean;
+    loggingInName: string | null;
+  };
+  // MCP 카탈로그 — 잘 알려진 공개 MCP 서버(Gmail 등)를 원클릭 등록하는 목록
+  // (mcp_catalog_list). "설치"는 백엔드가 터미널 창을 열어 로그인까지 안내할
+  // 뿐이다 — installingId는 그 터미널을 여는 동안만 해당 항목 버튼을 잠그는
+  // 용도이고, 로그인 완료 여부는 이 화면이 알 수 없다(사용자가 기존 mcp
+  // "새로고침"을 눌러야 반영된다).
+  mcpCatalog: {
+    items: McpCatalogEntry[];
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+    installingId: string | null;
   };
 }
 
@@ -222,6 +276,16 @@ export const state: AppState = {
   },
   sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false },
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
+  sessionChat: {
+    sessionId: null,
+    transcript: null,
+    loading: false,
+    error: null,
+    turnId: null,
+    streamingText: '',
+    streamingTools: [],
+    input: '',
+  },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
   autonomousTasks: { items: [], loading: false, error: null, loaded: false },
@@ -244,8 +308,10 @@ export const state: AppState = {
   },
   catalog: { plugins: [], loading: false, error: null, loaded: false, autoUpdate: {}, updating: {}, updatingAll: false, lastResult: {} },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
-  otel: { env: {}, loading: false, error: null, loaded: false },
-  mcp: { items: [], loading: false, error: null, loaded: false },
+  otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
+  malgnAgentConfig: { status: null, loading: false, error: null, loaded: false },
+  mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null },
+  mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
 };
 
 type Listener = () => void;
