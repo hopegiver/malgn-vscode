@@ -4,11 +4,14 @@
 //   - "run"    : 이 앱이 실제로 설치/업데이트 명령을 실행할 수 있다. 개별 실행은
 //                preview_dev_tool_update로 무엇이 바뀔지 화면에 보여주고 사용자
 //                확인을 받은 뒤(plan_id 일치 확인)에만 그 계획으로 실제 명령을
-//                실행한다. "전체 업데이트"는 버튼 클릭 자체를 일괄 동의로 보고
-//                각 도구의 미리보기를 화면 노출·개별 확인 없이 순차 실행하되,
-//                미리보기를 신뢰할 수 없거나(previewReliable === false) 영향
-//                대상이 1개보다 많은 항목은 배치에서 제외하고 개별 확인 대기로
-//                남긴다(handleUpdateAll).
+//                실행한다. "전체 업데이트"는 이미 설치된 도구(installed===true)만
+//                버튼 클릭 자체를 일괄 동의로 보고 각 도구의 미리보기를 화면
+//                노출·개별 확인 없이 순차 실행하되, 미리보기를 신뢰할 수
+//                없거나(previewReliable === false) 영향 대상이 1개보다 많은
+//                항목은 배치에서 제외하고 개별 확인 대기로 남긴다. 아직 설치되지
+//                않은 도구는 "전체 업데이트"의 동의 범위 밖이라 "N개를 설치합니다"
+//                요약 확인 1회를 받은 경우에만 같은 배치에 포함된다(M1,
+//                handleUpdateAll).
 //   - "manual" : 이 앱이 별도 프로세스로 실행하지 않는다(예: git은 macOS 시스템
 //                도구). "안내 보기"로 안내문과 복사 가능한 명령을 보여주며,
 //                "터미널에서 실행"은 어떤 명령이 실행될지 먼저 보여주고 확인을
@@ -233,7 +236,7 @@ function toggleLog(toolId: string): void {
   notifyChange();
 }
 
-// "전체 업데이트" — actionKind가 "run"인 도구만 순차(await 직렬)로 처리한다(백엔드가
+// "전체 업데이트" — actionKind가 "run"인 도구를 순차(await 직렬)로 처리한다(백엔드가
 // 뮤텍스로 1건씩만 받으므로 동시 호출하지 않는다). 각 도구도 개별 실행과 동일하게
 // 먼저 미리보기를 받는다. 미리보기 결과 영향 대상이 1개보다 많으면(brew가 의존성까지
 // 올리는 경우) 자동으로 실행하지 않고 그 항목만 확인 대기 상태로 남겨 사용자가
@@ -245,8 +248,34 @@ function toggleLog(toolId: string): void {
 // 못해 무엇이 바뀔지 모르는 채로 배치가 자동 실행될 수 있었다. 그래서
 // previewReliable === false인 항목도 영향 대상이 여럿인 경우와 동일하게 배치에서
 // 제외하고 개별 확인 대기로 남긴다.
+//
+// M1(review-devtools-install-2026-09-10.md): "전체 업데이트"가 동의하는 범위는
+// "있는 것들을 최신화"이지 "없는 것을 새로 설치"가 아니다. 이번 라운드 전에는
+// actionKind==='run'인 미설치 도구(gh/Claude/Wrangler)까지 targets에 들어가
+// 개별 확인 없이 실설치됐다 — preview_args가 없는 설치 프리뷰는 항상
+// previewReliable===true + affected.length===1이라 위 두 제외 조건을 둘 다
+// 통과했기 때문이다. 그래서 "업데이트"(설치돼 있는 도구)와 "설치"(아직 없는
+// 도구)를 분리한다: 업데이트는 기존처럼 개별 확인 없이 배치 처리하고, 설치는
+// "N개를 설치합니다" 요약 확인 1회를 받은 뒤에만 같은 배치에 포함시킨다 —
+// 개별 확인 0회(이전 버그)와 도구 수만큼의 확인(N회) 사이에서, 신규 머신
+// 셋업 편의와 비가역 실행의 동의 범위를 절충한 값이다.
 async function handleUpdateAll(): Promise<void> {
-  const targets = state.devTools.items.filter((t) => t.actionKind === 'run');
+  const runnable = state.devTools.items.filter((t) => t.actionKind === 'run');
+  const updateTargets = runnable.filter((t) => t.installed);
+  const installTargets = runnable.filter((t) => !t.installed);
+
+  let confirmedInstallTargets: DevToolStatus[] = [];
+  if (installTargets.length > 0) {
+    const names = installTargets.map((t) => t.name).join(', ');
+    const proceed = window.confirm(
+      `다음 ${installTargets.length}개 도구를 설치합니다: ${names}\n계속할까요?`
+    );
+    if (proceed) {
+      confirmedInstallTargets = installTargets;
+    }
+  }
+
+  const targets = [...updateTargets, ...confirmedInstallTargets];
   if (targets.length === 0) return;
 
   state.devTools.updatingAll = true;
