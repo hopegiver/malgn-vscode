@@ -22,6 +22,11 @@ const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
     "~/.local/bin/claude",
 ];
 
+/// `claude mcp *` 서브커맨드가 멈춰도(네트워크 불량, 인증 프롬프트 대기 등)
+/// 앱이 영구히 막히지 않도록 두는 상한. 헬스체크성 호출이라 15초면 충분히
+/// 넉넉하다.
+const MCP_COMMAND_TIMEOUT_SECS: u64 = 15;
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct McpServerSummary {
     pub name: String,
@@ -66,6 +71,15 @@ fn run_mcp_command(args: &[&str]) -> Result<(String, bool), String> {
 /// 자식 프로세스에만 환경변수를 하나 추가로 주입한다(이 호출에만 적용되고
 /// 다른 `run_mcp_command` 호출자에는 영향이 없다 — OAuth client secret을
 /// `MCP_CLIENT_SECRET`으로 넘기는 `mcp_add` 전용 경로).
+///
+/// 예전엔 `Command::output()`으로 무기한 블로킹했다(P0 버그와 동일 계열 —
+/// `claude` CLI가 멈추면 이 호출도 영원히 멈춘다). `dev_tools.rs`의
+/// `run_process_with_timeout_cancellable`과 동일한 관용구(stdin 차단 + 파이프
+/// 리더 스레드 + `try_wait()` 폴링 타임아웃)를 이 모듈 안에서 가볍게 재현한다
+/// — 그쪽 헬퍼는 프로세스 그룹 kill·`on_spawn`/`should_abort` 훅 등 도구
+/// 설치 전용 기능까지 딸려 있고 `current_dir` 지정도 지원하지 않아 그대로
+/// 재사용하기보다 이 파일의 필요(고정 `home` cwd, 단일 자식 프로세스)에 맞는
+/// 최소 형태로 옮긴다.
 fn run_mcp_command_with_env(
     args: &[&str],
     extra_env: Option<(&str, &str)>,
@@ -80,18 +94,67 @@ fn run_mcp_command_with_env(
     let path_env = crate::dev_tools::build_child_path_env(Some(&resolved));
 
     let mut command = std::process::Command::new(&resolved);
-    command.args(args).current_dir(&home).env("PATH", &path_env);
+    command
+        .args(args)
+        .current_dir(&home)
+        .env("PATH", &path_env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     if let Some((key, value)) = extra_env {
         command.env(key, value);
     }
 
-    let output = command
-        .output()
+    let mut child = command
+        .spawn()
         .map_err(|e| format!("claude 명령을 실행하지 못했습니다: {e}"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let success = output.status.success();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = stdout_pipe.map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+            buf
+        })
+    });
+    let stderr_reader = stderr_pipe.map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
+            buf
+        })
+    });
+
+    let timeout = std::time::Duration::from_secs(MCP_COMMAND_TIMEOUT_SECS);
+    let started = std::time::Instant::now();
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => break None,
+        }
+    };
+
+    let stdout_bytes = stdout_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+    let stderr_bytes = stderr_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+
+    let Some(status) = exit_status else {
+        return Err(format!(
+            "claude 명령이 {MCP_COMMAND_TIMEOUT_SECS}초 내에 끝나지 않아 중단했습니다."
+        ));
+    };
+
+    let success = status.success();
     let text = if success || stderr.trim().is_empty() {
         stdout
     } else {
@@ -416,16 +479,25 @@ fn build_install_command(claude_bin: &str, entry: &McpCatalogEntry) -> String {
 /// 실패해도(claude 미설치 등) 빈 목록을 돌려준다 — 커맨드 시그니처가
 /// `Result`가 아닌 `Vec`으로 고정돼 있다(프론트가 "0개 등록됨"과 "조회
 /// 실패"를 구분할 필요가 없는 화면이라는 설계 결정).
-#[tauri::command]
-pub fn mcp_list() -> Vec<McpServerSummary> {
+fn mcp_list_blocking() -> Vec<McpServerSummary> {
     match run_mcp_command(&["mcp", "list"]) {
         Ok((text, _success)) => parse_mcp_list(&text),
         Err(_) => Vec::new(),
     }
 }
 
+/// 예전엔 sync였다(P0 버그와 동일 계열 — non-async 커맨드는 메인 스레드에서
+/// 돈다). `dev_tools.rs`의 `check_dev_tools`가 정한 관용구(async +
+/// `spawn_blocking`)를 그대로 따른다 — 프론트 `invoke()` 계약은 항상
+/// Promise라 시그니처가 바뀌지 않는다.
 #[tauri::command]
-pub fn mcp_get(name: String) -> Result<McpServerDetail, String> {
+pub async fn mcp_list() -> Vec<McpServerSummary> {
+    tauri::async_runtime::spawn_blocking(mcp_list_blocking)
+        .await
+        .unwrap_or_default()
+}
+
+fn mcp_get_blocking(name: String) -> Result<McpServerDetail, String> {
     let (text, success) = run_mcp_command(&["mcp", "get", &name])?;
     if !success {
         return Err(if text.trim().is_empty() {
@@ -438,6 +510,13 @@ pub fn mcp_get(name: String) -> Result<McpServerDetail, String> {
         .ok_or_else(|| format!("'{name}' MCP 서버 정보를 해석하지 못했습니다."))
 }
 
+#[tauri::command]
+pub async fn mcp_get(name: String) -> Result<McpServerDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || mcp_get_blocking(name))
+        .await
+        .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
+}
+
 /// `oauth_client_id`/`oauth_client_secret`/`oauth_callback_port`는 http/sse
 /// 사내 OAuth MCP 등록에만 쓰인다(stdio는 `build_add_args`가 무시한다).
 /// `oauth_client_secret`이 `Some`이면 그 프로세스 실행에만
@@ -445,8 +524,8 @@ pub fn mcp_get(name: String) -> Result<McpServerDetail, String> {
 /// 코드의 로그/에러 메시지로도 별도로 출력하지 않는다(실패 시 반환되는
 /// stderr 텍스트에 CLI가 자체적으로 비밀값을 echo하는 경우는 이 코드가
 /// 막을 수 없는 CLI 쪽 동작이다).
-#[tauri::command]
-pub fn mcp_add(
+#[allow(clippy::too_many_arguments)]
+fn mcp_add_blocking(
     name: String,
     transport: String,
     target: String,
@@ -483,7 +562,35 @@ pub fn mcp_add(
 }
 
 #[tauri::command]
-pub fn mcp_remove(name: String) -> Result<(), String> {
+pub async fn mcp_add(
+    name: String,
+    transport: String,
+    target: String,
+    args: Vec<String>,
+    header: Option<String>,
+    env: Vec<EnvVarPair>,
+    oauth_client_id: Option<String>,
+    oauth_client_secret: Option<String>,
+    oauth_callback_port: Option<u16>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mcp_add_blocking(
+            name,
+            transport,
+            target,
+            args,
+            header,
+            env,
+            oauth_client_id,
+            oauth_client_secret,
+            oauth_callback_port,
+        )
+    })
+    .await
+    .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
+}
+
+fn mcp_remove_blocking(name: String) -> Result<(), String> {
     let (text, success) = run_mcp_command(&["mcp", "remove", &name])?;
     if success {
         Ok(())
@@ -494,14 +601,28 @@ pub fn mcp_remove(name: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+pub async fn mcp_remove(name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || mcp_remove_blocking(name))
+        .await
+        .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
+}
+
 /// 고정 카탈로그(`MCP_CATALOG`) 5개를 반환하되, `claude mcp list` 결과와
 /// target URL로 대조해 이미 등록된 항목은 `installed: true`로 표시한다.
 /// `mcp_list`와 동일하게 조회 실패는 "0개 설치됨"으로 느슨하게 처리한다
 /// (claude 미설치 상태에서도 카탈로그 자체는 항상 보여줘야 하는 화면이다).
-#[tauri::command]
-pub fn mcp_catalog_list() -> Vec<McpCatalogItem> {
-    let installed_targets: Vec<String> = mcp_list().into_iter().map(|s| s.target).collect();
+fn mcp_catalog_list_blocking() -> Vec<McpCatalogItem> {
+    let installed_targets: Vec<String> =
+        mcp_list_blocking().into_iter().map(|s| s.target).collect();
     build_catalog_list(&installed_targets)
+}
+
+#[tauri::command]
+pub async fn mcp_catalog_list() -> Vec<McpCatalogItem> {
+    tauri::async_runtime::spawn_blocking(mcp_catalog_list_blocking)
+        .await
+        .unwrap_or_default()
 }
 
 /// catalog_id로 표에서 항목을 찾아 `claude mcp add && claude mcp login`을

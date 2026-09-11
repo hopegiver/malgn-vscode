@@ -39,8 +39,7 @@ pub struct AutonomyProjectTasks {
 /// 전역 설정이 손상되면 빈 배열이 아니라 `Err`를 그대로 던진다(설계 §5-3 —
 /// 자율업무 화면에 이미 있는 error 상태로 바로 배너가 뜨게 하는, 사용자에게
 /// 보이는 오류 표면 3곳 중 하나).
-#[tauri::command]
-pub fn autonomy_list() -> Result<Vec<AutonomyProjectTasks>, String> {
+fn autonomy_list_blocking() -> Result<Vec<AutonomyProjectTasks>, String> {
     let roots = crate::config::workspace_roots_checked()?;
     let mut results = Vec::new();
     for workspace_root in roots {
@@ -75,6 +74,15 @@ pub fn autonomy_list() -> Result<Vec<AutonomyProjectTasks>, String> {
     }
     results.sort_by(|a, b| a.project_name.cmp(&b.project_name));
     Ok(results)
+}
+
+/// `check_dev_tools`(dev_tools.rs)와 동일한 이유·관용구 — sync 커맨드가
+/// 메인 스레드를 막는 P0 버그 계열이라 async + `spawn_blocking`으로 옮긴다.
+#[tauri::command]
+pub async fn autonomy_list() -> Result<Vec<AutonomyProjectTasks>, String> {
+    tauri::async_runtime::spawn_blocking(autonomy_list_blocking)
+        .await
+        .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }
 
 /// upsert. `project_path`는 반드시 `resolve_validated_project_root`로 검증한다
