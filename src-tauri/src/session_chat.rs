@@ -59,7 +59,6 @@ pub struct SessionTranscript {
     pub transcript_path: String,
     pub messages: Vec<ChatMessage>,
     pub truncated: bool,
-    pub live: bool,
     /// M3: 이 세션에 지금 진행 중인 턴이 있으면 그 `turn_id`(없으면 `null`).
     /// 화면 재진입 시 프론트가 이 값으로 델타/완료 이벤트 필터에 다시 붙는다.
     pub active_turn_id: Option<String>,
@@ -529,54 +528,9 @@ fn read_cwd_from_transcript(path: &Path) -> Result<String, String> {
     Err("세션의 작업 폴더를 찾을 수 없습니다: (트랜스크립트에서 cwd를 찾지 못했습니다)".to_string())
 }
 
-// ==================== live 배지(§6-①) ====================
-
-#[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-/// 이 값은 전송 허용 여부를 결정하는 하드 게이트다(§6-①: live면 전송 금지).
-/// Windows에서 추가 의존성 없이 PID 생존 여부를 확인할 안전한 표준 API가
-/// 없어 registry 항목 존재만으로 항상 `true`(live)를 반환한다 — 그 결과
-/// Windows에서는 모든 세션이 fail-closed로 항상 읽기 전용이 된다.
-#[cfg(windows)]
-fn pid_alive(_pid: u32) -> bool {
-    true
-}
-
-/// `~/.claude/sessions/*.json`(현재 다른 창에서 실행 중인 세션의 registry)에
-/// 이 `session_id`가 살아있는 pid로 등록되어 있는가.
-fn is_session_live(session_id: &str) -> bool {
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    let dir = home.join(".claude").join("sessions");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&content) else {
-            continue;
-        };
-        if value.get("sessionId").and_then(|v| v.as_str()) != Some(session_id) {
-            continue;
-        }
-        if let Some(pid) = value.get("pid").and_then(|v| v.as_u64()) {
-            if pid_alive(pid as u32) {
-                return true;
-            }
-        }
-    }
-    false
-}
+// pid 생존 확인은 `crate::process_util::pid_alive`(공유 모듈)를 쓴다 —
+// `kill_process_group_with_grace`(SIGTERM 유예 종료 확인)가 계속 사용한다.
+use crate::process_util::pid_alive;
 
 // ==================== (a) read_session_transcript ====================
 
@@ -586,7 +540,6 @@ pub fn read_session_transcript(session_id: String) -> Result<SessionTranscript, 
     let (raw, cwd) = parse_transcript_file(&path)?;
     let folded = fold_consecutive_tools(raw);
     let (messages, truncated) = finalize_messages(folded);
-    let live = is_session_live(&session_id);
     let active_turn_id = active_turn_id_for_session(&session_id);
 
     Ok(SessionTranscript {
@@ -595,7 +548,6 @@ pub fn read_session_transcript(session_id: String) -> Result<SessionTranscript, 
         transcript_path: path.to_string_lossy().to_string(),
         messages,
         truncated,
-        live,
         active_turn_id,
     })
 }
@@ -622,6 +574,15 @@ fn active_turn_id_for_session(session_id: &str) -> Option<String> {
     map.iter()
         .find(|(_, t)| t.session_id == session_id)
         .map(|(turn_id, _)| turn_id.clone())
+}
+
+/// `lib.rs`의 `read_claude_sessions()`가 registry에서 우리 자식 프로세스(앱이
+/// `send_session_message`로 스스로 띄운 `claude -p`) 항목을 먼저 제외할 수
+/// 있도록 현재 진행 중인 턴들의 pid 집합을 노출한다. `ACTIVE_TURNS`를 복붙해
+/// lib.rs에 별도로 두지 않고 이 하나의 조회 헬퍼를 공유한다.
+pub(crate) fn active_turn_pids() -> std::collections::HashSet<u32> {
+    let map = active_turns().lock().unwrap();
+    map.values().filter_map(|t| t.pid).collect()
 }
 
 fn register_turn(turn_id: &str, session_id: &str) -> Result<(), String> {
@@ -716,8 +677,11 @@ fn tail_bytes(text: &str, max_bytes: usize) -> String {
 }
 
 /// UUID v4 — `uuid` 크레이트를 새로 추가하지 않고 기존 의존성 `rand`로 직접
-/// 만든다(MVP: 새 의존성 없이 충분).
-fn generate_turn_id() -> String {
+/// 만든다(MVP: 새 의존성 없이 충분). `turn_id`뿐 아니라 신규 세션의
+/// `session_id`(앱이 사전 지정해 `claude --session-id`에 넘기는 값, §
+/// `start_new_session_message`)도 이 하나의 생성기를 공유한다 — 두 값 모두
+/// 표준 UUID v4 형태만 요구하므로 용도별로 복붙하지 않는다.
+fn generate_uuid_v4() -> String {
     use rand::RngCore;
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
@@ -729,16 +693,24 @@ fn generate_turn_id() -> String {
     )
 }
 
-fn build_claude_args(session_id: &str) -> Vec<String> {
-    let mut args = vec![
-        "-p".to_string(),
-        "--resume".to_string(),
-        session_id.to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--verbose".to_string(),
-        "--include-partial-messages".to_string(),
-    ];
+/// `resume=true`면 기존 재개 경로(`--resume <session_id>`, 기존 동작 그대로
+/// 회귀 없음). `resume=false`면 신규 세션 경로 — `--session-id <session_id>`로
+/// 앱이 사전 생성한 UUID를 CLI에 지정해, `run_turn()`이 stream-json의
+/// `system`/`init` 이벤트에서 session_id를 사후 캡처하지 않아도 되게 한다
+/// (그 사후 캡처 경로 자체가 없다는 것이 이 설계의 핵심 — §설계 결정 참조).
+fn build_claude_args(session_id: &str, resume: bool) -> Vec<String> {
+    let mut args = vec!["-p".to_string()];
+    if resume {
+        args.push("--resume".to_string());
+        args.push(session_id.to_string());
+    } else {
+        args.push("--session-id".to_string());
+        args.push(session_id.to_string());
+    }
+    args.push("--output-format".to_string());
+    args.push("stream-json".to_string());
+    args.push("--verbose".to_string());
+    args.push("--include-partial-messages".to_string());
     args.extend(TOOL_PERMISSION_ARGS.iter().map(|s| s.to_string()));
     args
 }
@@ -789,8 +761,9 @@ fn run_turn(
     session_id: String,
     turn_id: String,
     text: String,
+    resume: bool,
 ) {
-    let args = build_claude_args(&session_id);
+    let args = build_claude_args(&session_id, resume);
 
     let mut command = Command::new(&claude_path);
     command.args(&args);
@@ -928,6 +901,18 @@ fn run_turn(
     emit_done(&app, &session_id, &turn_id, ok, canceled, error);
 }
 
+/// `send_session_message`/`start_new_session_message` 공통 입력 검증(기존
+/// 동작 그대로 — 문자열만 뽑아내 공유했을 뿐 판정 로직은 바뀌지 않았다).
+fn validate_message_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("보낼 내용을 입력하세요.".to_string());
+    }
+    if text.chars().count() > MAX_INPUT_CHARS {
+        return Err("한 번에 보낼 수 있는 길이를 초과했습니다(최대 32,000자).".to_string());
+    }
+    Ok(())
+}
+
 // ==================== (b) send_session_message ====================
 
 #[tauri::command]
@@ -936,12 +921,7 @@ pub fn send_session_message(
     session_id: String,
     text: String,
 ) -> Result<SendStarted, String> {
-    if text.trim().is_empty() {
-        return Err("보낼 내용을 입력하세요.".to_string());
-    }
-    if text.chars().count() > MAX_INPUT_CHARS {
-        return Err("한 번에 보낼 수 있는 길이를 초과했습니다(최대 32,000자).".to_string());
-    }
+    validate_message_text(&text)?;
 
     let transcript_path = resolve_transcript_path(&session_id)?;
     let cwd = read_cwd_from_transcript(&transcript_path)?;
@@ -950,18 +930,17 @@ pub fn send_session_message(
     }
 
     // §6-① 갱신: 세션목록에 뜨는 세션은 §1-E 실측대로 예외 없이 전부 "지금
-    // 다른 창에서 실행 중"이라 원래의 하드 게이트(live면 무조건 거부)를 두면
-    // 입력창이 항상 비활성化되어 재개 기능 자체가 성립하지 않았다(문서 §6-①
-    // 트레이드오프 표의 B안 단점 그대로 재현됨). 그래서 차단을 제거하고
-    // read_session_transcript가 돌려주는 `live` 플래그로 화면에 경고만
-    // 띄운다(docs/design/session-chat.md §6-① 결정 갱신 참조) — 다른 창이
-    // 모르는 채 같은 jsonl에 이어붙는 대화 분기(§1-E, 손상은 아님)는 감수한다.
+    // 다른 창에서 실행 중"이라 원래의 하드 게이트(무조건 거부)를 두면 입력창이
+    // 항상 비활성화되어 재개 기능 자체가 성립하지 않았다. 실측 결과
+    // `claude -p --resume`은 원본 session_id를 유지하며 원본 jsonl에 그대로
+    // append한다(대화 분기는 일어나지 않는다) — 그래서 차단도, 경고도 두지
+    // 않는다.
     let claude_path = crate::cli_launcher::resolve_binary_expand_home(&CLAUDE_PATH_CANDIDATES, "claude")
         .ok_or_else(|| {
             "claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패).".to_string()
         })?;
 
-    let turn_id = generate_turn_id();
+    let turn_id = generate_uuid_v4();
     register_turn(&turn_id, &session_id)?;
 
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
@@ -977,10 +956,89 @@ pub fn send_session_message(
             session_id_for_thread,
             turn_id_for_thread,
             text,
+            true, // resume: 기존 세션 재개 경로 — 회귀 금지 대상
         );
     });
 
     Ok(SendStarted { turn_id })
+}
+
+// ==================== (b') start_new_session_message (S4) ====================
+//
+// 프로젝트 카드 "새 세션" 버튼용. 버튼 클릭 시점에는 spawn하지 않는다 — 프론트가
+// draft 상태만 만들고, 사용자가 첫 메시지를 보낼 때 이 커맨드가 호출되어 실제로
+// spawn한다.
+
+/// S4 안전장치 ①②: 프론트가 넘긴 `project_path`를 문자 그대로 신뢰하지
+/// 않는다. **요청 시점에** `scan_workspace_projects()`를 다시 실행해(캐시된
+/// 값이나 프론트 상태 불신 — TOCTOU 방지), 그 결과의 실제 프로젝트 path
+/// 집합과 정확히 일치하는 항목이 있는지만 확인한다. `crate::scan_workspace_projects()`가
+/// 이미 `~/workspace` 등 설정된 workspace 루트 바로 아래 1단계 + `CLAUDE.md`
+/// 존재를 요구하므로, 이 매치에 실패하면 `/etc`·`~/.ssh`·`..` 트래버설·존재하지
+/// 않는 경로가 전부 구조적으로 걸러진다(스캔 결과에 없으므로).
+fn validate_project_path(project_path: &str) -> Result<(), String> {
+    let projects = crate::scan_workspace_projects();
+    let matched = projects.iter().any(|p| p.path == project_path);
+    if !matched {
+        return Err("워크스페이스에서 확인되지 않은 프로젝트 경로입니다.".to_string());
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NewSessionStarted {
+    pub session_id: String,
+    pub turn_id: String,
+}
+
+#[tauri::command]
+pub fn start_new_session_message(
+    app: tauri::AppHandle,
+    project_path: String,
+    text: String,
+) -> Result<NewSessionStarted, String> {
+    validate_message_text(&text)?;
+
+    // S4 ①②: 재스캔 매치.
+    validate_project_path(&project_path)?;
+    // S4 ③: 매치 후 spawn 직전 재확인(기존 send_session_message와 동일 깊이 —
+    // 재스캔과 spawn 사이에 디렉터리가 사라지는 TOCTOU 잔여 창을 좁힌다).
+    if !Path::new(&project_path).is_dir() {
+        return Err(format!("프로젝트 폴더를 찾을 수 없습니다: {project_path}"));
+    }
+
+    let claude_path = crate::cli_launcher::resolve_binary_expand_home(&CLAUDE_PATH_CANDIDATES, "claude")
+        .ok_or_else(|| {
+            "claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패).".to_string()
+        })?;
+
+    // 세션 생성 방식: --session-id를 앱이 사전 생성해 CLI에 넘긴다(사후 캡처
+    // 방식이 아니다 — run_turn()이 stream-json의 system/init 이벤트에서
+    // session_id를 읽지 않는 기존 잠재 버그를 이 방식으로 우회한다).
+    let session_id = generate_uuid_v4();
+    let turn_id = generate_uuid_v4();
+    register_turn(&turn_id, &session_id)?;
+
+    let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let session_id_for_thread = session_id.clone();
+    let turn_id_for_thread = turn_id.clone();
+    let cwd = project_path;
+
+    std::thread::spawn(move || {
+        run_turn(
+            app,
+            claude_path,
+            path_env,
+            cwd,
+            session_id_for_thread,
+            turn_id_for_thread,
+            text,
+            false, // resume: 첫 실행이므로 --resume을 붙이지 않는다
+        );
+    });
+
+    Ok(NewSessionStarted { session_id, turn_id })
 }
 
 // ==================== (c) cancel_session_turn ====================
@@ -1169,11 +1227,11 @@ mod tests {
         assert_eq!(representative_arg("Read", Some(&input2)), "/tmp/a.txt");
     }
 
-    // turn_id는 UUID v4 형식이어야 한다
+    // turn_id/session_id는 UUID v4 형식이어야 한다
     #[test]
-    fn generate_turn_id_produces_uuid_v4_shape() {
-        let id = generate_turn_id();
-        assert!(validate_session_id(&id).is_ok(), "turn_id는 표준 UUID 형태여야 합니다: {id}");
+    fn generate_uuid_v4_produces_uuid_v4_shape() {
+        let id = generate_uuid_v4();
+        assert!(validate_session_id(&id).is_ok(), "생성된 id는 표준 UUID 형태여야 합니다: {id}");
         assert_eq!(id.chars().nth(14), Some('4'), "버전 니블이 4여야 합니다");
     }
 
@@ -1190,6 +1248,88 @@ mod tests {
         assert_eq!(second.unwrap_err(), "이 세션에 이미 진행 중인 요청이 있습니다.");
         // 정리
         finish_turn(turn1);
+    }
+
+    // build_claude_args: 기존 재개 경로(resume=true)의 인자 구성은 절대
+    // 바뀌면 안 된다(회귀 금지 — 설계 명시).
+    #[test]
+    fn build_claude_args_resume_true_matches_existing_resume_shape() {
+        let args = build_claude_args("11111111-2222-4333-8444-555555555501", true);
+        assert_eq!(
+            args,
+            vec![
+                "-p",
+                "--resume",
+                "11111111-2222-4333-8444-555555555501",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+                "--permission-prompts",
+                "none",
+            ]
+        );
+    }
+
+    // build_claude_args: 신규 세션 경로(resume=false)는 --resume 대신
+    // --session-id를 쓴다.
+    #[test]
+    fn build_claude_args_resume_false_uses_session_id_flag() {
+        let args = build_claude_args("11111111-2222-4333-8444-555555555501", false);
+        assert_eq!(
+            args,
+            vec![
+                "-p",
+                "--session-id",
+                "11111111-2222-4333-8444-555555555501",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+                "--permission-prompts",
+                "none",
+            ]
+        );
+        assert!(!args.contains(&"--resume".to_string()), "신규 세션 경로에는 --resume이 없어야 합니다");
+    }
+
+    // ==================== S4: start_new_session_message 안전장치 ====================
+
+    // 보안 케이스 1: ~/workspace 밖의 임의 경로(/etc, ~/.ssh)는 거부된다 —
+    // scan_workspace_projects()의 실제 결과에 없으므로 매치에 실패한다.
+    #[test]
+    fn validate_project_path_rejects_paths_outside_workspace_root() {
+        assert!(validate_project_path("/etc").is_err());
+        let ssh_dir = dirs::home_dir().map(|h| h.join(".ssh").to_string_lossy().to_string());
+        if let Some(ssh_dir) = ssh_dir {
+            assert!(validate_project_path(&ssh_dir).is_err());
+        }
+    }
+
+    // 보안 케이스 2: `..`를 포함한 경로 traversal 시도는 거부된다 — 스캔
+    // 결과는 항상 절대경로 문자열이라 상대 표기가 그대로 일치할 수 없다.
+    #[test]
+    fn validate_project_path_rejects_traversal_attempt() {
+        assert!(validate_project_path("../../etc/passwd").is_err());
+        assert!(validate_project_path("/Users/hopegiver/workspace/malgn-vscode/../../etc").is_err());
+    }
+
+    // 보안 케이스 3: 스캔 결과에 없는(존재하지 않는) 경로는 거부된다.
+    #[test]
+    fn validate_project_path_rejects_path_not_in_scan_results() {
+        assert!(validate_project_path("/tmp/definitely-not-a-scanned-project-xyz123").is_err());
+    }
+
+    // 보안 케이스 4: scan_workspace_projects()가 실제로 찾아낸 정상 프로젝트
+    // 경로는 통과한다(이 저장소 자신 — CLAUDE.md가 있어 항상 스캔된다).
+    #[test]
+    fn validate_project_path_accepts_a_real_scanned_project_path() {
+        let projects = crate::scan_workspace_projects();
+        let project = projects
+            .iter()
+            .find(|p| p.name == "malgn-vscode")
+            .expect("malgn-vscode 프로젝트가 스캔 결과에 없습니다");
+        assert!(validate_project_path(&project.path).is_ok());
     }
 
     // ==================== QA 실데이터 검증(#[ignore] — 이 머신 의존, CI에서 실행 안 함) ====================
@@ -1240,10 +1380,9 @@ mod tests {
             match result {
                 Ok(Ok(t)) => {
                     eprintln!(
-                        "OK  sid={sid} size={size}B elapsed={elapsed:?} messages={} truncated={} live={} cwd={}",
+                        "OK  sid={sid} size={size}B elapsed={elapsed:?} messages={} truncated={} cwd={}",
                         t.messages.len(),
                         t.truncated,
-                        t.live,
                         t.cwd
                     );
                     if t.messages.is_empty() {
@@ -1296,56 +1435,4 @@ mod tests {
         );
     }
 
-    // 실행: cargo test -- --ignored --nocapture session_chat::tests::live_flag_matches
-    // 목적: ~/.claude/sessions/*.json registry에 살아있는 pid로 등록된 세션에
-    // 대해 read_session_transcript(...).live == true 인지 실제로 확인한다.
-    #[test]
-    #[ignore]
-    fn live_flag_matches_sessions_registry() {
-        let home = dirs::home_dir().expect("home dir");
-        let sessions_dir = home.join(".claude").join("sessions");
-        let entries = std::fs::read_dir(&sessions_dir).expect("read ~/.claude/sessions");
-
-        let mut checked = 0;
-        let mut live_true = 0;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(value) = serde_json::from_str::<Value>(&content) else {
-                continue;
-            };
-            let Some(sid) = value.get("sessionId").and_then(|v| v.as_str()) else {
-                eprintln!("SKIP {path:?}: sessionId 필드 없음");
-                continue;
-            };
-            if validate_session_id(sid).is_err() {
-                continue;
-            }
-            if resolve_transcript_path(sid).is_err() {
-                eprintln!("SKIP sid={sid}: 대응하는 jsonl 트랜스크립트를 찾지 못함(registry엔 있음)");
-                continue;
-            }
-            let t = read_session_transcript(sid.to_string()).expect("read transcript");
-            checked += 1;
-            if t.live {
-                live_true += 1;
-            }
-            eprintln!(
-                "sid={sid} live={} pid={:?} entrypoint={:?} kind={:?}",
-                t.live,
-                value.get("pid"),
-                value.get("entrypoint"),
-                value.get("kind")
-            );
-            assert!(t.live, "registry에 살아있는 pid로 등록된 세션인데 live=false로 나왔습니다: sid={sid}");
-        }
-
-        eprintln!("=== checked={checked} live_true={live_true} ===");
-        assert!(checked > 0, "registry에서 jsonl까지 매칭되는 세션을 하나도 찾지 못했습니다");
-    }
 }

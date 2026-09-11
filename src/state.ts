@@ -95,6 +95,9 @@ export interface AppState {
   // enterSessionChatView/leaveSessionChatView).
   sessionChat: {
     sessionId: string | null;
+    /** draft 상태(프로젝트 카드 "새 세션") — session_id가 아직 없을 때만 채워진다.
+     * sessionId가 배정되면(첫 메시지 전송 성공) null로 되돌아간다. */
+    draftProjectPath: string | null;
     transcript: SessionTranscript | null;
     loading: boolean;
     error: string | null;
@@ -278,6 +281,7 @@ export const state: AppState = {
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
   sessionChat: {
     sessionId: null,
+    draftProjectPath: null,
     transcript: null,
     loading: false,
     error: null,

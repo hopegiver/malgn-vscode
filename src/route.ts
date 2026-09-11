@@ -9,6 +9,7 @@
 //   '#/settings[/<tab>]' -> settings
 //   '#/usage'            -> usage
 //   '#/sessions'         -> sessions-list (실제 ~/.claude/sessions/*.json)
+//   '#/sessions/new/<projectPath>' -> sessions-draft (프로젝트 카드 "새 세션" — session_id 배정 전)
 //   '#/sessions/<id>'    -> sessions-detail
 //   '#/tasks'            -> tasks-list (자율업무 목록 탭, 목업)
 //   '#/tasks/board'      -> tasks-board (자율업무 진행상황판 탭)
@@ -24,6 +25,7 @@ export type Route =
   | { readonly kind: 'settings'; readonly tab: SettingsTab }
   | { readonly kind: 'usage' }
   | { readonly kind: 'sessions-list' }
+  | { readonly kind: 'sessions-draft'; readonly projectPath: string }
   | { readonly kind: 'sessions-detail'; readonly sessionId: string }
   | { readonly kind: 'tasks-list' }
   | { readonly kind: 'tasks-board' }
@@ -63,6 +65,13 @@ export function parseRoute(): Route {
     return { kind: 'usage' };
   }
 
+  if (hash.startsWith('#/sessions/new/')) {
+    try {
+      return { kind: 'sessions-draft', projectPath: decodeURIComponent(hash.slice('#/sessions/new/'.length)) };
+    } catch {
+      return { kind: 'sessions-list' };
+    }
+  }
   if (hash.startsWith('#/sessions/')) {
     try {
       return { kind: 'sessions-detail', sessionId: decodeURIComponent(hash.slice('#/sessions/'.length)) };

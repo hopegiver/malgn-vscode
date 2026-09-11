@@ -118,7 +118,6 @@ html, body {
   border: 1px solid var(--color-hairline);
   border-radius: 10px;
   padding: 16px;
-  cursor: pointer;
   display: flex; flex-direction: column;
 }
 .project-card:hover { border-color: var(--color-brand); box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
@@ -127,8 +126,15 @@ html, body {
 .project-card-desc { color: var(--color-ink-muted); font-size: 12.5px; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .project-card-footer {
   margin-top: auto; padding-top: 12px; border-top: 1px solid var(--color-hairline);
-  font-size: 12px; color: var(--color-brand);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
+/* 카드 자체는 비-인터랙티브 컨테이너, 이 링크형 버튼이 "상세 보기" 형제 액션이다 */
+.project-card-link {
+  background: none; border: none; padding: 0; margin: 0;
+  font-size: 12px; color: var(--color-brand); font-weight: 600; cursor: pointer;
+}
+.project-card-link:hover { text-decoration: underline; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
 
 .badge {
   display: inline-flex; align-items: center;

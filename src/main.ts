@@ -48,7 +48,15 @@ import { renderCatalogView, loadCatalog, loadMarketplaces } from './views/catalo
 import { renderDevToolsView, loadDevTools } from './views/devTools';
 import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus, loadMcp, loadMcpCatalog } from './views/settings';
 import { renderUsageView, loadDailyUsage } from './views/usage';
-import { renderSessionsListView, renderSessionDetailView, loadSessions, enterSessionChatView, leaveSessionChatView } from './views/sessions';
+import {
+  renderSessionsListView,
+  renderSessionDetailView,
+  renderSessionDraftView,
+  loadSessions,
+  enterSessionChatView,
+  enterSessionDraftView,
+  leaveSessionChatView,
+} from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
 import { renderAutonomousTasksListView, renderAutonomousTaskBoardView, renderAutonomousTaskDetailView, loadAutonomousTasks } from './views/autonomousTasks';
 
@@ -95,6 +103,9 @@ function renderApp(): void {
     case 'sessions-detail':
       content = renderSessionDetailView(route.sessionId);
       break;
+    case 'sessions-draft':
+      content = renderSessionDraftView(route.projectPath);
+      break;
     case 'tasks-list':
       content = renderAutonomousTasksListView();
       break;
@@ -109,7 +120,7 @@ function renderApp(): void {
   // 세션 상세(채팅) 화면만 보조 클래스를 얹어 헤더/입력창 고정 + 메시지 목록
   // 자체 스크롤 레이아웃을 쓴다(styles.css `.content.chat-route`). 다른 라우트는
   // 기존 전체 페이지 스크롤(`.content` 단독)을 그대로 쓴다.
-  const contentClassName = route.kind === 'sessions-detail' ? 'content chat-route' : 'content';
+  const contentClassName = route.kind === 'sessions-detail' || route.kind === 'sessions-draft' ? 'content chat-route' : 'content';
   const main = el('main', { className: contentClassName }, [content]);
   root.appendChild(renderSidebar(route));
   root.appendChild(main);
@@ -159,7 +170,12 @@ function handleNavigation(): void {
       leaveSessionChatView();
       void enterSessionChatView(route.sessionId);
     }
-  } else if (state.sessionChat.sessionId !== null) {
+  } else if (route.kind === 'sessions-draft') {
+    if (state.sessionChat.draftProjectPath !== route.projectPath || state.sessionChat.sessionId !== null) {
+      leaveSessionChatView();
+      void enterSessionDraftView(route.projectPath);
+    }
+  } else if (state.sessionChat.sessionId !== null || state.sessionChat.draftProjectPath !== null) {
     leaveSessionChatView();
   }
   if (route.kind === 'usage') {

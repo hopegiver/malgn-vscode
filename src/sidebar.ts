@@ -110,7 +110,7 @@ function renderProjectsGroup(route: Route): HTMLElement {
 
 function renderSessionsGroup(route: Route): HTMLElement {
   const expanded = state.sidebar.sessionsExpanded;
-  const active = route.kind === 'sessions-list' || route.kind === 'sessions-detail';
+  const active = route.kind === 'sessions-list' || route.kind === 'sessions-detail' || route.kind === 'sessions-draft';
 
   const header = expandableNavItem('세션목록', active, () => navigate('#/sessions'), expanded, () => {
     state.sidebar.sessionsExpanded = !expanded;

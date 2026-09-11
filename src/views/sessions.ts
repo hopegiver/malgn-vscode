@@ -9,11 +9,12 @@ import {
   fetchClaudeSessions,
   fetchSessionTranscript,
   sendSessionMessage,
+  startNewSessionMessage,
   cancelSessionTurn,
   onSessionChatDelta,
   onSessionChatDone,
 } from '../sessionsApi';
-import type { ClaudeSessionRecord, ChatMessageKind } from '../sessionsApi';
+import type { ClaudeSessionRecord, ChatMessageKind, SessionTranscript } from '../sessionsApi';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { navigate } from '../route';
 
@@ -165,6 +166,12 @@ let lastTurnCanceled = false;
 // 있어(스트리밍 중) 화면에 즉시 보이도록 낙관적으로 echo한다. done 시 지운다
 // (재조회한 transcript.messages가 그 시점부터 정본이다).
 let pendingUserText: string | null = null;
+// draft(아직 session_id 없음) 상태에서 start_new_session_message() invoke가
+// 왕복하는 구간을 잠그는 플래그(RV-002). chat.turnId는 그 invoke 응답이 돌아온
+// "뒤"에야 설정되므로 turnId만으로는 왕복 구간 자체의 연타(중복 세션 생성)를
+// 막지 못한다 — 이 플래그가 전송 시작~종료(성공/실패/이탈 모두 finally)까지를
+// 커버한다.
+let draftSending = false;
 // send_session_message() IPC 응답(turnId)보다 session-chat-done 이벤트가 먼저
 // 도착하는 레이스 대비(M2) — Rust는 스레드를 스폰한 뒤 반환하므로 즉시 실패
 // 경로의 done이 invoke 응답보다 먼저 올 수 있다. 그 turnId를 여기 기억해뒀다가
@@ -252,32 +259,31 @@ async function loadSessionTranscript(sessionId: string, showLoading: boolean): P
   }
 }
 
-// 세션 상세 화면 진입 — 트랜스크립트를 불러오고 스트리밍 이벤트를 구독한다.
-// main.ts의 handleNavigation()이 라우트가 바뀔 때 호출한다.
-export async function enterSessionChatView(sessionId: string): Promise<void> {
-  const myGeneration = ++chatViewGeneration; // m4: 이 진입 콜의 세대를 고정
+// 이 화면 인스턴스가 진입할 때마다 공통으로 초기화하는 로컬 UI 상태(m4/§7 등
+// state.sessionChat IPC 계약 밖의 값들) — 세션 상세/draft 진입 양쪽에서 쓴다.
+function resetChatLocalUiState(): void {
   lastTurnCanceled = false;
   pendingUserText = null;
   earlyDoneTurnIds.clear();
-  chatNearBottom = true; // 새 세션 진입은 항상 하단(최신)에서 시작한다
+  chatNearBottom = true; // 새로 진입하면 항상 하단(최신)에서 시작한다
   metaModalOpen = false;
   detachMetaModalEscHandler();
-  state.sessionChat = {
-    sessionId,
-    transcript: null,
-    loading: false,
-    error: null,
-    turnId: null,
-    streamingText: '',
-    streamingTools: [],
-    input: '',
-  };
-  notifyChange();
-  void loadSessionTranscript(sessionId, true);
+  draftSending = false; // 이전 draft 화면에서 남았을 수 있는 잠금을 새 진입 시 초기화
+}
 
+// 델타/완료 스트리밍 이벤트 구독 — sessionId를 캡처하지 않고 매번
+// `state.sessionChat.sessionId`를 동적으로 비교한다. draft 상태(아직 session_id가
+// 없음)에서도 미리 구독을 걸어둘 수 있게 하기 위해서다 — 첫 메시지 전송이
+// 성공해 sessionId가 배정되는 순간부터 그 이후 도착하는 이벤트가 자연히
+// 필터를 통과한다(sendDraftMessage 참고).
+async function attachChatListeners(myGeneration: number): Promise<void> {
   try {
     const unlistenDelta = await onSessionChatDelta((d) => {
-      if (myGeneration !== chatViewGeneration || d.sessionId !== sessionId) return;
+      if (myGeneration !== chatViewGeneration) return;
+      // draft 구간(RV-003)에서는 승격 전이라 state.sessionChat.sessionId가 아직
+      // null이다 — null과 실제 sessionId를 비교하면 항상 불일치라 통과가
+      // 불가능해진다. sessionId가 배정된 뒤에만 정확히 일치를 요구한다.
+      if (state.sessionChat.sessionId !== null && d.sessionId !== state.sessionChat.sessionId) return;
       // turnId가 아직 배정 전(M2와 같은 레이스)이면 sessionId만으로 이 세션의
       // 진행 중인 턴으로 간주해 버리지 않는다. 배정 후에는 정확히 일치해야 한다.
       if (state.sessionChat.turnId !== null && d.turnId !== state.sessionChat.turnId) return;
@@ -292,11 +298,17 @@ export async function enterSessionChatView(sessionId: string): Promise<void> {
     }
 
     const unlistenDone = await onSessionChatDone((d) => {
-      if (myGeneration !== chatViewGeneration || d.sessionId !== sessionId) return;
+      if (myGeneration !== chatViewGeneration) return;
+      // RV-003: draft 구간에서는 state.sessionChat.sessionId가 아직 null이라
+      // sessionId 필터가 항상 걸려 이 아래 earlyDoneTurnIds.add()가 도달 불가였다
+      // (sendDraftMessage의 doneAlready 체크가 늘 false가 되어 turnId가 영원히
+      // 해제되지 않는 원인). sessionId가 배정된 뒤에만 정확히 일치를 요구한다.
+      if (state.sessionChat.sessionId !== null && d.sessionId !== state.sessionChat.sessionId) return;
       if (state.sessionChat.turnId !== null && d.turnId !== state.sessionChat.turnId) return;
-      // turnId 배정 전에 done이 먼저 온 경우(M2) — sendChatMessage의 invoke 응답이
-      // 뒤늦게 이 turnId로 다시 잠그지 않도록 기억해둔다.
+      // turnId 배정 전에 done이 먼저 온 경우(M2) — sendChatMessage/sendDraftMessage의
+      // invoke 응답이 뒤늦게 이 turnId로 다시 잠그지 않도록 기억해둔다.
       if (state.sessionChat.turnId === null) earlyDoneTurnIds.add(d.turnId);
+      const sid = state.sessionChat.sessionId;
       state.sessionChat.turnId = null;
       state.sessionChat.streamingText = '';
       state.sessionChat.streamingTools = [];
@@ -306,7 +318,7 @@ export async function enterSessionChatView(sessionId: string): Promise<void> {
       notifyChange();
       // "done 후 전체 재조회" — 화면에 남는 최종 상태는 항상 파일(jsonl)
       // 하나에서만 만든다(중단·다른 창의 동시 기록도 자동 반영됨).
-      void loadSessionTranscript(sessionId, false);
+      if (sid) void loadSessionTranscript(sid, false);
     });
     if (myGeneration !== chatViewGeneration) {
       unlistenDone();
@@ -319,7 +331,50 @@ export async function enterSessionChatView(sessionId: string): Promise<void> {
   }
 }
 
-// 세션 상세 화면 이탈 — 리스너를 반드시 해제하고 상태를 초기화한다.
+// 세션 상세 화면 진입 — 트랜스크립트를 불러오고 스트리밍 이벤트를 구독한다.
+// main.ts의 handleNavigation()이 라우트가 바뀔 때 호출한다.
+export async function enterSessionChatView(sessionId: string): Promise<void> {
+  const myGeneration = ++chatViewGeneration; // m4: 이 진입 콜의 세대를 고정
+  resetChatLocalUiState();
+  state.sessionChat = {
+    sessionId,
+    draftProjectPath: null,
+    transcript: null,
+    loading: false,
+    error: null,
+    turnId: null,
+    streamingText: '',
+    streamingTools: [],
+    input: '',
+  };
+  notifyChange();
+  void loadSessionTranscript(sessionId, true);
+  await attachChatListeners(myGeneration);
+}
+
+// "새 세션" draft 화면 진입 — 프로젝트 카드에서 시작한다. session_id가 아직
+// 없으므로 조회할 트랜스크립트도 없다 — 사용자가 첫 메시지를 보낼 때
+// sendDraftMessage()가 비로소 start_new_session_message()를 호출해 세션을
+// 발급받고 이 상태를 정상 세션으로 승격시킨다.
+export async function enterSessionDraftView(projectPath: string): Promise<void> {
+  const myGeneration = ++chatViewGeneration;
+  resetChatLocalUiState();
+  state.sessionChat = {
+    sessionId: null,
+    draftProjectPath: projectPath,
+    transcript: null,
+    loading: false,
+    error: null,
+    turnId: null,
+    streamingText: '',
+    streamingTools: [],
+    input: '',
+  };
+  notifyChange();
+  await attachChatListeners(myGeneration);
+}
+
+// 세션 상세/draft 화면 이탈 — 리스너를 반드시 해제하고 상태를 초기화한다.
 export function leaveSessionChatView(): void {
   chatViewGeneration++; // m4: 아직 listen() 대기 중이던 진입 콜을 무효화
   metaModalOpen = false;
@@ -334,6 +389,7 @@ export function leaveSessionChatView(): void {
   }
   state.sessionChat = {
     sessionId: null,
+    draftProjectPath: null,
     transcript: null,
     loading: false,
     error: null,
@@ -384,6 +440,66 @@ export async function sendChatMessage(sessionId: string, text: string): Promise<
   }
 }
 
+// draft 화면에서 첫 메시지를 보낸다 — 이 시점에 비로소 백엔드가 실제로 세션을
+// 생성하고 spawn한다(project-cards 4-b). 성공하면 이 상태를 그 session_id의
+// 정상 세션으로 승격시키고 라우트도 `#/sessions/<id>`로 바꾼다(4-c: 사이드바에
+// 낙관적 항목을 넣지 않고, 화면 전환만으로 사용자 기대를 충족한다).
+export async function sendDraftMessage(projectPath: string, text: string): Promise<void> {
+  const chat = state.sessionChat;
+  // RV-002: chat.turnId는 아래 invoke 응답이 돌아온 뒤에야 설정되므로 그것만으로는
+  // invoke 왕복 구간(연타) 자체를 막지 못한다. draftSending이 그 구간 전체를 잠근다.
+  if (chat.turnId || draftSending) return;
+  const trimmed = text.trim();
+  if (!trimmed) {
+    chat.error = '보낼 내용을 입력하세요.';
+    notifyChange();
+    return;
+  }
+  chat.error = null;
+  chat.input = '';
+  pendingUserText = trimmed;
+  draftSending = true;
+  notifyChange();
+  try {
+    const started = await startNewSessionMessage(projectPath, trimmed);
+    if (state.sessionChat.draftProjectPath !== projectPath) return; // 그 사이 이 draft 화면을 떠났다
+    // session-chat-done이 이 invoke 응답보다 먼저 도착해 이미 처리됐을 수 있다(M2와
+    // 같은 레이스, RV-003로 필터를 고쳐 이제 정상적으로 기록된다) — 그래도 세션
+    // 자체는 생성됐으니 승격은 그대로 진행한다.
+    const doneAlready = earlyDoneTurnIds.delete(started.turnId);
+    state.sessionChat.sessionId = started.sessionId;
+    state.sessionChat.draftProjectPath = null;
+    if (!doneAlready) {
+      state.sessionChat.turnId = started.turnId;
+      state.sessionChat.streamingText = '';
+      state.sessionChat.streamingTools = [];
+      lastTurnCanceled = false;
+    }
+    // 라우트를 먼저 실제 session_id로 바꾼 뒤에 알린다 — notifyChange()가 그
+    // 시점의 URL 해시를 기준으로 다시 그리므로, 순서가 바뀌면 화면이 draft
+    // 라우트에 머문 채 이미 배정된 sessionId 상태로 한 프레임 어긋나게 그려진다.
+    navigate(`#/sessions/${encodeURIComponent(started.sessionId)}`);
+    // RV-001: 승격 직후 바로 조회하면 `claude -p --session-id`가 아직 jsonl을
+    // 만들지 않아 실패해 화면이 "대화 기록을 불러오지 못했습니다" 오류로 덮인다.
+    // 진행 중인 일반 경로(!doneAlready)는 session-chat-done 리스너(RV-003로 고친
+    // 필터 덕에 이제 이 세션에도 정상 도달)가 완료 시점에 재조회하도록 맡긴다.
+    // doneAlready(턴이 이미 끝난 뒤 승격된 드문 레이스)만 예외 — 그 경우 프로세스가
+    // 이미 jsonl을 다 썼을 것이므로 즉시(로딩 상태로) 조회해도 안전하다.
+    if (doneAlready) void loadSessionTranscript(started.sessionId, true);
+  } catch (err) {
+    if (state.sessionChat.draftProjectPath !== projectPath) {
+      pendingUserText = null;
+      return;
+    }
+    state.sessionChat.error = err instanceof Error ? err.message : String(err);
+    state.sessionChat.input = trimmed; // 실패했으니 재전송할 수 있게 되돌려준다
+    pendingUserText = null;
+  } finally {
+    draftSending = false;
+    notifyChange();
+  }
+}
+
 export async function cancelChatTurn(): Promise<void> {
   const turnId = state.sessionChat.turnId;
   if (!turnId) return;
@@ -395,30 +511,37 @@ export async function cancelChatTurn(): Promise<void> {
   }
 }
 
+// 목록 레코드(~/.claude/sessions/*.json)가 없을 때(P2 — 다른 창이 닫혀 registry
+// 항목이 사라진 경우) 트랜스크립트의 첫 사용자 메시지에서 대신 제목을 유도한다.
+// jsonl은 여전히 정상적으로 읽히므로 화면 자체는 이 정보만으로도 설 수 있다.
+function deriveTitleFromTranscript(transcript: SessionTranscript | null): string | null {
+  if (!transcript) return null;
+  const firstUser = transcript.messages.find((m) => m.kind === 'user');
+  const text = firstUser?.text.trim();
+  if (!text) return null;
+  return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+}
+
 export function renderSessionDetailView(sessionId: string): HTMLElement {
   const back = el('a', { className: 'back-link', onClick: () => navigate('#/sessions') }, ['← 세션목록']);
   const session = state.sessions.items.find((s) => asString(s.sessionId) === sessionId);
+  const chat = state.sessionChat;
+  const transcript = chat.sessionId === sessionId ? chat.transcript : null;
 
-  if (!session) {
-    detachMetaModalEscHandler();
-    return el('div', { className: 'chat-page' }, [
-      back,
-      el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['세션을 찾을 수 없습니다'])]),
-    ]);
-  }
-
-  const title = sessionTitle(session);
-  const cwd = asString(session.cwd);
-  const version = asString(session.version);
-  const kind = asString(session.kind);
-  const startedAt = formatTimestamp(asNumber(session.startedAt));
-  const updatedAt = formatTimestamp(asNumber(session.updatedAt));
+  // P2: 목록 레코드는 있으면 쓰는 부가 메타 정보로 격하한다 — 없어도(다른
+  // 창이 닫혀 registry에서 사라져도) 트랜스크립트만으로 화면이 선다.
+  const title = session ? sessionTitle(session) : (deriveTitleFromTranscript(transcript) ?? '(제목 없음)');
+  const cwd = session ? asString(session.cwd) : (transcript?.cwd ?? '');
+  const version = session ? asString(session.version) : '';
+  const kind = session ? asString(session.kind) : '';
+  const startedAt = session ? formatTimestamp(asNumber(session.startedAt)) : '-';
+  const updatedAt = session ? formatTimestamp(asNumber(session.updatedAt)) : '-';
 
   const header = el('div', { className: 'chat-header' }, [
     back,
     el('div', { className: 'chat-header-row' }, [
       el('h1', { className: 'chat-title' }, [title]),
-      el('button', { className: 'btn', onClick: openMetaModal }, ['ⓘ 메타데이터']),
+      ...(session ? [el('button', { className: 'btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
     ]),
     el('div', { className: 'chat-meta-row' }, [
       el('span', {}, [projectNameFromCwd(cwd)]),
@@ -433,24 +556,18 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     ]),
   ]);
 
-  const chat = state.sessionChat;
   const body: HTMLElement[] = [header];
 
-  // live=true(다른 창에서 이 세션이 실행 중) — §6-① 갱신: 더 이상 전송을 막지
-  // 않는다(세션목록에 뜨는 세션은 §1-E 실측대로 예외 없이 항상 live라 막으면
-  // 재개 기능 자체가 성립하지 않는다). 대신 대화가 갈라질 수 있다는 경고만 띄운다.
-  const isLive = chat.sessionId === sessionId && chat.transcript?.live === true;
-  if (isLive) {
-    body.push(
-      el('div', { className: 'alert' }, [
-        el('span', {}, ['⚠ 이 세션은 다른 창에서도 실행 중입니다 — 여기서 보낸 메시지는 그 창에 표시되지 않고 대화가 갈라질 수 있습니다']),
-      ])
-    );
-  }
-
+  // RV-001: !chat.transcript는 두 가지 서로 다른 상황을 가리킬 수 있다 —
+  // (a) 진짜 조회 실패(예: 존재하지 않는 세션을 직접 URL로 연 경우, turnId 없음)
+  // (b) draft 승격 직후처럼 세션은 막 시작됐지만 `claude -p --session-id`가 아직
+  // jsonl을 안 만들어 조회할 게 없을 뿐인 "정상" 상태(turnId 있음). (b)를 (a)로
+  // 오판해 오류 블록을 그리면 그 아래 있던 스트리밍/입력창까지 통째로 가려진다
+  // (분기 자체가 다른 return 경로였기 때문) — 그래서 turnId 유무로 두 상황을
+  // 가른다.
   if (chat.sessionId !== sessionId || (chat.loading && !chat.transcript)) {
     body.push(el('div', { className: 'chat-thread' }, [el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])])]));
-  } else if (!chat.transcript) {
+  } else if (!chat.transcript && !chat.turnId) {
     body.push(
       el('div', { className: 'chat-thread' }, [
         el('div', { className: 'state-block' }, [
@@ -461,11 +578,13 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
       ])
     );
   } else {
+    // chat.transcript가 아직 null일 수 있다(위 (b) 상황) — 그 경우 빈 목록/false로
+    // 취급하고, 아래 streaming/입력창은 그대로 정상 렌더한다.
     const thread: HTMLElement[] = [];
-    if (chat.transcript.truncated) {
+    if (chat.transcript?.truncated) {
       thread.push(el('div', { className: 'chat-sample-note' }, ['이전 대화 일부는 표시하지 않습니다.']));
     }
-    for (const msg of chat.transcript.messages) thread.push(chatMessage(msg.kind, msg.text));
+    for (const msg of chat.transcript?.messages ?? []) thread.push(chatMessage(msg.kind, msg.text));
 
     // 방금 보낸 메시지 — done 후 재조회 전까지 낙관적으로 미리 보여준다(§2 흐름).
     if (pendingUserText !== null) thread.push(chatMessage('user', pendingUserText));
@@ -490,11 +609,11 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     if (chat.error) {
       bottomFixed.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${chat.error}`])]));
     }
-    bottomFixed.push(renderChatInputArea(sessionId, isLive, cwd));
+    bottomFixed.push(renderChatInputArea(cwd, (text) => void sendChatMessage(sessionId, text)));
     body.push(el('div', { className: 'chat-bottom-fixed' }, bottomFixed));
   }
 
-  if (metaModalOpen) {
+  if (metaModalOpen && session) {
     if (!metaModalEscHandler) {
       metaModalEscHandler = (e) => {
         if (e.key === 'Escape') closeMetaModal();
@@ -507,6 +626,53 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
   }
 
   return el('div', { className: 'chat-page' }, body);
+}
+
+// "새 세션" draft 화면 — 프로젝트 카드 "새 세션" 버튼으로 진입한다(4-b). 아직
+// session_id가 없으므로 조회할 트랜스크립트도, 메타데이터 모달도 없다. 사용자가
+// 첫 메시지를 보내면 sendDraftMessage()가 실제 세션을 발급받아 이 화면을
+// `#/sessions/<id>` 정상 세션 화면으로 승격시킨다.
+export function renderSessionDraftView(projectPath: string): HTMLElement {
+  const back = el('a', { className: 'back-link', onClick: () => navigate('#/projects') }, ['← 프로젝트']);
+  const chat = state.sessionChat;
+
+  const header = el('div', { className: 'chat-header' }, [
+    back,
+    el('div', { className: 'chat-header-row' }, [el('h1', { className: 'chat-title' }, ['새 세션'])]),
+    el('div', { className: 'chat-meta-row' }, [
+      el('span', {}, [projectNameFromCwd(projectPath)]),
+      el('span', {}, ['·']),
+      el('span', {}, [projectPath]),
+    ]),
+  ]);
+
+  const thread: HTMLElement[] = [];
+  if (pendingUserText !== null) thread.push(chatMessage('user', pendingUserText));
+  if (chat.turnId) {
+    for (const toolLine of chat.streamingTools) thread.push(chatMessage('tool', toolLine));
+    thread.push(chatMessage('assistant', chat.streamingText || '…'));
+  }
+  if (thread.length === 0) {
+    thread.push(
+      el('div', { className: 'state-block' }, [
+        el('div', { className: 'state-block-title' }, ['새 대화를 시작하세요']),
+        el('div', { className: 'state-block-desc' }, [`이 프로젝트에서 새 Claude 세션을 시작합니다 — 실행 폴더: ${projectPath}`]),
+      ])
+    );
+  }
+  scheduleChatAutoScroll();
+
+  const bottomFixed: HTMLElement[] = [];
+  if (chat.error) {
+    bottomFixed.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${chat.error}`])]));
+  }
+  bottomFixed.push(renderChatInputArea(projectPath, (text) => void sendDraftMessage(projectPath, text), draftSending));
+
+  return el('div', { className: 'chat-page' }, [
+    header,
+    el('div', { className: 'chat-thread' }, thread),
+    el('div', { className: 'chat-bottom-fixed' }, bottomFixed),
+  ]);
 }
 
 function renderMetaModal(session: ClaudeSessionRecord): HTMLElement {
@@ -528,11 +694,14 @@ function renderMetaModal(session: ClaudeSessionRecord): HTMLElement {
   return overlay;
 }
 
-function renderChatInputArea(sessionId: string, isLive: boolean, cwd: string): HTMLElement {
+// sessionId(세션 상세)와 projectPath(draft — 아직 세션이 없음) 양쪽에서
+// 공유한다. 실제 전송 동작은 onSend 콜백으로 주입받는다(sendChatMessage 또는
+// sendDraftMessage). extraSending은 draft 화면에서 draftSending(RV-002, 아직
+// chat.turnId가 배정되지 않은 invoke 왕복 구간)까지 입력창에 반영하기 위한 것.
+function renderChatInputArea(cwd: string, onSend: (text: string) => void, extraSending = false): HTMLElement {
   const chat = state.sessionChat;
-  const sending = chat.turnId !== null;
-  // §6-① 갱신: live 여부와 무관하게 항상 입력을 허용한다(전송 중일 때만
-  // 재전송을 막는다). claude.ai 스타일 단순 입력창 — 버튼 없이 Enter로만 전송.
+  const sending = chat.turnId !== null || extraSending;
+  // claude.ai 스타일 단순 입력창 — 버튼 없이 Enter로만 전송.
   const textarea = document.createElement('textarea');
   textarea.className = 'settings-input chat-input-textarea';
   textarea.placeholder = sending ? '응답을 기다리는 중…' : '메시지를 입력하세요 (Enter 전송 / Shift+Enter 줄바꿈)';
@@ -545,7 +714,7 @@ function renderChatInputArea(sessionId: string, isLive: boolean, cwd: string): H
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!sending) void sendChatMessage(sessionId, textarea.value);
+      if (!sending) onSend(textarea.value);
     }
   });
 
@@ -555,11 +724,6 @@ function renderChatInputArea(sessionId: string, isLive: boolean, cwd: string): H
   }
 
   const children: HTMLElement[] = [row];
-  if (isLive) {
-    children.push(
-      el('div', { className: 'chat-sample-note' }, ['⚠ 다른 창에서도 실행 중인 세션입니다 — 대화가 갈라질 수 있습니다'])
-    );
-  }
   if (!sending) {
     children.push(
       el('div', { className: 'chat-sample-note' }, [`⚠ 전송한 메시지는 실제로 파일을 변경하거나 명령을 실행할 수 있습니다 (실행 폴더: ${cwd || '(알 수 없음)'})`])

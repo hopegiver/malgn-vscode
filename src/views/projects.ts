@@ -69,26 +69,22 @@ function renderSkeletonGrid(): HTMLElement {
   return grid;
 }
 
+// 카드 자체는 비-인터랙티브 컨테이너다(role="button"/tabindex/전체 onClick을
+// 걷어냈다) — "상세 보기"와 "새 세션"을 각각 독립된 형제 버튼으로 두어 중첩
+// 인터랙티브 요소(카드 안에 버튼)를 만들지 않는다. 두 버튼 모두 네이티브
+// <button>이라 Tab으로 각각 개별 접근되고 Enter/Space로 각각 독립 실행된다.
 function renderProjectCard(project: WorkspaceProject): HTMLElement {
   const goToProject = (): void => navigate(`#/project/${encodeURIComponent(project.path)}`);
-  const card = el(
-    'div',
-    {
-      className: 'project-card',
-      onClick: goToProject,
-      onKeydown: (e) => {
-        if (e.key === 'Enter' || e.key === ' ') goToProject();
-      },
-    },
-    [
-      el('div', { className: 'project-card-top' }, [el('span', { className: 'project-card-name' }, [project.name]), badge(project.archiveStatus)]),
-      el('div', { className: 'project-card-desc' }, [project.path]),
-      el('div', { className: 'project-card-footer' }, ['상세 보기 →']),
-    ]
-  );
-  card.setAttribute('role', 'button');
-  card.setAttribute('tabindex', '0');
-  return card;
+  const goToNewSession = (): void => navigate(`#/sessions/new/${encodeURIComponent(project.path)}`);
+
+  return el('div', { className: 'project-card' }, [
+    el('div', { className: 'project-card-top' }, [el('span', { className: 'project-card-name' }, [project.name]), badge(project.archiveStatus)]),
+    el('div', { className: 'project-card-desc' }, [project.path]),
+    el('div', { className: 'project-card-footer' }, [
+      el('button', { className: 'project-card-link', onClick: goToProject }, ['상세 보기 →']),
+      el('button', { className: 'btn btn-sm', onClick: goToNewSession }, ['+ 새 세션']),
+    ]),
+  ]);
 }
 
 export function renderProjectsListView(): HTMLElement {

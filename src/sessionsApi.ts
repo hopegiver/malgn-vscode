@@ -43,14 +43,26 @@ export interface SessionTranscript {
   readonly messages: readonly ChatMessage[];
   /** 400개 상한으로 앞부분이 잘렸는가 */
   readonly truncated: boolean;
-  /** 이 세션이 지금 다른 창에서 실행 중인가(경고 배지) */
-  readonly live: boolean;
   /** 이 세션에 지금 진행 중인 턴이 있으면 그 turnId(재진입 재부착용, M3). 없으면 null */
   readonly activeTurnId: string | null;
 }
 
 export interface SendStarted {
   readonly turnId: string;
+}
+
+// ---------------- 프로젝트 카드 "새 세션" — draft 상태에서 첫 메시지를 보낼 때만
+// 실제로 spawn한다(src-tauri/src/session_chat.rs start_new_session_message).
+// 백엔드가 요청 시점에 project_path를 재검증하므로, 존재하지 않거나 워크스페이스
+// 밖의 경로는 여기서 에러로 돌아온다.
+
+export interface NewSessionStarted {
+  readonly sessionId: string;
+  readonly turnId: string;
+}
+
+export async function startNewSessionMessage(projectPath: string, text: string): Promise<NewSessionStarted> {
+  return invoke<NewSessionStarted>('start_new_session_message', { projectPath, text });
 }
 
 export interface SessionChatDelta {
