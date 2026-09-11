@@ -6,6 +6,7 @@
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 
 /// 세션 JSON의 `cwd`를 `~/.claude/projects/<이 값>/` 디렉터리명으로 바꾼다 — 이
 /// 프로젝트가 실제로 쓰는 규칙(`/`를 전부 `-`로 치환)을 그대로 따른다. 슬래시를
@@ -164,20 +165,11 @@ fn filter_and_dedup_sessions(
     result
 }
 
-/// `~/.claude/sessions/*.json` 메타데이터를 읽고, 가능하면 대화 로그에서 뽑은
-/// 제목(`title` 필드)을 얹어 반환한다. 경로가 이 함수 안에 고정되어 있어 프론트엔드가
-/// 다른 경로를 지정할 방법이 없다(사용자 입력을 받지 않는 커맨드). 대화 전문
-/// (`~/.claude/projects/**/*.jsonl`)은 제목 한 줄만 훑고 그 이상은 읽지 않는다 — 다른
-/// 여러 프로젝트의 민감한 대화 전체를 프론트엔드로 넘기지 않는다.
-///
-/// 파일 하나가 없거나 깨져 있어도(JSON 파싱 실패) 그 항목만 건너뛰고 전체 목록은
+/// `~/.claude/sessions/*.json` 메타데이터를 원본 그대로 읽는다(정리 전). 파일
+/// 하나가 없거나 깨져 있어도(JSON 파싱 실패) 그 항목만 건너뛰고 전체 목록은
 /// 계속 만든다 — 세션 메타데이터는 외부 프로세스가 계속 쓰고 있을 수 있는 값이라
 /// 언제든 깨진 상태로 읽힐 수 있다고 가정한다.
-///
-/// registry를 읽은 직후 `filter_and_dedup_sessions()`(순서 고정: 자식 제외 →
-/// 죽은 pid 필터 → sessionId dedup)로 정리한 다음, 살아남은 항목에 대해서만
-/// 제목을 뽑는다 — 어차피 걸러질 항목의 대화 로그까지 읽지 않는다.
-fn read_claude_sessions() -> Vec<Value> {
+fn read_raw_registry_sessions() -> Vec<Value> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
@@ -200,18 +192,443 @@ fn read_claude_sessions() -> Vec<Value> {
         };
         sessions.push(value);
     }
+    sessions
+}
 
+// ==================== jsonl 기반 목록 행 (architect C안) ====================
+//
+// 목록 행의 소스를 registry(`~/.claude/sessions/`) 단독에서 jsonl
+// (`~/.claude/projects/**/<sessionId>.jsonl`)로 옮긴다. registry는 "지금 실행
+// 중"이라는 사실 하나만 얹는 live 오버레이로 강등한다(아래 `overlay_running_state`).
+//
+// 안전장치 ①: `/private/tmp` 유래 프로젝트 디렉터리(`-private-tmp-...`,
+// `-tmp-...`, 대소문자 무관) 제외.
+// 안전장치 ②: `crate::scan_workspace_projects()` 결과에 있는 프로젝트로
+// 한정. 2단계로 나뉜다 — (a) `dir_name` 문자열 접두사로 거르는 싼 프리필터
+// (`is_allowed_project_dir`, 아래), (b) 프리필터를 통과한 파일에 한해 실제
+// `cwd`를 경로 컴포넌트 단위로 대조하는 권위 검사(`is_cwd_within_allowed_workspace`).
+// (a)만으로는 `sanitize_cwd_for_project_dir`가 `/`를 `-`로 뭉개 정보를 버리는
+// 탓에 `foo`가 허용이면 `foo-bar`(별개 디렉터리)까지 문자열 접두사로 통과시키는
+// 결함이 있다 — 그래서 (b)가 최종 권위를 가진다.
+// registry 오버레이 경로(`read_claude_sessions`의 live_registry)도 이제 (b)를
+// 통과해야만 목록에 노출된다(m3: 이전에는 registry 유래 폴백 행이 ①②를 전혀
+// 거치지 않아 워크스페이스 밖 cwd가 새어나갈 수 있었다 — 게이트를 추가해
+// 닫았다).
+// 셋 다 사람 승인 조건이라 이 함수들에서 빠지면 안 된다.
+
+/// 안전장치 ①의 판정 근거: 이 프로젝트의 디렉터리명 규칙(`/`→`-`)에서
+/// `/private/tmp/...` 경로는 반드시 이 접두사로 시작한다(실측 확인 — S6 근처
+/// 실측과 동일한 방식). 대소문자 구분 없이(`eq_ignore_ascii_case`) 비교한다
+/// (m4: macOS 파일시스템은 기본적으로 대소문자를 구분하지 않으므로 `/Private/Tmp`
+/// 등도 걸러야 한다).
+const PRIVATE_TMP_PROJECT_DIR_PREFIX: &str = "-private-tmp-";
+
+/// m4: `/tmp/...`(중간에 `private`을 거치지 않는 경로)도 `-tmp-...`로
+/// sanitize되므로 별도 접두사로 제외한다.
+const BARE_TMP_PROJECT_DIR_PREFIX: &str = "-tmp-";
+
+/// `dir_name`이 `prefix`로 시작하는지 대소문자 구분 없이 판정한다. 문자열
+/// 슬라이싱이 UTF-8 문자 경계를 벗어나 패닉하지 않도록 `get(..)`으로 안전하게
+/// 접근한다.
+fn starts_with_ignore_case(dir_name: &str, prefix: &str) -> bool {
+    dir_name
+        .get(..prefix.len())
+        .map(|head| head.eq_ignore_ascii_case(prefix))
+        .unwrap_or(false)
+}
+
+/// mtime 30일 컷 + 개수 상한. 순서(전량 stat → mtime 내림차순 → 상위 100 →
+/// head 파싱)를 지키기 위해 상한값도 스캔 함수와 같은 곳에 둔다.
+///
+/// m6: 이름은 "30일 컷 + 100건 상한"이지만, 개수 상한(100)이 mtime 내림차순
+/// 정렬 후 먼저 잘라내므로 실제 체감 시간창은 30일보다 훨씬 짧다 — 이 머신
+/// 실측으로는 약 10.6일(활동량에 따라 다른 머신에서는 달라질 수 있다). "30일
+/// 이내 전부"를 보장하는 값이 아니라 "최근 활동이 많으면 100건 상한이 먼저
+/// 걸린다"는 두 캡의 조합으로 이해해야 한다.
+const JSONL_SCAN_MAX_AGE_DAYS: u64 = 30;
+const JSONL_SCAN_MAX_ROWS: usize = 100;
+
+/// 안전장치 ②의 (a)단계(프리필터): `scan_workspace_projects()`가 찾은 각
+/// 프로젝트 경로를 이 파일이 이미 쓰는 `sanitize_cwd_for_project_dir` 규칙으로
+/// 치환해 접두사 목록을 만든다. `crate::scan_workspace_projects()`를 그대로
+/// 재사용한다(복붙하지 않는다) — `WorkspaceProject::path`는 이미 `pub(crate)`로
+/// 열려 있다. 최종 권위는 `is_cwd_within_allowed_workspace`(실제 `cwd` 컴포넌트
+/// 대조)에 있다.
+fn allowed_project_dir_prefixes() -> Vec<String> {
+    crate::scan_workspace_projects()
+        .iter()
+        .map(|p| sanitize_cwd_for_project_dir(&p.path))
+        .collect()
+}
+
+/// `dir_name`(예: `-Users-hopegiver-workspace-malgn-vscode-src-tauri-src`)이
+/// 안전장치 ①과 안전장치 ②의 (a)단계(싼 프리필터)를 통과하는지 판정하는 순수
+/// 함수(fs 접근 없음 — 유닛 테스트 대상). `cwd`가 프로젝트 루트 자신이면
+/// 접두사와 완전히 같고, 프로젝트 내부 하위 디렉터리면 접두사 뒤에 `-`가
+/// 이어진다.
+///
+/// **이 함수만으로는 최종 판정이 아니다.** 문자열 접두사 검사라 `foo`가
+/// 허용이면 `foo-bar`(별개 디렉터리)까지 통과시킨다 — 상한을 통과한 파일에
+/// 한해서만 `is_cwd_within_allowed_workspace`(실제 `cwd`를 경로 컴포넌트
+/// 단위로 대조하는 권위 검사)가 최종 판정을 내린다.
+fn is_allowed_project_dir(dir_name: &str, allowed_prefixes: &[String]) -> bool {
+    if starts_with_ignore_case(dir_name, PRIVATE_TMP_PROJECT_DIR_PREFIX)
+        || starts_with_ignore_case(dir_name, BARE_TMP_PROJECT_DIR_PREFIX)
+    {
+        return false;
+    }
+    allowed_prefixes
+        .iter()
+        .any(|prefix| dir_name == prefix || dir_name.starts_with(&format!("{prefix}-")))
+}
+
+/// 안전장치 ②의 권위 검사(M1): `cwd`가 실제로 `scan_workspace_projects()`가
+/// 찾은 프로젝트 경로 중 하나의 자기 자신이거나 그 하위인지 **경로 컴포넌트
+/// 단위**로 대조하는 순수 함수(fs 접근 없음 — 유닛 테스트 대상).
+/// `is_allowed_project_dir`의 문자열 접두사 프리필터는 `foo`가 허용일 때
+/// `foo-bar`(별개 디렉터리, 허용 안 됨)까지 통과시키는 결함이 있다 —
+/// `sanitize_cwd_for_project_dir`가 `/`를 `-`로 뭉개 경로 구분자 정보를 버려서
+/// 문자열만으로는 `foo-bar`와 `foo/bar`를 구분할 수 없기 때문이다.
+/// `Path::starts_with`는 컴포넌트 경계를 지키므로(`foo-bar`는 `foo`의
+/// 컴포넌트 하위가 아니다) 이 역전을 막는다.
+fn is_cwd_within_allowed_workspace(cwd: &str, allowed_roots: &[PathBuf]) -> bool {
+    let cwd_path = Path::new(cwd);
+    allowed_roots.iter().any(|root| cwd_path.starts_with(root))
+}
+
+/// `is_cwd_within_allowed_workspace`가 대조할 실제 워크스페이스 프로젝트 경로
+/// 목록. `crate::scan_workspace_projects()`를 그대로 재사용한다(복붙하지
+/// 않는다).
+fn allowed_workspace_roots() -> Vec<PathBuf> {
+    crate::scan_workspace_projects()
+        .iter()
+        .map(|p| PathBuf::from(&p.path))
+        .collect()
+}
+
+/// S6과 동일한 순회 규약(`session_chat::transcript::resolve_transcript_path`
+/// 참조): `~/.claude/projects/*/` **1단계 자식 디렉터리에서만** `*.jsonl`
+/// 파일을 본다. 재귀하지 않으므로 `<sid>/subagents/agent-*.jsonl`(서브에이전트
+/// 트랜스크립트, depth 2 이상)은 애초에 `read_dir` 대상 자체가 되지 않는다.
+fn scan_jsonl_candidate_paths() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let projects_dir = home.join(".claude").join("projects");
+    let Ok(project_dir_entries) = std::fs::read_dir(&projects_dir) else {
+        return Vec::new();
+    };
+
+    let allowed_prefixes = allowed_project_dir_prefixes();
+    let mut candidates = Vec::new();
+    for project_entry in project_dir_entries.flatten() {
+        let project_dir = project_entry.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+        let Some(dir_name) = project_dir.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_allowed_project_dir(dir_name, &allowed_prefixes) {
+            continue;
+        }
+
+        let Ok(file_entries) = std::fs::read_dir(&project_dir) else {
+            continue;
+        };
+        for file_entry in file_entries.flatten() {
+            let path = file_entry.path();
+            if !path.is_file() {
+                continue; // 서브에이전트 폴더 등 하위 디렉터리는 여기서 자연히 제외된다.
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            candidates.push(path);
+        }
+    }
+    candidates
+}
+
+/// `workspace::mtime_millis`와 동일한 로직(모듈이 달라 여기서는 그대로 복제한다
+/// — 10줄 이내 순수 유틸을 위해 모듈 간 결합을 늘리지 않는다).
+fn jsonl_mtime_millis(path: &Path) -> Option<i64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_millis()).ok()
+}
+
+/// 상한 적용: 전량 `stat` → mtime 30일 컷 → mtime 내림차순 정렬 → 상위 100건.
+/// `head` 파싱(cwd/title/startedAt/version)은 이 함수가 돌려준 결과에 대해서만
+/// 호출자가 수행한다 — 캡 밖으로 밀려날 파일까지 미리 열어보지 않는다.
+fn cap_recent_jsonl_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(60 * 60 * 24 * JSONL_SCAN_MAX_AGE_DAYS))
+        .unwrap_or(std::time::UNIX_EPOCH);
+
+    let mut stated: Vec<(PathBuf, std::time::SystemTime)> = paths
+        .into_iter()
+        .filter_map(|path| {
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            if modified < cutoff {
+                return None;
+            }
+            Some((path, modified))
+        })
+        .collect();
+
+    stated.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+    stated.truncate(JSONL_SCAN_MAX_ROWS);
+    stated.into_iter().map(|(path, _)| path).collect()
+}
+
+/// m5: "head 스캔"이라는 이름과 달리 이전에는 둘 다 못 찾으면(예: timestamp/
+/// version 필드가 끝까지 없는 파일) 실질적으로 파일 전체를 읽을 수 있었다 —
+/// 진짜 head(앞부분)만 보도록 줄 수 상한을 둔다.
+const JSONL_HEAD_SCAN_MAX_LINES: usize = 200;
+
+/// startedAt/version을 위한 head 스캔. 첫 `timestamp`(파싱 가능한 것)와 첫
+/// `version` 필드를 각각 찾는 즉시 기록하고, 둘 다 찾으면 더 읽지 않고
+/// 멈춘다(`find_session_title`/`read_cwd_from_transcript`와 같은 "찾는 즉시
+/// 중단" 관용구). `timestamp`는 `usage_stats::parse_iso_timestamp`(RFC3339)를
+/// 재사용해 epoch ms로 바꾼다 — 새 파서를 만들지 않는다. 둘 다 못 찾아도
+/// `JSONL_HEAD_SCAN_MAX_LINES`줄을 넘기면 멈춘다(m5: 진짜 "head"만 본다).
+fn read_jsonl_head_meta(path: &Path) -> (Option<i64>, Option<String>) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return (None, None);
+    };
+    let reader = BufReader::new(file);
+
+    let mut started_at: Option<i64> = None;
+    let mut version: Option<String> = None;
+
+    for (line_no, line) in reader.lines().enumerate() {
+        if line_no >= JSONL_HEAD_SCAN_MAX_LINES {
+            break;
+        }
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+
+        if started_at.is_none() {
+            if let Some(ts) = value.get("timestamp").and_then(|v| v.as_str()) {
+                if let Some(dt) = crate::usage_stats::parse_iso_timestamp(ts) {
+                    started_at = Some(dt.timestamp_millis());
+                }
+            }
+        }
+        if version.is_none() {
+            if let Some(v) = value.get("version").and_then(|v| v.as_str()) {
+                version = Some(v.to_string());
+            }
+        }
+        if started_at.is_some() && version.is_some() {
+            break;
+        }
+    }
+    (started_at, version)
+}
+
+/// depth-1 jsonl 파일 하나를 목록 행 하나로 바꾼다. `cwd`를 못 구하면(파일이
+/// 깨졌거나 cwd 필드가 끝까지 없음) 이 행은 만들 수 없으므로 `None` — 호출자가
+/// 그 파일만 건너뛰고 전체 스캔은 계속한다. M1: 실제 `cwd`가
+/// `is_cwd_within_allowed_workspace`(권위 검사, `allowed_roots` 기준)를
+/// 통과하지 못하면(디렉터리명 프리필터는 통과했지만 실제로는 다른 프로젝트인
+/// 경우, 예: `foo` 허용인데 `foo-bar` 유래) 마찬가지로 `None`을 반환해 이 행을
+/// 만들지 않는다.
+///
+/// `cwd`는 `session_chat::read_cwd_from_transcript`(재노출), `title`은 이 파일의
+/// `find_session_title`을 그대로 재사용한다 — 새 스캔 로직을 발명하지 않는다.
+fn build_jsonl_row(path: &Path, allowed_roots: &[PathBuf]) -> Option<Value> {
+    let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
+    let cwd = crate::session_chat::read_cwd_from_transcript(path).ok()?;
+    if !is_cwd_within_allowed_workspace(&cwd, allowed_roots) {
+        return None;
+    }
+    let (started_at, version) = read_jsonl_head_meta(path);
+    let updated_at = jsonl_mtime_millis(path).unwrap_or(0);
+    let title = find_session_title(&serde_json::json!({
+        "sessionId": session_id,
+        "cwd": cwd,
+    }))
+    .unwrap_or_default();
+
+    // m8: `startedAt`을 못 구했을 때 `0`으로 채우면 프론트가 이를 epoch 0으로
+    // 렌더해 "1970-01-01"이 보인다 — `Value::Null`로 남겨 프론트의 폴백 표시
+    // 로직이 정상 동작하게 한다. `started_at`이 `Option<i64>`라 `json!` 매크로가
+    // `None`을 자동으로 `null`로 직렬화한다.
+    let mut row = serde_json::json!({
+        "sessionId": session_id,
+        "cwd": cwd,
+        "title": title,
+        "startedAt": started_at,
+        "updatedAt": updated_at,
+    });
+    if let Some(version) = version {
+        if let Value::Object(map) = &mut row {
+            map.insert("version".to_string(), Value::String(version));
+        }
+    }
+    Some(row)
+}
+
+/// jsonl 기반 목록 행 전체를 만든다: 후보 수집(depth-1 + 안전장치 2개 (a)단계)
+/// → 상한 적용(mtime 30일 컷 + 100건) → 상한을 통과한 파일만 head 파싱 + 안전
+/// 장치 ② (b)단계(cwd 권위 검사).
+fn build_jsonl_rows() -> Vec<Value> {
+    let candidates = scan_jsonl_candidate_paths();
+    let capped = cap_recent_jsonl_paths(candidates);
+    let allowed_roots = allowed_workspace_roots();
+    capped
+        .iter()
+        .filter_map(|path| build_jsonl_row(path, &allowed_roots))
+        .collect()
+}
+
+/// jsonl 행에 registry 기반 "지금 실행 중" 오버레이를 얹는 순수 함수(fs 접근
+/// 없음 — 유닛 테스트 대상). `live_registry`는 "지금 실행 중"으로 표시할
+/// registry 항목 전체다 — `filter_and_dedup_sessions()`를 통과한 결과에
+/// `build_live_registry()`로 우리 자식(신규 세션) 항목을 되살린 것이어야
+/// 한다(M2). `filter_and_dedup_sessions()` 자체의 본체·시그니처·순서는 이
+/// 함수가 건드리지 않는다 — 이미 나온 결과를 입력으로만 받는다.
+///
+/// - jsonl 행의 `sessionId`가 `live_registry`에도 있으면 `running: true`,
+///   없으면 `running: false`.
+/// - `live_registry`에는 있는데 대응하는 jsonl 행이 없는 `sessionId`(세션
+///   생성 직후 수 초라 아직 jsonl이 안 생겼을 때 — 신규 세션의 첫 턴이 여기
+///   해당한다, M2)는 registry 항목을 그대로 행으로 추가한다(`running: true`,
+///   `title`이 없으면 빈 문자열로 채운다 — 출력 계약상 `title` 키는 항상
+///   있어야 한다).
+fn overlay_running_state(mut jsonl_rows: Vec<Value>, live_registry: Vec<Value>) -> Vec<Value> {
+    let jsonl_session_ids: std::collections::HashSet<String> = jsonl_rows
+        .iter()
+        .filter_map(|v| v.get("sessionId").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    let running_ids: std::collections::HashSet<String> = live_registry
+        .iter()
+        .filter_map(|v| v.get("sessionId").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+
+    for row in jsonl_rows.iter_mut() {
+        let running = row
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .map(|sid| running_ids.contains(sid))
+            .unwrap_or(false);
+        if let Value::Object(map) = row {
+            map.insert("running".to_string(), Value::Bool(running));
+        }
+    }
+
+    for mut value in live_registry {
+        let has_jsonl_row = value
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .map(|sid| jsonl_session_ids.contains(sid))
+            .unwrap_or(false);
+        if has_jsonl_row {
+            continue;
+        }
+        if let Value::Object(map) = &mut value {
+            map.insert("running".to_string(), Value::Bool(true));
+            if !map.contains_key("title") {
+                map.insert("title".to_string(), Value::String(String::new()));
+            }
+        }
+        jsonl_rows.push(value);
+    }
+
+    jsonl_rows
+}
+
+/// M2: 표시용 "live" registry 목록을 만드는 순수 함수(fs 접근 없음 — 유닛
+/// 테스트 대상). `filtered_registry`는 `filter_and_dedup_sessions()`가 이미
+/// 만든 결과(자식 제외 완료, 그 본체·시그니처·순서는 여기서 건드리지 않는다),
+/// `raw_registry`는 그 이전의 원본 목록, `active_session_ids`는
+/// `session_chat::active_turn_session_ids()`(현재 앱이 진행 중인 턴들의
+/// session_id — pid 제외 이전에 이미 알고 있는 값)다.
+///
+/// 신규 세션은 그 `sessionId`를 등록한 프로세스가 우리 자식 하나뿐이라
+/// `filter_and_dedup_sessions()`의 1단계(pid 제외)에서 `filtered_registry`
+/// 밖으로 완전히 빠진다 — "지금 실행 중"이라는 사실 자체는 `ACTIVE_TURNS`가
+/// 이미 알고 있으므로, `filtered_registry`에 없는 `active_session_ids`만
+/// `raw_registry`에서 다시 찾아 표시용으로 되살린다(dedup 로직 자체는 손대지
+/// 않는다 — 이미 나온 `filtered_registry` 결과에 항목을 추가할 뿐이다). 같은
+/// session_id의 `raw_registry` 후보가 여럿이면 `startedAt`이 가장 큰 것을
+/// 쓴다(다른 dedup 규칙과 동일한 기준).
+fn build_live_registry(
+    filtered_registry: Vec<Value>,
+    raw_registry: &[Value],
+    active_session_ids: &std::collections::HashSet<String>,
+) -> Vec<Value> {
+    let filtered_session_ids: std::collections::HashSet<String> = filtered_registry
+        .iter()
+        .filter_map(|v| v.get("sessionId").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+
+    let mut live_registry = filtered_registry;
+    for session_id in active_session_ids {
+        if filtered_session_ids.contains(session_id) {
+            continue;
+        }
+        let best = raw_registry
+            .iter()
+            .filter(|v| v.get("sessionId").and_then(|v| v.as_str()) == Some(session_id.as_str()))
+            .max_by_key(|v| v.get("startedAt").and_then(|v| v.as_i64()).unwrap_or(0))
+            .cloned();
+        if let Some(value) = best {
+            live_registry.push(value);
+        }
+    }
+    live_registry
+}
+
+/// 목록 행을 만드는 진입점. 소스는 jsonl(`build_jsonl_rows`)이고, registry
+/// (`~/.claude/sessions/*.json`)는 `filter_and_dedup_sessions()`(순서 고정:
+/// 자식 제외 → 죽은 pid 필터 → sessionId dedup, 본체·시그니처 변경 금지)를
+/// 통과한 뒤 `build_live_registry()`로 신규 세션(우리 자식만 등록된 세션,
+/// M2)의 표시를 되살리고, m3: 그 결과를 `is_cwd_within_allowed_workspace`로도
+/// 걸러(registry 오버레이 경로도 안전장치 ②를 통과해야 한다) `overlay_running_state`로
+/// "지금 실행 중" 오버레이를 얹는다.
+fn read_claude_sessions() -> Vec<Value> {
+    let jsonl_rows = build_jsonl_rows();
+
+    let raw_registry = read_raw_registry_sessions();
     let exclude_pids = crate::session_chat::active_turn_pids();
-    let mut sessions = filter_and_dedup_sessions(sessions, &exclude_pids);
+    let filtered_registry = filter_and_dedup_sessions(raw_registry.clone(), &exclude_pids);
+    let active_session_ids = crate::session_chat::active_turn_session_ids();
+    let mut live_registry = build_live_registry(filtered_registry, &raw_registry, &active_session_ids);
 
-    for value in sessions.iter_mut() {
+    // m3: registry 오버레이 경로(특히 위에서 되살린 신규 세션 항목과, jsonl이
+    // 아직 없어 폴백 행이 될 항목)는 이전에 안전장치 ①②를 전혀 거치지 않았다
+    // — 워크스페이스 밖 cwd(예: 스크래치패드)가 목록에 새어나갈 수 있었다.
+    // `is_cwd_within_allowed_workspace`(M1의 권위 검사, 실제 워크스페이스
+    // 루트만 통과)로 게이트를 추가해 닫는다. `cwd` 필드가 없는 항목은 판단
+    // 근거가 없으므로 보수적으로 제외한다(다른 안전장치들과 반대로 여기는
+    // fail-closed다 — 이 경로는 "새로 추가하는 게이트"라 기존 관용구를
+    // 그대로 따를 이유가 없다).
+    let allowed_roots = allowed_workspace_roots();
+    live_registry.retain(|value| {
+        value
+            .get("cwd")
+            .and_then(|c| c.as_str())
+            .is_some_and(|cwd| is_cwd_within_allowed_workspace(cwd, &allowed_roots))
+    });
+
+    for value in live_registry.iter_mut() {
         if let Some(title) = find_session_title(value) {
             if let Value::Object(map) = value {
                 map.insert("title".to_string(), Value::String(title));
             }
         }
     }
-    sessions
+
+    overlay_running_state(jsonl_rows, live_registry)
 }
 
 /// 예전엔 sync였다(P0 버그와 동일 계열 — non-async `#[tauri::command]`는
@@ -458,6 +875,300 @@ mod tests {
                 .and_then(|t| t.as_str())
                 .is_some_and(|t| !t.is_empty())),
             "실제 세션 중 제목을 추출한 것이 하나도 없습니다"
+        );
+    }
+
+    // ==================== jsonl 기반 목록 (architect C안) ====================
+
+    // depth-1만 스캔한다: 이 머신의 실제 ~/.claude/projects에는 서브에이전트
+    // 트랜스크립트(`<sid>/subagents/agent-*.jsonl`, depth 2 이상)가 실제로
+    // 존재하는데(실측: 1,000건 이상), 후보 목록에 하나도 섞여 있으면 안 된다.
+    #[test]
+    fn scan_candidates_exclude_subagent_transcripts_depth1_only() {
+        let candidates = scan_jsonl_candidate_paths();
+        assert!(
+            !candidates.is_empty(),
+            "이 머신에서 depth-1 jsonl 후보를 하나도 찾지 못했습니다"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|p| !p.to_string_lossy().contains("/subagents/")),
+            "서브에이전트 트랜스크립트 경로가 depth-1 스캔 결과에 섞여 있습니다"
+        );
+    }
+
+    // 안전장치 ①: `/private/tmp` 유래 프로젝트 디렉터리명은 허용 접두사와 무관하게
+    // 항상 제외된다.
+    #[test]
+    fn private_tmp_derived_project_dir_is_always_excluded() {
+        let allowed = vec!["-Users-hopegiver-workspace-malgn-vscode".to_string()];
+        assert!(!is_allowed_project_dir(
+            "-private-tmp-claude-501--Users-hopegiver-workspace-malgn-vscode-scratchpad",
+            &allowed
+        ));
+    }
+
+    // m4: 대소문자가 달라도(`-Private-Tmp-...`) 제외되어야 한다.
+    #[test]
+    fn private_tmp_derived_project_dir_is_excluded_case_insensitively() {
+        let allowed = vec!["-Users-hopegiver-workspace-malgn-vscode".to_string()];
+        assert!(!is_allowed_project_dir(
+            "-Private-Tmp-claude-501--Users-hopegiver-workspace-malgn-vscode-scratchpad",
+            &allowed
+        ));
+        assert!(!is_allowed_project_dir(
+            "-PRIVATE-TMP-claude-501--Users-hopegiver-workspace-malgn-vscode-scratchpad",
+            &allowed
+        ));
+    }
+
+    // m4: `/private`를 거치지 않는 순수 `/tmp/...` 경로(`-tmp-...`로 sanitize됨)도
+    // 대소문자 무관하게 제외되어야 한다.
+    #[test]
+    fn bare_tmp_derived_project_dir_is_excluded_case_insensitively() {
+        let allowed = vec!["-Users-hopegiver-workspace-malgn-vscode".to_string()];
+        assert!(!is_allowed_project_dir("-tmp-some-scratch-dir", &allowed));
+        assert!(!is_allowed_project_dir("-Tmp-some-scratch-dir", &allowed));
+    }
+
+    // 안전장치 ②의 (a)단계(프리필터): 스캔된 워크스페이스 프로젝트 목록에 없는
+    // 디렉터리명은 제외된다. 프로젝트 루트 자신과 그 하위 디렉터리(cwd가
+    // 서브폴더인 세션)는 모두 허용되어야 한다. **이 단계만으로는 `foo-bar`
+    // (별개 디렉터리)가 `foo` 허용에 의해 통과된다** — 그 결함은 아래
+    // `is_cwd_within_allowed_workspace`(권위 검사) 테스트가 고정한다.
+    #[test]
+    fn only_dirs_matching_scanned_workspace_projects_are_allowed() {
+        let allowed = vec!["-Users-hopegiver-workspace-malgn-vscode".to_string()];
+        assert!(is_allowed_project_dir(
+            "-Users-hopegiver-workspace-malgn-vscode",
+            &allowed
+        ));
+        assert!(is_allowed_project_dir(
+            "-Users-hopegiver-workspace-malgn-vscode-src-tauri-src",
+            &allowed
+        ));
+        assert!(!is_allowed_project_dir(
+            "-Users-hopegiver-workspace-some-other-project",
+            &allowed
+        ));
+    }
+
+    // M1 완료 판정: `foo`가 허용일 때 `foo-bar`(별개 디렉터리) 유래 세션은
+    // 권위 검사에서 거부되어야 한다 — 프리필터(`is_allowed_project_dir`)는
+    // 문자열 접두사라 이 역전을 막지 못하지만, 실제 `cwd`를 경로 컴포넌트
+    // 단위로 대조하는 `is_cwd_within_allowed_workspace`는 막는다.
+    #[test]
+    fn cwd_authority_check_rejects_sibling_dir_with_shared_prefix() {
+        let allowed_roots = vec![PathBuf::from("/Users/hopegiver/workspace/foo")];
+
+        assert!(
+            is_cwd_within_allowed_workspace("/Users/hopegiver/workspace/foo", &allowed_roots),
+            "허용 루트 자신은 통과해야 합니다"
+        );
+        assert!(
+            is_cwd_within_allowed_workspace(
+                "/Users/hopegiver/workspace/foo/sub",
+                &allowed_roots
+            ),
+            "허용 루트의 하위 디렉터리는 통과해야 합니다"
+        );
+        assert!(
+            !is_cwd_within_allowed_workspace(
+                "/Users/hopegiver/workspace/foo-bar",
+                &allowed_roots
+            ),
+            "foo-bar는 foo의 컴포넌트 하위가 아니므로 거부되어야 하는데 통과했습니다 — \
+             문자열 접두사와 경로 컴포넌트를 혼동했을 가능성이 있습니다"
+        );
+    }
+
+    // 개수 상한 100건: 150개 후보를 넣으면 정확히 100개로 잘려야 한다.
+    #[test]
+    fn caps_candidate_paths_at_100() {
+        let dir = std::env::temp_dir().join(format!(
+            "malgn-vscode-session-list-cap-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("임시 디렉터리 생성 실패");
+
+        let mut paths = Vec::new();
+        for i in 0..150 {
+            let path = dir.join(format!("{i}.jsonl"));
+            std::fs::write(&path, "{}").expect("임시 파일 쓰기 실패");
+            paths.push(path);
+        }
+
+        let capped = cap_recent_jsonl_paths(paths);
+        assert_eq!(capped.len(), JSONL_SCAN_MAX_ROWS, "100건 상한이 걸려야 합니다");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // registry에 살아있는(filter_and_dedup_sessions를 통과한) sessionId와 같은
+    // jsonl 행에는 running=true가 붙어야 한다.
+    #[test]
+    fn overlay_marks_jsonl_row_matching_registry_as_running_true() {
+        let jsonl_rows = vec![serde_json::json!({
+            "sessionId": "shared-sid",
+            "cwd": "/tmp/fixture",
+            "title": "제목",
+            "startedAt": 1_000,
+            "updatedAt": 2_000,
+        })];
+        let filtered_registry = vec![serde_json::json!({
+            "sessionId": "shared-sid",
+            "pid": std::process::id(),
+            "cwd": "/tmp/fixture",
+            "startedAt": 1_000,
+        })];
+
+        let result = overlay_running_state(jsonl_rows, filtered_registry);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].get("running").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    // registry에 대응 항목이 없는 jsonl 행은 running=false여야 한다(끝난 세션).
+    #[test]
+    fn overlay_marks_jsonl_row_without_registry_match_as_running_false() {
+        let jsonl_rows = vec![serde_json::json!({
+            "sessionId": "finished-sid",
+            "cwd": "/tmp/fixture",
+            "title": "",
+            "startedAt": 1_000,
+            "updatedAt": 2_000,
+        })];
+
+        let result = overlay_running_state(jsonl_rows, Vec::new());
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].get("running").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    // 폴백: registry에는 있지만 대응하는 jsonl 행이 아직 없는 sessionId(세션
+    // 생성 직후 수 초)는 registry 항목 그대로 행으로 추가되고 running=true다.
+    #[test]
+    fn registry_only_session_without_jsonl_row_is_added_as_fallback_row() {
+        let jsonl_rows: Vec<Value> = Vec::new();
+        let filtered_registry = vec![serde_json::json!({
+            "sessionId": "brand-new-sid",
+            "pid": std::process::id(),
+            "cwd": "/tmp/fixture",
+            "startedAt": 9_000,
+        })];
+
+        let result = overlay_running_state(jsonl_rows, filtered_registry);
+        assert_eq!(result.len(), 1, "폴백 행 하나가 추가되어야 합니다");
+        assert_eq!(
+            result[0].get("sessionId").and_then(|v| v.as_str()),
+            Some("brand-new-sid")
+        );
+        assert_eq!(
+            result[0].get("running").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            result[0].get("title").and_then(|v| v.as_str()),
+            Some(""),
+            "title 키는 출력 계약상 항상 있어야 하며, 못 뽑았으면 빈 문자열이어야 합니다"
+        );
+    }
+
+    // ==================== M2: 신규 세션 표시 (build_live_registry) ====================
+
+    // M2 완료 판정: 신규 세션은 그 sessionId를 등록한 프로세스가 우리 자식
+    // 하나뿐이라 `filter_and_dedup_sessions()`의 1단계(pid 제외)에서
+    // `filtered_registry` 밖으로 완전히 빠진다(여기서는 그 결과를 그대로
+    // 재현하려고 `filtered_registry`를 빈 벡터로 둔다). 하지만 `ACTIVE_TURNS`는
+    // 그 턴이 진행 중임을 알고 있으므로(`active_session_ids`), `build_live_registry`가
+    // `raw_registry`에서 그 항목을 되살려야 하고, 그 결과를 `overlay_running_state`에
+    // 넘기면 신규 세션이 목록에 행으로 존재하고 `running=true`여야 한다.
+    #[test]
+    fn brand_new_session_excluded_from_filtered_registry_still_becomes_live_fallback_row_running_true(
+    ) {
+        let filtered_registry: Vec<Value> = Vec::new(); // 1단계(pid 제외)로 이미 빠진 상태를 재현
+        let raw_registry = vec![serde_json::json!({
+            "sessionId": "brand-new-sid",
+            "pid": 12_345, // 우리 자식의 pid(exclude_pids에 포함되어 filtered_registry에서 빠졌다)
+            "cwd": "/tmp/fixture",
+            "startedAt": 9_000,
+        })];
+        let mut active_session_ids = std::collections::HashSet::new();
+        active_session_ids.insert("brand-new-sid".to_string());
+
+        let live_registry =
+            build_live_registry(filtered_registry, &raw_registry, &active_session_ids);
+        assert_eq!(
+            live_registry.len(),
+            1,
+            "ACTIVE_TURNS에 있는 신규 세션은 live_registry에 되살아나야 합니다"
+        );
+
+        // jsonl은 아직 생성되지 않은 상태(세션 생성 직후 수 초) 그대로 재현한다.
+        let jsonl_rows: Vec<Value> = Vec::new();
+        let result = overlay_running_state(jsonl_rows, live_registry);
+
+        assert_eq!(
+            result.len(),
+            1,
+            "신규 세션의 턴이 진행 중일 때 그 세션이 목록에 행으로 존재해야 합니다"
+        );
+        assert_eq!(
+            result[0].get("sessionId").and_then(|v| v.as_str()),
+            Some("brand-new-sid")
+        );
+        assert_eq!(
+            result[0].get("running").and_then(|v| v.as_bool()),
+            Some(true),
+            "신규 세션의 턴이 진행 중이면 running=true여야 합니다"
+        );
+    }
+
+    // build_live_registry는 filtered_registry에 이미 있는 session_id는 중복
+    // 추가하지 않는다(raw_registry에서 다시 찾아 되살릴 필요가 없다).
+    #[test]
+    fn build_live_registry_does_not_duplicate_session_already_in_filtered_registry() {
+        let existing = serde_json::json!({
+            "sessionId": "already-present-sid",
+            "pid": std::process::id(),
+            "cwd": "/tmp/fixture",
+            "startedAt": 1_000,
+        });
+        let filtered_registry = vec![existing.clone()];
+        let raw_registry = vec![existing];
+        let mut active_session_ids = std::collections::HashSet::new();
+        active_session_ids.insert("already-present-sid".to_string());
+
+        let live_registry =
+            build_live_registry(filtered_registry, &raw_registry, &active_session_ids);
+        assert_eq!(live_registry.len(), 1, "이미 있는 session_id는 중복 추가되면 안 됩니다");
+    }
+
+    // ==================== QA 실데이터 검증(#[ignore] — 이 머신 의존) ====================
+    // 실행: cargo test -- --ignored --nocapture session_list::tests::real_scan
+    // 목적: 서브에이전트 유령 세션(실측 1,000건 이상)이 섞이지 않는지, 그리고
+    // registry에서 사라진 뒤로 목록에 영영 안 보이던 끝난 세션이 이제 보이는지
+    // 실제 데이터로 확인한다.
+    #[test]
+    #[ignore]
+    fn real_scan_excludes_subagent_ghosts_and_surfaces_previously_hidden_finished_session() {
+        let sessions = read_claude_sessions();
+        assert!(
+            sessions.len() < 1_000,
+            "서브에이전트 유령 세션이 섞였을 가능성이 있습니다: {}건",
+            sessions.len()
+        );
+        assert!(
+            sessions.iter().any(|s| s
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                == Some("7b57eff2-8ea4-450d-b3b7-45510a499bf3")),
+            "이전에 registry에서 사라져 목록에 안 보이던 끝난 세션이 여전히 보이지 않습니다"
         );
     }
 }

@@ -1,9 +1,11 @@
-// 세션목록 — 이 앱에서 유일하게 실제 로컬 파일(~/.claude/sessions/*.json)을 읽어
-// 보여주는 화면 중 하나. Rust 커맨드 list_claude_sessions()가 반환한 값을 그대로
-// 쓴다. 상세 화면은 실제 jsonl 대화 전문을 읽어 보여주고(read_session_transcript,
-// 설계 docs/design/session-chat.md), 하단 입력창으로 보낸 메시지는 그 세션에
-// 실제로 이어져(send_session_message) 응답이 스트리밍된다.
-import { el, liveIndicator } from '../dom';
+// 세션목록 — Rust 커맨드 list_claude_sessions()가 반환한 값을 그대로 쓴다. 정본
+// 소스는 registry(지금 실행 중인 프로세스) → jsonl 대화 이력이라 끝난 세션도
+// 함께 나열되며, 지금 실행 중인지는 각 행의 running 필드로만 구분한다(최근
+// 30일/최대 100건으로 windowing됨). 상세 화면은 실제 jsonl 대화 전문을 읽어
+// 보여주고(read_session_transcript, 설계 docs/design/session-chat.md), 하단
+// 입력창으로 보낸 메시지는 그 세션에 실제로 이어져(send_session_message) 응답이
+// 스트리밍된다.
+import { el, liveIndicator, runningDot } from '../dom';
 import { state, notifyChange } from '../state';
 import {
   fetchClaudeSessions,
@@ -24,6 +26,10 @@ export function asString(v: unknown): string {
 
 export function asNumber(v: unknown): number | null {
   return typeof v === 'number' ? v : null;
+}
+
+export function asBoolean(v: unknown): boolean {
+  return v === true;
 }
 
 export function projectNameFromCwd(cwd: string): string {
@@ -63,13 +69,13 @@ export async function loadSessions(): Promise<void> {
   }
 }
 
-// 실제 세션 메타데이터(~/.claude/sessions/*.json)에는 "updatedAt" 필드가 없다
-// (있는 시각 필드는 세션 시작 시각인 "startedAt" 뿐 — 실측 확인, 이 파일이 다시
-// 갱신되지도 않는다). 존재하지 않는 필드로 비교하면 항상 0-0 동률이라 실제로는
-// 정렬이 되지 않고 디렉터리 읽기 순서가 그대로 노출됐다. 그래서 실제로 존재하는
-// startedAt 내림차순(가장 최근에 시작된 세션이 맨 위)으로 정렬한다.
+// 목록 소스가 registry(지금 실행 중인 프로세스) + jsonl 대화 이력 결합으로 바뀌며
+// 끝난 세션도 함께 섞인다. 이 화면에서는 "언제 시작했나"보다 "언제 마지막으로
+// 말했나"(updatedAt)가 사용자 기대(최근 대화가 위)에 맞으므로 updatedAt 내림차순
+// 으로 정렬한다. updatedAt이 없는 행(백엔드 폴백 등)은 startedAt으로 대신한다.
 export function sortedSessions(): ClaudeSessionRecord[] {
-  return [...state.sessions.items].sort((a, b) => (asNumber(b.startedAt) ?? 0) - (asNumber(a.startedAt) ?? 0));
+  const sortKey = (s: ClaudeSessionRecord): number => asNumber(s.updatedAt) ?? asNumber(s.startedAt) ?? 0;
+  return [...state.sessions.items].sort((a, b) => sortKey(b) - sortKey(a));
 }
 
 export function renderSessionsListView(): HTMLElement {
@@ -77,7 +83,7 @@ export function renderSessionsListView(): HTMLElement {
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['세션목록']),
       el('div', { className: 'page-subtitle-row' }, [
-        el('div', { className: 'page-subtitle' }, ['~/.claude/sessions/*.json — 실제 로컬 파일을 읽습니다']),
+        el('div', { className: 'page-subtitle' }, ['실행 중·종료된 세션 모두 표시 — 지금 실행 중인 세션만 ● 표시']),
         ...(state.sessions.live ? [liveIndicator()] : []),
       ]),
     ]),
@@ -101,7 +107,7 @@ export function renderSessionsListView(): HTMLElement {
     body.push(
       el('div', { className: 'state-block' }, [
         el('div', { className: 'state-block-title' }, ['세션이 없습니다']),
-        el('div', { className: 'state-block-desc' }, ['~/.claude/sessions/ 아래 *.json 파일을 찾지 못했습니다.']),
+        el('div', { className: 'state-block-desc' }, ['최근 30일 안에 실행했거나 대화한 세션을 찾지 못했습니다.']),
       ])
     );
   } else {
@@ -117,8 +123,7 @@ function renderSessionRow(session: ClaudeSessionRecord): HTMLElement {
   const cwd = asString(session.cwd);
   const name = asString(session.name);
   const version = asString(session.version);
-  const kind = asString(session.kind);
-  const entrypoint = asString(session.entrypoint);
+  const running = asBoolean(session.running);
 
   const goToDetail = (): void => navigate(`#/sessions/${encodeURIComponent(sessionId)}`);
 
@@ -138,7 +143,7 @@ function renderSessionRow(session: ClaudeSessionRecord): HTMLElement {
       ]),
       el('div', { className: 'session-row-meta' }, [
         el('span', { className: 'badge badge-unknown' }, [version || '버전 없음']),
-        el('span', { className: 'badge badge-active' }, [kind || entrypoint || '-']),
+        ...(running ? [runningDot()] : []),
       ]),
       el('div', { className: 'session-row-time' }, [
         el('div', {}, [`시작 ${formatTimestamp(asNumber(session.startedAt))}`]),
@@ -511,9 +516,11 @@ export async function cancelChatTurn(): Promise<void> {
   }
 }
 
-// 목록 레코드(~/.claude/sessions/*.json)가 없을 때(P2 — 다른 창이 닫혀 registry
-// 항목이 사라진 경우) 트랜스크립트의 첫 사용자 메시지에서 대신 제목을 유도한다.
-// jsonl은 여전히 정상적으로 읽히므로 화면 자체는 이 정보만으로도 설 수 있다.
+// 목록 레코드가 없을 때(P2) 트랜스크립트의 첫 사용자 메시지에서 대신 제목을
+// 유도한다. 원인은 두 가지다 — (1) 다른 창이 닫혀 registry에서 실행 중 항목이
+// 사라진 경우, (2) 백엔드가 목록에 최근 30일/최대 100건으로 windowing하므로 그
+// 범위 밖 세션을 직접 링크(URL)로 열었을 경우. 어느 쪽이든 jsonl은 여전히
+// 정상적으로 읽히므로 화면 자체는 이 정보만으로도 설 수 있다.
 function deriveTitleFromTranscript(transcript: SessionTranscript | null): string | null {
   if (!transcript) return null;
   const firstUser = transcript.messages.find((m) => m.kind === 'user');

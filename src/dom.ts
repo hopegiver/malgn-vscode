@@ -43,6 +43,18 @@ export function liveIndicator(label = '실시간'): HTMLElement {
   return el('span', { className: 'live-indicator' }, [el('span', { className: 'live-dot' }, []), label]);
 }
 
+// 세션 행 단위 "지금 실행 중" 표시 — liveIndicator()와 의미가 다르다. liveIndicator는
+// 전역 파일시스템 워처 구독 여부(state.sessions.live)를 나타내고, 이 함수는 세션
+// 레코드 하나하나의 running 필드(그 세션이 지금 실행 중인 프로세스인지)를 나타낸다.
+// 경고 배너가 아니라 점 하나 수준의 조용한 표시로 그친다 — 끝난 세션이 기본
+// 상태이므로 running === false일 때는 호출하지 말 것(아무것도 표시하지 않는다).
+export function runningDot(): HTMLElement {
+  const dot = el('span', { className: 'session-running-dot' }, []);
+  dot.setAttribute('title', '실행 중');
+  dot.setAttribute('aria-label', '실행 중');
+  return dot;
+}
+
 // 토스트 — 설정 저장 등 "실제로는 아무것도 안 하지만 사용자에게 반응은 보여줘야 하는"
 // 목업 액션의 피드백 채널. #app 트리 바깥(document.body 직속)에 붙여서 메인
 // render() 사이클(전체 재빌드)의 영향을 받지 않게 한다.

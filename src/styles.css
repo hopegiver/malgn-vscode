@@ -563,6 +563,14 @@ textarea.settings-input { resize: vertical; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-success-text); animation: live-pulse 1.6s ease-in-out infinite; }
 @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
+/* 세션 행의 "지금 실행 중" 조용한 점 표시(경고 배너 아님) — session-row-meta 안,
+   badge 옆에 나란히 놓인다. */
+.session-running-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--color-success-text); animation: live-pulse 1.6s ease-in-out infinite;
+  align-self: center;
+}
+
 /* ---------------- 토큰 도둑 (세션/서브에이전트/프로젝트 비용 랭킹) ---------------- */
 .thief-table { display: flex; flex-direction: column; font-size: 12.5px; }
 .thief-table-row {

@@ -78,6 +78,18 @@ pub(crate) fn active_turn_pids() -> std::collections::HashSet<u32> {
     map.values().filter_map(|t| t.pid).collect()
 }
 
+/// M2: `session_list::read_claude_sessions()`가 "지금 실행 중" 표시(live 집합)
+/// 판정에 쓰는 session_id 집합. `active_turn_pids()`(dedup 역전 방지용, pid
+/// 기준)와는 목적이 다르다 — 앱이 막 띄운 신규 세션은 그 sessionId를 등록한
+/// 프로세스가 우리 자식 하나뿐이라 pid 기반 registry 필터를 거치면 후보에서
+/// 통째로 빠진다. 그래서 표시용 판정은 pid 필터 결과가 아니라 `ACTIVE_TURNS`의
+/// session_id를 직접 봐야 한다(pid가 아직 `None`인 등록 직후 상태도 포함해야
+/// 하므로 `pid`가 아니라 `session_id` 필드만 본다).
+pub(crate) fn active_turn_session_ids() -> std::collections::HashSet<String> {
+    let map = active_turns().lock().unwrap();
+    map.values().map(|t| t.session_id.clone()).collect()
+}
+
 pub(crate) fn register_turn(turn_id: &str, session_id: &str) -> Result<(), String> {
     let mut map = active_turns().lock().unwrap();
     if map.values().any(|t| t.session_id == session_id) {

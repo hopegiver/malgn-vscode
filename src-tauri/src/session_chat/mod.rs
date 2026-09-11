@@ -37,6 +37,17 @@ pub use turn::request_shutdown;
 /// 있도록 현재 진행 중인 턴들의 pid 집합을 노출한다.
 pub(crate) use turn::active_turn_pids;
 
+/// M2: `session_list`가 표시용 "지금 실행 중" 판정(live 집합)에 쓴다. registry
+/// pid 필터(`active_turn_pids` 용도)와는 목적이 달라 별도로 노출한다 — 신규
+/// 세션은 그 session_id를 등록한 프로세스가 우리 자식 하나뿐이라 pid 필터를
+/// 거치면 후보에서 아예 빠지기 때문이다.
+pub(crate) use turn::active_turn_session_ids;
+
+/// `session_list`가 jsonl 기반 세션 행의 `cwd`를 뽑을 때 재사용한다 — 새 스캔
+/// 로직을 만들지 않고 이미 있는 "첫 cwd 필드에서 멈추는" 가벼운 스캔을 그대로
+/// 쓴다.
+pub(crate) use transcript::read_cwd_from_transcript;
+
 const MAX_INPUT_CHARS: usize = 32_000;
 
 /// `dev_tools.rs`/`autonomy.rs`/`mcp_manager.rs`가 이미 정한 관례(상수를 공유

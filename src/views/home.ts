@@ -6,6 +6,7 @@ import { el } from '../dom';
 import { state } from '../state';
 import { navigate } from '../route';
 import { computeTodayTokens, formatTokenCount } from './usage';
+import { asBoolean } from './sessions';
 
 const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
 
@@ -148,10 +149,16 @@ function projectsWidget(): HTMLElement {
   ]);
 }
 
+// 세션목록의 정본은 registry(지금 실행 중인 프로세스) → jsonl 대화 이력이라
+// 백엔드가 최근 30일/최대 100건을 항상 채워 돌려준다 — 전체 개수는 곧 상한
+// (100)에 수렴해 "몇 개"로는 아무 정보도 주지 못한다. 이 위젯은 사용자가
+// 실제로 궁금해할 "지금 뭔가 돌고 있나"에 답하도록 running===true인 항목만
+// 센다(taskBoardWidget과 같은 패턴).
 function sessionsWidget(): HTMLElement {
+  const runningCount = state.sessions.items.filter((s) => asBoolean(s.running)).length;
   return widgetShell('세션목록', () => navigate('#/sessions'), [
-    el('div', { className: 'home-widget-big-number' }, [`${state.sessions.items.length}개`]),
-    el('div', { className: 'home-widget-desc' }, ['~/.claude/sessions/*.json (실제 로컬 데이터)']),
+    el('div', { className: 'home-widget-big-number' }, [`${runningCount}개`]),
+    el('div', { className: 'home-widget-desc' }, ['지금 실행 중인 세션 (실제 로컬 데이터)']),
     el('div', { className: 'home-widget-link' }, ['세션목록 보기 →']),
   ]);
 }

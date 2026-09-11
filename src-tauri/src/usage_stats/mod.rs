@@ -12,6 +12,10 @@ mod pricing;
 /// 사용량 캐시를 미리 채워둘 때 쓴다.
 pub(crate) use daily::get_or_refresh_historical_daily_usage;
 
+/// `session_list`가 jsonl 행의 `startedAt`(head의 첫 `timestamp`)을 epoch ms로
+/// 바꿀 때 재사용한다 — RFC3339 파싱 로직을 새로 만들지 않는다.
+pub(crate) use daily::parse_iso_timestamp;
+
 /// `check_dev_tools`(dev_tools.rs)와 동일한 이유·관용구 — `~/.claude/projects/**/*.jsonl`
 /// 재귀 스캔+파싱이 sync 커맨드로 메인 스레드를 막는 P0 버그 계열이라
 /// async + `spawn_blocking`으로 옮긴다.

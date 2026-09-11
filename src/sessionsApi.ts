@@ -1,7 +1,10 @@
-// 이 앱에서 유일하게 하드코딩된 샘플이 아니라 실제 로컬 파일시스템 값을 보여주는
-// 기능 중 하나. Rust 커맨드 list_claude_sessions()가 ~/.claude/sessions/*.json
-// 메타데이터만 읽어 반환한다(대화 전문 .jsonl은 Rust 쪽에서부터 절대 건드리지
-// 않는다 — 경로가 Rust 코드에 고정돼 있어 여기서 다른 경로를 지정할 방법이 없다).
+// 이 앱에서 유일하게 하드코딩된 샘플이 아니라 실제 로컬 파일시스템/프로세스 값을
+// 보여주는 기능 중 하나. Rust 커맨드 list_claude_sessions()의 정본 데이터 소스는
+// registry(지금 실행 중인 프로세스) → jsonl 대화 이력이다(대화 전문 자체는 상세
+// 화면에서 read_session_transcript()로 따로 읽는다). 각 행에는 반드시 sessionId·
+// cwd·title·startedAt·updatedAt·running(지금 실행 중인지)이 있고, version·pid·
+// name·kind·entrypoint·bridgeSessionId는 있을 수도 없을 수도 있다. 백엔드가 최근
+// 30일/최대 100건으로 windowing하므로 그 범위 밖 세션은 이 목록에 나타나지 않는다.
 //
 // ~/.claude/sessions/ 를 앱 실행 내내 파일시스템 이벤트로 감시하다가(폴링 아님)
 // 변경되면 "claude-sessions-changed" 이벤트를 쏜다 — 프론트는 그 신호를 받으면
