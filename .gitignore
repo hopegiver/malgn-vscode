@@ -1,5 +1,4 @@
 STATUS.md
-docs/
 node_modules/
 *.vsix
 .vscode-test/
