@@ -24,15 +24,42 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-// 토글 스위치 — 카탈로그 "자동 업데이트" on/off 등에 사용하는 작은 목업 컴포넌트.
+// 토글 스위치 — 카탈로그 "자동 업데이트" on/off, 자율업무 활성/비활성 등에 쓰는
+// 공용 컴포넌트. role="switch" + tabindex라 키보드로 포커스는 가지만, 클릭
+// 핸들러만 있으면 Enter/Space로는 조작할 수 없다 — keydown에서 두 키 모두
+// 받아 onChange를 호출한다(공용 컴포넌트라 이 한 곳만 고치면 전 화면에 적용된다).
 export function toggleSwitch(checked: boolean, onChange: () => void): HTMLElement {
-  const track = el('span', { className: `toggle-track${checked ? ' on' : ''}`, onClick: onChange }, [
-    el('span', { className: 'toggle-thumb' }, []),
-  ]);
+  const track = el(
+    'span',
+    {
+      className: `toggle-track${checked ? ' on' : ''}`,
+      onClick: onChange,
+      onKeydown: (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onChange();
+        }
+      },
+    },
+    [el('span', { className: 'toggle-thumb' }, [])]
+  );
   track.setAttribute('role', 'switch');
   track.setAttribute('aria-checked', String(checked));
   track.setAttribute('tabindex', '0');
   return track;
+}
+
+// 공용 로딩/에러 블록 — 원래 views/settings.ts의 otel 패널이 쓰던 패턴
+// (loading/error/loaded 3상태)을 github/cloudflare/jira/mcp 패널도 동일하게
+// 따라 쓰면서 4곳에 중복되어 있던 것을 승격했다. 메시지와 재시도 콜백은 항상
+// 호출부가 그대로 넘긴다 — 여기서 공용 문구로 바꿔치기하지 않는다(원인 경로가
+// 담긴 원본 에러 메시지를 그대로 보여주는 것이 이 앱의 강점이다).
+export function loadingBlock(): HTMLElement {
+  return el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]);
+}
+
+export function errorBlock(message: string, onRetry: () => void): HTMLElement {
+  return el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${message}`]), el('button', { className: 'btn', onClick: onRetry }, ['다시 시도'])]);
 }
 
 // 실시간 감시 인디케이터 — 파일시스템 이벤트 기반 자동 갱신이 실제로 구독되어

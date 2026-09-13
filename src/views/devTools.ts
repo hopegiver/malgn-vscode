@@ -323,7 +323,7 @@ export function renderDevToolsView(): HTMLElement {
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['개발 환경']),
-      el('div', { className: 'page-subtitle' }, ['로컬에 설치된 CLI 도구 — 상태·버전은 실제 조회값이며, 설치/업데이트도 실제로 실행됩니다']),
+      el('div', { className: 'page-subtitle' }, ['로컬에 설치된 CLI 도구 — 설치/업데이트도 실제로 실행됩니다']),
     ]),
     el('div', { className: 'devtool-header-actions' }, [
       ...(runnableCount > 0
@@ -350,6 +350,16 @@ export function renderDevToolsView(): HTMLElement {
       el('div', { className: 'alert' }, [
         el('span', {}, [`⚠ ${state.devTools.error}`]),
         el('button', { className: 'btn', onClick: () => void loadDevTools() }, ['다시 시도']),
+      ])
+    );
+  } else if (state.devTools.items.length === 0) {
+    // 백엔드는 고정 6종을 항상 돌려주므로(check_dev_tools) 빈 목록은 정상 상태가
+    // 아니라 조회 자체가 이상했다는 신호다 — "0/7" 같은 값을 사실처럼 보여주지
+    // 않는다.
+    body.push(
+      el('div', { className: 'state-block' }, [
+        el('div', { className: 'state-block-title' }, ['도구 상태를 확인하지 못했습니다']),
+        el('div', { className: 'state-block-desc' }, ['"↻ 다시 확인"을 눌러 주세요.']),
       ])
     );
   } else {

@@ -16,6 +16,9 @@
   --color-danger-soft: #fee2e2;
   --color-success-soft: #ecfdf5;
   --color-success-text: #059669;
+  --color-warn-bg: #fffbeb;
+  --color-warn-border: #fde68a;
+  --color-warn-text: #92400e;
   --sidebar-width: 216px;
 }
 
@@ -152,7 +155,7 @@ html, body {
 
 .alert {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
-  background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
+  background: var(--color-warn-bg); border: 1px solid var(--color-warn-border); color: var(--color-warn-text);
   padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;
 }
 
@@ -277,7 +280,7 @@ html, body {
 /* ---------------- MCP 관리 ---------------- */
 .mcp-toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
 .mcp-add-card { max-width: 480px; margin-bottom: 16px; }
-.mcp-list { display: flex; flex-direction: column; gap: 8px; }
+.mcp-list { display: flex; flex-direction: column; gap: 8px; max-width: 1040px; }
 .mcp-row {
   display: flex; align-items: center; justify-content: space-between; gap: 14px;
   background: var(--color-surface); border: 1px solid var(--color-hairline);
@@ -301,7 +304,7 @@ html, body {
 
 /* ---------------- 설정 폼 ---------------- */
 .settings-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 10px; padding: 24px; max-width: 480px; }
-.settings-form-hint { font-size: 12.5px; color: var(--color-ink-muted); margin-bottom: 18px; }
+.settings-form-hint { font-size: 12.5px; color: var(--color-ink-muted); margin-bottom: 18px; overflow-wrap: anywhere; }
 .settings-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .settings-field-label { font-size: 12.5px; font-weight: 600; color: var(--color-ink); }
 .settings-input {
@@ -347,6 +350,10 @@ textarea.settings-input { resize: vertical; }
 .home-widget-list-item { font-size: 12.5px; color: var(--color-ink); }
 .home-widget-list-item.muted { color: var(--color-ink-faint); }
 .home-widget-link { margin-top: auto; padding-top: 10px; font-size: 12px; color: var(--color-brand); font-weight: 600; }
+/* .home-widget는 column flex라 자식 .badge(inline-flex)가 교차축 stretch로
+   카드 전체 폭까지 늘어난다 — 배지만 자기 너비로 되돌린다(부모 align-items는
+   다른 자식 블록 폭에 영향이 있어 건드리지 않는다). */
+.home-widget .badge { align-self: flex-start; }
 
 /* ---------------- 세션목록 (실제 fs 읽기) ---------------- */
 .session-list { display: flex; flex-direction: column; gap: 8px; }
@@ -458,7 +465,7 @@ textarea.settings-input { resize: vertical; }
 }
 .devtool-affected-list { margin: 0; padding-left: 18px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; }
 .devtool-panel-actions { display: flex; gap: 8px; }
-.devtool-panel-warn { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+.devtool-panel-warn { background: var(--color-warn-bg); border-color: var(--color-warn-border); color: var(--color-warn-text); }
 .devtool-panel-success { background: var(--color-success-soft); border-color: #a7f3d0; color: var(--color-success-text); }
 .devtool-panel-danger { background: var(--color-danger-soft); border-color: #fecaca; color: var(--color-danger); }
 .devtool-log {

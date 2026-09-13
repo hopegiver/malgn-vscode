@@ -60,6 +60,7 @@ export interface AppState {
     projects: readonly WorkspaceProject[];
     loading: boolean;
     error: string | null;
+    loaded: boolean;
     filter: DashboardFilter;
     sort: DashboardSort;
   };
@@ -275,7 +276,7 @@ export const state: AppState = {
   // 재현된 버그 — 프로젝트 목록이 "새로고침 중…" 스켈레톤에서 멈춰 있었다).
   // loadProjects() 자신이 시작하자마자 loading을 true로 바꾸므로 스켈레톤은
   // 여전히 짧게 보인다.
-  dashboard: { projects: [], loading: false, error: null, filter: 'all', sort: 'updated' },
+  dashboard: { projects: [], loading: false, error: null, loaded: false, filter: 'all', sort: 'updated' },
   projectTree: {
     projectPath: null,
     nodes: [],

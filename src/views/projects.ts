@@ -46,6 +46,7 @@ export async function loadProjects(): Promise<void> {
   notifyChange();
   try {
     state.dashboard.projects = await fetchWorkspaceProjects();
+    state.dashboard.loaded = true;
   } catch (err) {
     state.dashboard.error = err instanceof Error ? err.message : '프로젝트 목록을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
   } finally {
@@ -184,6 +185,13 @@ export function renderProjectsDetailView(path: string): HTMLElement {
   const project = state.dashboard.projects.find((p) => p.path === path);
 
   if (!project) {
+    if (state.dashboard.loading) {
+      return el('div', {}, [back, el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])])]);
+    }
+    if (state.dashboard.error) {
+      const retry = el('button', { className: 'btn', onClick: () => void loadProjects() }, ['다시 시도']);
+      return el('div', {}, [back, el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.dashboard.error}`]), retry])]);
+    }
     return el('div', {}, [back, el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['프로젝트를 찾을 수 없습니다'])])]);
   }
 

@@ -137,7 +137,7 @@ function handleNavigation(): void {
   renderApp();
   if (!state.authenticated) return;
 
-  if (state.dashboard.projects.length === 0 && !state.dashboard.loading) void loadProjects();
+  if (!state.dashboard.loaded && !state.dashboard.loading) void loadProjects();
   if (!state.sessions.loaded && !state.sessions.loading) void loadSessions();
   if (!state.devTools.loaded && !state.devTools.loading) void loadDevTools();
   if (!state.catalog.loaded && !state.catalog.loading) void loadCatalog();

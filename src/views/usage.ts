@@ -191,7 +191,7 @@ function renderDailyDetailPanel(date: string): HTMLElement {
 
 function renderDailyUsageSection(): HTMLElement {
   const labelRow = el('div', { className: 'overview-label-row' }, [
-    el('div', { className: 'overview-label' }, ['일별 사용량 (최근 30일, 실제 로컬 데이터)']),
+    el('div', { className: 'overview-label' }, ['일별 사용량 (최근 30일)']),
   ]);
 
   let body: HTMLElement;
@@ -261,7 +261,7 @@ export function renderUsageView(): HTMLElement {
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['사용량 통계']),
       el('div', { className: 'page-subtitle' }, [
-        '일별 사용량과 카드 통계는 모두 실제 로컬 데이터입니다. 날짜를 클릭하면 그날의 세션·에이전트·툴 상세를 볼 수 있습니다',
+        '날짜를 클릭하면 그날의 세션·에이전트·툴 상세를 볼 수 있습니다',
       ]),
     ]),
   ]);

@@ -1,4 +1,4 @@
-import { el, showToast, toggleSwitch } from '../dom';
+import { el, showToast, loadingBlock, errorBlock } from '../dom';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
@@ -28,13 +28,10 @@ const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[]
   { key: 'mcp', label: 'MCP 관리' },
 ];
 
+// 탭 전환 자체는 사이드바 하위메뉴가 담당한다(U-15) — 여기서는 동일한 6항목을
+// 상단에 칩 탭으로 다시 그리지 않는다(두 벌 내비게이션 + 이중 하이라이트 제거).
+// TAB_META는 현재 탭 이름을 페이지 부제로 보여주는 용도로만 남는다.
 export function renderSettingsView(tab: SettingsTab): HTMLElement {
-  const tabsRow = el(
-    'div',
-    { className: 'filter-group' },
-    TAB_META.map((t) => el('button', { className: `filter-btn${t.key === tab ? ' active' : ''}`, onClick: () => navigate(`#/settings/${t.key}`) }, [t.label]))
-  );
-
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [el('h1', { className: 'page-title' }, ['설정']), el('div', { className: 'page-subtitle' }, [TAB_META.find((t) => t.key === tab)?.label ?? ''])]),
   ]);
@@ -47,7 +44,7 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
   else if (tab === 'marketplace') body = renderMarketplacePanel();
   else body = renderMcpPanel();
 
-  return el('div', {}, [header, tabsRow, body]);
+  return el('div', {}, [header, body]);
 }
 
 // ---------------- OTel 설정 (실제 저장) ----------------
@@ -202,18 +199,6 @@ function renderOtelPanel(): HTMLElement {
   return el('div', { className: 'settings-card' }, [form]);
 }
 
-// ---------------- 공용 로딩/에러 블록 ----------------
-// otel 패널이 먼저 쓰던 패턴(loading/error/loaded 3상태)을 github/cloudflare/jira
-// 패널도 동일하게 따른다.
-
-function renderLoadingBlock(): HTMLElement {
-  return el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]);
-}
-
-function renderErrorBlock(message: string, onRetry: () => void): HTMLElement {
-  return el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${message}`]), el('button', { className: 'btn', onClick: onRetry }, ['다시 시도'])]);
-}
-
 // ---------------- GitHub 설정 (CLI 위임, 이 앱은 토큰을 취급하지 않는다) ----------------
 // 상태는 `gh` CLI를 읽기 전용으로 조회한 실물이다. "연결하기"/"연결 해제"는 앱이
 // 대신 로그인/로그아웃을 완료하지 않는다 — 사용자가 조작할 터미널 창을 여는
@@ -264,8 +249,8 @@ async function handleGithubDisconnect(): Promise<void> {
 }
 
 function renderGithubPanel(): HTMLElement {
-  if (state.github.loading && !state.github.loaded) return renderLoadingBlock();
-  if (state.github.error) return renderErrorBlock(state.github.error, () => void loadGithubStatus());
+  if (state.github.loading && !state.github.loaded) return loadingBlock();
+  if (state.github.error) return errorBlock(state.github.error, () => void loadGithubStatus());
 
   const status = state.github.status;
   const refreshBtn = el('button', { className: 'btn', onClick: () => void loadGithubStatus() }, ['상태 새로고침']);
@@ -366,8 +351,8 @@ async function handleCloudflareDisconnect(): Promise<void> {
 }
 
 function renderCloudflarePanel(): HTMLElement {
-  if (state.cloudflare.loading && !state.cloudflare.loaded) return renderLoadingBlock();
-  if (state.cloudflare.error) return renderErrorBlock(state.cloudflare.error, () => void loadCloudflareStatus());
+  if (state.cloudflare.loading && !state.cloudflare.loaded) return loadingBlock();
+  if (state.cloudflare.error) return errorBlock(state.cloudflare.error, () => void loadCloudflareStatus());
 
   const status = state.cloudflare.status;
   const refreshBtn = el('button', { className: 'btn', onClick: () => void loadCloudflareStatus() }, ['상태 새로고침']);
@@ -458,8 +443,8 @@ async function handleJiraDisconnect(): Promise<void> {
 }
 
 function renderJiraPanel(): HTMLElement {
-  if (state.jira.loading && !state.jira.loaded) return renderLoadingBlock();
-  if (state.jira.error) return renderErrorBlock(state.jira.error, () => void loadJiraStatus());
+  if (state.jira.loading && !state.jira.loaded) return loadingBlock();
+  if (state.jira.error) return errorBlock(state.jira.error, () => void loadJiraStatus());
 
   const status = state.jira.status;
   const connected = status?.connected ?? false;
@@ -584,6 +569,9 @@ async function handleRefreshMarketplaces(): Promise<void> {
 }
 
 function renderMarketplacePanel(): HTMLElement {
+  if (state.marketplaces.loading && !state.marketplaces.loaded) return loadingBlock();
+  if (state.marketplaces.error) return errorBlock(state.marketplaces.error, () => void loadMarketplaces());
+
   const repoRows =
     state.marketplaces.items.length > 0
       ? state.marketplaces.items.map((m) =>
@@ -604,6 +592,8 @@ function renderMarketplacePanel(): HTMLElement {
     [state.marketplaces.refreshing ? '새로고침 중…' : '↻ 마켓플레이스 새로고침']
   );
 
+  // 자동 업데이트 토글·저장 버튼은 저장되지 않는 로컬 UI 상태였던 목업이라
+  // 제거했다 — 이 목록은 설치된 플러그인 이름·버전만 보여주는 조회 전용이다.
   const pluginList = el(
     'div',
     { className: 'marketplace-plugin-list' },
@@ -614,32 +604,16 @@ function renderMarketplacePanel(): HTMLElement {
               el('div', { className: 'marketplace-plugin-name' }, [p.displayName ?? p.name]),
               el('div', { className: 'marketplace-plugin-version' }, [`v${p.version}`]),
             ]),
-            toggleSwitch(state.catalog.autoUpdate[p.id] ?? true, () => {
-              state.catalog.autoUpdate[p.id] = !(state.catalog.autoUpdate[p.id] ?? true);
-              notifyChange();
-            }),
           ])
         )
       : [el('div', { className: 'state-block-desc' }, ['설치된 플러그인이 없습니다.'])]
   );
-
-  const form = el('form', { className: 'settings-form marketplace-form' }, [
-    el('div', { className: 'settings-form-hint' }, ['카탈로그가 플러그인을 받아오는 저장소와 설치된 플러그인의 자동 업데이트 여부를 관리합니다.']),
-  ]);
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    showToast('마켓플레이스 설정 저장됨 (목업 — 실제로 저장되지 않습니다)');
-  });
-  const saveBtn = el('button', { className: 'btn btn-primary' }, ['저장']);
-  saveBtn.type = 'submit';
-  form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
 
   return el('div', { className: 'settings-card marketplace-panel' }, [
     el('div', { className: 'marketplace-repo-list' }, repoRows),
     el('div', { className: 'marketplace-actions' }, [refreshBtn]),
     el('div', { className: 'settings-field-label marketplace-list-label' }, ['설치된 플러그인']),
     pluginList,
-    form,
   ]);
 }
 
@@ -1031,8 +1005,8 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
 }
 
 function renderMcpPanel(): HTMLElement {
-  if (state.mcp.loading && !state.mcp.loaded) return renderLoadingBlock();
-  if (state.mcp.error) return renderErrorBlock(state.mcp.error, () => void loadMcp());
+  if (state.mcp.loading && !state.mcp.loaded) return loadingBlock();
+  if (state.mcp.error) return errorBlock(state.mcp.error, () => void loadMcp());
 
   const refreshBtn = el('button', { className: 'btn', onClick: () => void loadMcp() }, ['↻ 새로고침']);
   const addToggleBtn = el(
@@ -1058,7 +1032,7 @@ function renderMcpPanel(): HTMLElement {
   if (mcpAddFormOpen) body.push(renderMcpAddForm(mcpAddPrefill ?? undefined));
 
   if (state.mcpCatalog.error) {
-    body.push(renderErrorBlock(`MCP 카탈로그를 불러오지 못했습니다: ${state.mcpCatalog.error}`, () => void loadMcpCatalog()));
+    body.push(errorBlock(`MCP 카탈로그를 불러오지 못했습니다: ${state.mcpCatalog.error}`, () => void loadMcpCatalog()));
   }
 
   const rows = buildMcpRows();
@@ -1077,7 +1051,7 @@ function renderMcpPanel(): HTMLElement {
 
   // 카탈로그는 등록된 서버와 별도로 로딩된다 — 등록된 서버(및 GitHub 퀵스타트)는
   // 위 mcp-list에 먼저 보이고, 카탈로그 항목은 로딩이 끝나면 같은 목록에 합류한다.
-  if (catalogStillLoading) body.push(renderLoadingBlock());
+  if (catalogStillLoading) body.push(loadingBlock());
 
   return el('div', {}, body);
 }

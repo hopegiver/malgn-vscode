@@ -147,7 +147,7 @@ export function renderCatalogView(): HTMLElement {
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['카탈로그']),
       el('div', { className: 'page-subtitle' }, [
-        state.catalog.loaded ? `설치된 플러그인 ${state.catalog.plugins.length}개 (user scope) — 버전 관리 단위는 플러그인입니다` : '실제 로컬 데이터',
+        state.catalog.loaded ? `설치된 플러그인 ${state.catalog.plugins.length}개 (user scope) — 버전 관리 단위는 플러그인입니다` : '불러오는 중…',
       ]),
     ]),
     el('div', { className: 'devtool-header-actions' }, [
