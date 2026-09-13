@@ -311,10 +311,13 @@ export function renderAutonomousTasksListView(): HTMLElement {
       el('h1', { className: 'page-title' }, ['자율업무']),
       el('div', { className: 'page-subtitle' }, [`등록된 자율업무 ${state.autonomousTasks.items.length}개`]),
     ]),
+    // V-06: 폼이 열린 상태에서 라벨만 "취소"로 바뀌고 className은 primary
+    // 그대로라 화면에서 가장 강조된 버튼이 "취소"가 됐다. 열린 상태에서는
+    // 보조 버튼으로 낮춘다.
     el(
       'button',
       {
-        className: 'btn btn-primary',
+        className: showAddForm ? 'btn' : 'btn btn-primary',
         onClick: () => {
           showAddForm = !showAddForm;
           notifyChange();

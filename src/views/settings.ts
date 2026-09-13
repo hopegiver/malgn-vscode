@@ -594,6 +594,8 @@ function renderMarketplacePanel(): HTMLElement {
 
   // 자동 업데이트 토글·저장 버튼은 저장되지 않는 로컬 UI 상태였던 목업이라
   // 제거했다 — 이 목록은 설치된 플러그인 이름·버전만 보여주는 조회 전용이다.
+  const description = el('div', { className: 'settings-form-hint' }, ['카탈로그가 플러그인을 받아오는 저장소를 관리합니다.']);
+
   const pluginList = el(
     'div',
     { className: 'marketplace-plugin-list' },
@@ -610,6 +612,7 @@ function renderMarketplacePanel(): HTMLElement {
   );
 
   return el('div', { className: 'settings-card marketplace-panel' }, [
+    description,
     el('div', { className: 'marketplace-repo-list' }, repoRows),
     el('div', { className: 'marketplace-actions' }, [refreshBtn]),
     el('div', { className: 'settings-field-label marketplace-list-label' }, ['설치된 플러그인']),
@@ -708,8 +711,9 @@ function renderMcpCatalogRow(entry: McpCatalogEntry): HTMLElement {
 
 const GITHUB_MCP_TARGET = 'https://api.githubcopilot.com/mcp/';
 
-// 이미 등록된 경우(state.mcp.items에 target이 있음)에는 buildMcpRows가 이 행 자체를
-// 만들지 않는다 — 그래서 "이미 등록됨" 분기가 필요 없다.
+// 이미 등록된 경우(state.mcp.items에 정규화된 target이 있음)에는
+// buildInstallableMcpRows가 이 행 자체를 만들지 않는다(V-05: 끝 슬래시·대소문자
+// 차이는 normalizeMcpTarget이 흡수한다) — 그래서 "이미 등록됨" 분기가 필요 없다.
 function renderGithubMcpQuickstartRow(): HTMLElement {
   const actionEl = el(
     'button',
@@ -796,40 +800,52 @@ function renderMcpRow(server: McpServerSummary): HTMLElement {
   ]);
 }
 
-// ---------------- 통합 목록 (등록된 서버 + 미설치 카탈로그 + GitHub 퀵스타트) ----------------
-// 세 데이터 소스를 하나의 전체폭 .mcp-list로 합친다 — 박스 구분 없이 행 단위로만
-// 나열한다. malgn-agent 관련 항목(malgnai-hub 등)은 항상 맨 위로 올리고, 나머지는
-// 등록된 서버 → 미설치 카탈로그 → GitHub 퀵스타트 순서를 유지한다(Array.sort는
-// ES2019+ 스펙상 안정 정렬이라 동순위 항목의 상대 순서가 보존된다).
+// ---------------- 목록 (등록된 서버 / 설치 가능한 서버 두 섹션) ----------------
+// U-16: 등록된 서버·미설치 카탈로그·GitHub 퀵스타트를 한 목록에 섞어 두면
+// "github"(등록됨)와 "GitHub"(카탈로그)가 나란히 떠 중복처럼 보인다. catalog.ts가
+// 이미 쓰는 2섹션 패턴(설치된 것 / 설치 가능한 것)을 그대로 복제해 분리한다.
+// malgn-agent 관련 항목(malgnai-hub 등)은 각 섹션 안에서 맨 위로 올린다
+// (Array.sort는 ES2019+ 스펙상 안정 정렬이라 동순위 항목의 상대 순서가 보존된다).
 
 function isMalgnAgentEntry(name: string): boolean {
   return name.includes('malgn-agent');
 }
 
-function buildMcpRows(): HTMLElement[] {
-  const rows: { name: string; el: HTMLElement }[] = [];
-
-  for (const server of state.mcp.items) {
-    rows.push({ name: server.name, el: renderMcpRow(server) });
-  }
-
-  for (const entry of state.mcpCatalog.items) {
-    if (!entry.installed) rows.push({ name: entry.label, el: renderMcpCatalogRow(entry) });
-  }
-
-  const githubAlreadyRegistered = state.mcp.items.some((item) => item.target === GITHUB_MCP_TARGET);
-  if (!githubAlreadyRegistered) {
-    rows.push({ name: 'GitHub', el: renderGithubMcpQuickstartRow() });
-  }
-
-  rows.sort((a, b) => {
+function sortMalgnAgentFirst<T extends { name: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
     const aTop = isMalgnAgentEntry(a.name);
     const bTop = isMalgnAgentEntry(b.name);
     if (aTop === bTop) return 0;
     return aTop ? -1 : 1;
   });
+}
 
-  return rows.map((r) => r.el);
+// V-05: 끝 슬래시·대소문자 차이만으로 정확일치 비교가 실패해 이미 등록된 GitHub
+// MCP 서버와 퀵스타트 행이 중복으로 뜨는 문제 — 비교 전 정규화한다.
+function normalizeMcpTarget(url: string): string {
+  return url.replace(/\/+$/, '').toLowerCase();
+}
+
+function buildRegisteredMcpRows(): HTMLElement[] {
+  const rows = state.mcp.items.map((server) => ({ name: server.name, el: renderMcpRow(server) }));
+  return sortMalgnAgentFirst(rows).map((r) => r.el);
+}
+
+function buildInstallableMcpRows(): HTMLElement[] {
+  const rows: { name: string; el: HTMLElement }[] = [];
+
+  for (const entry of state.mcpCatalog.items) {
+    if (!entry.installed) rows.push({ name: entry.label, el: renderMcpCatalogRow(entry) });
+  }
+
+  const githubAlreadyRegistered = state.mcp.items.some(
+    (item) => normalizeMcpTarget(item.target) === normalizeMcpTarget(GITHUB_MCP_TARGET)
+  );
+  if (!githubAlreadyRegistered) {
+    rows.push({ name: 'GitHub', el: renderGithubMcpQuickstartRow() });
+  }
+
+  return sortMalgnAgentFirst(rows).map((r) => r.el);
 }
 
 interface McpAddPrefill {
@@ -1009,10 +1025,12 @@ function renderMcpPanel(): HTMLElement {
   if (state.mcp.error) return errorBlock(state.mcp.error, () => void loadMcp());
 
   const refreshBtn = el('button', { className: 'btn', onClick: () => void loadMcp() }, ['↻ 새로고침']);
+  // V-06: 폼이 열리면 라벨만 "취소"로 바뀌고 className은 primary 그대로라 화면에서
+  // 가장 강조된 버튼이 "취소"가 됐다. 열린 상태에서는 보조 버튼으로 낮춘다.
   const addToggleBtn = el(
     'button',
     {
-      className: 'btn btn-primary',
+      className: mcpAddFormOpen ? 'btn' : 'btn btn-primary',
       onClick: () => {
         mcpAddFormOpen = !mcpAddFormOpen;
         if (!mcpAddFormOpen) mcpAddPrefill = null;
@@ -1035,12 +1053,16 @@ function renderMcpPanel(): HTMLElement {
     body.push(errorBlock(`MCP 카탈로그를 불러오지 못했습니다: ${state.mcpCatalog.error}`, () => void loadMcpCatalog()));
   }
 
-  const rows = buildMcpRows();
+  // U-16: 등록된 서버와 설치 가능한 카탈로그를 섹션 헤더 2개로 분리한다
+  // (catalog.ts의 "설치된 플러그인" / "전역 에이전트·스킬" 2섹션 패턴과 동일).
+  const registeredRows = buildRegisteredMcpRows();
+  const installableRows = buildInstallableMcpRows();
   const catalogStillLoading = state.mcpCatalog.loading && !state.mcpCatalog.loaded;
 
-  if (rows.length > 0) {
-    body.push(el('div', { className: 'mcp-list' }, rows));
-  } else if (!catalogStillLoading) {
+  body.push(el('div', { className: 'plugin-section-label' }, [`등록된 서버 ${registeredRows.length}개`]));
+  if (registeredRows.length > 0) {
+    body.push(el('div', { className: 'mcp-list' }, registeredRows));
+  } else {
     body.push(
       el('div', { className: 'state-block' }, [
         el('div', { className: 'state-block-title' }, ['등록된 MCP 서버가 없습니다']),
@@ -1049,8 +1071,14 @@ function renderMcpPanel(): HTMLElement {
     );
   }
 
-  // 카탈로그는 등록된 서버와 별도로 로딩된다 — 등록된 서버(및 GitHub 퀵스타트)는
-  // 위 mcp-list에 먼저 보이고, 카탈로그 항목은 로딩이 끝나면 같은 목록에 합류한다.
+  if (installableRows.length > 0 || catalogStillLoading) {
+    body.push(el('div', { className: 'plugin-section-label' }, ['설치 가능한 서버']));
+  }
+  if (installableRows.length > 0) {
+    body.push(el('div', { className: 'mcp-list' }, installableRows));
+  }
+  // 카탈로그는 등록된 서버와 별도로 로딩된다 — 등록된 서버 섹션이 먼저 보이고,
+  // 카탈로그 항목은 로딩이 끝나면 설치 가능한 서버 섹션에 합류한다.
   if (catalogStillLoading) body.push(loadingBlock());
 
   return el('div', {}, body);

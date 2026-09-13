@@ -6,8 +6,8 @@
 // "업데이트" 버튼은 사용자가 명시적으로 승인해 실제로 `claude plugin update`를
 // 실행한다 — 인자는 항상 이미 읽어둔 신뢰할 수 있는 plugin id만 쓴다(자유 입력
 // 필드 없음). 성공해도 Claude Code 재시작 전까지는 반영되지 않는다 — 반드시
-// 안내한다. "자동 업데이트" 토글만 순수 목업(로컬 UI 상태).
-import { el, showToast, toggleSwitch } from '../dom';
+// 안내한다.
+import { el, showToast } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, updatePlugin } from '../catalogApi';
 import type { InstalledPlugin, CatalogEntryItem, CommandResult, GlobalEntry } from '../catalogApi';
@@ -42,9 +42,6 @@ export async function loadCatalog(): Promise<void> {
     const plugins = await fetchInstalledPlugins();
     state.catalog.plugins = plugins;
     state.catalog.loaded = true;
-    for (const p of plugins) {
-      if (!(p.id in state.catalog.autoUpdate)) state.catalog.autoUpdate[p.id] = true;
-    }
   } catch (err) {
     state.catalog.error = err instanceof Error ? err.message : '카탈로그를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
   } finally {
@@ -262,7 +259,6 @@ function renderGlobalEntryRow(item: GlobalEntry): HTMLElement {
 }
 
 function renderPluginCard(plugin: InstalledPlugin): HTMLElement {
-  const autoUpdate = state.catalog.autoUpdate[plugin.id] ?? true;
   const updating = state.catalog.updating[plugin.id] ?? false;
   const lastResult = state.catalog.lastResult[plugin.id];
 
@@ -282,14 +278,7 @@ function renderPluginCard(plugin: InstalledPlugin): HTMLElement {
       el('div', { className: 'plugin-card-version' }, [`v${plugin.version}`]),
       ...(plugin.description ? [el('div', { className: 'plugin-card-desc' }, [plugin.description])] : []),
     ]),
-    el('div', { className: 'plugin-card-actions' }, [
-      el('span', { className: 'auto-update-label' }, ['자동 업데이트']),
-      toggleSwitch(autoUpdate, () => {
-        state.catalog.autoUpdate[plugin.id] = !autoUpdate;
-        notifyChange();
-      }),
-      updateBtn,
-    ]),
+    el('div', { className: 'plugin-card-actions' }, [updateBtn]),
   ]);
 
   const sections = el('div', { className: 'plugin-card-sections' }, [

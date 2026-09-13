@@ -24,8 +24,26 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-// 토글 스위치 — 카탈로그 "자동 업데이트" on/off, 자율업무 활성/비활성 등에 쓰는
-// 공용 컴포넌트. role="switch" + tabindex라 키보드로 포커스는 가지만, 클릭
+// 클릭+키보드 활성화를 한 번에 붙이는 헬퍼 — role="button" + tabindex="0" +
+// click/keydown(Enter·Space, preventDefault로 스페이스의 페이지 스크롤 방지)을
+// 한 곳에서 관리한다. 카드형 위젯·트리 행·목록 행처럼 "전체가 클릭 가능한 블록"에
+// 새로 붙일 때 쓴다. 이미 자체적으로 role/tabindex/keydown을 갖추고 정상 동작하는
+// 곳(session-row, task-row-main 등)까지 굳이 재작성하지는 않았다.
+export function clickable<T extends HTMLElement>(node: T, onActivate: () => void): T {
+  node.setAttribute('role', 'button');
+  node.setAttribute('tabindex', '0');
+  node.addEventListener('click', onActivate);
+  node.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onActivate();
+    }
+  });
+  return node;
+}
+
+// 토글 스위치 — 자율업무 활성/비활성 등에 쓰는 공용 컴포넌트. role="switch" +
+// tabindex라 키보드로 포커스는 가지만, 클릭
 // 핸들러만 있으면 Enter/Space로는 조작할 수 없다 — keydown에서 두 키 모두
 // 받아 onChange를 호출한다(공용 컴포넌트라 이 한 곳만 고치면 전 화면에 적용된다).
 export function toggleSwitch(checked: boolean, onChange: () => void): HTMLElement {

@@ -187,14 +187,13 @@ export interface AppState {
     manualOpen: Record<string, boolean>;
   };
   // 카탈로그 — 설치된 플러그인은 실제 로컬 데이터(installed_plugins.json + 각
-  // installPath 실물). "자동 업데이트" 토글만 순수 목업(로컬 UI 상태). "업데이트"
-  // 버튼은 실제로 `claude plugin update`를 실행한다(사용자 명시 승인, 2026-09-08).
+  // installPath 실물). "업데이트" 버튼은 실제로 `claude plugin update`를
+  // 실행한다(사용자 명시 승인, 2026-09-08).
   catalog: {
     plugins: InstalledPlugin[];
     loading: boolean;
     error: string | null;
     loaded: boolean;
-    autoUpdate: Record<string, boolean>;
     updating: Record<string, boolean>;
     updatingAll: boolean;
     lastResult: Record<string, CommandResult | null>;
@@ -321,7 +320,7 @@ export const state: AppState = {
     logExpanded: {},
     manualOpen: {},
   },
-  catalog: { plugins: [], loading: false, error: null, loaded: false, autoUpdate: {}, updating: {}, updatingAll: false, lastResult: {} },
+  catalog: { plugins: [], loading: false, error: null, loaded: false, updating: {}, updatingAll: false, lastResult: {} },
   globalCatalog: { data: null, loading: false, error: null, loaded: false },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },

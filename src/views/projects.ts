@@ -2,7 +2,7 @@
 // 이 화면은 이제 목업이 아니다 — Rust 커맨드 list_workspace_projects()가 실제
 // ~/workspace 아래를 스캔한 결과를 그대로 쓴다(workspaceApi.ts, src-tauri/src/lib.rs
 // 주석 참고). "세션목록"에 이은 이 앱의 두 번째 실동작 화면.
-import { el } from '../dom';
+import { el, clickable } from '../dom';
 import { state, notifyChange } from '../state';
 import type { ArchiveStatus } from '../state';
 import { fetchWorkspaceProjects, fetchProjectTree, fetchFilePreview } from '../workspaceApi';
@@ -291,15 +291,12 @@ function renderProjectTreeSection(projectPath: string): HTMLElement {
 function renderTreeNode(node: ProjectTreeNode, projectPath: string, depth: number): HTMLElement {
   if (!node.isDirectory) {
     const isSelected = state.projectTree.selectedPath === node.relativePath;
-    const row = el(
-      'div',
-      { className: `tree-row tree-file${isSelected ? ' active' : ''}`, onClick: () => void loadFilePreview(projectPath, node.relativePath) },
-      [el('span', { className: 'tree-icon' }, ['📄']), el('span', { className: 'tree-name' }, [node.name])]
-    );
+    const row = el('div', { className: `tree-row tree-file${isSelected ? ' active' : ''}` }, [
+      el('span', { className: 'tree-icon' }, ['📄']),
+      el('span', { className: 'tree-name' }, [node.name]),
+    ]);
     row.style.paddingLeft = `${depth * 16 + 8}px`;
-    row.setAttribute('role', 'button');
-    row.setAttribute('tabindex', '0');
-    return row;
+    return clickable(row, () => void loadFilePreview(projectPath, node.relativePath));
   }
 
   const expanded = state.projectTree.expanded[node.relativePath] ?? false;

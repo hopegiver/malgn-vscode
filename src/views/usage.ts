@@ -4,7 +4,7 @@
 // 총 토큰/활동일수/일평균 토큰/캐시 히트율)도 이 데이터만으로 계산한 실제 값이다
 // — 비교할 이전 기간 데이터가 없어 전월 대비 등 증감 배지는 두지 않는다. 실시간
 // 감시는 하지 않는다 — "사용량 통계" 메뉴를 클릭할 때마다 새로 불러온다(sidebar.ts).
-import { el } from '../dom';
+import { el, clickable } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchDailyUsage } from '../usageApi';
 import type { DailyUsage } from '../usageApi';
@@ -214,14 +214,16 @@ function renderDailyUsageSection(): HTMLElement {
         const pct = maxTotal > 0 ? Math.round((total / maxTotal) * 100) : 0;
         const selected = state.dailyDetail.selectedDate === d.date;
         rows.push(
-          el(
-            'div',
-            { className: `bar-row bar-row-clickable${selected ? ' selected' : ''}`, onClick: () => toggleDailyDetail(d.date) },
-            [
-              el('div', { className: 'bar-row-label' }, [d.date]),
+          clickable(
+            el('div', { className: `bar-row bar-row-clickable${selected ? ' selected' : ''}` }, [
+              // U-08: role/tabindex/keydown이 전무해 키보드로 도달조차 안 됐다.
+              // 펼침 가능함을 시각적으로도 알리는 캐럿을 라벨 셀 안에 넣는다(3열
+              // 고정 grid라 새 컬럼을 추가하면 레이아웃이 깨진다).
+              el('div', { className: 'bar-row-label' }, [`${selected ? '▾' : '▸'} ${d.date}`]),
               el('div', { className: 'bar-track' }, [barFillEl(pct)]),
               el('div', { className: 'bar-row-value' }, [`${total.toLocaleString('ko-KR')} 토큰`]),
-            ]
+            ]),
+            () => toggleDailyDetail(d.date)
           )
         );
         if (selected) rows.push(renderDailyDetailPanel(d.date));

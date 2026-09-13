@@ -529,6 +529,26 @@ function deriveTitleFromTranscript(transcript: SessionTranscript | null): string
   return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
 
+// U-20: 세션 레코드가 없을 때(kind/startedAt/updatedAt이 전부 빈 값) 각 세그먼트를
+// 무조건 '-'로 채우면 "· - · 시작 - · 갱신 -"처럼 '-'가 겹쳐 나온다. 빈 세그먼트는
+// filter로 걷어내고 '·' 구분자는 남은 세그먼트 사이에만 join으로 생성한다.
+function renderChatMetaRow(cwd: string, version: string, kind: string, startedAt: string, updatedAt: string): HTMLElement {
+  const parts = [
+    projectNameFromCwd(cwd),
+    version ? `v${version}` : '버전 정보 없음',
+    kind,
+    startedAt !== '-' ? `시작 ${startedAt}` : '',
+    updatedAt !== '-' ? `갱신 ${updatedAt}` : '',
+  ].filter((part) => part !== '');
+
+  const children: HTMLElement[] = [];
+  parts.forEach((part, i) => {
+    if (i > 0) children.push(el('span', {}, ['·']));
+    children.push(el('span', {}, [part]));
+  });
+  return el('div', { className: 'chat-meta-row' }, children);
+}
+
 export function renderSessionDetailView(sessionId: string): HTMLElement {
   const back = el('a', { className: 'back-link', onClick: () => navigate('#/sessions') }, ['← 세션목록']);
   const session = state.sessions.items.find((s) => asString(s.sessionId) === sessionId);
@@ -550,17 +570,7 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
       el('h1', { className: 'chat-title' }, [title]),
       ...(session ? [el('button', { className: 'btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
     ]),
-    el('div', { className: 'chat-meta-row' }, [
-      el('span', {}, [projectNameFromCwd(cwd)]),
-      el('span', {}, ['·']),
-      el('span', {}, [version ? `v${version}` : '버전 정보 없음']),
-      el('span', {}, ['·']),
-      el('span', {}, [kind || '-']),
-      el('span', {}, ['·']),
-      el('span', {}, [`시작 ${startedAt}`]),
-      el('span', {}, ['·']),
-      el('span', {}, [`갱신 ${updatedAt}`]),
-    ]),
+    renderChatMetaRow(cwd, version, kind, startedAt, updatedAt),
   ]);
 
   const body: HTMLElement[] = [header];
@@ -685,7 +695,7 @@ export function renderSessionDraftView(projectPath: string): HTMLElement {
 function renderMetaModal(session: ClaudeSessionRecord): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
-      el('h2', { className: 'modal-title' }, ['세션 메타데이터 (실제 데이터)']),
+      el('h2', { className: 'modal-title' }, ['세션 메타데이터']),
       el('button', { className: 'modal-close-btn', onClick: closeMetaModal }, ['✕']),
     ]),
     el('div', { className: 'modal-body' }, [

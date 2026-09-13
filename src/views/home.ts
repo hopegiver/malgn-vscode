@@ -2,11 +2,16 @@
 // 보여준다. 위젯 클릭 시 해당 상세 화면으로 이동한다. 프로젝트·세션·개발환경·
 // 카탈로그·사용량 통계·자율업무 위젯은 전부 실제 로컬 데이터를 쓴다(main.ts가
 // 로그인 직후 한 번씩 미리 불러온다).
-import { el } from '../dom';
+import { el, clickable } from '../dom';
 import { state } from '../state';
 import { navigate } from '../route';
-import { computeTodayTokens, formatTokenCount } from './usage';
-import { asBoolean } from './sessions';
+import { computeTodayTokens, formatTokenCount, loadDailyUsage } from './usage';
+import { asBoolean, loadSessions } from './sessions';
+import { loadCatalog } from './catalog';
+import { loadProjects } from './projects';
+import { loadDevTools } from './devTools';
+import { loadAutonomousTasks } from './autonomousTasks';
+import { loadMcp } from './settings';
 
 const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
 
@@ -29,10 +34,19 @@ export function renderHomeView(): HTMLElement {
 }
 
 function widgetShell(title: string, onClick: () => void, children: readonly (Node | string)[]): HTMLElement {
-  const widget = el('div', { className: 'home-widget', onClick }, [el('div', { className: 'home-widget-title' }, [title]), ...children]);
-  widget.setAttribute('role', 'button');
-  widget.setAttribute('tabindex', '0');
-  return widget;
+  const widget = el('div', { className: 'home-widget' }, [el('div', { className: 'home-widget-title' }, [title]), ...children]);
+  return clickable(widget, onClick);
+}
+
+// error phase 전용 — 위젯 6개가 모두 같은 문구("상태를 불러오지 못했습니다.")를
+// 쓰면서도 복구 경로가 없었다(V-10). 카드를 클릭하면 서브페이지로 이동하는 대신
+// 그 자리에서 다시 불러오도록 onClick을 loadX()로 바꾸고, 링크 문구도 이동이
+// 아니라 재시도임을 알리게 바꾼다.
+function widgetErrorShell(title: string, onRetry: () => void): HTMLElement {
+  return widgetShell(title, onRetry, [
+    el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
+    el('div', { className: 'home-widget-link' }, ['다시 확인하기 →']),
+  ]);
 }
 
 function isToday(iso: string | null): boolean {
@@ -63,10 +77,7 @@ function taskBoardWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetShell('자율업무 진행상황', () => navigate('#/tasks/board'), [
-      el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
-      el('div', { className: 'home-widget-link' }, ['진행상황판 보기 →']),
-    ]);
+    return widgetErrorShell('자율업무 진행상황', () => void loadAutonomousTasks());
   }
 
   const tasks = state.autonomousTasks.items;
@@ -86,24 +97,31 @@ function taskBoardWidget(): HTMLElement {
 // 결과에 그 이름의 서버가 없으면(예: 아직 등록 전) 에러를 던지지 않고
 // "미설정"으로 조용히 처리한다.
 function mcpHubWidget(): HTMLElement {
-  if (!state.mcp.loaded && !state.mcp.error) {
+  const phase = pickState(state.mcp);
+  if (phase === 'loading') {
     return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
       el('div', { className: 'home-widget-desc' }, ['불러오는 중…']),
       el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
     ]);
   }
-  if (state.mcp.error) {
-    return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
-      el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
-      el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
-    ]);
+  if (phase === 'error') {
+    return widgetErrorShell('malgnai-hub 연동', () => void loadMcp());
   }
+
+  // R-01′: malgnai-hub 하나만 보고 끝내지 않고, 등록된 MCP 서버 전체에서 미연결
+  // 상태를 집계해 조치 신호로 올린다. 이상 없으면(0건) 기존 문구 그대로 둔다.
+  const disconnectedCount = state.mcp.items.filter((s) => !s.connected).length;
+  const disconnectedBreakdown =
+    disconnectedCount > 0
+      ? [el('div', { className: 'home-widget-breakdown' }, [el('span', {}, [`⚠ 미연결 MCP ${disconnectedCount}개`])])]
+      : [];
 
   const hub = state.mcp.items.find((s) => s.name === MALGNAI_HUB_MCP_NAME);
   if (!hub) {
     return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
       el('span', { className: 'badge badge-unknown' }, ['미설정']),
       el('div', { className: 'home-widget-desc' }, ['malgnai-hub MCP 서버가 등록되어 있지 않습니다.']),
+      ...disconnectedBreakdown,
       el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
     ]);
   }
@@ -111,6 +129,7 @@ function mcpHubWidget(): HTMLElement {
   return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
     el('span', { className: `badge ${hub.connected ? 'badge-active' : 'badge-archived'}` }, [hub.connected ? '연결됨' : '미연결']),
     el('div', { className: 'home-widget-desc' }, [hub.statusLabel]),
+    ...disconnectedBreakdown,
     el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
   ]);
 }
@@ -119,13 +138,17 @@ function mcpHubWidget(): HTMLElement {
 
 function usageWidget(): HTMLElement {
   const usage = state.dailyUsage;
-  if (!usage.loaded && !usage.error) {
+  const phase = pickState(usage);
+  if (phase === 'loading') {
     return widgetShell('사용량 통계', () => navigate('#/usage'), [
       el('div', { className: 'home-widget-desc' }, ['불러오는 중…']),
       el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
     ]);
   }
-  if (usage.error || usage.items.length === 0) {
+  if (phase === 'error') {
+    return widgetErrorShell('사용량 통계', () => void loadDailyUsage());
+  }
+  if (usage.items.length === 0) {
     return widgetShell('사용량 통계', () => navigate('#/usage'), [
       el('div', { className: 'home-widget-desc' }, ['최근 30일 이내 사용 기록이 없습니다.']),
       el('div', { className: 'home-widget-link' }, ['자세히 보기 →']),
@@ -148,16 +171,20 @@ function catalogWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetShell('카탈로그', () => navigate('#/catalog'), [
-      el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
-      el('div', { className: 'home-widget-link' }, ['카탈로그 보기 →']),
-    ]);
+    return widgetErrorShell('카탈로그', () => void loadCatalog());
   }
 
   const plugins = state.catalog.plugins;
   const totalAgents = plugins.reduce((sum, p) => sum + p.agents.length, 0);
   const totalSkills = plugins.reduce((sum, p) => sum + p.skills.length, 0);
   const totalKnowledge = plugins.reduce((sum, p) => sum + p.knowledge.length, 0);
+
+  // R-01′: 형식 오류(status === 'invalid')는 카탈로그 화면에서만 보였다 —
+  // 데이터는 이미 로그인 직후 globalCatalog로 프리페치돼 있으므로(main.ts) 홈이
+  // 손에 쥔 값을 숫자로만 말하지 않고 조치 신호로 끌어올린다. 이상 없으면(0건)
+  // 기존 breakdown 그대로 둔다.
+  const globalEntries = state.globalCatalog.data ? [...state.globalCatalog.data.agents, ...state.globalCatalog.data.skills] : [];
+  const invalidCount = globalEntries.filter((e) => e.status === 'invalid').length;
 
   return widgetShell('카탈로그', () => navigate('#/catalog'), [
     el('div', { className: 'home-widget-big-number' }, [`${plugins.length}개`]),
@@ -166,6 +193,7 @@ function catalogWidget(): HTMLElement {
       el('span', {}, [`에이전트 ${totalAgents}`]),
       el('span', {}, [`스킬 ${totalSkills}`]),
       el('span', {}, [`지식 ${totalKnowledge}`]),
+      ...(invalidCount > 0 ? [el('span', {}, [`⚠ 형식 오류 ${invalidCount}건`])] : []),
     ]),
     el('div', { className: 'home-widget-link' }, ['카탈로그 보기 →']),
   ]);
@@ -180,10 +208,7 @@ function projectsWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetShell('프로젝트', () => navigate('#/projects'), [
-      el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
-      el('div', { className: 'home-widget-link' }, ['프로젝트 보기 →']),
-    ]);
+    return widgetErrorShell('프로젝트', () => void loadProjects());
   }
 
   const projects = state.dashboard.projects;
@@ -217,10 +242,7 @@ function sessionsWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetShell('세션목록', () => navigate('#/sessions'), [
-      el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
-      el('div', { className: 'home-widget-link' }, ['세션목록 보기 →']),
-    ]);
+    return widgetErrorShell('세션목록', () => void loadSessions());
   }
 
   const runningCount = state.sessions.items.filter((s) => asBoolean(s.running)).length;
@@ -240,18 +262,22 @@ function devToolsWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetShell('개발 환경', () => navigate('#/dev-tools'), [
-      el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
-      el('div', { className: 'home-widget-link' }, ['개발 환경 보기 →']),
-    ]);
+    return widgetErrorShell('개발 환경', () => void loadDevTools());
   }
 
-  const installedCount = state.devTools.items.filter((t) => t.installed).length;
+  // R-01′: 몇 개가 설치됐는지가 아니라 "무엇이 미설치인가"가 조치 신호다 —
+  // dev-tools 화면에서만 보이던 이름을 홈으로 끌어올린다. 전부 설치돼 있으면
+  // (0건) 기존 문구·breakdown 없음 그대로 둔다.
+  const installed = state.devTools.items.filter((t) => t.installed);
+  const uninstalled = state.devTools.items.filter((t) => !t.installed);
   const total = state.devTools.items.length;
 
   return widgetShell('개발 환경', () => navigate('#/dev-tools'), [
-    el('div', { className: 'home-widget-big-number' }, [`${installedCount}/${total}`]),
+    el('div', { className: 'home-widget-big-number' }, [`${installed.length}/${total} 설치됨`]),
     el('div', { className: 'home-widget-desc' }, ['설치된 CLI 도구']),
+    ...(uninstalled.length > 0
+      ? [el('div', { className: 'home-widget-breakdown' }, uninstalled.map((t) => el('span', {}, [`${t.name} 미설치`])))]
+      : []),
     el('div', { className: 'home-widget-link' }, ['개발 환경 보기 →']),
   ]);
 }

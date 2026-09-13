@@ -409,8 +409,13 @@ function renderActionArea(tool: DevToolStatus, updating: boolean, previewLoading
   }
 
   if (tool.actionKind === 'run') {
-    const label = tool.installed ? '업데이트' : '설치';
-    return el('button', { className: 'btn btn-primary', onClick: () => void handleRequestPreview(tool) }, [label]);
+    // U-17: 이 버튼의 실제 동작은 dry-run 미리보기를 여는 것뿐이다(실행은 미리보기
+    // 패널의 "실행" 버튼만 한다). 이미 설치된 도구는 라벨을 "업데이트 확인"으로
+    // 바꾸고 클래스를 보조로 낮춰, 진짜 비가역 실행 버튼("실행")만 이 화면에서
+    // primary로 남게 한다.
+    const label = tool.installed ? '업데이트 확인' : '설치';
+    const className = tool.installed ? 'btn' : 'btn btn-primary';
+    return el('button', { className, onClick: () => void handleRequestPreview(tool) }, [label]);
   }
   if (tool.actionKind === 'manual') {
     return el('button', { className: 'btn', onClick: () => toggleManual(tool.id) }, [
@@ -431,9 +436,16 @@ function renderRunningPanel(tool: DevToolStatus): HTMLElement {
 }
 
 function renderPreviewPanel(tool: DevToolStatus, preview: DevToolPreview): HTMLElement {
-  const warnMultiple = preview.affected.length !== 1;
+  // V-02: affected.length !== 1은 0건(=영향 범위를 전혀 모른다)일 때도 참이 되어
+  // "외 0개 항목이 함께 바뀔 수 있습니다"라는, 가장 정보가 없는 상태를 가장
+  // 구체적인 것처럼 말하는 문구가 나갔다. "여럿이 함께 바뀐다"와 "범위를 모른다"는
+  // 서로 다른 경고이므로 나눈다.
+  const warnMultiple = preview.affected.length > 1;
+  const warnUnknownAffected = preview.affected.length === 0;
   const children: HTMLElement[] = [
-    el('div', { className: 'devtool-panel-title' }, ['실행 전 확인']),
+    // V-07: 도구가 6개 늘어선 목록에서 이 패널이 어느 도구 것인지 화면 어디에도
+    // 없었다 — 제목에 도구명을 넣는다.
+    el('div', { className: 'devtool-panel-title' }, [`실행 전 확인 — ${tool.name}`]),
     el('div', { className: 'devtool-panel-command' }, [preview.commandDisplay]),
   ];
 
@@ -452,6 +464,12 @@ function renderPreviewPanel(tool: DevToolStatus, preview: DevToolPreview): HTMLE
     children.push(
       el('div', { className: 'devtool-panel devtool-panel-warn' }, [
         `⚠ ${tool.name} 외 ${Math.max(preview.affected.length - 1, 0)}개 항목이 함께 바뀔 수 있습니다(의존성 연쇄 업그레이드). 신중히 확인 후 실행하세요.`,
+      ])
+    );
+  } else if (warnUnknownAffected) {
+    children.push(
+      el('div', { className: 'devtool-panel devtool-panel-warn' }, [
+        '⚠ 영향 범위를 확인하지 못했습니다 — 무엇이 바뀔지 알 수 없습니다. 신중히 확인 후 실행하세요.',
       ])
     );
   }
@@ -537,7 +555,8 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
   };
 
   const children: HTMLElement[] = [
-    el('div', { className: 'devtool-panel-title' }, [summary[result.outcome]]),
+    // V-07: 미리보기 패널과 마찬가지로 결과 패널 제목에도 도구명을 넣는다.
+    el('div', { className: 'devtool-panel-title' }, [`${tool.name} — ${summary[result.outcome]}`]),
     el('div', { className: 'devtool-panel-verified' }, [result.verified ? '확인됨(verified)' : '확인되지 않음(unverified)']),
   ];
 
