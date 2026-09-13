@@ -8,3 +8,4 @@ dist/
 .dev.vars
 site/
 src-tauri/.env
+scripts/capture/output/
