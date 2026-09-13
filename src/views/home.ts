@@ -276,7 +276,7 @@ function devToolsWidget(): HTMLElement {
     el('div', { className: 'home-widget-big-number' }, [`${installed.length}/${total} 설치됨`]),
     el('div', { className: 'home-widget-desc' }, ['설치된 CLI 도구']),
     ...(uninstalled.length > 0
-      ? [el('div', { className: 'home-widget-breakdown' }, uninstalled.map((t) => el('span', {}, [`${t.name} 미설치`])))]
+      ? [el('div', { className: 'home-widget-breakdown' }, uninstalled.map((t) => el('span', {}, [`⚠ ${t.name} 미설치`])))]
       : []),
     el('div', { className: 'home-widget-link' }, ['개발 환경 보기 →']),
   ]);

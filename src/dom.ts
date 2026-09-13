@@ -29,13 +29,20 @@ export function el<K extends keyof HTMLElementTagNameMap>(
 // 한 곳에서 관리한다. 카드형 위젯·트리 행·목록 행처럼 "전체가 클릭 가능한 블록"에
 // 새로 붙일 때 쓴다. 이미 자체적으로 role/tabindex/keydown을 갖추고 정상 동작하는
 // 곳(session-row, task-row-main 등)까지 굳이 재작성하지는 않았다.
-export function clickable<T extends HTMLElement>(node: T, onActivate: () => void): T {
+// opts.stopPropagation: 이 요소가 클릭 가능한 부모 안에 중첩된 별도의 조작
+// 대상(예: 행 안의 펼침 캐럿)일 때 true로 준다 — 없으면 Enter/Space가 이
+// 핸들러를 실행한 뒤 부모의 keydown까지 버블링해 두 동작이 동시에 발동한다.
+export function clickable<T extends HTMLElement>(node: T, onActivate: () => void, opts?: { readonly stopPropagation?: boolean }): T {
   node.setAttribute('role', 'button');
   node.setAttribute('tabindex', '0');
-  node.addEventListener('click', onActivate);
+  node.addEventListener('click', (e) => {
+    if (opts?.stopPropagation) e.stopPropagation();
+    onActivate();
+  });
   node.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
+      if (opts?.stopPropagation) e.stopPropagation();
       onActivate();
     }
   });

@@ -99,9 +99,14 @@ async function copyToClipboard(text: string, label: string): Promise<void> {
 
 function notifyOutcome(tool: DevToolStatus, result: DevToolActionResult): void {
   switch (result.outcome) {
-    case 'updated':
-      showToast(`${tool.name}: v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 업데이트되었습니다`);
+    case 'updated': {
+      // R3-03: 패널(renderResultPanel)과 같은 규칙(versionBefore 유무)으로
+      // 신규 설치/업데이트를 구분한다 — 이전엔 outcome만 보고 무조건
+      // "업데이트되었습니다"라고 말해 신규 설치 성공 때도 동사가 틀렸다.
+      const fresh = !result.versionBefore;
+      showToast(`${tool.name}: v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 ${fresh ? '설치' : '업데이트'}되었습니다`);
       break;
+    }
     case 'alreadyLatest':
       showToast(`${tool.name}: 이미 최신입니다`);
       break;
@@ -561,7 +566,12 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
   ];
 
   if (result.versionBefore || result.versionAfter) {
-    children.push(el('div', { className: 'devtool-panel-notes' }, [`${result.versionBefore ?? '?'} → ${result.versionAfter ?? '?'}`]));
+    // R3-04: 신규 설치(versionBefore 없음)에서는 "? → 2.0.68"처럼 물음표를
+    // 노출하지 않고 "신규 설치: 2.0.68"로 말한다.
+    const notes = !result.versionBefore && result.versionAfter
+      ? `신규 설치: ${result.normalizedAfter ?? result.versionAfter}`
+      : `${result.versionBefore ?? '?'} → ${result.versionAfter ?? '?'}`;
+    children.push(el('div', { className: 'devtool-panel-notes' }, [notes]));
   }
 
   if (!result.pathVisible && result.pathHint) {

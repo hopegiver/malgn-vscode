@@ -1,4 +1,4 @@
-import { el } from './dom';
+import { el, clickable } from './dom';
 import { state, notifyChange } from './state';
 import type { SettingsTab } from './state';
 import { navigate } from './route';
@@ -56,20 +56,16 @@ export function renderSidebar(route: Route): HTMLElement {
     settingsGroup,
   ];
 
-  const logoutItem = el(
-    'div',
-    {
-      className: 'sidebar-nav-item sidebar-logout',
-      onClick: () => {
-        state.authenticated = false;
-        state.auth.userEmail = null;
-        state.auth.userName = null;
-        state.auth.error = null;
-        window.location.hash = '';
-        notifyChange();
-      },
-    },
-    ['로그아웃']
+  const logoutItem = clickable(
+    el('div', { className: 'sidebar-nav-item sidebar-logout' }, ['로그아웃']),
+    () => {
+      state.authenticated = false;
+      state.auth.userEmail = null;
+      state.auth.userName = null;
+      state.auth.error = null;
+      window.location.hash = '';
+      notifyChange();
+    }
   );
 
   return el('aside', { className: 'sidebar' }, [
@@ -139,28 +135,28 @@ function renderSessionsGroup(route: Route): HTMLElement {
 }
 
 function navItem(label: string, active: boolean, onClick: () => void): HTMLElement {
-  return el('div', { className: `sidebar-nav-item${active ? ' active' : ''}`, onClick }, [label]);
+  return clickable(el('div', { className: `sidebar-nav-item${active ? ' active' : ''}` }, [label]), onClick);
 }
 
-// 헤더 본문 클릭 = 화면 전환, 화살표 클릭 = 펼침/접힘만(전환 없음). 화살표는
-// el() 헬퍼가 이벤트 객체를 넘기지 않아 stopPropagation을 못 걸므로 직접 DOM으로
-// 만든다 — 그래야 화살표 클릭이 상위 row의 onClick(네비게이션)까지 트리거하지 않는다.
+// 헤더 본문 클릭/Enter = 화면 전환, 화살표 클릭/Enter = 펼침/접힘만(전환 없음).
+// 캐럿도 clickable()로 키보드 포커스·Enter/Space를 받되 stopPropagation:true를
+// 줘서 부모 row(clickable, 네비게이션)까지 이중으로 발동하지 않게 한다.
 function expandChevron(expanded: boolean, onToggle: () => void): HTMLElement {
-  const span = document.createElement('span');
-  span.className = 'sidebar-nav-chevron sidebar-nav-chevron-btn';
-  span.textContent = expanded ? '▾' : '▸';
-  span.addEventListener('click', (e) => {
-    e.stopPropagation();
-    onToggle();
-  });
-  return span;
+  return clickable(
+    el('span', { className: 'sidebar-nav-chevron sidebar-nav-chevron-btn' }, [expanded ? '▾' : '▸']),
+    onToggle,
+    { stopPropagation: true }
+  );
 }
 
 function expandableNavItem(label: string, active: boolean, onClick: () => void, expanded: boolean, onToggle: () => void): HTMLElement {
-  return el('div', { className: `sidebar-nav-item sidebar-nav-expandable${active ? ' active' : ''}`, onClick }, [
-    el('span', { className: 'sidebar-nav-group-label' }, [label]),
-    expandChevron(expanded, onToggle),
-  ]);
+  return clickable(
+    el('div', { className: `sidebar-nav-item sidebar-nav-expandable${active ? ' active' : ''}` }, [
+      el('span', { className: 'sidebar-nav-group-label' }, [label]),
+      expandChevron(expanded, onToggle),
+    ]),
+    onClick
+  );
 }
 
 function subList(
@@ -169,8 +165,8 @@ function subList(
   onViewAll: () => void
 ): HTMLElement {
   return el('div', { className: 'sidebar-subnav' }, [
-    ...items.map((s) => el('div', { className: `sidebar-subnav-item${s.active ? ' active' : ''}`, onClick: s.onClick }, [s.label])),
-    ...(viewAllLabel ? [el('div', { className: 'sidebar-subnav-item sidebar-subnav-viewall', onClick: onViewAll }, [viewAllLabel])] : []),
+    ...items.map((s) => clickable(el('div', { className: `sidebar-subnav-item${s.active ? ' active' : ''}` }, [s.label]), s.onClick)),
+    ...(viewAllLabel ? [clickable(el('div', { className: 'sidebar-subnav-item sidebar-subnav-viewall' }, [viewAllLabel]), onViewAll)] : []),
   ]);
 }
 
@@ -186,13 +182,12 @@ function navGroup(spec: NavGroupSpec): HTMLElement {
   // 수동 토글 상태이거나, 그 섹션이 현재 활성 라우트면 항상 펼쳐 보여준다.
   const expanded = spec.expanded || spec.active;
 
-  const header = el(
-    'div',
-    { className: `sidebar-nav-item sidebar-nav-group-header${spec.active ? ' active' : ''}`, onClick: spec.onToggle },
-    [
+  const header = clickable(
+    el('div', { className: `sidebar-nav-item sidebar-nav-group-header${spec.active ? ' active' : ''}` }, [
       el('span', { className: 'sidebar-nav-group-label' }, [spec.label]),
       el('span', { className: 'sidebar-nav-chevron' }, [expanded ? '▾' : '▸']),
-    ]
+    ]),
+    spec.onToggle
   );
 
   const children: HTMLElement[] = [header];

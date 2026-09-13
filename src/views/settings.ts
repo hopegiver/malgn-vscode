@@ -954,8 +954,8 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
 
   const form = el('form', { className: 'settings-form mcp-add-form' }, [
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['이름']), nameInput]),
-    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['transport']), transportSelect]),
-    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['target']), targetInput]),
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['전송 방식 (transport)']), transportSelect]),
+    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['대상 (target)']), targetInput]),
     argsField,
     envField,
     headerField,

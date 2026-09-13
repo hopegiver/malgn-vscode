@@ -229,7 +229,9 @@ function renderConfigStatusBanner(): HTMLElement | null {
   }
 
   const infoLine = el('div', { className: 'settings-form-hint' }, [
-    `감시 중인 workspace ${status.workspaces.length}개: ${status.workspaces.length > 0 ? status.workspaces.join(', ') : '없음'} (${status.configPath})`,
+    status.workspaces.length > 0
+      ? `감시 중인 workspace ${status.workspaces.length}개: ${status.workspaces.join(', ')} (${status.configPath})`
+      : `감시 중인 workspace 0개 (${status.configPath})`,
   ]);
   if (status.warnings.length === 0) return infoLine;
   return el('div', {}, [infoLine, el('div', { className: 'alert' }, [`⚠ 전역 설정 경고: ${status.warnings.join(' / ')}`])]);

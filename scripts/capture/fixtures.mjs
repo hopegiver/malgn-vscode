@@ -213,7 +213,10 @@ function buildDailyUsage() {
   const items = [];
   for (let i = 13; i >= 0; i--) {
     const d = new Date(Date.now() - i * DAY);
-    const date = d.toISOString().slice(0, 10);
+    // 앱은 프런트(views/usage.ts localDateKey)·백엔드(usage_stats/daily.rs
+    // local_date_key) 모두 로컬 날짜를 쓴다 — 여기서 UTC(toISOString)를 쓰면
+    // KST 00~09시 캡처에서 하루 어긋난 키가 생겨 "오늘" 데이터가 사라져 보인다.
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const base = 200_000 + Math.round(Math.sin(i) * 80_000) + (i === 0 ? 400_000 : 0);
     items.push({
       date,
