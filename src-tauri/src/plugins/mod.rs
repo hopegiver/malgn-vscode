@@ -10,6 +10,7 @@
 // id·마켓플레이스 id)만 들어온다 — 프론트엔드에 자유 텍스트 입력 필드가 없어
 // 임의 문자열이 인자로 들어갈 경로 자체가 없다.
 
+mod global;
 mod installed;
 mod marketplace;
 
@@ -27,6 +28,14 @@ pub async fn list_installed_plugins() -> Vec<installed::InstalledPlugin> {
 #[tauri::command]
 pub fn list_known_marketplaces() -> Vec<marketplace::MarketplaceInfo> {
     marketplace::read_known_marketplaces()
+}
+
+/// 플러그인과 무관하게 개인이 직접 만든 전역(user-level) 에이전트/스킬을
+/// 읽기 전용으로 조회한다. `list_known_marketplaces`처럼 스캔 대상이 소수
+/// 파일이라 sync로 충분하다.
+#[tauri::command]
+pub fn list_global_catalog() -> global::GlobalCatalog {
+    global::read_global_catalog()
 }
 
 #[derive(Serialize, Debug)]

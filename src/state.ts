@@ -4,7 +4,7 @@
 import type { ClaudeSessionRecord, SessionTranscript } from './sessionsApi';
 import type { WorkspaceProject, ProjectTreeNode, FilePreview } from './workspaceApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devToolsApi';
-import type { InstalledPlugin, MarketplaceInfo, CommandResult } from './catalogApi';
+import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } from './catalogApi';
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
 import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsApi';
@@ -198,6 +198,16 @@ export interface AppState {
     updatingAll: boolean;
     lastResult: Record<string, CommandResult | null>;
   };
+  // 전역(user-level) 에이전트/스킬 — 플러그인에 안 묶인 개인 항목
+  // (~/.claude/agents/*.md, ~/.claude/skills/*/SKILL.md). 조회+상태표시만 —
+  // enable/disable·삭제·편집 없음. status가 "invalid"인 항목은 화면에서 경고로
+  // 표시한다(list_global_catalog).
+  globalCatalog: {
+    data: GlobalCatalog | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+  };
   // 마켓플레이스 저장소 목록 — 실제 로컬 데이터(known_marketplaces.json). 새로고침
   // 버튼은 실제로 `claude plugin marketplace update`를 실행한다.
   marketplaces: {
@@ -311,6 +321,7 @@ export const state: AppState = {
     manualOpen: {},
   },
   catalog: { plugins: [], loading: false, error: null, loaded: false, autoUpdate: {}, updating: {}, updatingAll: false, lastResult: {} },
+  globalCatalog: { data: null, loading: false, error: null, loaded: false },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
   malgnAgentConfig: { status: null, loading: false, error: null, loaded: false },

@@ -9,8 +9,8 @@
 // 안내한다. "자동 업데이트" 토글만 순수 목업(로컬 UI 상태).
 import { el, showToast, toggleSwitch } from '../dom';
 import { state, notifyChange } from '../state';
-import { fetchInstalledPlugins, fetchKnownMarketplaces, updatePlugin } from '../catalogApi';
-import type { InstalledPlugin, CatalogEntryItem, CommandResult } from '../catalogApi';
+import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, updatePlugin } from '../catalogApi';
+import type { InstalledPlugin, CatalogEntryItem, CommandResult, GlobalEntry } from '../catalogApi';
 
 // 성공 결과 노트는 확인 후 후속 조치가 없으므로 잠시 보여준 뒤 자동으로 치운다.
 // 실패 노트는 메시지를 계속 봐야 하니 그대로 남긴다.
@@ -49,6 +49,22 @@ export async function loadCatalog(): Promise<void> {
     state.catalog.error = err instanceof Error ? err.message : '카탈로그를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
   } finally {
     state.catalog.loading = false;
+    notifyChange();
+  }
+}
+
+// 플러그인에 안 묶인 개인 전역 에이전트/스킬 — 조회 전용(enable/disable·삭제 없음).
+export async function loadGlobalCatalog(): Promise<void> {
+  state.globalCatalog.loading = true;
+  state.globalCatalog.error = null;
+  notifyChange();
+  try {
+    state.globalCatalog.data = await fetchGlobalCatalog();
+    state.globalCatalog.loaded = true;
+  } catch (err) {
+    state.globalCatalog.error = err instanceof Error ? err.message : '전역 에이전트/스킬을 불러오지 못했습니다.';
+  } finally {
+    state.globalCatalog.loading = false;
     notifyChange();
   }
 }
@@ -144,9 +160,18 @@ export function renderCatalogView(): HTMLElement {
             ),
           ]
         : []),
-      el('button', { className: 'btn', onClick: () => void loadCatalog(), disabled: state.catalog.loading }, [
-        state.catalog.loading ? '새로고침 중…' : '↻ 새로고침',
-      ]),
+      el(
+        'button',
+        {
+          className: 'btn',
+          onClick: () => {
+            void loadCatalog();
+            void loadGlobalCatalog();
+          },
+          disabled: state.catalog.loading,
+        },
+        [state.catalog.loading ? '새로고침 중…' : '↻ 새로고침']
+      ),
     ]),
   ]);
 
@@ -172,7 +197,68 @@ export function renderCatalogView(): HTMLElement {
     body.push(el('div', { className: 'plugin-list' }, state.catalog.plugins.map(renderPluginCard)));
   }
 
+  body.push(renderGlobalCatalogSection());
+
   return el('div', {}, [header, ...body]);
+}
+
+function renderGlobalCatalogSection(): HTMLElement {
+  const sectionHeader = el('div', { className: 'global-catalog-header' }, [
+    el('h2', { className: 'global-catalog-title' }, ['전역 에이전트/스킬']),
+    el('div', { className: 'page-subtitle' }, [
+      '플러그인에 속하지 않은 개인 전역 항목 — ~/.claude/agents · ~/.claude/skills (조회 전용)',
+    ]),
+  ]);
+
+  const gc = state.globalCatalog;
+  const contentChildren: HTMLElement[] = [];
+
+  if (gc.loading && !gc.loaded) {
+    contentChildren.push(
+      el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])])
+    );
+  } else if (gc.error) {
+    contentChildren.push(
+      el('div', { className: 'alert' }, [
+        el('span', {}, [`⚠ ${gc.error}`]),
+        el('button', { className: 'btn', onClick: () => void loadGlobalCatalog() }, ['다시 시도']),
+      ])
+    );
+  } else if (!gc.data || (gc.data.agents.length === 0 && gc.data.skills.length === 0)) {
+    contentChildren.push(
+      el('div', { className: 'state-block' }, [
+        el('div', { className: 'state-block-title' }, ['전역 에이전트/스킬이 없습니다']),
+        el('div', { className: 'state-block-desc' }, ['~/.claude/agents, ~/.claude/skills에 개인 항목이 없습니다.']),
+      ])
+    );
+  } else {
+    contentChildren.push(
+      el('div', { className: 'plugin-card-sections' }, [
+        globalEntrySection('에이전트', gc.data.agents),
+        globalEntrySection('스킬', gc.data.skills),
+      ])
+    );
+  }
+
+  return el('div', { className: 'global-catalog-section' }, [sectionHeader, ...contentChildren]);
+}
+
+function globalEntrySection(label: string, items: readonly GlobalEntry[]): HTMLElement {
+  return el('div', { className: 'plugin-section' }, [
+    el('div', { className: 'plugin-section-label' }, [`${label} ${items.length}개`]),
+    el('div', { className: 'plugin-entry-list' }, items.map(renderGlobalEntryRow)),
+  ]);
+}
+
+function renderGlobalEntryRow(item: GlobalEntry): HTMLElement {
+  const isInvalid = item.status === 'invalid';
+  return el('div', { className: 'plugin-entry-row' }, [
+    el('span', { className: 'plugin-entry-name' }, [
+      item.name,
+      ...(isInvalid ? [el('span', { className: 'global-entry-status invalid' }, [' ⚠ 형식 오류'])] : []),
+    ]),
+    ...(item.description ? [el('span', { className: 'plugin-entry-desc' }, [item.description])] : []),
+  ]);
 }
 
 function renderPluginCard(plugin: InstalledPlugin): HTMLElement {

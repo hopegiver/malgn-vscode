@@ -59,6 +59,7 @@ pub fn run() {
             dev_tools::open_manual_instruction,
             plugins::list_installed_plugins,
             plugins::list_known_marketplaces,
+            plugins::list_global_catalog,
             otel_settings::otel_settings_get,
             otel_settings::otel_settings_save,
             plugins::update_plugin,

@@ -44,7 +44,7 @@ import { renderSidebar } from './sidebar';
 import { renderLoginView } from './views/login';
 import { renderHomeView } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree } from './views/projects';
-import { renderCatalogView, loadCatalog, loadMarketplaces } from './views/catalog';
+import { renderCatalogView, loadCatalog, loadGlobalCatalog, loadMarketplaces } from './views/catalog';
 import { renderDevToolsView, loadDevTools } from './views/devTools';
 import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus, loadMcp, loadMcpCatalog } from './views/settings';
 import { renderUsageView, loadDailyUsage } from './views/usage';
@@ -141,6 +141,7 @@ function handleNavigation(): void {
   if (!state.sessions.loaded && !state.sessions.loading) void loadSessions();
   if (!state.devTools.loaded && !state.devTools.loading) void loadDevTools();
   if (!state.catalog.loaded && !state.catalog.loading) void loadCatalog();
+  if (!state.globalCatalog.loaded && !state.globalCatalog.loading) void loadGlobalCatalog();
   if (!state.marketplaces.loaded && !state.marketplaces.loading) void loadMarketplaces();
   if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
   if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
