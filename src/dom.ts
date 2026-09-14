@@ -107,6 +107,81 @@ export function runningDot(): HTMLElement {
   return dot;
 }
 
+// 모달 오버레이 — 배경 클릭 시 닫히되, "모달 박스 안(예: 제목 텍스트)에서
+// mousedown으로 드래그를 시작해 오버레이 위에서 mouseup"하는 경우에는 닫히지
+// 않아야 한다. el()의 onClick은 단순 'click' 리스너라 이 케이스를 못 막는다 —
+// click 이벤트의 target이 오버레이 자신이 되어(버블링이 아니라 직접 발생)
+// modalBox의 stopPropagation과 무관하게 오버레이 핸들러가 실행되기 때문이다.
+// 그래서 mousedown 시점에 "오버레이 자기 자신에서 시작했는가"를 기록해뒀다가
+// click 시점에 그 기록과 현재 target을 함께 확인한다. role="dialog"/aria-modal도
+// 여기서 함께 설정한다. (기존 4곳의 modal-overlay가 공통으로 겪던 버그를 승격.)
+export function createModalOverlay(modalBox: HTMLElement, onClose: () => void): HTMLElement {
+  modalBox.addEventListener('click', (e) => e.stopPropagation());
+
+  let downOnOverlay = false;
+  const overlay = el('div', { className: 'modal-overlay' }, [modalBox]);
+  overlay.addEventListener('mousedown', (e) => {
+    downOnOverlay = e.target === overlay;
+  });
+  overlay.addEventListener('click', (e) => {
+    if (downOnOverlay && e.target === overlay) onClose();
+    downOnOverlay = false;
+  });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  return overlay;
+}
+
+// 확인 다이얼로그 — window.confirm()을 대체한다. 이 앱의 Tauri v2 WKWebView
+// (macOS)에서는 @tauri-apps/plugin-dialog를 설치하지 않았고 네이티브 dialog
+// delegate도 연결돼 있지 않아 window.confirm()이 실제로는 다이얼로그를 띄우지
+// 못하고 조용히 false를 반환한다 — "삭제" 버튼을 눌러도 아무 반응이 없는 것처럼
+// 보이는 원인이었다. showToast처럼 #app 트리 바깥(document.body)에 직접 붙여서
+// 메인 render() 사이클(전체 재빌드)의 영향을 받지 않게 하고, createModalOverlay로
+// 배경 드래그 안전 닫힘을 재사용한다. ESC와 오버레이 바깥 클릭·닫기 버튼은 모두
+// 취소로 resolve(false)한다.
+export function confirmDialog(
+  message: string,
+  opts?: { readonly title?: string; readonly confirmLabel?: string; readonly cancelLabel?: string; readonly danger?: boolean }
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: boolean): void => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+      resolve(result);
+    };
+
+    const onKeydown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') finish(false);
+    };
+
+    const confirmBtn = el('button', { className: 'btn btn-primary', onClick: () => finish(true) }, [opts?.confirmLabel ?? '확인']);
+    confirmBtn.type = 'button';
+    if (opts?.danger) {
+      confirmBtn.style.background = 'var(--color-danger)';
+      confirmBtn.style.borderColor = 'var(--color-danger)';
+    }
+    const cancelBtn = el('button', { className: 'btn', onClick: () => finish(false) }, [opts?.cancelLabel ?? '취소']);
+    cancelBtn.type = 'button';
+
+    const modalBox = el('div', { className: 'modal-box' }, [
+      el('div', { className: 'modal-header' }, [
+        el('h2', { className: 'modal-title' }, [opts?.title ?? '확인']),
+        el('button', { className: 'modal-close-btn', onClick: () => finish(false) }, ['✕']),
+      ]),
+      el('div', { className: 'modal-body' }, [el('p', {}, [message]), el('div', { className: 'settings-form-actions' }, [confirmBtn, cancelBtn])]),
+    ]);
+
+    const overlay = createModalOverlay(modalBox, () => finish(false));
+    window.addEventListener('keydown', onKeydown);
+    document.body.appendChild(overlay);
+    confirmBtn.focus();
+  });
+}
+
 // 토스트 — 설정 저장 등 "실제로는 아무것도 안 하지만 사용자에게 반응은 보여줘야 하는"
 // 목업 액션의 피드백 채널. #app 트리 바깥(document.body 직속)에 붙여서 메인
 // render() 사이클(전체 재빌드)의 영향을 받지 않게 한다.

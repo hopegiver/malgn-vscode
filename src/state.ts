@@ -12,11 +12,12 @@ import type { AutonomyRunStatus } from './autonomyApi';
 import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
 import type { OtelSettings } from './otelApi';
 import type { MalgnAgentConfigStatus } from './configApi';
+import type { AppLinksStatus } from './appLinksApi';
 
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
-export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp';
+export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp' | 'applinks';
 export type CatalogTab = 'plugins' | 'global';
 
 // "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 두 조회를 (projectPath, id)
@@ -82,6 +83,7 @@ export interface AppState {
     projectsExpanded: boolean;
     sessionsExpanded: boolean;
     catalogExpanded: boolean;
+    appLinksExpanded: boolean;
   };
   // 목업이 아니라 실제 ~/.claude/sessions/*.json을 읽어온 값이 들어간다. live는
   // 파일시스템 워처 이벤트 구독이 실제로 성공했을 때만 true — 브라우저 폴백
@@ -272,6 +274,18 @@ export interface AppState {
     loaded: boolean;
     installingId: string | null;
   };
+  // 앱링크 — 사내/외부 웹 앱 바로가기(docs/design-app-links.md). status가 정본
+  // 응답 전체(links/warnings/limits 포함)를 담고, 파생값(활성 링크 목록)은
+  // 저장하지 않고 렌더 시점에 `status.links.filter(l => l.enabled)`로 계산한다.
+  // error는 커맨드 호출 자체가 실패한 경우(Tauri IPC 부재 등)에만 쓰인다 — 파일
+  // 손상은 status.ok/status.error로 표현된다.
+  appLinks: {
+    status: AppLinksStatus | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+    saving: boolean;
+  };
 }
 
 export const state: AppState = {
@@ -294,7 +308,7 @@ export const state: AppState = {
     previewLoading: false,
     previewError: null,
   },
-  sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false, catalogExpanded: false },
+  sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false, catalogExpanded: false, appLinksExpanded: true },
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
   sessionChat: {
     sessionId: null,
@@ -334,6 +348,7 @@ export const state: AppState = {
   malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editingAutonomy: false, editingWorkspaces: false, saving: false },
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null },
   mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
+  appLinks: { status: null, loading: false, error: null, loaded: false, saving: false },
 };
 
 type Listener = () => void;

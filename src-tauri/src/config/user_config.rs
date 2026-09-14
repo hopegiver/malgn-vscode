@@ -149,34 +149,9 @@ pub(crate) fn expand_tilde(entry: &str, home: Option<&Path>) -> Result<PathBuf, 
     ))
 }
 
-fn backup_path_for(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("malgn-agent.json");
-    path.with_file_name(format!("{file_name}.malgn-bak"))
-}
-
-/// 원자적 쓰기 — 같은 디렉터리에 임시 파일을 쓰고 `fs::rename`한다
-/// (`otel_settings.rs::write_atomically`와 동일 패턴 — 소비자가 2곳뿐이라
-/// 아직 공용 모듈로 뽑지 않는다).
-fn write_atomically(path: &Path, content: &str) -> Result<(), String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| "설정 파일의 상위 디렉터리를 확인할 수 없습니다.".to_string())?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("설정 디렉터리를 만들지 못했습니다: {e}"))?;
-    let tmp_name = format!(
-        ".{}.malgn-tmp-{}",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("malgn-agent.json"),
-        std::process::id()
-    );
-    let tmp_path = dir.join(tmp_name);
-    std::fs::write(&tmp_path, content).map_err(|e| format!("임시 파일을 쓰지 못했습니다: {e}"))?;
-    std::fs::rename(&tmp_path, path).map_err(|e| format!("설정 파일 교체에 실패했습니다: {e}"))?;
-    Ok(())
-}
+// 원자적 쓰기 + 백업 경로 유틸은 `crate::fs_atomic`로 추출됨(3번째 소비자인
+// `app_links`가 생기면서 공용 모듈화 — `docs/design-app-links.md` §2-4).
+use crate::fs_atomic::{backup_path_for, write_atomically};
 
 /// 순수 함수 — 주어진 경로에 저장한다(`otel_settings.rs::save_to_settings_file`과
 /// 동일한 백업+원자적 쓰기 패턴). 상위 디렉터리 생성 → 기존 파일 있으면

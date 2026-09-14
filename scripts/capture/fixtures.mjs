@@ -388,6 +388,35 @@ const JIRA_NORMAL = {
 };
 const JIRA_EMPTY = { connected: false };
 
+// ---------------- app_links_get / app_links_save / app_links_open ----------------
+const APP_LINKS_LIMITS = { maxLinks: 20, maxNameLength: 40, maxUrlLength: 2048, allowedSchemes: ['https', 'http'] };
+
+const APP_LINKS_NORMAL = {
+  ok: true,
+  error: null,
+  filePath: '/Users/dev/.claude/malgn-agent-apps.json',
+  fileExists: true,
+  links: [
+    { id: 'malgnai-hub-dashboard', name: 'malgnai-hub 대시보드', url: 'https://malgnai-hub.malgnsoft.workers.dev', enabled: true },
+    { id: 'jira-board', name: 'Jira 보드', url: 'https://malgnsoft.atlassian.net/jira/software/projects/MA/boards/3', enabled: true },
+    { id: 'grafana', name: 'Grafana 대시보드', url: 'https://grafana.malgnsoft.com', enabled: false },
+    { id: 'confluence', name: 'Confluence', url: 'https://malgnsoft.atlassian.net/wiki', enabled: true },
+    { id: 'legacy-intranet', name: '사내 인트라넷(레거시)', url: 'http://intranet.malgnsoft.local', enabled: false },
+  ],
+  warnings: [],
+  limits: APP_LINKS_LIMITS,
+};
+
+const APP_LINKS_EMPTY = {
+  ok: true,
+  error: null,
+  filePath: '/Users/dev/.claude/malgn-agent-apps.json',
+  fileExists: false,
+  links: [],
+  warnings: [],
+  limits: APP_LINKS_LIMITS,
+};
+
 // ---------------- 시나리오별 값 맵 (읽기 커맨드) ----------------
 export const READ_FIXTURES = {
   normal: {
@@ -412,6 +441,7 @@ export const READ_FIXTURES = {
     github_status: GITHUB_NORMAL,
     cloudflare_status: CLOUDFLARE_NORMAL,
     jira_status: JIRA_NORMAL,
+    app_links_get: APP_LINKS_NORMAL,
   },
   empty: {
     google_oauth_login: USER,
@@ -435,12 +465,15 @@ export const READ_FIXTURES = {
     github_status: GITHUB_EMPTY,
     cloudflare_status: CLOUDFLARE_EMPTY,
     jira_status: JIRA_EMPTY,
+    app_links_get: APP_LINKS_EMPTY,
   },
 };
 
 // action(write) 커맨드 — 캡처 흐름에서 직접 클릭하지 않지만, 방어적으로 안전한
 // 기본 응답을 채워 예기치 못한 호출에도 하네스가 멈추지 않게 한다.
 export const ACTION_DEFAULTS = {
+  app_links_open: null,
+  app_links_save: APP_LINKS_NORMAL,
   autonomy_delete_task: null,
   autonomy_save_task: null,
   autonomy_set_enabled: null,
@@ -489,4 +522,5 @@ export const ERROR_MESSAGES = {
   github_status: '`gh auth status` 실행에 실패했습니다.',
   cloudflare_status: '`wrangler whoami` 실행에 실패했습니다.',
   jira_status: '키체인에서 Jira 자격 증명을 읽지 못했습니다.',
+  app_links_get: '앱링크 설정 파일(malgn-agent-apps.json)을 파싱하지 못했습니다 (JSON 문법 오류).',
 };

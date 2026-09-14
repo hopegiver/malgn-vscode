@@ -31,7 +31,7 @@ export type Route =
   | { readonly kind: 'tasks-board' }
   | { readonly kind: 'tasks-detail'; readonly taskId: string };
 
-const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'jira', 'marketplace', 'mcp'];
+const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'jira', 'marketplace', 'mcp', 'applinks'];
 const CATALOG_TABS: readonly CatalogTab[] = ['plugins', 'global'];
 
 export function parseRoute(): Route {

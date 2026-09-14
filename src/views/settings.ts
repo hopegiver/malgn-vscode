@@ -1,9 +1,10 @@
-import { el, showToast, loadingBlock, errorBlock } from '../dom';
+import { el, showToast, loadingBlock, errorBlock, confirmDialog } from '../dom';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
 import type { OtelSettings } from '../otelApi';
 import { loadCatalog, loadMarketplaces } from './catalog';
+import { renderAppLinksPanel } from './appLinks';
 import { refreshMarketplaces } from '../catalogApi';
 import {
   fetchGithubStatus,
@@ -27,9 +28,10 @@ const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[]
   { key: 'jira', label: 'Jira 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
+  { key: 'applinks', label: '앱링크설정' },
 ];
 
-// 탭 전환 자체는 사이드바 하위메뉴가 담당한다(U-15) — 여기서는 동일한 6항목을
+// 탭 전환 자체는 사이드바 하위메뉴가 담당한다(U-15) — 여기서는 동일한 7항목을
 // 상단에 칩 탭으로 다시 그리지 않는다(두 벌 내비게이션 + 이중 하이라이트 제거).
 // TAB_META는 현재 탭 이름을 페이지 부제로 보여주는 용도로만 남는다.
 export function renderSettingsView(tab: SettingsTab): HTMLElement {
@@ -43,6 +45,7 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
   else if (tab === 'cloudflare') body = renderCloudflarePanel();
   else if (tab === 'jira') body = renderJiraPanel();
   else if (tab === 'marketplace') body = renderMarketplacePanel();
+  else if (tab === 'applinks') body = renderAppLinksPanel();
   else body = renderMcpPanel();
 
   return el('div', {}, [header, body]);
@@ -676,7 +679,7 @@ function renderMarketplacePanel(): HTMLElement {
 // ---------------- MCP 관리 (claude mcp CLI 위임, 읽기+추가/삭제) ----------------
 // 목록/상세는 `claude mcp` CLI를 실제로 위임 실행한 결과다(mcpApi.ts). 모델을
 // 호출하지 않는 순수 헬스체크라 빠르고 무료다. 삭제는 실제로 서버 등록을
-// 지우므로 확인(window.confirm) 후에만 실행한다. 추가 폼 펼침 상태는 다른
+// 지우므로 확인(confirmDialog) 후에만 실행한다. 추가 폼 펼침 상태는 다른
 // 화면 탭 전환과 무관한 순수 UI 상태라 자율업무 화면의 showAddForm과 같은
 // 방식으로 모듈 스코프 변수에 둔다.
 
@@ -797,7 +800,7 @@ let mcpAddFormOpen = false;
 let mcpAddPrefill: McpAddPrefill | null = null;
 
 async function handleRemoveMcp(server: McpServerSummary): Promise<void> {
-  if (!window.confirm(`"${server.name}" MCP 서버를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
+  if (!(await confirmDialog(`"${server.name}" MCP 서버를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`, { danger: true }))) return;
   try {
     await removeMcpServer(server.name);
     showToast(`"${server.name}" 서버를 삭제했습니다`);

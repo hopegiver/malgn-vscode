@@ -1,8 +1,10 @@
+mod app_links;
 mod autonomy;
 mod cli_launcher;
 mod cloudflare_integration;
 mod config;
 mod dev_tools;
+mod fs_atomic;
 mod github_integration;
 mod google_oauth;
 mod jira_integration;
@@ -50,6 +52,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            app_links::app_links_get,
+            app_links::app_links_save,
+            app_links::app_links_open,
             session_list::list_claude_sessions,
             workspace::list_workspace_projects,
             dev_tools::check_dev_tools,

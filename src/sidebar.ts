@@ -6,6 +6,7 @@ import type { Route } from './route';
 import { sortedSessions, sessionTitle, asString } from './views/sessions';
 import { sortedProjectsByRecency } from './views/projects';
 import { loadDailyUsage } from './views/usage';
+import { enabledAppLinks, openLink } from './views/appLinks';
 import { brandMark } from './brand';
 
 const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: string }[] = [
@@ -15,6 +16,7 @@ const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: strin
   { key: 'jira', label: 'Jira 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
+  { key: 'applinks', label: '앱링크설정' },
 ];
 
 const CATALOG_TABS: readonly { readonly key: CatalogTab; readonly label: string }[] = [
@@ -73,6 +75,7 @@ export function renderSidebar(route: Route): HTMLElement {
     }),
     catalogGroup,
     navItem('개발 환경', route.kind === 'dev-tools', () => navigate('#/dev-tools')),
+    renderAppLinksGroup(),
     settingsGroup,
   ];
 
@@ -148,6 +151,43 @@ function renderSessionsGroup(route: Route): HTMLElement {
       children.push(el('div', { className: 'sidebar-subnav' }, [el('div', { className: 'sidebar-subnav-empty' }, ['불러오는 중…'])]));
     } else {
       children.push(subList(items, state.sessions.items.length > SIDEBAR_SUBLIST_LIMIT ? '전체 보기 →' : null, () => navigate('#/sessions')));
+    }
+  }
+
+  return el('div', { className: 'sidebar-nav-group' }, children);
+}
+
+// 앱링크 — 대응하는 라우트가 없어(클릭 = 외부 브라우저 열기, 화면 전환 없음)
+// 항상 active:false다. navGroup()과 달리 헤더는 라우트를 갖지 않는 순수 토글
+// 헤더이고(navGroup의 헤더 구조를 그대로 복제), 로딩 중에는 프로젝트/세션
+// 그룹과 동일하게 "불러오는 중…"을 비클릭 항목으로 보여준다(설계 §6-2 —
+// subList()의 항목은 전부 clickable()로 감싸지므로 이 비클릭 상태만은 subList를
+// 거치지 않고 직접 그린다).
+function renderAppLinksGroup(): HTMLElement {
+  const expanded = state.sidebar.appLinksExpanded;
+
+  const header = clickable(
+    el('div', { className: 'sidebar-nav-item sidebar-nav-group-header' }, [
+      el('span', { className: 'sidebar-nav-group-label' }, ['앱링크']),
+      el('span', { className: 'sidebar-nav-chevron' }, [expanded ? '▾' : '▸']),
+    ]),
+    () => {
+      state.sidebar.appLinksExpanded = !expanded;
+      notifyChange();
+    }
+  );
+
+  const children: HTMLElement[] = [header];
+  if (expanded) {
+    if (!state.appLinks.loaded) {
+      children.push(el('div', { className: 'sidebar-subnav' }, [el('div', { className: 'sidebar-subnav-empty' }, ['불러오는 중…'])]));
+    } else {
+      const links = enabledAppLinks();
+      const items =
+        links.length > 0
+          ? links.map((l) => ({ label: l.name, active: false, onClick: () => void openLink(l) }))
+          : [{ label: '앱링크설정에서 추가 →', active: false, onClick: () => navigate('#/settings/applinks') }];
+      children.push(subList(items, null, () => {}));
     }
   }
 

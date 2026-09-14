@@ -74,6 +74,7 @@ import {
   loadAutonomousTasks,
   leaveAutonomousTasksListView,
 } from './views/autonomousTasks';
+import { loadAppLinks } from './views/appLinks';
 
 // 순수 렌더 — 상태를 바꾸지 않는다. onStateChange(renderApp)로 구독되어 있어
 // notifyChange() 한 번으로 항상 최신 상태가 반영된다.
@@ -167,6 +168,9 @@ function handleNavigation(): void {
   if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
   if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
   if (!state.mcpCatalog.loaded && !state.mcpCatalog.loading) void loadMcpCatalog();
+  // 사이드바가 전 화면에 상시 렌더되므로 탭 진입을 기다리지 않고 미리 불러온다
+  // (docs/design-app-links.md §6-3).
+  if (!state.appLinks.loaded && !state.appLinks.loading) void loadAppLinks();
   // OTel 자동 세팅 — 설정 화면에 한 번도 안 들어간 사용자를 위해 세션당 정확히
   // 한 번만 조건 확인 후 시도한다(조건 3개는 views/settings.ts의
   // ensureOtelAutoConfigured 참고).

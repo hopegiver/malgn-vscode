@@ -280,32 +280,9 @@ fn validate_value(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn backup_path_for(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("settings.json");
-    path.with_file_name(format!("{file_name}.malgn-bak"))
-}
-
-/// 원자적 쓰기 — 같은 디렉터리에 임시 파일을 쓰고 `fs::rename`한다.
-fn write_atomically(path: &Path, content: &str) -> Result<(), String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| "설정 파일의 상위 디렉터리를 확인할 수 없습니다.".to_string())?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("설정 디렉터리를 만들지 못했습니다: {e}"))?;
-    let tmp_name = format!(
-        ".{}.malgn-tmp-{}",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("settings.json"),
-        std::process::id()
-    );
-    let tmp_path = dir.join(tmp_name);
-    std::fs::write(&tmp_path, content).map_err(|e| format!("임시 파일을 쓰지 못했습니다: {e}"))?;
-    std::fs::rename(&tmp_path, path).map_err(|e| format!("설정 파일 교체에 실패했습니다: {e}"))?;
-    Ok(())
-}
+// 원자적 쓰기 + 백업 경로 유틸은 `crate::fs_atomic`로 추출됨(3번째 소비자인
+// `app_links`가 생기면서 공용 모듈화 — `docs/design-app-links.md` §2-4).
+use crate::fs_atomic::{backup_path_for, write_atomically};
 
 /// 저장 알고리즘(순서 고정, 설계 §7):
 /// 1. 파싱 실패 시 즉시 `Err` — 파싱 못 한 파일을 절대 덮어쓰지 않는다.

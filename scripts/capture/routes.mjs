@@ -237,4 +237,17 @@ export const AUTH_ROUTES = [
       return verdict((await count(page, '.mcp-row')) >= 2, 'mcp-row가 2개 미만');
     },
   },
+  {
+    id: 'settings-applinks',
+    hash: '#/settings/applinks',
+    label: '설정 · 앱링크',
+    verify: async (page, scenario) => {
+      const text = await bodyText(page);
+      if (scenario === 'loading') return verdict(text.includes('불러오는 중'), '로딩 마커 미검출');
+      if (text.includes('불러오는 중')) return verdict(false, '"불러오는 중" 마커가 남아있음(로딩 상태가 해소되지 않음)');
+      if (scenario === 'error') return verdict(await hasAlert(page), '.alert 미검출');
+      if (scenario === 'empty') return verdict(text.includes('아직 등록된 앱링크가 없습니다'), '빈 상태 문구 미검출');
+      return verdict((await count(page, '.mcp-row')) === 5, 'mcp-row(앱링크 행) 개수가 픽스처(5)와 다름');
+    },
+  },
 ];
