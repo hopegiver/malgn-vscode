@@ -1,5 +1,7 @@
 // ---------------- 프로세스 실행 ----------------
 
+use crate::process_util::SilentCommand;
+
 /// `dev_tools.rs`/`autonomy.rs`가 이미 정한 관례(결정 5.2 — 상수를 공유하지
 /// 않고 각자 별도로 둔다) 그대로 이 모듈에도 독립적으로 둔다.
 pub(super) const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
@@ -54,7 +56,8 @@ pub(super) fn run_mcp_command_with_env(
         .env("PATH", &path_env)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .silent();
     if let Some((key, value)) = extra_env {
         command.env(key, value);
     }

@@ -33,6 +33,41 @@ pub fn pid_alive(_pid: u32) -> bool {
     true
 }
 
+// ---------------- Windows 콘솔 창 억제 ----------------
+// GUI(콘솔 없는) 부모 프로세스가 콘솔 서브프로세스(claude/gh/wrangler 등)를
+// spawn하면 Windows는 그 자식을 위해 새 콘솔 창을 자동으로 띄운다(부모에게
+// 콘솔이 없으므로 자식이 붙을 콘솔을 새로 만드는 것). 배경에서 조용히 실행돼야
+// 하는 호출부(버전 조회·상태 조회·claude 턴 실행 등)마다 이 대응을 19곳에
+// 복붙하지 않도록, `Command`에 `.silent()`를 추가하는 확장 trait 하나로
+// 모은다. Windows가 아닌 플랫폼에서는 완전한 no-op이라 크로스 플랫폼 호출부가
+// 분기 없이 그대로 체이닝할 수 있다.
+//
+// 적용 대상이 아닌 것: 사용자가 "직접 보고 조작하도록" 여는 창(예:
+// `cli_launcher::open_terminal_command`가 여는 macOS Terminal.app) — 그런
+// 호출부는 이 trait을 쓰지 않는다.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 백그라운드로 조용히 실행할 자식 프로세스에 붙이는 확장.
+pub trait SilentCommand {
+    /// Windows에서 `CREATE_NO_WINDOW`를 적용해 콘솔 창이 뜨지 않게 한다.
+    /// 다른 플랫폼에서는 아무 일도 하지 않는다.
+    fn silent(&mut self) -> &mut Self;
+}
+
+impl SilentCommand for std::process::Command {
+    #[cfg(windows)]
+    fn silent(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+
+    #[cfg(not(windows))]
+    fn silent(&mut self) -> &mut Self {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +111,35 @@ mod tests {
     fn very_unlikely_pid_is_not_alive() {
         // i32::MAX에 가까운 pid는 실제 OS가 배정할 가능성이 사실상 없다.
         assert!(!pid_alive(u32::MAX - 1));
+    }
+
+    /// `.silent()`를 체이닝해도 정상적으로 spawn·실행된다 — 크로스플랫폼에서
+    /// (Windows는 `CREATE_NO_WINDOW`를 실제로 적용하고, 그 외 플랫폼은
+    /// no-op이라) 회귀 없이 통과해야 한다. Windows에서 플래그 비트 자체를
+    /// 검증하려면 자식의 콘솔 유무를 관찰해야 하는데 CI 환경에 따라
+    /// 신뢰하기 어려워, 여기서는 "이 확장을 붙여도 정상 동작한다"는 계약만
+    /// 고정한다.
+    #[cfg(unix)]
+    #[test]
+    fn silent_does_not_break_spawning_on_unix() {
+        let output = std::process::Command::new("echo")
+            .arg("ok")
+            .silent()
+            .output()
+            .expect("echo 실행 실패");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn silent_does_not_break_spawning_on_windows() {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "echo ok"])
+            .silent()
+            .output()
+            .expect("cmd 실행 실패");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
     }
 }

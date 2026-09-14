@@ -10,6 +10,7 @@
 //    사용자가 실제로 보고 조작할 수 있는 Terminal.app 창에서 실행되도록 연다.
 //    (macOS 전용 — 이 프로젝트는 macOS 데스크톱 앱이다.)
 
+use crate::process_util::SilentCommand;
 use std::path::Path;
 use std::process::Command;
 
@@ -24,7 +25,12 @@ pub fn resolve_binary(absolute_candidates: &[&str], bare_name: &str) -> Option<S
     }
     // PATH 폴백: 존재 여부만 확인하고(버전 출력 내용은 쓰지 않는다) 성공하면 이름을
     // 그대로 돌려준다. 여기서 실행하는 것은 --version 뿐이라 안전하다(비대화형).
-    if Command::new(bare_name).arg("--version").output().is_ok() {
+    if Command::new(bare_name)
+        .arg("--version")
+        .silent()
+        .output()
+        .is_ok()
+    {
         return Some(bare_name.to_string());
     }
     None
@@ -63,6 +69,11 @@ pub struct TerminalLaunchResult {
 /// `shell_command`는 이 모듈 안에서 절대경로로 해석된 신뢰 가능한 바이너리 + 고정
 /// 서브커맨드 문자열만 넘어온다(사용자 자유입력 없음) — AppleScript 문자열 이스케이프는
 /// 그럼에도 방어적으로 처리한다.
+///
+/// 이 함수는 의도적으로 `SilentCommand::silent()`를 쓰지 않는다 — 이 파일 안의
+/// 다른 호출부(`resolve_binary`)와 달리 이건 macOS 전용이고(Windows에서 콘솔
+/// 창이 뜨는 문제와 무관), 애초에 이 창을 사용자가 보고 조작하게 하는 것이
+/// 목적이라 "조용히" 실행하면 기능 자체가 무너진다.
 pub fn open_terminal_command(shell_command: &str) -> Result<(), String> {
     let escaped = shell_command.replace('\\', "\\\\").replace('"', "\\\"");
     let script =

@@ -6,6 +6,7 @@
 // 않는다(평문 토큰을 stdout으로 낸다).
 
 use crate::cli_launcher::{open_terminal_command, resolve_binary, TerminalLaunchResult};
+use crate::process_util::SilentCommand;
 use serde::Serialize;
 use serde_json::Value;
 use std::process::Command;
@@ -41,6 +42,7 @@ pub fn github_status() -> GithubStatus {
 
     let logged_in = Command::new(&gh)
         .args(["auth", "status"])
+        .silent()
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -54,6 +56,7 @@ pub fn github_status() -> GithubStatus {
 
     let profile = Command::new(&gh)
         .args(["api", "user"])
+        .silent()
         .output()
         .ok()
         .filter(|o| o.status.success())

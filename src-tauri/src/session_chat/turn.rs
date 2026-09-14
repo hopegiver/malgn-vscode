@@ -13,6 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use super::transcript::representative_arg;
+use crate::process_util::SilentCommand;
 
 const MAX_CONCURRENT_TOTAL: usize = 3;
 
@@ -166,6 +167,7 @@ pub(crate) fn kill_process_group_with_grace(pid: u32) {
 pub(crate) fn kill_process_group_with_grace(pid: u32) {
     let _ = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .silent()
         .output();
 }
 
@@ -277,6 +279,7 @@ pub(crate) fn run_turn(
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
+    command.silent();
     #[cfg(unix)]
     command.process_group(0);
 

@@ -28,6 +28,7 @@
 use crate::cli_launcher::{
     open_terminal_command, resolve_binary_expand_home, TerminalLaunchResult,
 };
+use crate::process_util::SilentCommand;
 use serde::Serialize;
 use std::process::Command;
 
@@ -100,7 +101,7 @@ pub fn cloudflare_status() -> CloudflareStatus {
         };
     };
 
-    let output = Command::new(&wrangler).arg("whoami").output();
+    let output = Command::new(&wrangler).arg("whoami").silent().output();
     match output {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);

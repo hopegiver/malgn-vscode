@@ -1,6 +1,7 @@
 // ==================== 5. 버전 문자열 정규화(결정 4) ====================
 
 use super::DevTool;
+use crate::process_util::SilentCommand;
 use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -218,6 +219,9 @@ pub(crate) fn run_process_with_timeout_cancellable(
     // 필요) — Windows에는 이 개념 자체가 없어 이 호출도 없다(CommandExt는 unix 전용).
     #[cfg(unix)]
     command.process_group(0);
+    // 버전 조회·도구 설치 등 전부 백그라운드 실행이라 Windows에서 콘솔 창이
+    // 뜨면 안 된다(non-Windows에서는 no-op).
+    command.silent();
 
     let mut child = match command.spawn() {
         Ok(c) => c,

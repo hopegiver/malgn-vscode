@@ -14,6 +14,7 @@ mod global;
 mod installed;
 mod marketplace;
 
+use crate::process_util::SilentCommand;
 use serde::Serialize;
 
 /// `check_dev_tools`(dev_tools.rs)와 동일한 이유·관용구 — sync 커맨드가
@@ -44,8 +45,31 @@ pub(crate) struct CommandResult {
     message: String,
 }
 
+/// `mcp_manager/process.rs`와 동일한 이유(결정 5.2 — 상수 비공유)로 독립적으로 둔다.
+const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    "~/.local/bin/claude",
+];
+
 fn run_claude_command(args: &[&str]) -> CommandResult {
-    match std::process::Command::new("claude").args(args).output() {
+    let Some(resolved) =
+        crate::cli_launcher::resolve_binary_expand_home(&CLAUDE_PATH_CANDIDATES, "claude")
+    else {
+        return CommandResult {
+            success: false,
+            message: "claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패)."
+                .to_string(),
+        };
+    };
+    let path_env = crate::dev_tools::build_child_path_env(Some(&resolved));
+
+    match std::process::Command::new(&resolved)
+        .args(args)
+        .env("PATH", &path_env)
+        .silent()
+        .output()
+    {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
