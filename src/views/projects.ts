@@ -2,7 +2,7 @@
 // 이 화면은 이제 목업이 아니다 — Rust 커맨드 list_workspace_projects()가 실제
 // ~/workspace 아래를 스캔한 결과를 그대로 쓴다(workspaceApi.ts, src-tauri/src/lib.rs
 // 주석 참고). "세션목록"에 이은 이 앱의 두 번째 실동작 화면.
-import { el, clickable, showToast } from '../dom';
+import { el, clickable, showToast, createModalOverlay } from '../dom';
 import { state, notifyChange } from '../state';
 import type { ArchiveStatus } from '../state';
 import { fetchWorkspaceProjects, fetchProjectTree, fetchFilePreview } from '../workspaceApi';
@@ -211,7 +211,7 @@ function renderWorkspacesEditForm(status: MalgnAgentConfigStatus): HTMLElement {
 }
 
 // sessions.ts의 renderMetaModal과 동일한 구조 — 배경 클릭·ESC·닫기 버튼 3가지
-// 경로로 닫힌다.
+// 경로로 닫힌다. 오버레이 생성은 dom.ts의 createModalOverlay로 공용화했다.
 function renderWorkspacesModal(status: MalgnAgentConfigStatus): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
@@ -220,12 +220,7 @@ function renderWorkspacesModal(status: MalgnAgentConfigStatus): HTMLElement {
     ]),
     el('div', { className: 'modal-body' }, [renderWorkspacesEditForm(status)]),
   ]);
-  modalBox.addEventListener('click', (e) => e.stopPropagation());
-
-  const overlay = el('div', { className: 'modal-overlay', onClick: closeWorkspacesModal }, [modalBox]);
-  overlay.setAttribute('role', 'dialog');
-  overlay.setAttribute('aria-modal', 'true');
-  return overlay;
+  return createModalOverlay(modalBox, closeWorkspacesModal);
 }
 
 export function renderProjectsListView(): HTMLElement {

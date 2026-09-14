@@ -9,7 +9,7 @@
 // .claude/logs/autonomy/<날짜>/ 아래 로그 파일에 남는다(설계 §9) — 그래서 상세
 // 화면은 "마지막 실행 1건"의 요약/로그 경로만 보여주고, 히스토리 목록을 그리지
 // 않는다.
-import { el, showToast, toggleSwitch } from '../dom';
+import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog } from '../dom';
 import { state, notifyChange } from '../state';
 import type { AutonomousTask } from '../state';
 import {
@@ -44,9 +44,6 @@ const BOARD_COLUMNS: readonly { readonly key: BoardColumn; readonly label: strin
 
 const RUN_STATUS_LABEL: Readonly<Record<AutonomyRunStatus, string>> = { success: '성공', failed: '실패', timeout: '타임아웃' };
 
-// 폼 표시 여부만 다루는 모듈 로컬 UI 상태 — 전역 state까지 갈 필요는 없다.
-let showAddForm = false;
-
 // 전역 설정 편집 모달 — 열림 상태 자체는 이 화면 전용 값이라 기존 전역 state
 // (state.malgnAgentConfig.editingAutonomy)를 그대로 재사용하지만(sessions.ts의
 // metaModalOpen과 달리 다른 화면과 공유되지 않는다), ESC 리스너는 sessions.ts
@@ -66,11 +63,57 @@ function closeAutonomyConfigModal(): void {
   notifyChange();
 }
 
+// "새 자율업무" / "자율업무 수정" 겸용 모달 — editingTask가 null이면 추가 모드,
+// 채워져 있으면 그 task를 프리필한 수정 모드다(제출 시 같은 id로 upsert).
+// 목록 화면의 헤더 버튼과 상세 화면의 "수정" 버튼이 둘 다 이 모달을 연다 —
+// 열림 상태를 이 화면 전용 값이라 전역 state까지 보낼 필요는 없다(config
+// 모달과 달리 다른 화면과 공유되지 않으므로 모듈 로컬로 충분하다).
+let taskFormModal: { readonly editingTask: AutonomousTask | null } | null = null;
+let taskFormModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function detachTaskFormModalEscHandler(): void {
+  if (taskFormModalEscHandler) {
+    window.removeEventListener('keydown', taskFormModalEscHandler);
+    taskFormModalEscHandler = null;
+  }
+}
+
+function openTaskFormModal(editingTask: AutonomousTask | null): void {
+  taskFormModal = { editingTask };
+  notifyChange();
+}
+
+function closeTaskFormModal(): void {
+  taskFormModal = null;
+  detachTaskFormModalEscHandler();
+  notifyChange();
+}
+
+// 목록/상세 렌더 함수 양쪽에서 공유하는 attach-and-render 헬퍼 — 열려 있지
+// 않으면 ESC 리스너를 정리하고 null을 반환, 열려 있으면 필요 시 리스너를 붙이고
+// 모달 엘리먼트를 반환한다.
+function renderTaskFormModalIfOpen(): HTMLElement | null {
+  if (!taskFormModal) {
+    detachTaskFormModalEscHandler();
+    return null;
+  }
+  if (!taskFormModalEscHandler) {
+    taskFormModalEscHandler = (e) => {
+      if (e.key === 'Escape') closeTaskFormModal();
+    };
+    window.addEventListener('keydown', taskFormModalEscHandler);
+  }
+  return renderTaskFormModal(taskFormModal.editingTask);
+}
+
 // 자율업무 화면을 완전히 떠날 때(다른 라우트로 이동) main.ts에서 호출한다 —
-// 모달이 열려 있었다면 window에 남은 ESC 리스너를 정리한다.
+// 열려 있던 모달(전역 설정 / 추가·수정)이 있었다면 window에 남은 ESC 리스너를
+// 정리한다.
 export function leaveAutonomousTasksListView(): void {
   state.malgnAgentConfig.editingAutonomy = false;
   detachAutonomyConfigModalEscHandler();
+  taskFormModal = null;
+  detachTaskFormModalEscHandler();
 }
 
 // ---------------- (projectPath, taskId) 복합키 ----------------
@@ -392,6 +435,8 @@ function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
 
 // sessions.ts의 renderMetaModal과 동일한 구조(modal-overlay/modal-box/modal-header
 // +modal-close-btn/modal-body) — 배경 클릭·ESC·닫기 버튼 3가지 경로로 닫힌다.
+// 오버레이 생성 자체는 dom.ts의 createModalOverlay로 공용화했다(드래그 중 바깥으로
+// 나가도 닫히지 않는 안전 처리 포함).
 function renderConfigEditModal(status: MalgnAgentConfigStatus): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
@@ -400,12 +445,7 @@ function renderConfigEditModal(status: MalgnAgentConfigStatus): HTMLElement {
     ]),
     el('div', { className: 'modal-body' }, [renderConfigEditForm(status)]),
   ]);
-  modalBox.addEventListener('click', (e) => e.stopPropagation());
-
-  const overlay = el('div', { className: 'modal-overlay', onClick: closeAutonomyConfigModal }, [modalBox]);
-  overlay.setAttribute('role', 'dialog');
-  overlay.setAttribute('aria-modal', 'true');
-  return overlay;
+  return createModalOverlay(modalBox, closeAutonomyConfigModal);
 }
 
 // ---------------- 실시간 런타임 갱신 (이벤트 구독, 실패 시 폴링 열화) ----------------
@@ -456,7 +496,7 @@ async function handleToggleTask(task: AutonomousTask): Promise<void> {
 }
 
 async function handleDeleteTask(task: AutonomousTask, afterDelete?: () => void): Promise<void> {
-  if (!window.confirm(`"${task.name}" 자율업무를 삭제할까요? 되돌릴 수 없습니다.`)) return;
+  if (!(await confirmDialog(`"${task.name}" 자율업무를 삭제할까요? 되돌릴 수 없습니다.`, { danger: true }))) return;
   try {
     await deleteAutonomyTask(task.projectPath, task.id);
     state.autonomousTasks.items = state.autonomousTasks.items.filter((t) => !(t.projectPath === task.projectPath && t.id === task.id));
@@ -479,20 +519,7 @@ function tabsRow(active: 'list' | 'board'): HTMLElement {
 // ---------------- 목록 탭 ----------------
 
 export function renderAutonomousTasksListView(): HTMLElement {
-  // V-06: 폼이 열린 상태에서 라벨만 "취소"로 바뀌고 className은 primary
-  // 그대로라 화면에서 가장 강조된 버튼이 "취소"가 됐다. 열린 상태에서는
-  // 보조 버튼으로 낮춘다.
-  const addToggleBtn = el(
-    'button',
-    {
-      className: showAddForm ? 'btn' : 'btn btn-primary',
-      onClick: () => {
-        showAddForm = !showAddForm;
-        notifyChange();
-      },
-    },
-    [showAddForm ? '취소' : '+ 새 자율업무']
-  );
+  const addBtn = el('button', { className: 'btn btn-primary', onClick: () => openTaskFormModal(null) }, ['+ 새 자율업무']);
   const configEditToggleBtn = renderConfigEditToggleBtn();
 
   const header = el('div', { className: 'page-header' }, [
@@ -500,14 +527,13 @@ export function renderAutonomousTasksListView(): HTMLElement {
       el('h1', { className: 'page-title' }, ['자율업무']),
       el('div', { className: 'page-subtitle' }, [`등록된 자율업무 ${state.autonomousTasks.items.length}개`]),
     ]),
-    el('div', { className: 'devtool-header-actions' }, [addToggleBtn, ...(configEditToggleBtn ? [configEditToggleBtn] : [])]),
+    el('div', { className: 'devtool-header-actions' }, [addBtn, ...(configEditToggleBtn ? [configEditToggleBtn] : [])]),
   ]);
 
   const body: HTMLElement[] = [];
   const configBanner = renderConfigStatusBanner();
   if (configBanner) body.push(configBanner);
   body.push(tabsRow('list'));
-  if (showAddForm) body.push(renderAddForm());
 
   if (state.autonomousTasks.loading && state.autonomousTasks.items.length === 0) {
     body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]));
@@ -537,6 +563,9 @@ export function renderAutonomousTasksListView(): HTMLElement {
   } else {
     detachAutonomyConfigModalEscHandler();
   }
+
+  const taskFormModalEl = renderTaskFormModalIfOpen();
+  if (taskFormModalEl) rootChildren.push(taskFormModalEl);
 
   return el('div', {}, rootChildren);
 }
@@ -572,41 +601,63 @@ function renderTaskRow(task: AutonomousTask): HTMLElement {
   main.setAttribute('role', 'button');
   main.setAttribute('tabindex', '0');
 
+  const editBtn = el('button', { className: 'btn', onClick: () => openTaskFormModal(task) }, ['수정']);
   const deleteBtn = el('button', { className: 'btn', onClick: () => void handleDeleteTask(task) }, ['삭제']);
   deleteBtn.style.color = 'var(--color-danger)';
 
   return el('div', { className: 'task-row' }, [
     main,
-    el('div', { className: 'task-row-actions' }, [toggleSwitch(task.enabled, () => void handleToggleTask(task)), deleteBtn]),
+    el('div', { className: 'task-row-actions' }, [toggleSwitch(task.enabled, () => void handleToggleTask(task)), editBtn, deleteBtn]),
   ]);
 }
 
-function renderAddForm(): HTMLElement {
+// 추가/수정 겸용 폼 — editingTask가 있으면 그 값으로 프리필하고 제출 시 같은
+// id·projectPath로 upsert한다(project는 바꿀 수 없다 — 바꾸면 원래 프로젝트의
+// autonomy.json에 고아 항목이 남고 다른 쪽엔 중복 항목이 생기므로, 그 경우엔
+// 삭제 후 새로 등록하도록 안내한다).
+function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
   const nameInput = document.createElement('input');
   nameInput.className = 'settings-input';
   nameInput.placeholder = '예: 야간 프로젝트 상태 점검';
+  nameInput.value = editingTask?.name ?? '';
 
   const promptInput = document.createElement('textarea');
   promptInput.className = 'settings-input task-form-textarea';
   promptInput.placeholder = '이 자율업무가 실제로 실행될 때 claude에게 전달할 지시문을 구체적으로 적으세요';
   promptInput.rows = 4;
+  promptInput.value = editingTask?.prompt ?? '';
 
-  const projectSelect = document.createElement('select');
-  projectSelect.className = 'settings-input';
-  const projects = state.dashboard.projects;
-  if (projects.length === 0) {
-    const placeholderOption = document.createElement('option');
-    placeholderOption.value = '';
-    placeholderOption.textContent = state.dashboard.loading ? '프로젝트 목록 불러오는 중…' : '등록된 프로젝트가 없습니다';
-    projectSelect.appendChild(placeholderOption);
-    projectSelect.disabled = true;
+  let projectSelect: HTMLSelectElement | null = null;
+  let projectField: HTMLElement;
+  if (editingTask) {
+    const projectDisplay = document.createElement('input');
+    projectDisplay.className = 'settings-input';
+    projectDisplay.value = editingTask.projectName;
+    projectDisplay.disabled = true;
+    projectField = el('label', { className: 'settings-field' }, [
+      el('span', { className: 'settings-field-label' }, ['프로젝트']),
+      projectDisplay,
+      el('div', { className: 'settings-form-hint' }, ['등록된 프로젝트는 수정할 수 없습니다. 다른 프로젝트로 옮기려면 삭제 후 새로 등록하세요.']),
+    ]);
   } else {
-    for (const project of projects) {
-      const optionEl = document.createElement('option');
-      optionEl.value = project.path;
-      optionEl.textContent = project.name;
-      projectSelect.appendChild(optionEl);
+    projectSelect = document.createElement('select');
+    projectSelect.className = 'settings-input';
+    const projects = state.dashboard.projects;
+    if (projects.length === 0) {
+      const placeholderOption = document.createElement('option');
+      placeholderOption.value = '';
+      placeholderOption.textContent = state.dashboard.loading ? '프로젝트 목록 불러오는 중…' : '등록된 프로젝트가 없습니다';
+      projectSelect.appendChild(placeholderOption);
+      projectSelect.disabled = true;
+    } else {
+      for (const project of projects) {
+        const optionEl = document.createElement('option');
+        optionEl.value = project.path;
+        optionEl.textContent = project.name;
+        projectSelect.appendChild(optionEl);
+      }
     }
+    projectField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['프로젝트']), projectSelect]);
   }
 
   const intervalSelect = document.createElement('select');
@@ -617,7 +668,7 @@ function renderAddForm(): HTMLElement {
     optionEl.textContent = opt.label;
     intervalSelect.appendChild(optionEl);
   }
-  intervalSelect.value = '60';
+  intervalSelect.value = editingTask ? String(editingTask.interval) : '60';
   const intervalHint = el('div', { className: 'settings-form-hint' }, [
     '이전 실행이 끝난 뒤(시작 시점이 아니라 완료 시점 기준) 이 시간만큼 지나야 다시 실행됩니다.',
   ]);
@@ -625,6 +676,7 @@ function renderAddForm(): HTMLElement {
   const subagentInput = document.createElement('input');
   subagentInput.className = 'settings-input';
   subagentInput.placeholder = '예: malgn-agent:qa-engineer (비워두면 지정 안 함)';
+  subagentInput.value = editingTask?.subagent ?? '';
 
   const limits = state.malgnAgentConfig.status?.limits ?? null;
   const defaultTimeout = state.malgnAgentConfig.status?.autonomy.defaultTimeout ?? null;
@@ -634,6 +686,7 @@ function renderAddForm(): HTMLElement {
   timeoutInput.min = String(limits?.minTimeout ?? 1);
   timeoutInput.max = String(limits?.maxTimeout ?? 480);
   timeoutInput.placeholder = defaultTimeout !== null ? `비우면 전역 기본값(${defaultTimeout}분) 사용` : '비우면 전역 기본값 사용';
+  timeoutInput.value = editingTask?.timeout !== null && editingTask?.timeout !== undefined ? String(editingTask.timeout) : '';
   const timeoutHint = el('div', { className: 'settings-form-hint' }, [
     limits ? `선택 항목입니다. 범위: ${limits.minTimeout}~${limits.maxTimeout}분.` : '선택 항목입니다 — 비우면 전역 기본값을 사용합니다.',
   ]);
@@ -648,22 +701,24 @@ function renderAddForm(): HTMLElement {
   const form = el('form', { className: 'settings-form task-add-form' }, [
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['이름']), nameInput]),
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['프롬프트']), promptInput]),
-    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['프로젝트']), projectSelect]),
+    projectField,
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['실행 주기']), intervalSelect, intervalHint]),
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['서브에이전트 (선택)']), subagentInput]),
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['타임아웃 (분, 선택)']), timeoutInput, timeoutHint]),
-    startupHint,
+    ...(editingTask ? [] : [startupHint]),
   ]);
 
-  const saveBtn = el('button', { className: 'btn btn-primary' }, ['저장']);
+  const saveBtn = el('button', { className: 'btn btn-primary' }, [editingTask ? '저장' : '추가']);
   saveBtn.type = 'submit';
-  form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
+  const cancelBtn = el('button', { className: 'btn', onClick: closeTaskFormModal }, ['취소']);
+  cancelBtn.type = 'button';
+  form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn, cancelBtn]));
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const name = nameInput.value.trim();
     const prompt = promptInput.value.trim();
-    const projectPath = projectSelect.value;
+    const projectPath = editingTask ? editingTask.projectPath : (projectSelect?.value ?? '');
     if (!name || !prompt || !projectPath) {
       showToast('이름, 프롬프트, 프로젝트를 모두 입력하세요');
       return;
@@ -681,12 +736,12 @@ function renderAddForm(): HTMLElement {
     }
 
     const task: AutonomyTaskConfig = {
-      id: crypto.randomUUID(),
+      id: editingTask ? editingTask.id : crypto.randomUUID(),
       name,
       prompt,
       subagent: subagentInput.value.trim() || null,
       interval: Number(intervalSelect.value),
-      enabled: true,
+      enabled: editingTask ? editingTask.enabled : true,
       timeout,
     };
 
@@ -694,8 +749,8 @@ function renderAddForm(): HTMLElement {
     void (async () => {
       try {
         await saveAutonomyTask(projectPath, task);
-        showToast(`"${name}" 자율업무가 추가되었습니다`);
-        showAddForm = false;
+        showToast(editingTask ? `"${name}" 자율업무를 수정했습니다` : `"${name}" 자율업무가 추가되었습니다`);
+        closeTaskFormModal();
         await loadAutonomousTasks();
       } catch (err) {
         showToast(err instanceof Error ? err.message : '자율업무 저장에 실패했습니다');
@@ -705,7 +760,22 @@ function renderAddForm(): HTMLElement {
     })();
   });
 
-  return el('div', { className: 'settings-card task-add-card' }, [form]);
+  return form;
+}
+
+// sessions.ts의 renderMetaModal / 이 파일의 renderConfigEditModal과 동일한
+// 구조(modal-overlay/modal-box/modal-header+modal-close-btn/modal-body) —
+// 배경 클릭·ESC·닫기 버튼·취소 버튼 4가지 경로로 닫힌다. 오버레이 생성은
+// dom.ts의 createModalOverlay로 공용화했다.
+function renderTaskFormModal(editingTask: AutonomousTask | null): HTMLElement {
+  const modalBox = el('div', { className: 'modal-box' }, [
+    el('div', { className: 'modal-header' }, [
+      el('h2', { className: 'modal-title' }, [editingTask ? '자율업무 수정' : '새 자율업무 추가']),
+      el('button', { className: 'modal-close-btn', onClick: closeTaskFormModal }, ['✕']),
+    ]),
+    el('div', { className: 'modal-body' }, [renderTaskForm(editingTask)]),
+  ]);
+  return createModalOverlay(modalBox, closeTaskFormModal);
 }
 
 // ---------------- 진행상황판 탭 ----------------
@@ -800,8 +870,10 @@ export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
     ['삭제']
   );
   deleteBtn.style.color = 'var(--color-danger)';
+  const editBtn = el('button', { className: 'btn', onClick: () => openTaskFormModal(task) }, ['수정']);
   const actions = el('div', { className: 'settings-form-actions' }, [
     el('button', { className: 'btn', onClick: () => void handleToggleTask(task) }, [task.enabled ? '중지' : '재개']),
+    editBtn,
     deleteBtn,
   ]);
 
@@ -823,5 +895,9 @@ export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
     '과거 실행 이력 전체는 이 화면에 쌓이지 않습니다 — 프로젝트의 .claude/logs/autonomy/ 아래 날짜별 로그 파일에서 확인하세요.',
   ]);
 
-  return el('div', {}, [back, header, actions, overview, logHint]);
+  const detailChildren: HTMLElement[] = [back, header, actions, overview, logHint];
+  const taskFormModalEl = renderTaskFormModalIfOpen();
+  if (taskFormModalEl) detailChildren.push(taskFormModalEl);
+
+  return el('div', {}, detailChildren);
 }

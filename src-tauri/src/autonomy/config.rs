@@ -307,4 +307,44 @@ mod tests {
         task.timeout = Some(999_999);
         assert_eq!(effective_timeout_minutes(&task, None), MAX_TIMEOUT_MINUTES);
     }
+
+    // "삭제가 안 되는 것 같다" 조사용 회귀 테스트 — 실제 임시 디렉터리에 진짜
+    // 파일 I/O로 저장→삭제를 왕복시켜본다(`mod.rs`의 `autonomy_save_task`/
+    // `autonomy_delete_task`가 하는 일과 완전히 동일한 순서: 읽기 → upsert/retain
+    // → 쓰기). `resolve_validated_project_root`의 workspace 경로 검증은 별도
+    // 관심사라 여기서는 다루지 않는다(그쪽은 mod.rs의 기존 테스트가 담당).
+    #[test]
+    fn save_then_delete_roundtrip_actually_removes_task_from_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "malgn-autonomy-test-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1) 저장(autonomy_save_task와 동일한 순서: read -> upsert -> write)
+        let mut file = read_autonomy_file(&dir);
+        upsert_task(&mut file, sample_task("roundtrip-1"));
+        write_autonomy_file(&dir, &file).expect("첫 저장은 성공해야 한다");
+
+        // 2) 실제로 디스크에 반영됐는지 새로 읽어 확인
+        let reloaded = read_autonomy_file(&dir);
+        assert_eq!(reloaded.tasks.len(), 1, "저장 직후 파일에서 다시 읽으면 task가 있어야 한다");
+        assert_eq!(reloaded.tasks[0].id, "roundtrip-1");
+
+        // 3) 삭제(autonomy_delete_task와 동일한 순서: read -> retain -> write)
+        let mut file = read_autonomy_file(&dir);
+        file.tasks.retain(|t| t.id != "roundtrip-1");
+        write_autonomy_file(&dir, &file).expect("삭제 후 저장은 성공해야 한다");
+
+        // 4) 다시 읽어서 실제로 사라졌는지 확인 — 여기서 남아 있으면 "삭제가 안
+        // 된다"는 사용자 보고가 파일 계층 버그임이 확정된다.
+        let after_delete = read_autonomy_file(&dir);
+        assert_eq!(after_delete.tasks.len(), 0, "삭제 후 다시 읽으면 task가 사라져 있어야 한다");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

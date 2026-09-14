@@ -5,7 +5,7 @@
 // 보여주고(read_session_transcript, 설계 docs/design/session-chat.md), 하단
 // 입력창으로 보낸 메시지는 그 세션에 실제로 이어져(send_session_message) 응답이
 // 스트리밍된다.
-import { el, liveIndicator, runningDot } from '../dom';
+import { el, liveIndicator, runningDot, createModalOverlay } from '../dom';
 import { state, notifyChange } from '../state';
 import {
   fetchClaudeSessions,
@@ -702,13 +702,9 @@ function renderMetaModal(session: ClaudeSessionRecord): HTMLElement {
       el('div', { className: 'session-detail-fields' }, Object.entries(session).map(([key, value]) => renderFieldRow(key, value))),
     ]),
   ]);
-  // 배경(overlay) 클릭은 닫지만 모달 박스 내부 클릭은 전파를 막아 닫히지 않게 한다.
-  modalBox.addEventListener('click', (e) => e.stopPropagation());
-
-  const overlay = el('div', { className: 'modal-overlay', onClick: closeMetaModal }, [modalBox]);
-  overlay.setAttribute('role', 'dialog');
-  overlay.setAttribute('aria-modal', 'true');
-  return overlay;
+  // 오버레이 생성(배경 클릭 시 닫힘, 드래그로 바깥에 나가도 안 닫힘)은 dom.ts의
+  // createModalOverlay로 공용화했다.
+  return createModalOverlay(modalBox, closeMetaModal);
 }
 
 // sessionId(세션 상세)와 projectPath(draft — 아직 세션이 없음) 양쪽에서

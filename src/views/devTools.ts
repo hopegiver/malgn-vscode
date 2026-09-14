@@ -21,7 +21,7 @@
 // timedOut/notSupported 3+ 상태로 구분해 보여준다 — exit code만으로 "성공"을
 // 주장하지 않는다(verified=false는 명령이 성공을 보고했지만 버전 재조회로 확인하지
 // 못했다는 뜻이며, 성공으로 표시하지 않는다).
-import { el, showToast } from '../dom';
+import { el, showToast, confirmDialog } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
@@ -272,9 +272,7 @@ async function handleUpdateAll(): Promise<void> {
   let confirmedInstallTargets: DevToolStatus[] = [];
   if (installTargets.length > 0) {
     const names = installTargets.map((t) => t.name).join(', ');
-    const proceed = window.confirm(
-      `다음 ${installTargets.length}개 도구를 설치합니다: ${names}\n계속할까요?`
-    );
+    const proceed = await confirmDialog(`다음 ${installTargets.length}개 도구를 설치합니다: ${names}\n계속할까요?`);
     if (proceed) {
       confirmedInstallTargets = installTargets;
     }
