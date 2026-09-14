@@ -4,7 +4,7 @@
 //   '' / '#/'            -> home (로그인 직후 첫 화면 — 전체 요약 대시보드)
 //   '#/projects'         -> projects-list (로컬 프로젝트 목록, 옛 "대시보드")
 //   '#/project/<path>'   -> projects-detail
-//   '#/catalog'          -> catalog (플러그인 단위 카드 목록 — 탭 없음)
+//   '#/catalog[/<tab>]'  -> catalog (탭: plugins 기본값 | global)
 //   '#/dev-tools'        -> dev-tools (로컬 CLI 도구 버전 — 실제 조회)
 //   '#/settings[/<tab>]' -> settings
 //   '#/usage'            -> usage
@@ -14,13 +14,13 @@
 //   '#/tasks'            -> tasks-list (자율업무 목록 탭, 목업)
 //   '#/tasks/board'      -> tasks-board (자율업무 진행상황판 탭)
 //   '#/tasks/item/<id>'  -> tasks-detail
-import type { SettingsTab } from './state';
+import type { SettingsTab, CatalogTab } from './state';
 
 export type Route =
   | { readonly kind: 'home' }
   | { readonly kind: 'projects-list' }
   | { readonly kind: 'projects-detail'; readonly path: string }
-  | { readonly kind: 'catalog' }
+  | { readonly kind: 'catalog'; readonly tab: CatalogTab }
   | { readonly kind: 'dev-tools' }
   | { readonly kind: 'settings'; readonly tab: SettingsTab }
   | { readonly kind: 'usage' }
@@ -32,6 +32,7 @@ export type Route =
   | { readonly kind: 'tasks-detail'; readonly taskId: string };
 
 const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'jira', 'marketplace', 'mcp'];
+const CATALOG_TABS: readonly CatalogTab[] = ['plugins', 'global'];
 
 export function parseRoute(): Route {
   const hash = window.location.hash;
@@ -48,7 +49,9 @@ export function parseRoute(): Route {
   }
 
   if (hash.startsWith('#/catalog')) {
-    return { kind: 'catalog' };
+    const seg = hash.split('/')[2] as CatalogTab | undefined;
+    const tab = seg && CATALOG_TABS.includes(seg) ? seg : 'plugins';
+    return { kind: 'catalog', tab };
   }
 
   if (hash.startsWith('#/dev-tools')) {

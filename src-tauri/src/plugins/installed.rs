@@ -76,6 +76,54 @@ fn entry_items(names: Vec<String>, prefix: &str) -> Vec<CatalogEntryItem> {
         .collect()
 }
 
+// knowledge/ 는 agents·skills와 달리 2단 구조다(카테고리 폴더 안에 실제 .md 문서들이
+// 있고, 최상위에도 README.md 같은 인덱스 문서가 있을 수 있다). 그래서 디렉터리 이름이
+// 아니라 트리 전체를 재귀적으로 훑어 .md 파일만 모아야 실제 "지식 항목" 개수가 나온다.
+// 카테고리 폴더 안에 .html/.png 같은 비-md 첨부 자산이 섞여 있어도(예:
+// design/html-style-guide/) 그런 파일은 .md가 아니므로 자연히 제외된다.
+fn list_knowledge_md_relative_stems(dir: &Path) -> Vec<String> {
+    fn walk(base: &Path, current: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(current) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            if file_name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else if path.extension().and_then(|x| x.to_str()) == Some("md") {
+                if let Ok(rel) = path.strip_prefix(base) {
+                    let rel_no_ext = rel.with_extension("");
+                    if let Some(rel_str) = rel_no_ext.to_str() {
+                        out.push(rel_str.replace('\\', "/"));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut names = Vec::new();
+    walk(dir, dir, &mut names);
+    names.sort();
+    names
+}
+
+fn knowledge_entry_items(names: Vec<String>) -> Vec<CatalogEntryItem> {
+    names
+        .into_iter()
+        .map(|n| CatalogEntryItem {
+            id: format!("knowledge-{}", n.replace('/', "-")),
+            name: n,
+            description: String::new(),
+        })
+        .collect()
+}
+
 pub(crate) fn read_installed_plugins() -> Vec<InstalledPlugin> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
@@ -141,7 +189,9 @@ pub(crate) fn read_installed_plugins() -> Vec<InstalledPlugin> {
 
         let agents = entry_items(list_md_file_stems(&install_dir.join("agents")), "agent");
         let skills = entry_items(list_dir_names(&install_dir.join("skills")), "skill");
-        let knowledge = entry_items(list_dir_names(&install_dir.join("knowledge")), "knowledge");
+        let knowledge = knowledge_entry_items(list_knowledge_md_relative_stems(
+            &install_dir.join("knowledge"),
+        ));
 
         results.push(InstalledPlugin {
             id: plugin_id.clone(),
@@ -175,5 +225,12 @@ mod tests {
         assert!(!p.agents.is_empty(), "agents 목록이 비어 있습니다");
         assert!(!p.skills.is_empty(), "skills 목록이 비어 있습니다");
         assert!(!p.knowledge.is_empty(), "knowledge 목록이 비어 있습니다");
+        // knowledge는 카테고리 폴더 개수(16)가 아니라 그 안의 .md 파일 개수(이 머신
+        // 기준 42)여야 한다 — 재귀 집계가 제대로 되는지 느슨하게 확인한다.
+        assert!(
+            p.knowledge.len() > 20,
+            "knowledge 항목이 {}개뿐입니다 — 카테고리 폴더 개수만 세고 있을 가능성이 있습니다",
+            p.knowledge.len()
+        );
     }
 }

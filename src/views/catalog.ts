@@ -9,6 +9,7 @@
 // 안내한다.
 import { el, showToast } from '../dom';
 import { state, notifyChange } from '../state';
+import type { CatalogTab } from '../state';
 import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, updatePlugin } from '../catalogApi';
 import type { InstalledPlugin, CatalogEntryItem, CommandResult, GlobalEntry } from '../catalogApi';
 
@@ -139,16 +140,21 @@ async function handleUpdateAll(): Promise<void> {
   notifyChange();
 }
 
-export function renderCatalogView(): HTMLElement {
+// 탭 전환 자체는 사이드바 하위메뉴가 담당한다(U-15와 동일 패턴) — 여기서는
+// 페이지 상단에 별도 탭 칩을 다시 그리지 않는다. tab은 부제·액션 버튼·본문
+// 분기에만 쓰인다.
+export function renderCatalogView(tab: CatalogTab): HTMLElement {
+  const subtitle =
+    tab === 'plugins'
+      ? state.catalog.loaded
+        ? `설치된 플러그인 ${state.catalog.plugins.length}개 (user scope) — 버전 관리 단위는 플러그인입니다`
+        : '불러오는 중…'
+      : '플러그인에 속하지 않은 개인 전역 항목 — ~/.claude/agents · ~/.claude/skills (조회 전용)';
+
   const header = el('div', { className: 'page-header' }, [
-    el('div', {}, [
-      el('h1', { className: 'page-title' }, ['카탈로그']),
-      el('div', { className: 'page-subtitle' }, [
-        state.catalog.loaded ? `설치된 플러그인 ${state.catalog.plugins.length}개 (user scope) — 버전 관리 단위는 플러그인입니다` : '불러오는 중…',
-      ]),
-    ]),
+    el('div', {}, [el('h1', { className: 'page-title' }, ['카탈로그']), el('div', { className: 'page-subtitle' }, [subtitle])]),
     el('div', { className: 'devtool-header-actions' }, [
-      ...(state.catalog.plugins.length > 1
+      ...(tab === 'plugins' && state.catalog.plugins.length > 1
         ? [
             el(
               'button',
@@ -172,6 +178,12 @@ export function renderCatalogView(): HTMLElement {
     ]),
   ]);
 
+  const body: HTMLElement[] = tab === 'plugins' ? renderPluginsTabBody() : [renderGlobalCatalogSection()];
+
+  return el('div', {}, [header, ...body]);
+}
+
+function renderPluginsTabBody(): HTMLElement[] {
   const body: HTMLElement[] = [];
 
   if (state.catalog.loading && !state.catalog.loaded) {
@@ -194,19 +206,12 @@ export function renderCatalogView(): HTMLElement {
     body.push(el('div', { className: 'plugin-list' }, state.catalog.plugins.map(renderPluginCard)));
   }
 
-  body.push(renderGlobalCatalogSection());
-
-  return el('div', {}, [header, ...body]);
+  return body;
 }
 
+// 페이지 헤더 부제가 이미 이 섹션의 설명을 보여주므로(global 탭 진입 시) 여기서
+// 같은 문구를 중복해 다시 그리지 않는다.
 function renderGlobalCatalogSection(): HTMLElement {
-  const sectionHeader = el('div', { className: 'global-catalog-header' }, [
-    el('h2', { className: 'global-catalog-title' }, ['전역 에이전트/스킬']),
-    el('div', { className: 'page-subtitle' }, [
-      '플러그인에 속하지 않은 개인 전역 항목 — ~/.claude/agents · ~/.claude/skills (조회 전용)',
-    ]),
-  ]);
-
   const gc = state.globalCatalog;
   const contentChildren: HTMLElement[] = [];
 
@@ -237,7 +242,7 @@ function renderGlobalCatalogSection(): HTMLElement {
     );
   }
 
-  return el('div', { className: 'global-catalog-section' }, [sectionHeader, ...contentChildren]);
+  return el('div', { className: 'global-catalog-section' }, contentChildren);
 }
 
 function globalEntrySection(label: string, items: readonly GlobalEntry[]): HTMLElement {

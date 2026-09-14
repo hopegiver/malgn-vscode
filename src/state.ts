@@ -17,6 +17,7 @@ export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
 export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp';
+export type CatalogTab = 'plugins' | 'global';
 
 // "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 두 조회를 (projectPath, id)
 // 키로 병합한 결과다. id~enabled까지는 설정(autonomy.json, upsert 대상 그대로),
@@ -80,6 +81,7 @@ export interface AppState {
     settingsExpanded: boolean;
     projectsExpanded: boolean;
     sessionsExpanded: boolean;
+    catalogExpanded: boolean;
   };
   // 목업이 아니라 실제 ~/.claude/sessions/*.json을 읽어온 값이 들어간다. live는
   // 파일시스템 워처 이벤트 구독이 실제로 성공했을 때만 true — 브라우저 폴백
@@ -289,7 +291,7 @@ export const state: AppState = {
     previewLoading: false,
     previewError: null,
   },
-  sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false },
+  sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false, catalogExpanded: false },
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
   sessionChat: {
     sessionId: null,

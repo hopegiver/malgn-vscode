@@ -95,7 +95,7 @@ function renderApp(): void {
       content = renderProjectsDetailView(route.path);
       break;
     case 'catalog':
-      content = renderCatalogView();
+      content = renderCatalogView(route.tab);
       break;
     case 'dev-tools':
       content = renderDevToolsView();

@@ -1,6 +1,6 @@
 import { el, clickable } from './dom';
 import { state, notifyChange } from './state';
-import type { SettingsTab } from './state';
+import type { SettingsTab, CatalogTab } from './state';
 import { navigate } from './route';
 import type { Route } from './route';
 import { sortedSessions, sessionTitle, asString } from './views/sessions';
@@ -15,6 +15,11 @@ const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: strin
   { key: 'jira', label: 'Jira 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
+];
+
+const CATALOG_TABS: readonly { readonly key: CatalogTab; readonly label: string }[] = [
+  { key: 'plugins', label: '플러그인 카탈로그' },
+  { key: 'global', label: '전역 카탈로그' },
 ];
 
 const SIDEBAR_SUBLIST_LIMIT = 6;
@@ -39,6 +44,21 @@ export function renderSidebar(route: Route): HTMLElement {
     })),
   });
 
+  const catalogGroup = navGroup({
+    label: '카탈로그',
+    active: route.kind === 'catalog',
+    expanded: state.sidebar.catalogExpanded,
+    onToggle: () => {
+      state.sidebar.catalogExpanded = !state.sidebar.catalogExpanded;
+      notifyChange();
+    },
+    subItems: CATALOG_TABS.map((t) => ({
+      label: t.label,
+      active: route.kind === 'catalog' && route.tab === t.key,
+      onClick: () => navigate(`#/catalog/${t.key}`),
+    })),
+  });
+
   const mainItems: HTMLElement[] = [
     navItem('대시보드', route.kind === 'home', () => navigate('#/')),
     renderProjectsGroup(route),
@@ -51,7 +71,7 @@ export function renderSidebar(route: Route): HTMLElement {
       // 여기서 직접 부른다(겹쳐 쌓이지 않게 loading 가드).
       if (!state.dailyUsage.loading) void loadDailyUsage();
     }),
-    navItem('카탈로그', route.kind === 'catalog', () => navigate('#/catalog')),
+    catalogGroup,
     navItem('개발 환경', route.kind === 'dev-tools', () => navigate('#/dev-tools')),
     settingsGroup,
   ];
