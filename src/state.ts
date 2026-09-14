@@ -231,16 +231,19 @@ export interface AppState {
     loaded: boolean;
     saving: boolean;
   };
-  // 전역 설정 파일(~/.claude/malgn-agent.json) 상태 — workspaces가 자율업무·
-  // 프로젝트 스캔 범위 그 자체라, 자율업무 화면(views/autonomousTasks.ts) 상단에
-  // 상시 표시한다("이 프로젝트가 왜 안 보이지"를 설명하는 근거). editing은 편집
-  // 폼 펼침 여부(순수 UI 상태), saving은 저장 요청 진행 중 여부다.
+  // 전역 설정 파일(~/.claude/malgn-agent.json) 상태 — 자율업무 화면(autonomy·
+  // logs 필드)과 프로젝트 화면(workspaces 필드)이 이 하나의 slice를 함께
+  // 조회·표시한다. 저장 API가 4개 필드를 항상 통째로 덮어쓰는 풀 오버라이트라,
+  // 두 화면이 각자 편집하지 않는 필드는 이 status의 현재값을 그대로 실어
+  // 보내야 한다. editingAutonomy/editingWorkspaces는 각 화면의 편집 폼 펼침
+  // 여부(순수 UI 상태, 화면별로 독립), saving은 저장 요청 진행 중 여부다.
   malgnAgentConfig: {
     status: MalgnAgentConfigStatus | null;
     loading: boolean;
     error: string | null;
     loaded: boolean;
-    editing: boolean;
+    editingAutonomy: boolean;
+    editingWorkspaces: boolean;
     saving: boolean;
   };
   // MCP 관리 — `claude mcp` CLI를 위임 실행해 등록된 MCP 서버 목록/연결 상태를
@@ -328,7 +331,7 @@ export const state: AppState = {
   globalCatalog: { data: null, loading: false, error: null, loaded: false },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
-  malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editing: false, saving: false },
+  malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editingAutonomy: false, editingWorkspaces: false, saving: false },
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null },
   mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
 };

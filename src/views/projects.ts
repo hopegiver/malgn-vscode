@@ -2,11 +2,14 @@
 // 이 화면은 이제 목업이 아니다 — Rust 커맨드 list_workspace_projects()가 실제
 // ~/workspace 아래를 스캔한 결과를 그대로 쓴다(workspaceApi.ts, src-tauri/src/lib.rs
 // 주석 참고). "세션목록"에 이은 이 앱의 두 번째 실동작 화면.
-import { el, clickable } from '../dom';
+import { el, clickable, showToast } from '../dom';
 import { state, notifyChange } from '../state';
 import type { ArchiveStatus } from '../state';
 import { fetchWorkspaceProjects, fetchProjectTree, fetchFilePreview } from '../workspaceApi';
 import type { WorkspaceProject, ProjectTreeNode } from '../workspaceApi';
+import { saveMalgnAgentConfig } from '../configApi';
+import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
+import { loadMalgnAgentConfigStatus } from './autonomousTasks';
 import { navigate } from '../route';
 
 const BADGE_META: Readonly<Record<ArchiveStatus, { readonly label: string; readonly cls: string }>> = {
@@ -53,6 +56,11 @@ export async function loadProjects(): Promise<void> {
     state.dashboard.loading = false;
     notifyChange();
   }
+
+  // 전역 설정(workspaces 편집)을 이 화면에서도 쓴다 — 자율업무 화면을 아직
+  // 한 번도 안 열었으면 state.malgnAgentConfig.status가 비어 있으므로 여기서도
+  // 독립적으로 갱신한다(목록 조회 실패와 무관하게).
+  if (!state.malgnAgentConfig.loaded) void loadMalgnAgentConfigStatus();
 }
 
 function renderSkeletonGrid(): HTMLElement {
@@ -88,6 +96,138 @@ function renderProjectCard(project: WorkspaceProject): HTMLElement {
   ]);
 }
 
+// 세션 메타데이터 모달(sessions.ts)과 동일한 패턴 — 열림 상태는 기존 전역
+// state(state.malgnAgentConfig.editingWorkspaces)를 재사용하고, ESC 리스너만
+// 모듈 스코프로 둔다.
+let workspacesModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function detachWorkspacesModalEscHandler(): void {
+  if (workspacesModalEscHandler) {
+    window.removeEventListener('keydown', workspacesModalEscHandler);
+    workspacesModalEscHandler = null;
+  }
+}
+
+function closeWorkspacesModal(): void {
+  state.malgnAgentConfig.editingWorkspaces = false;
+  detachWorkspacesModalEscHandler();
+  notifyChange();
+}
+
+// 프로젝트 화면을 완전히 떠날 때(다른 라우트로 이동) main.ts에서 호출한다 —
+// 모달이 열려 있었다면 window에 남은 ESC 리스너를 정리한다.
+export function leaveProjectsListView(): void {
+  state.malgnAgentConfig.editingWorkspaces = false;
+  detachWorkspacesModalEscHandler();
+}
+
+// 헤더의 "workspace 설정" 버튼 — 항상 열기만 하는 단일 버튼이다(닫기는 모달
+// 자체의 X/배경클릭/ESC로만 한다). 전역 설정이 로드돼 있고 에러가 없을 때만
+// 노출한다(자율업무 화면의 renderConfigEditToggleBtn과 동일한 조건).
+function renderWorkspacesToggleBtn(): HTMLElement | null {
+  const cfg = state.malgnAgentConfig;
+  if (cfg.error || !cfg.status || !cfg.status.ok) return null;
+  return el(
+    'button',
+    {
+      className: 'btn',
+      onClick: () => {
+        state.malgnAgentConfig.editingWorkspaces = true;
+        notifyChange();
+      },
+    },
+    ['workspace 설정']
+  );
+}
+
+// 자율업무 화면의 handleSaveMalgnAgentConfig와는 별도 함수다 — 그쪽은 성공 시
+// editingAutonomy를 닫는데, 이 화면은 editingWorkspaces를 닫아야 한다. 저장
+// API가 4개 필드 전체를 항상 덮어쓰는 풀 오버라이트라 이 화면이 건드리지
+// 않는 autonomy/logs는 현재 로드된 status 값을 그대로 실어 보낸다.
+async function handleSaveWorkspaces(workspaces: readonly string[]): Promise<void> {
+  const current = state.malgnAgentConfig.status;
+  state.malgnAgentConfig.saving = true;
+  notifyChange();
+  try {
+    const payload: MalgnAgentConfigInput = {
+      workspaces,
+      autonomy: current?.autonomy ?? { concurrency: 1, defaultTimeout: 30 },
+      logs: current?.logs ?? { retentionDays: 30 },
+    };
+    state.malgnAgentConfig.status = await saveMalgnAgentConfig(payload);
+    closeWorkspacesModal();
+    showToast('전역 설정을 저장했습니다.');
+  } catch (err) {
+    showToast(`전역 설정 저장에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.malgnAgentConfig.saving = false;
+    notifyChange();
+  }
+}
+
+function renderWorkspacesEditForm(status: MalgnAgentConfigStatus): HTMLElement {
+  const workspacesInput = document.createElement('textarea');
+  workspacesInput.id = 'malgn-config-workspaces';
+  workspacesInput.className = 'settings-input';
+  workspacesInput.rows = 4;
+  workspacesInput.value = status.workspaces.join('\n');
+  workspacesInput.autocomplete = 'off';
+
+  const form = el('form', { className: 'settings-form' }, [
+    el('div', { className: 'settings-form-hint' }, [`전역 설정 파일(${status.configPath})의 workspace 목록을 직접 수정합니다.`]),
+    el('label', { className: 'settings-field' }, [
+      el('span', { className: 'settings-field-label' }, ['Workspaces (한 줄에 하나씩)']),
+      workspacesInput,
+      el('div', { className: 'settings-form-hint' }, ['자율업무·프로젝트 화면이 스캔할 절대경로를 한 줄에 하나씩 입력하세요. 빈 줄은 무시됩니다.']),
+    ]),
+  ]);
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const workspaces = workspacesInput.value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    void handleSaveWorkspaces(workspaces);
+  });
+
+  const saveBtn = el('button', { className: 'btn btn-primary', disabled: state.malgnAgentConfig.saving }, [
+    state.malgnAgentConfig.saving ? '저장 중…' : '저장',
+  ]);
+  saveBtn.type = 'submit';
+  const cancelBtn = el(
+    'button',
+    {
+      className: 'btn',
+      disabled: state.malgnAgentConfig.saving,
+      onClick: closeWorkspacesModal,
+    },
+    ['취소']
+  );
+  cancelBtn.type = 'button';
+  form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn, cancelBtn]));
+
+  return form;
+}
+
+// sessions.ts의 renderMetaModal과 동일한 구조 — 배경 클릭·ESC·닫기 버튼 3가지
+// 경로로 닫힌다.
+function renderWorkspacesModal(status: MalgnAgentConfigStatus): HTMLElement {
+  const modalBox = el('div', { className: 'modal-box' }, [
+    el('div', { className: 'modal-header' }, [
+      el('h2', { className: 'modal-title' }, ['Workspace 설정']),
+      el('button', { className: 'modal-close-btn', onClick: closeWorkspacesModal }, ['✕']),
+    ]),
+    el('div', { className: 'modal-body' }, [renderWorkspacesEditForm(status)]),
+  ]);
+  modalBox.addEventListener('click', (e) => e.stopPropagation());
+
+  const overlay = el('div', { className: 'modal-overlay', onClick: closeWorkspacesModal }, [modalBox]);
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  return overlay;
+}
+
 export function renderProjectsListView(): HTMLElement {
   const list = filteredProjects();
 
@@ -96,6 +236,7 @@ export function renderProjectsListView(): HTMLElement {
     { className: 'btn', onClick: () => void loadProjects(), disabled: state.dashboard.loading },
     [state.dashboard.loading ? '새로고침 중…' : '↻ 새로고침']
   );
+  const workspacesToggleBtn = renderWorkspacesToggleBtn();
 
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
@@ -104,7 +245,7 @@ export function renderProjectsListView(): HTMLElement {
         ? []
         : [el('div', { className: 'page-subtitle' }, [`내 프로젝트 ${state.dashboard.projects.length}개`])]),
     ]),
-    refreshBtn,
+    el('div', { className: 'devtool-header-actions' }, [refreshBtn, ...(workspacesToggleBtn ? [workspacesToggleBtn] : [])]),
   ]);
 
   const body: HTMLElement[] = [];
@@ -176,7 +317,20 @@ export function renderProjectsListView(): HTMLElement {
     );
   }
 
-  return el('div', {}, [header, ...body]);
+  const rootChildren: HTMLElement[] = [header, ...body];
+  if (state.malgnAgentConfig.editingWorkspaces && state.malgnAgentConfig.status?.ok) {
+    if (!workspacesModalEscHandler) {
+      workspacesModalEscHandler = (e) => {
+        if (e.key === 'Escape') closeWorkspacesModal();
+      };
+      window.addEventListener('keydown', workspacesModalEscHandler);
+    }
+    rootChildren.push(renderWorkspacesModal(state.malgnAgentConfig.status));
+  } else {
+    detachWorkspacesModalEscHandler();
+  }
+
+  return el('div', {}, rootChildren);
 }
 
 export function renderProjectsDetailView(path: string): HTMLElement {

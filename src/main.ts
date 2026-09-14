@@ -43,7 +43,7 @@ import { parseRoute } from './route';
 import { renderSidebar } from './sidebar';
 import { renderLoginView } from './views/login';
 import { renderHomeView } from './views/home';
-import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree } from './views/projects';
+import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree, leaveProjectsListView } from './views/projects';
 import { renderCatalogView, loadCatalog, loadGlobalCatalog, loadMarketplaces } from './views/catalog';
 import { renderDevToolsView, loadDevTools } from './views/devTools';
 import {
@@ -67,7 +67,13 @@ import {
   leaveSessionChatView,
 } from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
-import { renderAutonomousTasksListView, renderAutonomousTaskBoardView, renderAutonomousTaskDetailView, loadAutonomousTasks } from './views/autonomousTasks';
+import {
+  renderAutonomousTasksListView,
+  renderAutonomousTaskBoardView,
+  renderAutonomousTaskDetailView,
+  loadAutonomousTasks,
+  leaveAutonomousTasksListView,
+} from './views/autonomousTasks';
 
 // 순수 렌더 — 상태를 바꾸지 않는다. onStateChange(renderApp)로 구독되어 있어
 // notifyChange() 한 번으로 항상 최신 상태가 반영된다.
@@ -205,6 +211,12 @@ function handleNavigation(): void {
     // 불러오는 중이면 겹쳐 쌓이지 않게 건너뛴다.
     if (!state.dailyUsage.loading) void loadDailyUsage();
   }
+  // 자율업무/프로젝트 화면의 설정 모달은 각 화면의 목록 뷰에서만 렌더된다 —
+  // 그 라우트를 완전히 벗어나면 열려 있던 모달의 ESC 리스너가 window에 남지
+  // 않도록 매번 정리한다(sessionChat 리스너 해제와 같은 원칙). 모달이 닫혀
+  // 있던 경우엔 두 함수 모두 아무 일도 하지 않는다.
+  if (route.kind !== 'tasks-list') leaveAutonomousTasksListView();
+  if (route.kind !== 'projects-list') leaveProjectsListView();
 }
 
 // 세션목록·사용량 통계 실시간 감시 — 앱이 켜져 있는 동안 딱 한 번만 구독한다.

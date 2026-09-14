@@ -47,6 +47,32 @@ const RUN_STATUS_LABEL: Readonly<Record<AutonomyRunStatus, string>> = { success:
 // 폼 표시 여부만 다루는 모듈 로컬 UI 상태 — 전역 state까지 갈 필요는 없다.
 let showAddForm = false;
 
+// 전역 설정 편집 모달 — 열림 상태 자체는 이 화면 전용 값이라 기존 전역 state
+// (state.malgnAgentConfig.editingAutonomy)를 그대로 재사용하지만(sessions.ts의
+// metaModalOpen과 달리 다른 화면과 공유되지 않는다), ESC 리스너는 sessions.ts
+// 세션 메타데이터 모달 패턴과 동일하게 모듈 스코프로 둔다.
+let autonomyConfigModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function detachAutonomyConfigModalEscHandler(): void {
+  if (autonomyConfigModalEscHandler) {
+    window.removeEventListener('keydown', autonomyConfigModalEscHandler);
+    autonomyConfigModalEscHandler = null;
+  }
+}
+
+function closeAutonomyConfigModal(): void {
+  state.malgnAgentConfig.editingAutonomy = false;
+  detachAutonomyConfigModalEscHandler();
+  notifyChange();
+}
+
+// 자율업무 화면을 완전히 떠날 때(다른 라우트로 이동) main.ts에서 호출한다 —
+// 모달이 열려 있었다면 window에 남은 ESC 리스너를 정리한다.
+export function leaveAutonomousTasksListView(): void {
+  state.malgnAgentConfig.editingAutonomy = false;
+  detachAutonomyConfigModalEscHandler();
+}
+
 // ---------------- (projectPath, taskId) 복합키 ----------------
 
 function runtimeKey(projectPath: string, taskId: string): string {
@@ -184,10 +210,11 @@ export async function loadAutonomousTasks(): Promise<void> {
 }
 
 // ---------------- 전역 설정(malgn-agent.json) 상시 표시 + 편집 ----------------
-// 설정 화면(views/settings.ts)이 아니라 이 화면에 둔 이유: workspaces 목록이 곧
-// 이 화면이 스캔하는 프로젝트 범위 그 자체라 "왜 이 프로젝트가 안 보이지"를
-// 바로 옆에서 설명해줄 수 있다. 편집 폼도 같은 이유로 이 화면에 둔다(설정
-// 화면으로 옮기지 않는다).
+// 설정 화면(views/settings.ts)이 아니라 이 화면에 둔 이유: 동시 실행 개수·
+// 기본 타임아웃·로그 보존 일수가 이 화면이 실행하는 자율업무 자체의 동작
+// 방식이라 "왜 이렇게 동작하지"를 바로 옆에서 설명해줄 수 있다. workspaces
+// (프로젝트 스캔 범위) 편집은 더 이상 여기 없다 — 프로젝트 화면
+// (views/projects.ts)의 헤더로 옮겨졌다.
 
 export async function loadMalgnAgentConfigStatus(): Promise<void> {
   state.malgnAgentConfig.loading = true;
@@ -231,28 +258,35 @@ function renderConfigStatusBanner(): HTMLElement | null {
 
   const infoLine = el('div', { className: 'settings-form-hint' }, [
     status.workspaces.length > 0
-      ? `감시 중인 workspace ${status.workspaces.length}개: ${status.workspaces.join(', ')} (${status.configPath})`
-      : `감시 중인 workspace 0개 (${status.configPath})`,
+      ? `감시 중인 workspace ${status.workspaces.length}개: ${status.workspaces.join(', ')} (${status.configPath}) — workspace 목록 편집은 "프로젝트" 화면에서 합니다.`
+      : `감시 중인 workspace 0개 (${status.configPath}) — workspace 목록 편집은 "프로젝트" 화면에서 합니다.`,
   ]);
 
-  const editToggleBtn = el(
+  const parts: HTMLElement[] = [infoLine];
+  if (status.warnings.length > 0) {
+    parts.push(el('div', { className: 'alert' }, [`⚠ 전역 설정 경고: ${status.warnings.join(' / ')}`]));
+  }
+  return el('div', {}, parts);
+}
+
+// 헤더의 "설정 편집" 버튼 — sessions.ts의 openMetaModal처럼 항상 열기만 하는
+// 단일 버튼이다(닫기는 모달 자체의 X/배경클릭/ESC로만 한다). state.malgnAgentConfig.status가
+// 로드돼 있고 에러가 없을 때만 노출한다(renderConfigStatusBanner가 error/null을
+// 처리하는 조건과 동일).
+function renderConfigEditToggleBtn(): HTMLElement | null {
+  const cfg = state.malgnAgentConfig;
+  if (cfg.error || !cfg.status || !cfg.status.ok) return null;
+  return el(
     'button',
     {
       className: 'btn',
       onClick: () => {
-        state.malgnAgentConfig.editing = !state.malgnAgentConfig.editing;
+        state.malgnAgentConfig.editingAutonomy = true;
         notifyChange();
       },
     },
-    [state.malgnAgentConfig.editing ? '설정 편집 닫기' : '설정 편집']
+    ['설정 편집']
   );
-
-  const parts: HTMLElement[] = [infoLine, el('div', { className: 'settings-form-actions' }, [editToggleBtn])];
-  if (status.warnings.length > 0) {
-    parts.push(el('div', { className: 'alert' }, [`⚠ 전역 설정 경고: ${status.warnings.join(' / ')}`]));
-  }
-  if (state.malgnAgentConfig.editing) parts.push(renderConfigEditForm(status));
-  return el('div', {}, parts);
 }
 
 async function handleSaveMalgnAgentConfig(payload: MalgnAgentConfigInput): Promise<void> {
@@ -260,7 +294,7 @@ async function handleSaveMalgnAgentConfig(payload: MalgnAgentConfigInput): Promi
   notifyChange();
   try {
     state.malgnAgentConfig.status = await saveMalgnAgentConfig(payload);
-    state.malgnAgentConfig.editing = false;
+    closeAutonomyConfigModal();
     showToast('전역 설정을 저장했습니다.');
   } catch (err) {
     showToast(`전역 설정 저장에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
@@ -274,13 +308,6 @@ async function handleSaveMalgnAgentConfig(payload: MalgnAgentConfigInput): Promi
 // 클래스를 재사용해 시각적으로 통일한다.
 function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
   const { limits } = status;
-
-  const workspacesInput = document.createElement('textarea');
-  workspacesInput.id = 'malgn-config-workspaces';
-  workspacesInput.className = 'settings-input';
-  workspacesInput.rows = 4;
-  workspacesInput.value = status.workspaces.join('\n');
-  workspacesInput.autocomplete = 'off';
 
   const concurrencyInput = document.createElement('input');
   concurrencyInput.id = 'malgn-config-concurrency';
@@ -312,11 +339,6 @@ function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
   const form = el('form', { className: 'settings-form' }, [
     el('div', { className: 'settings-form-hint' }, [`전역 설정 파일(${status.configPath})을 직접 수정합니다.`]),
     el('label', { className: 'settings-field' }, [
-      el('span', { className: 'settings-field-label' }, ['Workspaces (한 줄에 하나씩)']),
-      workspacesInput,
-      el('div', { className: 'settings-form-hint' }, ['자율업무·프로젝트 화면이 스캔할 절대경로를 한 줄에 하나씩 입력하세요. 빈 줄은 무시됩니다.']),
-    ]),
-    el('label', { className: 'settings-field' }, [
       el('span', { className: 'settings-field-label' }, ['동시 실행 개수 (concurrency)']),
       concurrencyInput,
       el('div', { className: 'settings-form-hint' }, [`허용 범위: 1 ~ ${limits.maxConcurrency}`]),
@@ -335,12 +357,11 @@ function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const workspaces = workspacesInput.value
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    // 이 폼은 workspaces를 다루지 않는다(프로젝트 화면으로 이전) — 현재
+    // 로드된 값을 그대로 실어 보내야 저장 시 workspaces가 날아가지 않는다
+    // (저장 API가 4개 필드 전체를 항상 덮어쓰는 풀 오버라이트라서).
     const payload: MalgnAgentConfigInput = {
-      workspaces,
+      workspaces: state.malgnAgentConfig.status?.workspaces ?? [],
       autonomy: {
         concurrency: Number(concurrencyInput.value),
         defaultTimeout: Number(defaultTimeoutInput.value),
@@ -359,17 +380,32 @@ function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
     {
       className: 'btn',
       disabled: state.malgnAgentConfig.saving,
-      onClick: () => {
-        state.malgnAgentConfig.editing = false;
-        notifyChange();
-      },
+      onClick: closeAutonomyConfigModal,
     },
     ['취소']
   );
   cancelBtn.type = 'button';
   form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn, cancelBtn]));
 
-  return el('div', { className: 'settings-card' }, [form]);
+  return form;
+}
+
+// sessions.ts의 renderMetaModal과 동일한 구조(modal-overlay/modal-box/modal-header
+// +modal-close-btn/modal-body) — 배경 클릭·ESC·닫기 버튼 3가지 경로로 닫힌다.
+function renderConfigEditModal(status: MalgnAgentConfigStatus): HTMLElement {
+  const modalBox = el('div', { className: 'modal-box' }, [
+    el('div', { className: 'modal-header' }, [
+      el('h2', { className: 'modal-title' }, ['자율업무 전역 설정']),
+      el('button', { className: 'modal-close-btn', onClick: closeAutonomyConfigModal }, ['✕']),
+    ]),
+    el('div', { className: 'modal-body' }, [renderConfigEditForm(status)]),
+  ]);
+  modalBox.addEventListener('click', (e) => e.stopPropagation());
+
+  const overlay = el('div', { className: 'modal-overlay', onClick: closeAutonomyConfigModal }, [modalBox]);
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  return overlay;
 }
 
 // ---------------- 실시간 런타임 갱신 (이벤트 구독, 실패 시 폴링 열화) ----------------
@@ -443,25 +479,28 @@ function tabsRow(active: 'list' | 'board'): HTMLElement {
 // ---------------- 목록 탭 ----------------
 
 export function renderAutonomousTasksListView(): HTMLElement {
+  // V-06: 폼이 열린 상태에서 라벨만 "취소"로 바뀌고 className은 primary
+  // 그대로라 화면에서 가장 강조된 버튼이 "취소"가 됐다. 열린 상태에서는
+  // 보조 버튼으로 낮춘다.
+  const addToggleBtn = el(
+    'button',
+    {
+      className: showAddForm ? 'btn' : 'btn btn-primary',
+      onClick: () => {
+        showAddForm = !showAddForm;
+        notifyChange();
+      },
+    },
+    [showAddForm ? '취소' : '+ 새 자율업무']
+  );
+  const configEditToggleBtn = renderConfigEditToggleBtn();
+
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['자율업무']),
       el('div', { className: 'page-subtitle' }, [`등록된 자율업무 ${state.autonomousTasks.items.length}개`]),
     ]),
-    // V-06: 폼이 열린 상태에서 라벨만 "취소"로 바뀌고 className은 primary
-    // 그대로라 화면에서 가장 강조된 버튼이 "취소"가 됐다. 열린 상태에서는
-    // 보조 버튼으로 낮춘다.
-    el(
-      'button',
-      {
-        className: showAddForm ? 'btn' : 'btn btn-primary',
-        onClick: () => {
-          showAddForm = !showAddForm;
-          notifyChange();
-        },
-      },
-      [showAddForm ? '취소' : '+ 새 자율업무']
-    ),
+    el('div', { className: 'devtool-header-actions' }, [addToggleBtn, ...(configEditToggleBtn ? [configEditToggleBtn] : [])]),
   ]);
 
   const body: HTMLElement[] = [];
@@ -486,7 +525,20 @@ export function renderAutonomousTasksListView(): HTMLElement {
     body.push(el('div', { className: 'task-list' }, state.autonomousTasks.items.map(renderTaskRow)));
   }
 
-  return el('div', {}, [header, ...body]);
+  const rootChildren: HTMLElement[] = [header, ...body];
+  if (state.malgnAgentConfig.editingAutonomy && state.malgnAgentConfig.status?.ok) {
+    if (!autonomyConfigModalEscHandler) {
+      autonomyConfigModalEscHandler = (e) => {
+        if (e.key === 'Escape') closeAutonomyConfigModal();
+      };
+      window.addEventListener('keydown', autonomyConfigModalEscHandler);
+    }
+    rootChildren.push(renderConfigEditModal(state.malgnAgentConfig.status));
+  } else {
+    detachAutonomyConfigModalEscHandler();
+  }
+
+  return el('div', {}, rootChildren);
 }
 
 function renderTaskRow(task: AutonomousTask): HTMLElement {
