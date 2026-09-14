@@ -11,7 +11,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 ①중요한 작업 완료 ②WBS 단계 변경 ③중요한 설계 결정 ④blocker 발생/해결 ⑤세션 종료 ⑥context compact 직전.
 그 외에는 malgnai-hub `work_record`/`decision_record`/`issue_record`에만 기록하고 STATUS.md는 그대로 둔다 — STATUS.md는 "현재 스냅숏"이지 "매 턴 로그"가 아니다.
 
-**필수 규율:** 주요 결정/이슈/교훈은 malgnai-hub에 기록.
+**필수 규율:** 주요 결정/이슈/교훈은 malgnai-hub에 기록. 완료된 작업은 그 자리에서 `wbs_update`(status=done)·`issue_resolve`로 상태도 즉시 갱신한다 — `decision_record`/`work_record` 같은 서술형 기록만으로 완료 처리를 대신하지 않는다(등록만 되고 갱신되지 않는 상태 누적을 방지하기 위함, 2026-09-14 도입).
 
 ## Project Overview
 malgn-vscode("맑은에이전트") — 사내 개발자 워크스테이션 프로비저닝 **Tauri 데스크톱 앱**(macOS/Windows). malgn-agent의 GUI 프론트엔드.
