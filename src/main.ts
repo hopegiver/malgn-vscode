@@ -46,7 +46,16 @@ import { renderHomeView } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree } from './views/projects';
 import { renderCatalogView, loadCatalog, loadGlobalCatalog, loadMarketplaces } from './views/catalog';
 import { renderDevToolsView, loadDevTools } from './views/devTools';
-import { renderSettingsView, loadOtelEnv, loadGithubStatus, loadCloudflareStatus, loadJiraStatus, loadMcp, loadMcpCatalog } from './views/settings';
+import {
+  renderSettingsView,
+  loadOtelEnv,
+  loadGithubStatus,
+  loadCloudflareStatus,
+  loadJiraStatus,
+  loadMcp,
+  loadMcpCatalog,
+  ensureOtelAutoConfigured,
+} from './views/settings';
 import { renderUsageView, loadDailyUsage } from './views/usage';
 import {
   renderSessionsListView,
@@ -133,6 +142,11 @@ function renderApp(): void {
 // 프로젝트·세션·개발환경·카탈로그·마켓플레이스·사용량 통계는 로그인 직후 한
 // 번씩 미리 불러온다 — 홈 대시보드 위젯과 사이드바 펼침 목록이 실제 값을 바로
 // 보여줘야 하기 때문이다(로딩/실패 상태는 각 화면이 loaded/loading 플래그로 알아서 처리).
+// OTel 자동 세팅 시도 여부 — 앱 세션당 정확히 한 번만 ensureOtelAutoConfigured()를
+// 호출한다(runtimeWatcherInitialized/liveWatchersInitialized와 같은 1회성 플래그
+// 패턴).
+let otelAutoSetupChecked = false;
+
 function handleNavigation(): void {
   renderApp();
   if (!state.authenticated) return;
@@ -147,6 +161,13 @@ function handleNavigation(): void {
   if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
   if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
   if (!state.mcpCatalog.loaded && !state.mcpCatalog.loading) void loadMcpCatalog();
+  // OTel 자동 세팅 — 설정 화면에 한 번도 안 들어간 사용자를 위해 세션당 정확히
+  // 한 번만 조건 확인 후 시도한다(조건 3개는 views/settings.ts의
+  // ensureOtelAutoConfigured 참고).
+  if (!otelAutoSetupChecked) {
+    otelAutoSetupChecked = true;
+    void ensureOtelAutoConfigured();
+  }
 
   const route = parseRoute();
   if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {

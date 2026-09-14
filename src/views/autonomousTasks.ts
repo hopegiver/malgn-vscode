@@ -21,7 +21,8 @@ import {
   onAutonomyRuntimeChanged,
 } from '../autonomyApi';
 import type { AutonomyTaskConfig, ProjectAutonomyGroup, AutonomyRuntimeStatus, AutonomyRunStatus } from '../autonomyApi';
-import { fetchMalgnAgentConfig } from '../configApi';
+import { fetchMalgnAgentConfig, saveMalgnAgentConfig } from '../configApi';
+import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
 import { navigate } from '../route';
 
 const INTERVAL_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
@@ -182,11 +183,11 @@ export async function loadAutonomousTasks(): Promise<void> {
   void loadMalgnAgentConfigStatus();
 }
 
-// ---------------- 전역 설정(malgn-agent.json) 상시 표시 ----------------
+// ---------------- 전역 설정(malgn-agent.json) 상시 표시 + 편집 ----------------
 // 설정 화면(views/settings.ts)이 아니라 이 화면에 둔 이유: workspaces 목록이 곧
 // 이 화면이 스캔하는 프로젝트 범위 그 자체라 "왜 이 프로젝트가 안 보이지"를
-// 바로 옆에서 설명해줄 수 있고, settings.ts는 이번 작업에서 OTel 관련 부분
-// 이외에는 손대지 않기로 되어 있다(미커밋 MCP 변경 보호).
+// 바로 옆에서 설명해줄 수 있다. 편집 폼도 같은 이유로 이 화면에 둔다(설정
+// 화면으로 옮기지 않는다).
 
 export async function loadMalgnAgentConfigStatus(): Promise<void> {
   state.malgnAgentConfig.loading = true;
@@ -233,8 +234,142 @@ function renderConfigStatusBanner(): HTMLElement | null {
       ? `감시 중인 workspace ${status.workspaces.length}개: ${status.workspaces.join(', ')} (${status.configPath})`
       : `감시 중인 workspace 0개 (${status.configPath})`,
   ]);
-  if (status.warnings.length === 0) return infoLine;
-  return el('div', {}, [infoLine, el('div', { className: 'alert' }, [`⚠ 전역 설정 경고: ${status.warnings.join(' / ')}`])]);
+
+  const editToggleBtn = el(
+    'button',
+    {
+      className: 'btn',
+      onClick: () => {
+        state.malgnAgentConfig.editing = !state.malgnAgentConfig.editing;
+        notifyChange();
+      },
+    },
+    [state.malgnAgentConfig.editing ? '설정 편집 닫기' : '설정 편집']
+  );
+
+  const parts: HTMLElement[] = [infoLine, el('div', { className: 'settings-form-actions' }, [editToggleBtn])];
+  if (status.warnings.length > 0) {
+    parts.push(el('div', { className: 'alert' }, [`⚠ 전역 설정 경고: ${status.warnings.join(' / ')}`]));
+  }
+  if (state.malgnAgentConfig.editing) parts.push(renderConfigEditForm(status));
+  return el('div', {}, parts);
+}
+
+async function handleSaveMalgnAgentConfig(payload: MalgnAgentConfigInput): Promise<void> {
+  state.malgnAgentConfig.saving = true;
+  notifyChange();
+  try {
+    state.malgnAgentConfig.status = await saveMalgnAgentConfig(payload);
+    state.malgnAgentConfig.editing = false;
+    showToast('전역 설정을 저장했습니다.');
+  } catch (err) {
+    showToast(`전역 설정 저장에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.malgnAgentConfig.saving = false;
+    notifyChange();
+  }
+}
+
+// OTel 패널(views/settings.ts의 renderOtelPanel)과 같은 settings-form 계열
+// 클래스를 재사용해 시각적으로 통일한다.
+function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
+  const { limits } = status;
+
+  const workspacesInput = document.createElement('textarea');
+  workspacesInput.id = 'malgn-config-workspaces';
+  workspacesInput.className = 'settings-input';
+  workspacesInput.rows = 4;
+  workspacesInput.value = status.workspaces.join('\n');
+  workspacesInput.autocomplete = 'off';
+
+  const concurrencyInput = document.createElement('input');
+  concurrencyInput.id = 'malgn-config-concurrency';
+  concurrencyInput.className = 'settings-input';
+  concurrencyInput.type = 'number';
+  concurrencyInput.min = '1';
+  concurrencyInput.max = String(limits.maxConcurrency);
+  concurrencyInput.value = String(status.autonomy.concurrency);
+  concurrencyInput.autocomplete = 'off';
+
+  const defaultTimeoutInput = document.createElement('input');
+  defaultTimeoutInput.id = 'malgn-config-default-timeout';
+  defaultTimeoutInput.className = 'settings-input';
+  defaultTimeoutInput.type = 'number';
+  defaultTimeoutInput.min = String(limits.minTimeout);
+  defaultTimeoutInput.max = String(limits.maxTimeout);
+  defaultTimeoutInput.value = String(status.autonomy.defaultTimeout);
+  defaultTimeoutInput.autocomplete = 'off';
+
+  const retentionDaysInput = document.createElement('input');
+  retentionDaysInput.id = 'malgn-config-retention-days';
+  retentionDaysInput.className = 'settings-input';
+  retentionDaysInput.type = 'number';
+  retentionDaysInput.min = '1';
+  retentionDaysInput.max = '365';
+  retentionDaysInput.value = String(status.logs.retentionDays);
+  retentionDaysInput.autocomplete = 'off';
+
+  const form = el('form', { className: 'settings-form' }, [
+    el('div', { className: 'settings-form-hint' }, [`전역 설정 파일(${status.configPath})을 직접 수정합니다.`]),
+    el('label', { className: 'settings-field' }, [
+      el('span', { className: 'settings-field-label' }, ['Workspaces (한 줄에 하나씩)']),
+      workspacesInput,
+      el('div', { className: 'settings-form-hint' }, ['자율업무·프로젝트 화면이 스캔할 절대경로를 한 줄에 하나씩 입력하세요. 빈 줄은 무시됩니다.']),
+    ]),
+    el('label', { className: 'settings-field' }, [
+      el('span', { className: 'settings-field-label' }, ['동시 실행 개수 (concurrency)']),
+      concurrencyInput,
+      el('div', { className: 'settings-form-hint' }, [`허용 범위: 1 ~ ${limits.maxConcurrency}`]),
+    ]),
+    el('label', { className: 'settings-field' }, [
+      el('span', { className: 'settings-field-label' }, ['기본 타임아웃 (분)']),
+      defaultTimeoutInput,
+      el('div', { className: 'settings-form-hint' }, [`허용 범위: ${limits.minTimeout}분 ~ ${limits.maxTimeout}분`]),
+    ]),
+    el('label', { className: 'settings-field' }, [
+      el('span', { className: 'settings-field-label' }, ['로그 보존 일수']),
+      retentionDaysInput,
+      el('div', { className: 'settings-form-hint' }, ['허용 범위: 1일 ~ 365일']),
+    ]),
+  ]);
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const workspaces = workspacesInput.value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const payload: MalgnAgentConfigInput = {
+      workspaces,
+      autonomy: {
+        concurrency: Number(concurrencyInput.value),
+        defaultTimeout: Number(defaultTimeoutInput.value),
+      },
+      logs: { retentionDays: Number(retentionDaysInput.value) },
+    };
+    void handleSaveMalgnAgentConfig(payload);
+  });
+
+  const saveBtn = el('button', { className: 'btn btn-primary', disabled: state.malgnAgentConfig.saving }, [
+    state.malgnAgentConfig.saving ? '저장 중…' : '저장',
+  ]);
+  saveBtn.type = 'submit';
+  const cancelBtn = el(
+    'button',
+    {
+      className: 'btn',
+      disabled: state.malgnAgentConfig.saving,
+      onClick: () => {
+        state.malgnAgentConfig.editing = false;
+        notifyChange();
+      },
+    },
+    ['취소']
+  );
+  cancelBtn.type = 'button';
+  form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn, cancelBtn]));
+
+  return el('div', { className: 'settings-card' }, [form]);
 }
 
 // ---------------- 실시간 런타임 갱신 (이벤트 구독, 실패 시 폴링 열화) ----------------

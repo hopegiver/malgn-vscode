@@ -2,6 +2,7 @@ import { el, showToast, loadingBlock, errorBlock } from '../dom';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
+import type { OtelSettings } from '../otelApi';
 import { loadCatalog, loadMarketplaces } from './catalog';
 import { refreshMarketplaces } from '../catalogApi';
 import {
@@ -90,6 +91,58 @@ async function handleSaveOtelSettings(values: Record<string, string>): Promise<v
   } finally {
     state.otel.saving = false;
     notifyChange();
+  }
+}
+
+// ---------------- OTel 자동 세팅 (설정이 한 번도 없었을 때만, 세션당 1회) ----------------
+// 화면 진입만으로는 저장을 호출하지 않는다는 위 원칙(51~53행)은 "설정 화면에
+// 들어갔을 때"에 대한 것이고, 이 함수는 그 화면에 아예 들어가지 않은 사용자를
+// 위한 별도 경로다 — 아래 3개 조건을 전부 만족할 때만, 딱 한 번 자동 저장한다.
+// 호출 시점(세션당 1회 트리거)은 main.ts의 handleNavigation()이 담당한다.
+export async function ensureOtelAutoConfigured(): Promise<void> {
+  let settings: OtelSettings;
+  try {
+    // state.otel을 오염시키지 않으려고 이 체크 전용 지역 변수로만 받는다 —
+    // 사용자가 마침 설정 > OTel 탭에 있다면 화면과 결과가 다를 수 있는 드문
+    // 경합은 감수한다.
+    settings = await fetchOtelSettings();
+  } catch {
+    return; // Tauri IPC 브리지가 없는 환경 등 — 조용히 건너뛴다.
+  }
+
+  // 조건 1: settings.json 자체가 정상 파싱됨(깨진 파일은 절대 건드리지 않는다).
+  if (settings.parseError !== null) return;
+  // 조건 2: 사내 collector 주소가 이 빌드에 실제로 주입돼 있음(포크·시크릿 없는
+  // CI 빌드에서는 빈 엔드포인트로 텔레메트리를 켜봐야 아무 데도 못 보낸다).
+  if (!settings.endpointDefaultsInjected) return;
+  // 조건 3: 이 키가 파일에 아예 없음 = 한 번도 설정한 적 없다는 뜻. 값이 이미
+  // 있으면(0이든 1이든) 사용자의 명시적 선택이므로 절대 덮지 않는다.
+  if ('CLAUDE_CODE_ENABLE_TELEMETRY' in settings.values) return;
+
+  const values: Record<string, string> = {};
+  for (const key of settings.managedKeys) {
+    if (settings.readOnlyKeys.includes(key)) continue;
+    if (key === 'OTEL_RESOURCE_ATTRIBUTES') continue;
+    const value = key in settings.values ? settings.values[key] : settings.defaults[key];
+    if (value === undefined) continue;
+    values[key] = value;
+  }
+
+  // 로그인 전이어도 텔레메트리 기본 키는 켤 수 있다 — resource attributes만
+  // 나중에 로그인 후 사용자가 설정 화면에서 저장할 때 자연히 붙는다.
+  const identity = state.auth.userEmail ? { email: state.auth.userEmail, name: state.auth.userName } : null;
+
+  try {
+    const result = await saveOtelSettings({ values, identity });
+    showToast('OTel 텔레메트리를 기본값으로 자동 설정했습니다. 설정 > OTel 설정에서 확인·변경할 수 있습니다.');
+    // 사용자가 마침 설정 > OTel 탭을 보고 있었다면 화면도 최신 상태로 갱신한다.
+    if (state.otel.settings) {
+      state.otel.settings = result;
+      notifyChange();
+    }
+  } catch (err) {
+    // 자동화 실패로 사용자를 방해하지 않는다 — 토스트 없이 콘솔에만 남긴다.
+    console.error('OTel 자동 설정 실패:', err);
   }
 }
 

@@ -149,6 +149,59 @@ pub(crate) fn expand_tilde(entry: &str, home: Option<&Path>) -> Result<PathBuf, 
     ))
 }
 
+fn backup_path_for(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("malgn-agent.json");
+    path.with_file_name(format!("{file_name}.malgn-bak"))
+}
+
+/// 원자적 쓰기 — 같은 디렉터리에 임시 파일을 쓰고 `fs::rename`한다
+/// (`otel_settings.rs::write_atomically`와 동일 패턴 — 소비자가 2곳뿐이라
+/// 아직 공용 모듈로 뽑지 않는다).
+fn write_atomically(path: &Path, content: &str) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| "설정 파일의 상위 디렉터리를 확인할 수 없습니다.".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("설정 디렉터리를 만들지 못했습니다: {e}"))?;
+    let tmp_name = format!(
+        ".{}.malgn-tmp-{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("malgn-agent.json"),
+        std::process::id()
+    );
+    let tmp_path = dir.join(tmp_name);
+    std::fs::write(&tmp_path, content).map_err(|e| format!("임시 파일을 쓰지 못했습니다: {e}"))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| format!("설정 파일 교체에 실패했습니다: {e}"))?;
+    Ok(())
+}
+
+/// 순수 함수 — 주어진 경로에 저장한다(`otel_settings.rs::save_to_settings_file`과
+/// 동일한 백업+원자적 쓰기 패턴). 상위 디렉터리 생성 → 기존 파일 있으면
+/// `<path>.malgn-bak`로 롤링 1세대 백업 → 직렬화 → 원자적 쓰기 → 캐시 리셋
+/// (다음 `load()` 호출이 새로 읽도록).
+pub(crate) fn save_to_path(path: &Path, cfg: &UserConfig) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("설정 디렉터리를 만들지 못했습니다: {e}"))?;
+    }
+
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        let backup_path = backup_path_for(path);
+        std::fs::write(&backup_path, existing)
+            .map_err(|e| format!("백업 파일을 쓰지 못했습니다: {e}"))?;
+    }
+
+    let pretty = serde_json::to_string_pretty(cfg)
+        .map_err(|e| format!("설정을 직렬화하지 못했습니다: {e}"))?;
+    write_atomically(path, &pretty)?;
+
+    let mut cache = CACHE.lock().unwrap();
+    *cache = None;
+    Ok(())
+}
+
 fn is_filesystem_root(path: &Path) -> bool {
     path.parent().is_none()
 }
@@ -337,5 +390,71 @@ mod tests {
         assert_eq!(valid.len(), 1);
         assert!(warnings.is_empty());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    fn sample_config(concurrency: u32) -> UserConfig {
+        UserConfig {
+            version: 1,
+            workspaces: vec!["/tmp/proj-a".to_string(), "/tmp/proj-b".to_string()],
+            autonomy: AutonomyGlobalConfig {
+                concurrency: Some(concurrency),
+                default_timeout: Some(45),
+            },
+            logs: LogsGlobalConfig {
+                retention_days: Some(14),
+            },
+        }
+    }
+
+    // 신규 — save_to_path로 저장 후 load_from_path로 다시 읽으면 동일(round-trip).
+    #[test]
+    fn save_to_path_then_load_from_path_round_trips() {
+        let dir = temp_subdir("save-roundtrip");
+        let path = dir.join("malgn-agent.json");
+        let cfg = sample_config(4);
+
+        save_to_path(&path, &cfg).expect("저장에 성공해야 합니다");
+        let loaded = load_from_path(&path).expect("저장 직후 로드는 성공해야 합니다");
+
+        assert_eq!(loaded.version, cfg.version);
+        assert_eq!(loaded.workspaces, cfg.workspaces);
+        assert_eq!(loaded.autonomy.concurrency, cfg.autonomy.concurrency);
+        assert_eq!(
+            loaded.autonomy.default_timeout,
+            cfg.autonomy.default_timeout
+        );
+        assert_eq!(loaded.logs.retention_days, cfg.logs.retention_days);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 신규 — 기존 파일이 있는 상태에서 두 번째 저장 시 롤링 1세대 백업
+    // (`.malgn-bak`)이 생기고, 그 내용이 첫 번째 저장 값인지.
+    #[test]
+    fn save_to_path_creates_rolling_backup_of_previous_save() {
+        let dir = temp_subdir("save-backup");
+        let path = dir.join("malgn-agent.json");
+
+        let first = sample_config(2);
+        save_to_path(&path, &first).expect("첫 번째 저장에 성공해야 합니다");
+
+        let second = sample_config(6);
+        save_to_path(&path, &second).expect("두 번째 저장에 성공해야 합니다");
+
+        let backup_path = backup_path_for(&path);
+        assert!(backup_path.is_file(), "백업 파일이 생성되어야 한다");
+
+        let backup_cfg: UserConfig =
+            serde_json::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+        assert_eq!(
+            backup_cfg.autonomy.concurrency,
+            first.autonomy.concurrency,
+            "백업은 첫 번째 저장 값이어야 한다"
+        );
+
+        let current: UserConfig =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(current.autonomy.concurrency, second.autonomy.concurrency);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

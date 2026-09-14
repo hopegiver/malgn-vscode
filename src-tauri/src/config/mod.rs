@@ -5,7 +5,7 @@
 
 mod user_config;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub(crate) use user_config::UserConfig;
@@ -143,5 +143,156 @@ pub fn malgn_agent_config_get() -> MalgnAgentConfigStatus {
             },
             limits: limits(),
         },
+    }
+}
+
+// ---------------- 쓰기 커맨드(설계 §13 확장) ----------------
+// 프론트에서 오는 원시 입력 — 필드명은 camelCase로 (역)직렬화된다.
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct MalgnAgentConfigAutonomyInput {
+    pub concurrency: u32,
+    #[serde(rename = "defaultTimeout")]
+    pub default_timeout: u32,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct MalgnAgentConfigLogsInput {
+    #[serde(rename = "retentionDays")]
+    pub retention_days: u32,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct MalgnAgentConfigInput {
+    pub workspaces: Vec<String>,
+    pub autonomy: MalgnAgentConfigAutonomyInput,
+    pub logs: MalgnAgentConfigLogsInput,
+}
+
+/// concurrency ∈ [1, MAX_CONCURRENCY], default_timeout ∈ [MIN_TIMEOUT_MINUTES,
+/// MAX_TIMEOUT_MINUTES]로 clamp하는 순수 함수 — 단위 테스트 대상.
+fn clamp_autonomy_defaults(concurrency: u32, default_timeout: u32) -> (u32, u32) {
+    use crate::autonomy::config as autonomy_config;
+    let clamped_concurrency = concurrency.clamp(1, autonomy_config::MAX_CONCURRENCY);
+    let clamped_timeout = default_timeout.clamp(
+        autonomy_config::MIN_TIMEOUT_MINUTES,
+        autonomy_config::MAX_TIMEOUT_MINUTES,
+    );
+    (clamped_concurrency, clamped_timeout)
+}
+
+/// retention_days ∈ [1, MAX_LOG_RETENTION_DAYS]로 clamp하는 순수 함수 —
+/// 단위 테스트 대상.
+fn clamp_log_retention_days(retention_days: u32) -> u32 {
+    use crate::autonomy::config as autonomy_config;
+    retention_days.clamp(1, autonomy_config::MAX_LOG_RETENTION_DAYS)
+}
+
+/// 원본 workspace 배열을 저장 전에 다듬는 순수 함수 — trim, 빈 문자열 제거,
+/// 32개 cap(말도 안 되게 큰 원본 배열 방어. 8개 상한 자체는
+/// `validate_workspace_entries`가 매 load 시점에 적용한다). 유효성 필터링은
+/// 하지 않는다 — 파일에는 원본 문자열 그대로 저장한다(정책: `malgn_agent_
+/// config_get()`이 매 load 시점에 검증하는 것과 대칭).
+const MAX_RAW_WORKSPACE_ENTRIES: usize = 32;
+
+fn sanitize_raw_workspace_list(entries: Vec<String>) -> Vec<String> {
+    entries
+        .into_iter()
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .take(MAX_RAW_WORKSPACE_ENTRIES)
+        .collect()
+}
+
+/// `malgn_agent_config_get()`이 읽는 파일을 프론트가 직접 편집·저장할 수
+/// 있게 한다(설계 §5/§13에서 "범위 밖"으로 뒀던 부분의 확장). 저장 직후
+/// 최신 상태를 그대로 재사용해 응답한다 — 프론트가 별도 재조회를 하지 않아도
+/// 최신 값을 받는다.
+#[tauri::command]
+pub fn malgn_agent_config_save(
+    payload: MalgnAgentConfigInput,
+) -> Result<MalgnAgentConfigStatus, String> {
+    let (concurrency, default_timeout) = clamp_autonomy_defaults(
+        payload.autonomy.concurrency,
+        payload.autonomy.default_timeout,
+    );
+    let retention_days = clamp_log_retention_days(payload.logs.retention_days);
+    let workspaces = sanitize_raw_workspace_list(payload.workspaces);
+
+    let cfg = UserConfig {
+        version: 1,
+        workspaces,
+        autonomy: user_config::AutonomyGlobalConfig {
+            concurrency: Some(concurrency),
+            default_timeout: Some(default_timeout),
+        },
+        logs: user_config::LogsGlobalConfig {
+            retention_days: Some(retention_days),
+        },
+    };
+
+    let path = user_config::config_file_path()
+        .ok_or_else(|| "홈 디렉터리를 확인할 수 없습니다".to_string())?;
+    user_config::save_to_path(&path, &cfg)?;
+
+    Ok(malgn_agent_config_get())
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+
+    #[test]
+    fn clamp_autonomy_defaults_clamps_below_minimum() {
+        let (concurrency, timeout) = clamp_autonomy_defaults(0, 0);
+        assert_eq!(concurrency, 1);
+        assert_eq!(timeout, crate::autonomy::config::MIN_TIMEOUT_MINUTES);
+    }
+
+    #[test]
+    fn clamp_autonomy_defaults_clamps_above_maximum() {
+        let (concurrency, timeout) = clamp_autonomy_defaults(999, 999_999);
+        assert_eq!(concurrency, crate::autonomy::config::MAX_CONCURRENCY);
+        assert_eq!(timeout, crate::autonomy::config::MAX_TIMEOUT_MINUTES);
+    }
+
+    #[test]
+    fn clamp_autonomy_defaults_keeps_in_range_values_unchanged() {
+        let (concurrency, timeout) = clamp_autonomy_defaults(4, 90);
+        assert_eq!(concurrency, 4);
+        assert_eq!(timeout, 90);
+    }
+
+    #[test]
+    fn clamp_log_retention_days_clamps_below_minimum() {
+        assert_eq!(clamp_log_retention_days(0), 1);
+    }
+
+    #[test]
+    fn clamp_log_retention_days_clamps_above_maximum() {
+        assert_eq!(
+            clamp_log_retention_days(9_999),
+            crate::autonomy::config::MAX_LOG_RETENTION_DAYS
+        );
+    }
+
+    #[test]
+    fn sanitize_raw_workspace_list_trims_and_drops_blank_entries() {
+        let entries = vec![
+            "  /tmp/a  ".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "/tmp/b".to_string(),
+        ];
+        let cleaned = sanitize_raw_workspace_list(entries);
+        assert_eq!(cleaned, vec!["/tmp/a".to_string(), "/tmp/b".to_string()]);
+    }
+
+    #[test]
+    fn sanitize_raw_workspace_list_caps_at_thirty_two() {
+        let entries: Vec<String> = (0..50).map(|i| format!("/tmp/proj-{i}")).collect();
+        let cleaned = sanitize_raw_workspace_list(entries);
+        assert_eq!(cleaned.len(), MAX_RAW_WORKSPACE_ENTRIES);
+        assert_eq!(cleaned[0], "/tmp/proj-0");
     }
 }

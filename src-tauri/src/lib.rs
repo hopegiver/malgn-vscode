@@ -84,6 +84,7 @@ pub fn run() {
             autonomy::autonomy_set_enabled,
             autonomy::autonomy_runtime_status,
             config::malgn_agent_config_get,
+            config::malgn_agent_config_save,
             mcp_manager::mcp_list,
             mcp_manager::mcp_get,
             mcp_manager::mcp_add,
