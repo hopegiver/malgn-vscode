@@ -58,3 +58,6 @@
     묻는 축이 없었다. §6-② C안→A안 전환(도구 실행 권한 개방)이 그 축을 처음으로 필요하게 만들었다.
   — 이번 라운드 집중: `TOOL_PERMISSION_ARGS`(session_chat.rs:41) 개방 후 권한을 정하는 값의 소재,
     입력창 주변 고지 부재, 도구 줄 60자 절단, cwd 결정(첫 cwd)과 화면 표시의 일치, 화면 이탈 후 실행 인지.
+- 2026-09-15 / target_id `devtools-windows-parity` / 2차(증분 — 새 리스크 표면 1개 `-EncodedCommand`, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r2.md`
+  — 재사용 사유: 이번 라운드 신규 리스크 표면(`-EncodedCommand`)에 대해 신규 페르소나를 만들지 않고 이 파일을 재투입했다. INDEX.md 대조 결과 역할개념("앱이 자식 프로세스에 넘긴 권한의 크기를 사용자가 사전에 알고 사후에 확인할 수 있는가")이 새 표면과 정확히 일치했다 — 관심사 2(사전 고지)가 "사용자가 실행될 명령을 볼 수 있는가", 관심사 3(사후 감사 표면)이 "작업 관리자 명령줄이 base64가 되는 것"에 그대로 대응. 6대 요소 무수정(회전문 페르소나 회피).
+  — 이번 라운드 집중: `-EncodedCommand`가 권한 경계를 넓히는가(아님 — 전달 형식만 변경), PowerShell이 `-Command`/`-EncodedCommand` 어느 쪽에서도 스크립트를 에코하지 않아 창 본문이 무변화라는 점, macOS `do script`(에코함)와의 투명성 비대칭, `open_terminal_program` 계열 6개 호출부의 사전 고지 부재, 그리고 가장 큰 blast radius인 "전체 업데이트" 배치가 예고 없는 UAC 승격을 동의 범위에 끌어들이는 경로(N2).

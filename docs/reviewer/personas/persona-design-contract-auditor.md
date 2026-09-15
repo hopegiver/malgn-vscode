@@ -54,3 +54,9 @@
 - 2026-09-15 / target_id `devtools-windows-parity` / 1차(최초, 풀패널) / `docs/reviewer/review-devtools-windows-parity-2026-09-15.md`
   — 재사용 사유: 역할개념("구현이 설계 정본의 조항·불변식을 조항 단위로 지켰는가, 사라진 조항은 없는가")이 그대로 유효하다. 이번 라운드는 판정 정본 `docs/design/devtools-windows-parity.md` 577줄이 명시적으로 지정됐고, 그 §B.2가 "Windows도 run 3 / manual 3, 도구 단위까지 정확히 일치"라는 검사 가능한 단언을 내놓아 조항 대조의 과녁이 뚜렷하다. 6대 요소 무수정.
   — 이번 라운드 집중: §B.2 run/manual 도구 단위 일치 단언의 강제 수단 존재 여부(조용한 누락 판정), §B.3 winget 종료코드·프리뷰 조항의 구현 도달 지점, §D.2 골든 테스트 조항, §1.1 리터럴 전용 불변식의 가드가 손 나열인지 구조적 순회인지, 설계 스케치를 기각한 자리들(ResolvedRunners 캐시 필드·WingetPackage id·`--scope user`)의 기각 근거가 코드에 남아 있는지, 강제 수단이 "사람의 주의력"인 조항 색출.
+- 2026-09-15 / target_id `devtools-windows-parity` / 2차(증분 — 새 리스크 표면 1개 `-EncodedCommand`, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r2.md`
+  — 재사용 사유: 직전 라운드에서 "조용한 누락"(§B.2)을 잡아낸 축이 이번 라운드에도 그대로 필요했다 — 설계 조항이 한쪽 경로에만 구현되는 같은 형태가 §B.3에서 재발했는지 조항 단위로 대조. 6대 요소 무수정.
+  — 이번 라운드 집중: §B.2 "run 3 / manual 3" 강제 수단이 실제로 생겼는지, §B.3 "winget 프리뷰는 preview_reliable:false"가 설치·업데이트 **양쪽** 경로에 구현됐는지(설치만 구현 → N2), §B.2 대안 A 기각 결정이 새 Manual 라우팅에서도 지켜졌는지, 그리고 설계서가 애초에 다루지 않은 축(업데이트 경로 Manual 문구의 플랫폼 분리) 식별.
+- 2026-09-15 / target_id `devtools-windows-parity` / 3차(축소 — 새 리스크 표면 0, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r3.md`
+  — 재사용 사유: 2차에서 "조항은 있는데 강제 수단이 없다"(§B.3)를 잡은 축이, 이번엔 "강제 수단이 생겼다고 주장하는 가드가 실제로 무엇을 강제하는가"를 판정해야 했다. 6대 요소 무수정.
+  — 이번 라운드 집중: 신규 가드 4종의 단언을 한 줄씩 읽어 항진명제(`plan.runner == Winget` 분기 안의 `!winget_preview_is_reliable(plan.runner)`) 식별, 설치 경로 판정(`installer_label == "winget"` 문자열)이 새 정본에 배선되지 않은 이중 진실원 확인, `assert_eq!(checked, total)`이 면제시키지 못하는 축(빈 후보 배열·새 Runner·순회 배열과 match의 분리) 색출.

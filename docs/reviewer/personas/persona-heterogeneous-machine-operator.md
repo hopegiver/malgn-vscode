@@ -52,3 +52,9 @@ Intel 맥 6대와 nvm·volta·corepack이 뒤섞인 머신이 아직 살아 있�
 - 2026-09-15 / target_id `devtools-windows-parity` / 1차(최초, 풀패널) / `docs/reviewer/review-devtools-windows-parity-2026-09-15.md`
   — 재사용 사유: 역할개념("이 기능이 우리 조직의 이기종 머신에서 실제로 뜨는가, 안 될 때 막다른 골목인가")이 이번 작업의 동기와 정확히 일치한다 — 직원 90%가 Windows이고 이 화면이 그들에게 전부 "설치 안 됨"이라 거짓말하던 것이 착수 사유다. 직전 라운드의 O1~O3(쓰기권한 가정·installed×actionKind 교차표·막다른 골목) 기준을 플랫폼 축에 그대로 적용. 6대 요소 무수정.
   — 이번 라운드 집중: macOS 전용 cfg 게이트 5곳 제거 후 6개 도구가 Windows에서 각각 어디로 떨어지는지 교차표 재작성, 설치 성공 후 PATH 미갱신이 "실패" 오표시로 이어지는지(절대경로 재확인 경로 추적), Manual 강등 시 다음 행동(copyable_command/doc_url)이 0개인 셀이 있는지, UAC 승격 국면(예고·거부·타임아웃 손자 프로세스)에서 사용자가 자기 상황을 알 수 있는지.
+- 2026-09-15 / target_id `devtools-windows-parity` / 2차(증분 — 새 리스크 표면 1개 `-EncodedCommand`, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r2.md`
+  — 재사용 사유: 역할개념("이 기능이 우리 조직의 이기종 머신에서 실제로 뜨는가, 안 될 때 막다른 골목인가")이 그대로 과녁. M1이 닫힌 뒤 같은 종류의 거짓 문구·막다른 골목이 남아 있는지가 이번 라운드의 핵심이었다. 6대 요소 무수정.
+  — 이번 라운드 집중: 6개 도구 × 14개 Windows 후보를 "사용자가 화면에서 실제로 보게 될 문구"까지 끝까지 추적 — Windows Git/Node가 `MANUAL_XCODE_CLT`(macOS Xcode CLT 문구 + `softwareupdate --list`)로 라우팅되는 경로(N1), `Unknown`으로 떨어져 다음 행동 0개가 되는 후보 4건(N3), Git "only for me" 설치 경로의 현실성.
+- 2026-09-15 / target_id `devtools-windows-parity` / 3차(축소 — 새 리스크 표면 0, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r3.md`
+  — 재사용 사유: 이번 라운드의 단일 질문("Windows 사용자가 사실이 아닌 것을 보는 클래스가 닫혔는가")이 이 페르소나의 O1~O3 기준 그 자체다. 6대 요소 무수정.
+  — 이번 라운드 집중: 14개 Windows 후보를 수정 후 분류기·`compute_action_for_platform`로 재추적해 macOS 문구 잔존 0 확인, 그리고 **가드가 덮지 않는 계층**(`resolve_plan`의 NoRunner 강등, `compute_path_visibility_windows` → 프론트 PATH 힌트 패널)에서 같은 클래스가 살아 있는지 수색 — 후자에서 신규 Major 1건 발견.
