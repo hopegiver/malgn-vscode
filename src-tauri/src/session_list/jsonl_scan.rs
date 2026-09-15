@@ -154,8 +154,8 @@ fn read_jsonl_head_meta(path: &Path) -> (Option<i64>, Option<String>) {
 /// 경우, 예: `foo` 허용인데 `foo-bar` 유래) 마찬가지로 `None`을 반환해 이 행을
 /// 만들지 않는다.
 ///
-/// `cwd`는 `session_chat::read_cwd_from_transcript`(재노출), `title`은 이 파일의
-/// `find_session_title`을 그대로 재사용한다 — 새 스캔 로직을 발명하지 않는다.
+/// `cwd`는 `session_chat::read_cwd_from_transcript`(재노출), `title`은
+/// `session_list::find_session_title`을 그대로 재사용한다 — 새 스캔 로직을 발명하지 않는다.
 fn build_jsonl_row(path: &Path, allowed_roots: &[PathBuf]) -> Option<Value> {
     let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
     let cwd = crate::session_chat::read_cwd_from_transcript(path).ok()?;

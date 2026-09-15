@@ -2,7 +2,7 @@
 //
 // 목록 행의 소스를 registry(`~/.claude/sessions/`) 단독에서 jsonl
 // (`~/.claude/projects/**/<sessionId>.jsonl`)로 옮긴다. registry는 "지금 실행
-// 중"이라는 사실 하나만 얹는 live 오버레이로 강등한다(아래 `overlay_running_state`).
+// 중"이라는 사실 하나만 얹는 live 오버레이로 강등한다(`session_list::registry::overlay_running_state`).
 //
 // 안전장치 ①: `/private/tmp` 유래 프로젝트 디렉터리(`-private-tmp-...`,
 // `-tmp-...`, 대소문자 무관) 제외.
