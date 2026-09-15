@@ -402,6 +402,35 @@ pub(crate) fn windows_system_tool(roots: &EnvRoots, relative: &str) -> String {
     win_join(&system_root_or_default(roots).to_string_lossy(), relative)
 }
 
+// ==================== ⑧-1 PowerShell 인코딩 전달(M3) ====================
+
+/// M3(review-devtools-windows-parity-2026-09-15.md) 처방(b): `cli_launcher::
+/// spawn_terminal_window`가 `powershell.exe`에 스크립트를 넘길 때 `-Command
+/// <script>`가 아니라 `-EncodedCommand <base64>`를 쓴다. 인코딩된 문자열은
+/// base64 표준 알파벳(`A-Za-z0-9+/=`)만 쓰므로, 공백·따옴표·`&`·`;` 같은
+/// 특수문자가 이 인자에는 아예 등장하지 않는다 — Rust의 Windows 커맨드라인
+/// 인코딩(`Command::args`가 인자마다 다시 하는 재인용)도, `powershell.exe`
+/// 자신의 명령행 파서(`-Command`의 값 경계를 정하는 규칙)도 이 인자에서는
+/// 특수 처리할 게 없어진다. 남는 파싱 표면은 PowerShell이 **디코딩한 뒤의**
+/// 스크립트 텍스트를 해석하는 한 층뿐이다(`quote_token`의 작은따옴표
+/// 이스케이프가 여전히 그 층의 안전을 책임진다 — 이 함수는 그 결과 문자열을
+/// 그대로 감싸 전달 형식만 바꾼다, 이스케이프 규칙 자체는 무변경).
+///
+/// 이 함수 자체(UTF-16LE 인코딩 + base64)는 **순수함수**라 이 머신(Mac)에서
+/// 100% 실행 검증된다(`platform_tests.rs`의 수동 디코드 왕복 테스트 참고).
+/// PowerShell이 실제로 이 인코딩(UTF-16LE, 표준 base64, 패딩 포함)을
+/// 기대한다는 사실 자체는 Microsoft 공식 문서 근거이며, 실제 `powershell.exe
+/// -EncodedCommand`가 이 출력을 받아 올바르게 디코딩·실행하는지는 이
+/// 머신에서 실기 검증할 수 없다(미검증 — Windows PC 필요).
+pub(crate) fn encode_powershell_command(script: &str) -> String {
+    use base64::Engine;
+    let utf16le_bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(utf16le_bytes)
+}
+
 /// N1(2라운드 비차단, 이번에 함께 처리): Windows에서 자식 프로세스의 현재
 /// 디렉터리를 고정한다. `.cmd` shim(`npm.cmd` 등)은 `cmd.exe`가 해석하는데,
 /// `cmd.exe`의 명령 해석은 **현재 디렉터리를 먼저** 본다(Rust std의 실행파일

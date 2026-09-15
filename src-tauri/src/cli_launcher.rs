@@ -124,8 +124,14 @@ fn spawn_terminal_window(shell_command: &str) -> Result<(), String> {
             let roots = platform::EnvRoots::from_env();
             let powershell =
                 platform::windows_system_tool(&roots, r"System32\WindowsPowerShell\v1.0\powershell.exe");
+            // M3(review-devtools-windows-parity-2026-09-15.md): `-Command
+            // shell_command` 대신 `-EncodedCommand`(base64 UTF-16LE)로
+            // 넘긴다(platform::encode_powershell_command 참고) — 이미
+            // quote_token으로 인용된 스크립트 텍스트를 그대로 인코딩만
+            // 감싸 전달한다(인용 규칙 자체는 무변경).
+            let encoded = platform::encode_powershell_command(shell_command);
             Command::new(powershell)
-                .args(["-NoLogo", "-NoProfile", "-NoExit", "-Command", shell_command])
+                .args(["-NoLogo", "-NoProfile", "-NoExit", "-EncodedCommand", &encoded])
                 .windowed()
                 .spawn()
                 .map(|_| ())
