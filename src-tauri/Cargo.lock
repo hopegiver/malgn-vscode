@@ -4217,6 +4217,7 @@ dependencies = [
  "chrono",
  "dirs",
  "dotenvy",
+ "dunce",
  "jsonwebtoken",
  "keyring",
  "libc",

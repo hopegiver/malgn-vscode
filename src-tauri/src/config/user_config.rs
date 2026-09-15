@@ -195,7 +195,7 @@ fn validate_workspace_entries_with_home(
     let mut valid: Vec<PathBuf> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    let canonical_home = home.and_then(|h| h.canonicalize().ok());
+    let canonical_home = home.and_then(|h| dunce::canonicalize(h).ok());
 
     for entry in entries {
         if valid.len() >= MAX_WORKSPACE_ENTRIES {
@@ -218,7 +218,7 @@ fn validate_workspace_entries_with_home(
             continue;
         }
 
-        let canonical = expanded.canonicalize().unwrap_or(expanded);
+        let canonical = dunce::canonicalize(&expanded).unwrap_or(expanded);
 
         if is_filesystem_root(&canonical) {
             warnings.push(format!(
@@ -364,6 +364,24 @@ mod tests {
         let (valid, warnings) = validate_workspace_entries_with_home(&entries, Some(&home));
         assert_eq!(valid.len(), 1);
         assert!(warnings.is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_workspace_entries_strips_extended_length_prefix() {
+        // Windows std::fs::canonicalize()는 `\\?\`(extended-length) 접두 경로를
+        // 반환한다 — 이 값이 그대로 조회(get) 응답을 거쳐 편집 폼에 재채워지면
+        // 사용자가 재저장할 때 `\\?\`가 raw 값으로 영구 저장돼 이후 스캔이
+        // 실패한다. dunce::canonicalize()로 접두어를 제거해 방지한다.
+        let home = temp_subdir("unc-prefix");
+        let project = home.join("workspace");
+        std::fs::create_dir_all(&project).unwrap();
+        let entries = vec![project.to_string_lossy().to_string()];
+        let (valid, warnings) = validate_workspace_entries_with_home(&entries, Some(&home));
+        assert_eq!(valid.len(), 1);
+        assert!(warnings.is_empty());
+        assert!(!valid[0].to_string_lossy().starts_with(r"\\?\"));
         let _ = std::fs::remove_dir_all(&home);
     }
 
