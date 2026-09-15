@@ -241,6 +241,22 @@ pub(crate) struct PathVisibility {
 /// 일부러 읽지 않는다 — `winreg` 크레이트 추가가 필요한데 얻는 정확도가 힌트
 /// 문구 하나에 비해 과하다. 순수 판정은 `platform::dir_in_path_var`(§D.2)가
 /// 맡는다.
+///
+/// T1(review-devtools-windows-parity-2026-09-15-r3.md) 재발 방지: 이 분기는
+/// 원래 `hint`에 "새 터미널을 열거나…"라는 한국어 **조언 문장**을 담아
+/// 돌려줬다. 프런트(`devTools.ts`)는 `hint`를 항상 "PATH 설정에 붙여넣을
+/// 명령"으로 취급해 고정 제목 + 명령 블록 + 복사 버튼으로 렌더한다(계약을
+/// 만드는 이 함수가 그 소비 방식을 통제할 수 없고, 프런트는 이번 라운드
+/// 변경 범위 밖이다) — 그 결과 Windows 사용자는 문장을 복사해 PATH에
+/// 붙여넣으라는 실행 불가능한 지시를 받는다. macOS 분기(`export PATH=...`)와
+/// 달리 Windows에는 한 줄로 안전하게 붙여넣을 수 있는 대응 명령이 없다
+/// (`setx PATH "%PATH%;<dir>"`는 PATH를 잘라내거나 중복시키는 잘 알려진
+/// 함정이 있어 오히려 더 위험하다) — 그래서 `hint: None`을 돌려준다. 계약
+/// (`PathVisibility`/`DevToolActionResult.path_hint`)은 그대로 두고
+/// (`!result.pathVisible && result.pathHint`일 때만 패널을 그리는) 프런트
+/// 조건을 그대로 이용해 패널 자체가 나타나지 않게 한다 — 거짓 지시를 주는
+/// 대신 아무 말도 하지 않는 쪽을 택한다(`visible: false`는 유지해 "PATH에
+/// 아직 없다"는 사실 자체는 잃지 않는다).
 fn compute_path_visibility_windows(dir: &str) -> PathVisibility {
     let path_var = std::env::var("PATH").unwrap_or_default();
     if super::platform::dir_in_path_var(super::platform::Platform::Win, dir, &path_var) {
@@ -252,9 +268,7 @@ fn compute_path_visibility_windows(dir: &str) -> PathVisibility {
     } else {
         PathVisibility {
             visible: false,
-            hint: Some(
-                "새 터미널을 열거나 로그아웃 후 다시 로그인하면 PATH가 갱신됩니다.".to_string(),
-            ),
+            hint: None,
             hint_target: None,
         }
     }
@@ -507,13 +521,18 @@ libpsl
     // 로직(`dir_in_path_var`)은 platform.rs가 합성 `;`-PATH로 이미 검증한다 —
     // 여기서 전역 `PATH` 환경변수를 덮어써 재현하면 병렬 테스트 실행과
     // 레이스가 생겨 오히려 신뢰도를 낮춘다.
+    // T1(review-devtools-windows-parity-2026-09-15-r3.md) 재발 방지: Windows
+    // 분기는 더 이상 hint에 조언 문장을 담지 않는다 — 프런트가 hint를 항상
+    // "PATH에 붙여넣을 명령"으로 렌더하므로(`devTools.ts`), 실행 불가능한
+    // 한국어 문장을 명령인 것처럼 복사 버튼과 함께 보여주는 결함(T1)이 다시
+    // 생기지 않으려면 hint가 아예 없어야 한다.
     #[test]
     fn compute_path_visibility_windows_uses_process_path_only() {
         let visible = compute_path_visibility_windows(r"C:\Program Files\GitHub CLI");
         assert!(!visible.visible);
         assert_eq!(
-            visible.hint.as_deref(),
-            Some("새 터미널을 열거나 로그아웃 후 다시 로그인하면 PATH가 갱신됩니다.")
+            visible.hint, None,
+            "Windows에서 실행 불가능한 조언 문장이 hint로 나가면 안 됩니다(T1 재발)"
         );
         assert_eq!(visible.hint_target, None);
     }

@@ -35,6 +35,11 @@ pub(crate) mod platform;
 mod process;
 mod query;
 mod runners;
+// R-8(review-devtools-windows-parity-2026-09-15-r3.md): classify_tests.rs/
+// plan_table_tests.rs가 공유하는 "DEV_TOOLS × windows_path_candidates" 순회
+// 헬퍼 — 테스트 전용이라 #[cfg(test)]로만 컴파일된다.
+#[cfg(test)]
+pub(crate) mod win_candidate_test_support;
 
 use crate::cli_launcher::resolve_binary_expand_home;
 use platform::Platform;

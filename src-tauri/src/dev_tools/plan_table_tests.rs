@@ -111,18 +111,41 @@ fn install_manual_plan_mac_variant_keeps_brew_wording() {
 // Windows 분기(설계 §B.1, 전부 미검증)는 brew가 아니라 winget 명령을
 // 내야 한다 — mac 문구가 그대로 새어나가면 이 작업의 핵심 결함(거짓 안내)이
 // 재발한 것이다.
+//
+// T6(review-devtools-windows-parity-2026-09-15-r3.md) 재발 방지: 예전에는
+// 이 가드가 6개 도구를 손으로 나열했다 — 오늘은 6/6이라 우연히 전수였지만
+// 7번째 도구가 추가되면 조용히 면제된다.
+// `windows_installed_tool_actions_never_reach_macos_only_manual_text`와
+// 동형으로 macOS 전용 토큰 부재는 DEV_TOOLS 전체를 구조적으로 순회해
+// 검사한다(도구마다 제각각이던 검사를 통일 — 이전엔 gh/node만 일부 검사했다).
+// 각 도구의 정확한 명령값(어떤 러너로 무엇을 설치하는지)은 구조적으로 유도할
+// 수 없는 도구별 사실이라 그 아래에 리터럴로 남긴다.
 #[test]
 fn install_manual_plan_windows_variant_uses_winget_not_brew() {
+    use super::super::DEV_TOOLS;
+
+    const MAC_ONLY_TOKENS: [&str; 5] = ["softwareupdate", "brew", "Xcode", "xcode-select", "Homebrew"];
+
+    for def in DEV_TOOLS.iter() {
+        let plan = install_manual_plan_windows(def.id);
+        let text = format!("{} {}", plan.message_ko, plan.copyable_command.unwrap_or(""));
+        for token in MAC_ONLY_TOKENS {
+            assert!(
+                !text.contains(token),
+                "{}용 install_manual_plan_windows에 macOS 전용 토큰 '{token}'이 있습니다: {text}",
+                def.key
+            );
+        }
+    }
+
     let gh = install_manual_plan_windows(ToolId::Gh);
     assert!(gh
         .copyable_command
         .unwrap_or("")
         .starts_with("winget install --id GitHub.cli"));
-    assert!(!gh.copyable_command.unwrap_or("").contains("brew"));
 
     let node = install_manual_plan_windows(ToolId::Node);
     assert_eq!(node.copyable_command, Some("winget install OpenJS.NodeJS.LTS"));
-    assert!(!node.message_ko.contains("Homebrew"));
 
     let git = install_manual_plan_windows(ToolId::Git);
     assert_eq!(
@@ -141,6 +164,23 @@ fn install_manual_plan_windows_variant_uses_winget_not_brew() {
     );
     let wrangler = install_manual_plan_windows(ToolId::Wrangler);
     assert_eq!(wrangler.copyable_command, Some("npm install -g wrangler"));
+}
+
+// T3(review-devtools-windows-parity-2026-09-15-r3.md, 2차 m4 승계) 재발 방지:
+// 실행기 해석 실패 강등 문구가 플랫폼별로 실제 후보만 말해야 한다 —
+// Windows 사용자에게 brew를, macOS 사용자에게 winget을 보여주면 양방향으로
+// 샌다.
+#[test]
+fn manual_no_runner_plan_never_leaks_other_platforms_runner_name() {
+    let mac = manual_no_runner_plan(super::super::platform::Platform::Mac);
+    assert!(!mac.message_ko.contains("winget"));
+    assert!(mac.message_ko.contains("brew"));
+    assert_eq!(mac.reason, ManualReason::NoRunner);
+
+    let win = manual_no_runner_plan(super::super::platform::Platform::Win);
+    assert!(!win.message_ko.contains("brew"));
+    assert!(win.message_ko.contains("winget"));
+    assert_eq!(win.reason, ManualReason::NoRunner);
 }
 
 // 설계 §B.3: winget "이미 최신" 종료 코드 상수가 실제 문서값(0x8A15002B)과
@@ -322,66 +362,50 @@ fn windows_system_managed_plan_never_mentions_macos_terms() {
 #[test]
 fn windows_installed_tool_actions_never_reach_macos_only_manual_text() {
     use super::super::classify::classify_install_method_windows;
-    use super::super::platform::{expand_path_tokens, EnvRoots, Platform};
-    use super::super::DEV_TOOLS;
+    use super::super::platform::Platform;
+    use super::super::win_candidate_test_support::{for_every_windows_candidate, synthetic_windows_env_roots};
     use std::path::Path;
 
     const MAC_ONLY_TOKENS: [&str; 5] = ["softwareupdate", "brew", "Xcode", "xcode-select", "Homebrew"];
 
-    let roots = EnvRoots {
-        home: Some(std::path::PathBuf::from(r"C:\Users\hopegiver")),
-        appdata: Some(std::path::PathBuf::from(r"C:\Users\hopegiver\AppData\Roaming")),
-        local_appdata: Some(std::path::PathBuf::from(r"C:\Users\hopegiver\AppData\Local")),
-        program_files: Some(std::path::PathBuf::from(r"C:\Program Files")),
-        program_files_x86: Some(std::path::PathBuf::from(r"C:\Program Files (x86)")),
-        pnpm_home: None,
-        system_root: Some(std::path::PathBuf::from(r"C:\Windows")),
-    };
-
-    let mut checked = 0usize;
+    let roots = synthetic_windows_env_roots();
     let mut violations: Vec<String> = Vec::new();
-    let total_candidates: usize = DEV_TOOLS
-        .iter()
-        .map(|d| d.windows_path_candidates.len())
-        .sum();
 
-    for def in DEV_TOOLS.iter() {
-        for template in def.windows_path_candidates {
-            let expanded = expand_path_tokens(Platform::Win, template, &roots)
-                .unwrap_or_else(|| panic!("{}의 후보 {template:?} 토큰 확장 실패", def.key));
-            let method = classify_install_method_windows(Path::new(&expanded), &roots);
-            let action = compute_action_for_platform(def.id, &method, Platform::Win);
-            checked += 1;
+    // R-8(3차): 순회 자체(EnvRoots 조립 + windows_path_candidates 전수 + 빈
+    // 배열 방지)는 win_candidate_test_support로 통일했다 — 이 테스트는 검사
+    // 로직만 클로저로 넘긴다.
+    let checked = for_every_windows_candidate(|def, template, expanded| {
+        let method = classify_install_method_windows(Path::new(&expanded), &roots);
+        let action = compute_action_for_platform(def.id, &method, Platform::Win);
 
-            match action {
-                Action::Manual(mp) => {
-                    let text = format!("{} {}", mp.message_ko, mp.copyable_command.unwrap_or(""));
-                    for token in MAC_ONLY_TOKENS {
-                        if text.contains(token) {
-                            violations.push(format!(
-                                "{}의 Windows 후보 {template:?}(분류: {method:?})가 macOS 전용 \
-                                 토큰 '{token}'을 포함한 Manual 문구를 냅니다: {text}",
-                                def.key
-                            ));
-                        }
-                    }
-                }
-                Action::Run(plan) => {
-                    if plan.runner == Runner::Brew {
+        match action {
+            Action::Manual(mp) => {
+                let text = format!("{} {}", mp.message_ko, mp.copyable_command.unwrap_or(""));
+                for token in MAC_ONLY_TOKENS {
+                    if text.contains(token) {
                         violations.push(format!(
-                            "{}의 Windows 후보 {template:?}(분류: {method:?})가 존재하지 않는 \
-                             Brew 러너로 라우팅됩니다",
+                            "{}의 Windows 후보 {template:?}(분류: {method:?})가 macOS 전용 \
+                             토큰 '{token}'을 포함한 Manual 문구를 냅니다: {text}",
                             def.key
                         ));
                     }
                 }
             }
+            Action::Run(plan) => {
+                if plan.runner == Runner::Brew {
+                    violations.push(format!(
+                        "{}의 Windows 후보 {template:?}(분류: {method:?})가 존재하지 않는 \
+                         Brew 러너로 라우팅됩니다",
+                        def.key
+                    ));
+                }
+            }
         }
-    }
+    });
 
-    assert_eq!(
-        checked, total_candidates,
-        "DEV_TOOLS 순회가 예상과 다르게 실행됐습니다 — 이 가드가 무의미해집니다"
+    assert!(
+        checked > 0,
+        "DEV_TOOLS 순회가 실행되지 않았습니다 — 이 가드가 무의미해집니다"
     );
     assert!(violations.is_empty(), "\n{}", violations.join("\n"));
 }

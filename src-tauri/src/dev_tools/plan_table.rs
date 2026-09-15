@@ -285,8 +285,11 @@ pub(crate) const RUN_WINGET_INSTALL_GH: RunPlan = RunPlan {
         Arg::Lit("--silent"),
     ],
     // winget에는 `brew install -n`류 dry-run이 없다(B.3) — 프리뷰는
-    // query::build_install_preview가 installer_label=="winget"일 때 별도
-    // 안내(고정 preview_reliable:false)로 대체한다. 여기서 `winget show`를
+    // query::no_dry_run_install_notes가 이 RunPlan의 runner(Runner::Winget)를
+    // winget_preview_is_reliable로 판정해 별도 안내(고정
+    // preview_reliable:false)로 대체한다(T2①, review-devtools-windows-
+    // parity-2026-09-15-r3.md — 예전엔 installer_label 문자열 비교였다).
+    // 여기서 `winget show`를
     // 실제로 호출하지 않는 이유는 이 머신에 winget이 없어 그 실행 경로
     // 자체가 검증 불가능하기 때문이다(정직 규율) — preview_reliable:false가
     // 이미 "거짓 안심을 주지 않는다"는 B.3의 목표를 달성한다.
@@ -440,7 +443,13 @@ const MANUAL_UNKNOWN_METHOD: ManualPlan = ManualPlan {
     reason: ManualReason::UnknownMethod,
     message_ko: "설치 방식을 확인할 수 없어 앱이 자동으로 실행하지 않습니다. 터미널에서 직접 업데이트해주세요.",
     copyable_command: None,
-    doc_url: None,
+    // 3차 리뷰(review-devtools-windows-parity-2026-09-15-r3.md) "system_prefixes
+    // 확장 보류" 판정이 붙인 조건: 분류 규칙(classify.rs)은 실기 1호 PC 검증
+    // 전에 추측으로 넓히지 않되(오분류 시 잘못된 러너로 실행되는 피해가 더
+    // 크다), 다음 행동이 0개인 막다른 골목만은 해소한다. 실제 설치 경로를
+    // 사용자가 보고할 자리를 주면 그 실측이 나중에 system_prefixes를 안전하게
+    // (추측이 아니라 관측으로) 넓힐 근거가 된다.
+    doc_url: Some("https://github.com/hopegiver/malgn-vscode/issues/new"),
 };
 // M1(review-devtools-windows-parity-2026-09-15.md): mod.rs DEV_TOOLS의 Claude
 // Windows 후보 3번째(`%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe`)가
@@ -458,15 +467,32 @@ const MANUAL_CLAUDE_WINGET_UNSUPPORTED: ManualPlan = ManualPlan {
     copyable_command: Some("claude update"),
     doc_url: Some("https://docs.claude.com/en/docs/claude-code/setup"),
 };
-pub(crate) const MANUAL_NO_RUNNER: ManualPlan = ManualPlan {
+// T3(review-devtools-windows-parity-2026-09-15-r3.md, 2차 m4 승계) 재발 방지:
+// 예전에는 "brew/npm/winget"을 한 문구에 전부 나열했다 — Windows 사용자는
+// 존재하지 않는 brew를, macOS 사용자는 존재하지 않는 winget을 보는 양방향
+// 누출이었고, 신규 가드 2종(N1/N2 재발 방지)도 이 강등 계층(`resolve_plan`)을
+// 보지 않아 걸리지 않았다. 실제 후보만 플랫폼별로 나눠 말한다.
+pub(crate) const MANUAL_NO_RUNNER_MAC: ManualPlan = ManualPlan {
     reason: ManualReason::NoRunner,
-    // 설계 §B.2: winget 슬롯 추가로 실행기 후보가 하나 더 늘었으므로 문구도
-    // 함께 넓힌다(새 분기를 만들지 않고 기존 강등 경로를 그대로 재사용 — 해석
-    // 실패 시 이 상수로 자동 강등된다).
-    message_ko: "필요한 실행 도구(brew/npm/winget)를 찾을 수 없어 앱이 자동으로 실행하지 않습니다.",
+    message_ko: "필요한 실행 도구(brew/npm)를 찾을 수 없어 앱이 자동으로 실행하지 않습니다.",
     copyable_command: None,
     doc_url: None,
 };
+pub(crate) const MANUAL_NO_RUNNER_WIN: ManualPlan = ManualPlan {
+    reason: ManualReason::NoRunner,
+    message_ko: "필요한 실행 도구(winget/npm)를 찾을 수 없어 앱이 자동으로 실행하지 않습니다.",
+    copyable_command: None,
+    doc_url: None,
+};
+
+/// `resolve_plan`이 실행기 해석에 실패해 강등할 때 부르는 정본 — 플랫폼별로
+/// 실제 존재할 수 있는 러너만 언급한다.
+pub(crate) fn manual_no_runner_plan(platform: super::platform::Platform) -> ManualPlan {
+    match platform {
+        super::platform::Platform::Win => MANUAL_NO_RUNNER_WIN,
+        super::platform::Platform::Mac => MANUAL_NO_RUNNER_MAC,
+    }
+}
 
 static UPDATE_TABLE: &[Row] = &[
     Row {

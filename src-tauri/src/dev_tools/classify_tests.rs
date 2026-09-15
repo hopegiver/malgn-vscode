@@ -552,70 +552,51 @@ const KNOWN_UNKNOWN_WINDOWS_CANDIDATES: [(&str, &str); 3] = [
 
 #[test]
 fn windows_candidates_never_silently_fall_to_unknown_method_manual() {
-    use super::super::platform::{expand_path_tokens, EnvRoots, Platform};
     use super::super::plan_table::{Action, ManualReason};
-    use super::super::DEV_TOOLS;
+    use super::super::win_candidate_test_support::{for_every_windows_candidate, synthetic_windows_env_roots};
+    use std::collections::BTreeSet;
     use std::path::Path;
 
-    let roots = EnvRoots {
-        home: Some(PathBuf::from(r"C:\Users\hopegiver")),
-        appdata: Some(PathBuf::from(r"C:\Users\hopegiver\AppData\Roaming")),
-        local_appdata: Some(PathBuf::from(r"C:\Users\hopegiver\AppData\Local")),
-        program_files: Some(PathBuf::from(r"C:\Program Files")),
-        program_files_x86: Some(PathBuf::from(r"C:\Program Files (x86)")),
-        pnpm_home: None,
-        system_root: Some(PathBuf::from(r"C:\Windows")),
-    };
-
-    let mut checked = 0usize;
+    // R-8(3차): 순회 자체(EnvRoots 조립 + windows_path_candidates 전수 + 빈
+    // 배열 방지)는 win_candidate_test_support로 통일했다 — 이 테스트는 검사
+    // 로직만 클로저로 넘긴다.
+    let roots = synthetic_windows_env_roots();
     let mut violations: Vec<String> = Vec::new();
-    let mut actual_unknown: Vec<(String, String)> = Vec::new();
-    let total_candidates: usize = DEV_TOOLS
-        .iter()
-        .map(|d| d.windows_path_candidates.len())
-        .sum();
+    // T7(3차): 순서 의존 Vec 비교를 BTreeSet으로 바꾼다 — DEV_TOOLS 배열
+    // 순서를 바꾸는 무해한 리팩터가 "허용목록이 달라졌습니다"라는 오해
+    // 유발 실패를 내지 않게 한다.
+    let mut actual_unknown: BTreeSet<(String, String)> = BTreeSet::new();
 
-    for def in DEV_TOOLS.iter() {
-        for template in def.windows_path_candidates {
-            let expanded = expand_path_tokens(Platform::Win, template, &roots)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}의 후보 {template:?}가 토큰 확장에 실패했습니다(테스트용 \
-                         EnvRoots가 불완전합니다)",
-                        def.key
-                    )
-                });
-            let method = classify_install_method_windows(Path::new(&expanded), &roots);
-            checked += 1;
+    let checked = for_every_windows_candidate(|def, template, expanded| {
+        let method = classify_install_method_windows(Path::new(&expanded), &roots);
 
-            if matches!(method, InstallMethod::Unknown(_)) {
-                actual_unknown.push((def.key.to_string(), (*template).to_string()));
-                continue;
-            }
-
-            let action = lookup_action(def.id, method.kind());
-            let silently_unrouted = matches!(
-                action,
-                Action::Manual(plan) if plan.reason == ManualReason::UnknownMethod
-            );
-            if silently_unrouted {
-                violations.push(format!(
-                    "{}의 Windows 후보 {template:?}(확장: {expanded})가 {method:?}로 \
-                     분류됐지만 UPDATE_TABLE에 (tool={:?}, method={:?}) 행이 없어 조용히 \
-                     \"설치 방식을 확인할 수 없습니다\"로 강등됩니다 — M1과 같은 결함입니다.",
-                    def.key,
-                    def.id,
-                    method.kind()
-                ));
-            }
+        if matches!(method, InstallMethod::Unknown(_)) {
+            actual_unknown.insert((def.key.to_string(), template.to_string()));
+            return;
         }
-    }
-    assert_eq!(
-        checked, total_candidates,
-        "DEV_TOOLS 순회가 예상과 다르게 실행됐습니다 — 이 가드가 무의미해집니다"
+
+        let action = lookup_action(def.id, method.kind());
+        let silently_unrouted = matches!(
+            action,
+            Action::Manual(plan) if plan.reason == ManualReason::UnknownMethod
+        );
+        if silently_unrouted {
+            violations.push(format!(
+                "{}의 Windows 후보 {template:?}(확장: {expanded})가 {method:?}로 \
+                 분류됐지만 UPDATE_TABLE에 (tool={:?}, method={:?}) 행이 없어 조용히 \
+                 \"설치 방식을 확인할 수 없습니다\"로 강등됩니다 — M1과 같은 결함입니다.",
+                def.key,
+                def.id,
+                method.kind()
+            ));
+        }
+    });
+    assert!(
+        checked > 0,
+        "DEV_TOOLS 순회가 실행되지 않았습니다 — 이 가드가 무의미해집니다"
     );
 
-    let expected_unknown: Vec<(String, String)> = KNOWN_UNKNOWN_WINDOWS_CANDIDATES
+    let expected_unknown: BTreeSet<(String, String)> = KNOWN_UNKNOWN_WINDOWS_CANDIDATES
         .iter()
         .map(|(key, template)| (key.to_string(), template.to_string()))
         .collect();

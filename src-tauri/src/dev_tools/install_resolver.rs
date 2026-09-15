@@ -4,8 +4,8 @@
 
 use super::classify::{canonicalize_best_effort, classify_install_method_with_defaults, InstallMethod};
 use super::plan_table::{
-    compute_action, install_manual_plan, Action, Arg, ManualPlan, Runner, RunPlan,
-    MANUAL_NOT_WRITABLE, MANUAL_NO_RUNNER, RUN_BREW_INSTALL_GH, RUN_NPM_GLOBAL_INSTALL_WRANGLER,
+    compute_action, install_manual_plan, manual_no_runner_plan, Action, Arg, ManualPlan, Runner,
+    RunPlan, MANUAL_NOT_WRITABLE, RUN_BREW_INSTALL_GH, RUN_NPM_GLOBAL_INSTALL_WRANGLER,
     RUN_NPM_INSTALL_CLAUDE, RUN_PNPM_GLOBAL_ADD, RUN_WINGET_INSTALL_GH,
 };
 // 설계 §F.2: 실행기(runner) 해석 자체는 runners.rs로 분리했다(install_resolver.rs
@@ -56,7 +56,9 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
         Action::Manual(mp) => ResolvedAction::Manual(mp),
         Action::Run(plan) => match resolve_runner_path(plan.runner, Some(resolved_tool_path)) {
             Some(runner_path) => ResolvedAction::Run { runner_path, plan },
-            None => ResolvedAction::Manual(MANUAL_NO_RUNNER),
+            // T3(review-devtools-windows-parity-2026-09-15-r3.md): 플랫폼별
+            // 실행기 후보만 말한다(brew/winget 양방향 누출 방지).
+            None => ResolvedAction::Manual(manual_no_runner_plan(super::platform::platform_now())),
         },
     };
 
