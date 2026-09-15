@@ -524,17 +524,32 @@ fn classify_install_method_windows_case_insensitive_matching() {
 // 강등됐다. 이 테스트는 DEV_TOOLS 전체를 순회해(하드코딩 목록 없이) 같은
 // 클래스의 결함이 다른 도구/후보에서 재발하면 구조적으로 잡는다.
 //
-// 범위: `InstallMethod::Unknown`으로 분류되는 후보는 이 테스트에서
-// **제외**한다 — Unknown은 `Row{tool:None, method:Unknown,
-// Manual(MANUAL_UNKNOWN_METHOD)}`로 이어지는 **의도된** 폴백이지(§4
-// 완결성 — 모르는 경로는 정직하게 모른다고 말한다), 이 테스트가 잡으려는
-// "분류는 됐는데 라우팅이 없어 조용히 같은 문구로 강등되는" 결함과는
-// 다르다. 현재 이 제외 대상에 걸리는 후보가 있다(gh의 `C:\Program
-// Files\GitHub CLI\gh.exe`, git/node의 `%LOCALAPPDATA%\Programs\...`) —
-// winget/설치기의 실제 레이아웃이 이 머신에서 검증 불가라 방어적으로
-// 다루려면 별도 조사가 필요하고, 이번 라운드의 M1 범위(Wrangler/pnpm +
-// 같은 패턴이 즉시 드러난 Claude/WingetPackage)를 넘어선다고 판단해 이번
-// 커밋에서는 손대지 않았다 — 후속 조사 대상으로 남긴다(미검증 명시).
+// 범위: `InstallMethod::Unknown`으로 분류되는 후보는 이 테스트의 "조용히
+// UnknownMethod로 강등되는가" 판정에서 **제외**한다 — Unknown은
+// `Row{tool:None, method:Unknown, Manual(MANUAL_UNKNOWN_METHOD)}`로 이어지는
+// **의도된** 폴백이지(§4 완결성 — 모르는 경로는 정직하게 모른다고 말한다),
+// 이 테스트가 잡으려는 "분류는 됐는데 라우팅이 없어 조용히 같은 문구로
+// 강등되는" 결함과는 다르다.
+//
+// N3(review-devtools-windows-parity-2026-09-15-r2.md) 재발 방지: 예전에는 이
+// 제외가 `matches!(method, Unknown(_)) => continue`라는 **판정식**이었다 —
+// 새 후보가 추가돼 Unknown으로 떨어지면 아무 신호 없이 조용히 면제
+// 집합에 합류했다(이 파일의 `scratch_dump_windows_classification`로 실측한
+// 결과, 4개가 아니라 정확히 3개가 이 상태다: gh의 `C:\Program Files\GitHub
+// CLI\gh.exe`, git의 `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`, node의
+// `%LOCALAPPDATA%\Programs\nodejs\node.exe`. `C:\Program Files
+// (x86)\Git\cmd\git.exe`는 classify_install_method_windows 5번 분기가 이미
+// SystemManaged로 분류한다 — Unknown이 아니다). 이제 제외를 **명시적
+// 리터럴 허용목록**으로 고정하고 실제 계산된 Unknown 집합과
+// `assert_eq!`로 대조한다 — 허용목록에 없는 후보가 새로 Unknown이 되면
+// 이 assert가 즉시 깨져 "허용목록에 올려도 되는 결함인지" 사람이 검토하게
+// 만든다(조용한 면제 합류를 구조적으로 차단).
+const KNOWN_UNKNOWN_WINDOWS_CANDIDATES: [(&str, &str); 3] = [
+    ("node", r"%LOCALAPPDATA%\Programs\nodejs\node.exe"),
+    ("gh", r"C:\Program Files\GitHub CLI\gh.exe"),
+    ("git", r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe"),
+];
+
 #[test]
 fn windows_candidates_never_silently_fall_to_unknown_method_manual() {
     use super::super::platform::{expand_path_tokens, EnvRoots, Platform};
@@ -554,6 +569,7 @@ fn windows_candidates_never_silently_fall_to_unknown_method_manual() {
 
     let mut checked = 0usize;
     let mut violations: Vec<String> = Vec::new();
+    let mut actual_unknown: Vec<(String, String)> = Vec::new();
     let total_candidates: usize = DEV_TOOLS
         .iter()
         .map(|d| d.windows_path_candidates.len())
@@ -573,7 +589,7 @@ fn windows_candidates_never_silently_fall_to_unknown_method_manual() {
             checked += 1;
 
             if matches!(method, InstallMethod::Unknown(_)) {
-                // 위 문서화 참고 — 이 테스트의 범위 밖(별도 조사 필요, 미검증).
+                actual_unknown.push((def.key.to_string(), (*template).to_string()));
                 continue;
             }
 
@@ -598,6 +614,18 @@ fn windows_candidates_never_silently_fall_to_unknown_method_manual() {
         checked, total_candidates,
         "DEV_TOOLS 순회가 예상과 다르게 실행됐습니다 — 이 가드가 무의미해집니다"
     );
+
+    let expected_unknown: Vec<(String, String)> = KNOWN_UNKNOWN_WINDOWS_CANDIDATES
+        .iter()
+        .map(|(key, template)| (key.to_string(), template.to_string()))
+        .collect();
+    assert_eq!(
+        actual_unknown, expected_unknown,
+        "Unknown으로 분류되는 Windows 후보 집합이 허용목록과 달라졌습니다 — 새 후보가 \
+         Unknown으로 떨어진다면(다음 행동 0개) 이 허용목록에 올려도 되는 결함인지부터 \
+         검토한 뒤 KNOWN_UNKNOWN_WINDOWS_CANDIDATES를 갱신하세요."
+    );
+
     // 첫 위반에서 멈추지 않고 전부 모아 한 번에 보고한다 — 여러 도구가
     // 동시에 어긋나도 한 번의 실행으로 전체 그림을 알 수 있다.
     assert!(
