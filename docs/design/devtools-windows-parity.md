@@ -15,7 +15,7 @@
 | **B. 설치 경로** | **winget 러너를 신설한다.** 단 적용 대상은 **gh 하나**(+업데이트 국면의 winget 설치본). claude=npm, wrangler=pnpm→npm, pnpm/node/git=manual — **macOS와 run 3 / manual 3으로 정확히 동수**이며 이는 우연이 아니라 같은 G1~G4 게이트를 Windows 후보에 적용한 결과다 |
 | **C. 게이트 해제** | **3단계(Phase 0 CI → Phase 1 탐지 → Phase 2 실행), 피처 플래그는 두지 않는다.** 중간 상태는 플래그가 아니라 **테이블에 행을 넣지 않는 것**으로 표현한다(기존 fail-closed 성질 재사용). 롤백은 포터블 exe 교체 + `git revert`로 충분 |
 | **D. 탐지** | `dev_tools/platform.rs` 신설. `Platform`을 **인자로** 받는 순수함수 8개(경로 토큰 확장·확장자·PATH 합성·PATH 스캔·인용)로 Windows 로직 전체를 **macOS에서 `cargo test`로 실행 검증**한다. `cfg`는 `platform_now()`와 실제 syscall 2곳으로 격리. Windows에서는 **bare-name 프로브 실행을 폐지**하고 명시적 PATH 스캔으로 절대경로를 확정한다 |
-| **E. 터미널** | **`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`(절대경로)** + `-NoProfile -NoLogo -NoExit -Command` + **`CREATE_NEW_CONSOLE`(0x10)** 명시. bare name `powershell.exe`는 G-1의 ②"현재 실행 파일의 디렉터리"를 그대로 타므로 쓰지 않는다. `process_util.rs`에 `silent()`의 형제 `windowed()`를 추가한다 — `f983216`과 **충돌하지 않는다**(그 커밋은 이 경로를 명시적으로 제외했고, 같은 플래그 계열의 반대 방향이다) |
+| **E. 터미널** | **`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`(절대경로)** + `-NoLogo -NoProfile -NoExit -EncodedCommand`(base64 UTF-16LE — 평문 `-Command`는 PowerShell 인용 층을 한 겹 더 타므로 쓰지 않는다, E.1) + **`CREATE_NEW_CONSOLE`(0x10)** 명시. bare name `powershell.exe`는 G-1의 ②"현재 실행 파일의 디렉터리"를 그대로 타므로 쓰지 않는다. `process_util.rs`에 `silent()`의 형제 `windowed()`를 추가한다 — `f983216`과 **충돌하지 않는다**(그 커밋은 이 경로를 명시적으로 제외했고, 같은 플래그 계열의 반대 방향이다) |
 | **F. 파일 분리** | 신규 `platform.rs`(~330줄) + `install_resolver.rs`(754줄, 증분 후 ~930줄 예상)를 **`runners.rs`로 분할**. 그 둘만 하면 나머지는 1,000줄 규율 안에 남는다 |
 | **G. 보안** | 쟁점 9개. 축은 둘이다: ① **실행 전 절대경로 확정**(Windows bare-name 폴백 폐지 — 근거는 CWD 검색이 아니라 "탐색이 어디로 떨어지는지 앱이 스스로 정한다" + 프로세스 미기동 + 무한 대기 제거, G-1) ② **`rust-version` 하한 1.81 고정**(BatBadBut CVE-2024-24576/43402 완화가 `.cmd` 러너 실행의 전제, G-2). **잔여 위험은 사라지지 않고 "현재 실행 파일의 디렉터리"로 옮겨간다** — 이 앱의 Windows 배포물은 단일 포터블 exe라 그 디렉터리가 보통 다운로드 폴더다(G-1·G-9) |
 
@@ -195,7 +195,15 @@ $ git show f983216 --stat
 **포기한 것**: winget이 없는 머신(Windows 10 1809 미만, 또는 App Installer 미등록 상태 — winget은 Microsoft Store가 비동기로 등록하므로 **최초 로그인 직후엔 없을 수 있다**)에서는 gh 자동 설치가 불가능하다.
 **감당**: winget 해석에 실패하면 **기존 `MANUAL_NO_RUNNER` 경로로 자동 강등**된다(신규 분기 없음).
 
-> **winget 러너 경로는 `ResolvedRunners`에 캐시 필드로 두지 않는다.** `ResolvedRunners { brew, npm, pnpm }`에 네 번째 필드를 추가하면 이 구조체를 리터럴로 만드는 **기존 테스트 3개가 컴파일 에러로 깨진다.** 그런데 "기존 테스트를 한 줄도 고치지 않는다"는 것이 이 작업에서 macOS 무변경을 증명하는 유일한 기계적 수단이다(C.3.1) — 캐시 한 칸보다 그 증명 수단이 값어치가 크다. 대신 `path_for(Runner::Winget)`가 **요청 시점에 그 자리에서 해석**한다. winget을 쓰는 도구는 gh 하나뿐이라(B.2) 호출 빈도가 낮고, 해석은 파일 존재 확인 한 번이라 캐시의 값어치 자체가 작다. 문구만 Windows 전용으로 구체화한다 — "winget(앱 설치 관리자)을 찾을 수 없습니다. Microsoft Store에서 '앱 설치 관리자'를 업데이트하거나 https://cli.github.com 에서 직접 설치해주세요."
+> **winget 러너 경로는 `ResolvedRunners`의 캐시 필드다** — brew/npm/pnpm과 똑같이 `ResolvedRunners { brew, npm, pnpm, winget }`의 네 번째 필드이고, `resolve()`가 화면 1회 로드마다 한 번만 해석해 담는다. 실패 시 문구만 Windows 전용으로 구체화한다 — "winget(앱 설치 관리자)을 찾을 수 없습니다. Microsoft Store에서 '앱 설치 관리자'를 업데이트하거나 https://cli.github.com 에서 직접 설치해주세요."
+>
+> **이탈 #1 철회 — 왜 이 자리에 기록을 남기는가.** 이 설계는 한때 정반대를 정했다: *"네 번째 필드를 추가하면 구조체를 리터럴로 만드는 기존 테스트가 컴파일 에러로 깨지므로, 캐시 필드를 두지 않고 `path_for(Runner::Winget)`가 요청 시점에 그 자리에서 해석한다."* 근거는 "기존 테스트를 한 줄도 고치지 않는 것이 macOS 무변경의 유일한 기계적 증명 수단(C.3.1)"이었다. **그 결정은 철회됐고, 근거가 된 C.3.1도 함께 재정의됐다.**
+>
+> **철회 사유는 성능이 아니라 검증 능력이다.** `path_for(Winget)`만 구조체를 우회해 실제 파일시스템을 다시 읽으면, 테스트가 `ResolvedRunners { brew: None, npm: None, pnpm: None }`으로 **"실행기가 하나도 없다"를 주입해도 winget만 그 주입을 무시한다.** gh의 install 후보는 `[Brew, Winget]` 순이라 winget이 실제로 설치된 머신에서는 gh가 `Run`으로 해석되고, **"러너가 하나도 없으면 Manual"이라는 fail-closed 불변식(C.2·B.2의 감당책 전체가 이것에 얹혀 있다)을 테스트가 검사할 수 없는 상태**가 된다. 이것은 이론적 위험이 아니라 실제로 일어났다 — winget이 기본 설치된 `windows-latest` CI 러너에서 그 테스트가 거짓 실패하면서 드러났다.
+>
+> **교환의 방향이 반대였다.** "기존 테스트 무수정"은 macOS 무변경을 **간접적으로** 시사하는 편의 지표였고, 그것을 지키려고 포기한 것은 이 설계의 **핵심 안전장치가 검사 가능한 상태**였다. 지표를 지키려 안전장치를 못 보게 두는 교환은 성립하지 않는다. 필드 승격의 실제 비용은 기존 테스트 4개의 구조체 리터럴에 `winget: None` 한 줄씩을 가산하는 것이며(어서션은 한 줄도 바뀌지 않았다), 그 정도를 허용하도록 C.3.1을 재정의하는 쪽이 옳다.
+>
+> **다음에 같은 제안이 올라오면**: "winget은 gh 하나만 쓰니 호출 빈도가 낮고 해석도 파일 존재 확인 한 번이라 캐시 값어치가 작다"는 관찰 자체는 지금도 참이다. 하지만 이 필드의 존재 이유는 캐시 성능이 아니라 **주입 가능성**이다 — 네 러너가 같은 그릇을 거쳐야 테스트가 러너 조합을 통제할 수 있다. 성능을 근거로는 이 필드를 뺄 수 없다.
 
 ### B.3 winget 호출의 비정상 케이스 (③ 의무)
 
@@ -285,13 +293,26 @@ mod.rs:236  open_manual_instruction    동일
 
 ### C.3 macOS 무변경 보장 — 무엇으로 증명하는가
 
-주장이 아니라 **기계가 판정할 수 있는 형태**로만 둔다.
+주장이 아니라 **기계가 판정할 수 있는 형태**로만 둔다. 단, 그 형태는 **앞으로도 참으로 유지할 수 있는 것**이어야 한다 — 참이 아닌 증명 수단을 문서에 남겨 두면 다음 사람이 그것을 근거로 잘못된 이탈을 승인한다(B.2 "이탈 #1 철회"가 정확히 그 경로로 일어났다).
 
-1. **기존 테스트를 한 줄도 고치지 않는다.** `Platform` 파라미터화는 **기존 공개 함수 시그니처를 유지**하고(`build_child_path_env(runner_path)`), 내부에서 `platform_now()`를 넘기는 얇은 래퍼로 만든다. `process.rs:444/456/462`의 세 테스트가 **무수정으로 통과**하는 것이 곧 무변경 증거다. 기존 테스트를 손대야 한다면 그건 이미 회귀다.
-2. **골든 테스트를 추가한다.** 현행 `build_child_path_env_prioritizes_runner_bin_dir`는 `starts_with`/`contains`만 본다 — 중간에 디렉터리가 끼어들어도 통과한다. `compose_path_env(Mac, Some("/opt/homebrew/bin/brew"))`의 **전체 문자열 완전 일치** 테스트를 추가한다. `DEV_TOOLS`의 macOS `path_candidates` 6×N 배열도 같은 방식으로 고정한다.
-3. **CI `macos-latest` 잡**(Phase 0) — 로컬에서만 돌던 283개 테스트를 자동 게이트로 승격.
-4. **화면 회귀**: macOS에서 개발 환경 화면 스크린샷을 Phase 1 전후로 대조한다(Skill `common-screen-verification-and-capture`).
-5. **`capabilities/default.json` 무변경**을 diff로 확인한다 — 이 작업은 새 Tauri 플러그인을 쓰지 않으므로 권한 표면이 넓어질 이유가 없다. 이 파일에 변경이 생겼다면 설계에서 벗어난 것이다.
+1. **macOS 실행경로를 검사하는 기존 테스트의 어서션 본문을 고치지 않는다.**
+   허용 — 어서션이 보는 값을 바꾸지 않는 변경 셋: ①구조체 리터럴의 **필드 가산**(`winget: None`) ②POSIX 전용 전제 테스트에 `#[cfg(unix)]`/`#[cfg(target_os = "macos")]` **속성 부착** ③Windows 등가 테스트를 **옆에 신설**.
+   금지 — `assert*!`의 좌·우변 변경, 테스트 삭제, `#[ignore]` 부착. macOS 어서션의 기대값을 바꿔야 통과한다면 그건 회귀다.
+   기계적 검사: 브랜치 diff에서 **macOS가 실행하는 테스트의 `assert` 행 변경이 0**인가.
+   **범위 한정 — Windows 분기만 검사하는 테스트는 이 규율 밖이다.** 그쪽은 신규 영역이라 기대값이 아직 확정되지 않았고, 실제로 CI가 `compute_path_visibility_windows` 테스트의 기대값("무조건 찾지 못함") 쪽이 틀렸음을 밝혀 고쳤다 — 로직이 아니라 테스트가 틀린 경우다. 그 자유가 없으면 CI가 알려준 사실을 반영할 수 없다. 이 한정이 규율을 무르게 만들지 않는 이유: **macOS 어서션은 여전히 한 줄도 못 고친다.**
+
+2. **macOS에서 관측 가능한 결과가 전부 같다** — 1번보다 강하고, 1번이 무너져도 남는 기준이다.
+   **쓸 수 없는 형태**: "프로덕션 코드 diff가 macOS 실행경로를 지나지 않는다." 실제로 지나간다 — `ResolvedRunners::resolve()`는 macOS에서도 winget 후보를 해석하고, 후보가 전부 미스매치라 `cli_launcher.rs`의 Mac 분기가 bare-name `winget --version` 프로브를 1회 spawn한다(즉시 ENOENT). 증명해야 하는 것은 "지나지 않음"이 아니라 **"지나가도 값이 같음"**이다.
+   근거 사슬: Windows 전용 후보는 `%LOCALAPPDATA%\…` 같은 리터럴이고 `expand_path_tokens(Mac, ..)`는 `%토큰%`을 확장하지 않고 **문자열을 그대로 돌려준다** → 그 문자열은 macOS 파일시스템에 실존할 수 없다 → `path_for(Winget)`은 macOS에서 **항상 `None`** → `None`은 후보 목록에서 다음 러너로 넘어가는 **기존 동작과 정확히 같다**.
+   기계적 검사: `runners.rs`의 `#[cfg(target_os = "macos")] path_for_winget_is_none_on_this_mac_machine`. **이 테스트 하나가 2번의 증명을 떠받친다** — 삭제하거나 `cfg`를 떼면 증명이 사라진다.
+
+3. **새로 생긴 macOS 부작용은 0이라고 주장하지 않고 세어서 적는다.**
+   현재 **N = 1**: 개발 환경 화면 1회 로드마다 + 설치/터미널 액션마다 **존재하지 않는 `winget` bare-name spawn 시도 1회**(즉시 ENOENT, 도구 6개 루프 **밖**이라 1회로 고정). 실해는 거의 없으나 "무변경"이 0 부작용을 뜻하는 것으로 읽히면 이런 항목이 생길 때마다 주장 전체가 거짓이 된다. 세어서 적으면 다음 사람은 **증가분만** 보면 된다 — N을 늘리는 변경은 이 줄을 함께 고쳐야 한다.
+
+4. **골든 테스트를 추가한다.** 현행 `build_child_path_env_prioritizes_runner_bin_dir`는 `starts_with`/`contains`만 본다 — 중간에 디렉터리가 끼어들어도 통과한다. `compose_path_env(Mac, Some("/opt/homebrew/bin/brew"))`의 **전체 문자열 완전 일치** 테스트를 추가한다. `DEV_TOOLS`의 macOS `path_candidates` 6×N 배열도 같은 방식으로 고정한다.
+5. **CI `macos-latest` 잡**(Phase 0) — 로컬에서만 돌던 테스트를 자동 게이트로 승격. **작동 중이다**: `macos-latest` 342 passed / 0 failed / 17 ignored(§8).
+6. **화면 회귀**: macOS에서 개발 환경 화면 스크린샷을 Phase 1 전후로 대조한다(Skill `common-screen-verification-and-capture`).
+7. **`capabilities/default.json` 무변경**을 diff로 확인한다 — 이 작업은 새 Tauri 플러그인을 쓰지 않으므로 권한 표면이 넓어질 이유가 없다. 이 파일에 변경이 생겼다면 설계에서 벗어난 것이다.
 
 ---
 
@@ -344,7 +365,7 @@ Path::new(r"C:\Users\me").join(r"AppData\Roaming")
 | `exe_extensions(plat) -> &'static [&'static str]` | Mac `[""]` / Win `[".exe", ".cmd", ".bat"]` (**이 순서** — `.exe`가 `.cmd`보다 안전하므로 우선) | ✓ |
 | `path_separator(plat) -> char` | `:` / `;` | ✓ |
 | `default_path_dirs(plat, &roots) -> Vec<String>` | Mac: 현행 6개 리터럴 그대로. Win: `%SystemRoot%\system32`, `%SystemRoot%`, `%SystemRoot%\System32\Wbem`, `%APPDATA%\npm`, `%LOCALAPPDATA%\pnpm`, `%LOCALAPPDATA%\Microsoft\WindowsApps` | ✓ 골든 테스트 |
-| `compose_path_env(plat, runner_path, &roots) -> String` | `build_child_path_env`의 정본. **빈 항목 배제 규칙 유지**(빈 PATH 항목은 두 OS 모두 CWD로 해석된다). 이 자식 PATH는 G-1의 ①단계이므로 오염되면 이름 해석이 흔들린다 | ✓ **기존 테스트 3개 무수정 통과 + 신규 골든** |
+| `compose_path_env(plat, runner_path, &roots) -> String` | `build_child_path_env`의 정본. **빈 항목 배제 규칙 유지**(빈 PATH 항목은 두 OS 모두 CWD로 해석된다). 이 자식 PATH는 G-1의 ①단계이므로 오염되면 이름 해석이 흔들린다 | ✓ **기존 테스트 3개의 어서션 무수정 통과 + 신규 골든**(C.3.1 — POSIX 전용 본문에 `#[cfg(unix)]`를 붙이고 Windows 등가물을 옆에 세우는 것은 허용, 어서션 좌·우변은 불변) |
 | `path_scan_candidates(plat, path_var, name) -> Vec<String>` | `which`/`where` 대체. PATH를 split → 각 디렉터리 × `exe_extensions` 조합을 **경로 문자열로만** 생성. **빈 항목·상대 경로 항목은 배제**(D.3, G-9) | ✓ 가짜 PATH 문자열 주입 |
 | `dir_in_path_var(plat, dir, path_var) -> bool` | `compute_path_visibility`의 Windows 정본. Win은 대소문자 무시 + 후행 `\` 정규화 | ✓ |
 | `quote_token(plat, token) -> String` / `build_terminal_command_line(plat, program, args) -> String` | E 참조 | ✓ |
@@ -404,7 +425,7 @@ npm/pnpm/wrangler의 Windows 전역 shim은 `.cmd` 배치 파일이다. Rust `st
 
 | 자리 | 조치 |
 |---|---|
-| `classify_install_method`(`classify.rs:87`) | 세그먼트 분리를 `split(['/', '\\'])`로, Windows는 **대소문자 무시 비교**. `dunce`(이미 의존성)로 `\\?\` 확장 길이 접두 제거 — `config/user_config.rs:370` 주석이 이미 이 함정을 기록해 두었다. 기존 macOS 테스트 23건이 무수정 통과해야 한다 |
+| `classify_install_method`(`classify.rs:87`) | 세그먼트 분리를 `split(['/', '\\'])`로, Windows는 **대소문자 무시 비교**. `dunce`(이미 의존성)로 `\\?\` 확장 길이 접두 제거 — `config/user_config.rs:370` 주석이 이미 이 함정을 기록해 두었다. 기존 macOS 테스트 23건이 **어서션 무수정으로** 통과해야 한다(C.3.1) |
 | `compute_path_visibility`(`diagnostics.rs:238`) | 현행은 `/etc/paths` + 셸 rc 파일을 읽는다(POSIX 전용). Windows는 **프로세스 PATH(`std::env::var("PATH")`)에 그 디렉터리가 있는지**로 판정한다 — Windows GUI 앱은 macOS의 launchd와 달리 로그인 시점 사용자 PATH를 상속하므로 이게 타당한 근사다. `path_hint`는 "새 터미널을 열거나 로그아웃 후 다시 로그인하면 PATH가 갱신됩니다", `path_hint_target`은 `None`. **레지스트리(`HKCU\Environment`)는 읽지 않는다** — `winreg` 크레이트 추가가 필요하고, 얻는 정확도가 힌트 문구 하나에 비해 과하다 |
 | `is_git_stub_without_clt`(`install_resolver.rs:286`) | macOS 전용 개념(`/usr/bin/git` xcrun 스텁). **`plat` 인자를 받지 않는다** — 이 함수는 경로가 `/usr/bin/git`과 **문자열 완전 일치**하는지부터 보고, Windows 경로는 어떤 형태로도 그 리터럴과 같아질 수 없다. 즉 Windows에서 false가 나오는 것이 이미 구조적으로 보장되며, 플랫폼 인자를 추가해도 동작은 한 글자도 달라지지 않고 호출 사슬에 인자만 번진다(F.3이 억제하려는 비용). **인자를 늘리는 것이 아니라, 완전 일치라는 성질을 주석과 테스트로 못 박는다** |
 | `install_prefix_writable`(`install_resolver.rs:231`) | `Runner::Winget`에는 prefix 개념이 없다 → **검사를 건너뛴다**(없는 경로에 대해 fail-closed로 오작동하는 것을 막는 기존 처리와 같은 정신). npm 러너는 `%APPDATA%\npm`을 검사 — 기존 `#[cfg(windows)] is_writable_by_current_user`(프로브 파일 생성/삭제)를 그대로 쓴다 |
@@ -418,18 +439,20 @@ npm/pnpm/wrangler의 Windows 전역 shim은 `.cmd` 배치 파일이다. Rust `st
 ```rust
 // cli_launcher.rs
 #[cfg(windows)] → %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe   // ← 절대경로. bare name 금지
-    args: ["-NoProfile", "-NoLogo", "-NoExit", "-Command", <command_line>]
+    args: ["-NoLogo", "-NoProfile", "-NoExit", "-EncodedCommand", <base64 UTF-16LE(command_line)>]
     creation_flags: CREATE_NEW_CONSOLE (0x0000_0010)   // ← process_util::SilentCommand의 형제 windowed()
 ```
 
 **절대경로로 지정하는 이유(생략하면 D.3이 없앤 위험을 같은 문서가 다시 만든다)**: 프로그램 이름을 `"powershell.exe"`로 두면 std의 5단계 해석 순서를 타고, 그 2번이 **현재 실행 파일의 디렉터리** = 이 앱의 포터블 exe가 놓인 폴더(보통 다운로드 폴더)다(D.3). 거기 `powershell.exe`가 떨어져 있으면 그게 뜬다. `%SystemRoot%`는 `EnvRoots`로 확장하고(D.2), 확장에 실패하면 터미널을 열지 않고 실패 메시지(E.4)를 돌려준다 — **추측 경로로 대체하지 않는다.**
+
+**`-Command`가 아니라 `-EncodedCommand`(base64 UTF-16LE)인 이유**: 명령 문자열을 커맨드라인에 평문으로 실으면 PowerShell의 인용·확장 규칙을 한 번 더 통과하게 되어, E.2의 인용 규칙만으로는 최종 해석을 확정할 수 없다. base64로 넘기면 그 층이 사라지고 **문자열이 조립된 그대로 실행된다** — 인코딩은 `platform::encode_powershell_command`(순수함수)가 하므로 macOS에서 테스트된다. 대가: 창에 뜬 명령행을 사람이 눈으로 읽을 수 없다(터미널 안에서 실행되는 명령 자체는 그대로 보인다). **이 base64 커맨드라인은 EDR 휴리스틱의 대표적 탐지 대상이므로 사내 PC 실기 검증 1순위다**(§8.1 ①).
 
 **`-NoProfile`을 붙이는 이유**: PowerShell은 기본적으로 시작 시 사용자 프로필 스크립트(`$PROFILE`, 예 `…\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`)를 실행한다. 그 경로는 **사용자가 쓸 수 있는 자리**이고, 하필 이 창은 `gh auth login` 같은 인증 흐름이 진행되는 창이다. 프로필을 읽지 않으면 창의 실행 환경이 우리가 넘긴 명령 하나로 좁혀지고, 부수적으로 사용자 프로필의 별칭·함수가 명령을 덮어써 안내가 어긋나는 일도 사라진다. **잃는 것**: 사용자가 프로필에 설정해 둔 프롬프트·별칭이 이 창에는 적용되지 않는다 — 명령 한 줄을 실행하고 사용자가 이어받는 창이라 감수할 수 있다.
 
 **무엇을 띄우는가**: **Windows PowerShell(`powershell.exe`, 5.1)**.
 - **대안 `wt.exe`(Windows Terminal)**: 기각 — Windows 10 구형에 없다. 없는 경우 폴백이 필요해 분기가 2배가 된다.
 - **대안 `pwsh.exe`(PowerShell 7)**: 기각 — 별도 설치물이라 부재 가능.
-- **대안 `cmd.exe /K`**: 기각 — 인용 규칙이 PowerShell보다 나쁘다(`start "" cmd /K "…"`의 첫 인용 인자가 **창 제목**으로 먹히는 고전적 함정). `powershell.exe`는 `-Command` 하나로 끝난다.
+- **대안 `cmd.exe /K`**: 기각 — 인용 규칙이 PowerShell보다 나쁘다(`start "" cmd /K "…"`의 첫 인용 인자가 **창 제목**으로 먹히는 고전적 함정). `powershell.exe`는 `-EncodedCommand` 하나로 끝난다.
 - `powershell.exe`는 Windows 10 1809 이상 전 버전에 내장 → **winget보다 가용성이 넓다**(winget이 없어도 안내 창은 뜬다).
 
 **어떻게 창이 뜨는가**: `f983216`이 도입한 `CREATE_NO_WINDOW`의 **정반대**다. GUI(콘솔 없는) 부모가 콘솔 자식을 띄우면 Windows가 콘솔을 자동 생성하므로 `.silent()`를 **안 붙이기만 해도** 창이 뜨지만, 암묵적 동작에 기대지 않고 `CREATE_NEW_CONSOLE`을 **명시**한다.
@@ -496,7 +519,7 @@ fn spawn_terminal_line(line: &str) -> Result<(), String>                        
 
 1. **`dev_tools/platform.rs` 신규**(~330줄). 경계: **플랫폼에 따라 달라지는 순수 결정 전부**(토큰 확장·확장자·구분자·기본 PATH·PATH 합성·PATH 스캔·PATH 가시성 판정·인용·터미널 명령행 조립) + 그 테스트. 이 경계는 임의로 그은 게 아니라 **D의 "순수함수로 떼어내야 macOS에서 검증되는 것"과 정확히 같은 선**이다 — 파일 하나가 곧 "CI 없이도 검증되는 영역"이 된다.
 2. **`dev_tools/install_resolver.rs` → `install_resolver.rs` + `runners.rs` 분할.** 경계:
-   - `runners.rs`(~350): `Runner` 해석 전부 — `BREW_CANDIDATES`/`NPM_CANDIDATES`/신규 `WINGET_CANDIDATES`, `resolve_runner_path`, `ResolvedRunners`(필드는 brew/npm/pnpm 그대로 — winget은 `path_for`가 매번 해석, B.2), `install_prefix_writable` + 테스트
+   - `runners.rs`(~350): `Runner` 해석 전부 — `BREW_CANDIDATES`/`NPM_CANDIDATES`/신규 `WINGET_CANDIDATES`, `resolve_runner_path`, `ResolvedRunners`(필드 **넷** — brew/npm/pnpm/**winget**. 네 러너 모두 `resolve()`가 한 번 해석해 담고 `path_for`는 캐시값만 돌려준다. winget만 예외로 두면 테스트가 러너 조합을 주입할 수 없다 → B.2 "이탈 #1 철회"), `install_prefix_writable` + 테스트
    - `install_resolver.rs`(~580): 판정 로직 — `validate_argv_token`, `resolve_plan`, `install_candidates`, `resolve_install_plan`, `resolve_args`, `build_command_display`, `is_git_stub_without_clt` + 테스트
    - 이 선을 고른 이유: **Windows 증분이 거의 전부 `runners.rs` 쪽에 떨어진다**(winget 러너 해석·후보·쓰기권한). 판정 규칙(G1~G4의 코드 표현)은 플랫폼과 무관하게 그대로 남아 diff가 작아지고 리뷰가 쉬워진다.
 
@@ -518,7 +541,7 @@ fn spawn_terminal_line(line: &str) -> Result<(), String>                        
 | **G-4** | **UAC 권한 상승** | **앱은 절대 스스로 승격하지 않는다**(`runas` verb·`ShellExecute` 금지를 코드 주석으로 명문화). winget이 승격을 요구하면 OS가 사용자에게 묻고, 거부하면 non-zero로 실패한다. 프리뷰 `notes`에 "관리자 권한 승인 창이 뜰 수 있습니다"를 미리 표시 | Git/Node는 애초에 manual(B.1) |
 | **G-5** | **winget 소스·패키지 오지정** | `--source winget` 고정(**`msstore` 배제**), `-e`(exact) + `--id` 고정 리터럴로 이름 모호성 제거. **`--ignore-security-hash` 사용 금지**를 명문화 | 오설치 = 임의 코드 실행 |
 | **G-6** | **타임아웃 후 잔존 설치 프로세스** — Windows kill은 직속 자식만 죽인다(`process.rs:160-171`). winget은 msiexec을 손자로 띄운다 | 600초 타임아웃 + `TimedOut` 메시지에 "백그라운드에서 계속 진행 중일 수 있습니다" 명시. Job Object 도입은 **미해결 쟁점**으로 남김 | 기존 주석의 "손자는 드물다" 가정이 winget에서는 성립하지 않는다 |
-| **G-7** | **터미널 창 명령 주입** — `-Command`에 넘어가는 문자열이 곧 사용자 눈앞에서 실행된다. **`open_terminal_command`의 입력은 리터럴과 절대경로뿐이 아니다**: 호출부에 `mcp_manager/mod.rs`의 `mcp_install`(카탈로그 리터럴 + 절대경로 조립)과 **`mcp_login`(`format!("{claude_bin} mcp login {}", shell_single_quote(&name))`)** 이 있고, 그 `name`은 `claude mcp list` 출력 파싱에서 온다 — 실질적으로 `~/.claude.json`·프로젝트 `.mcp.json`에 적힌 값이라 **클론한 저장소가 값을 넣을 수 있다.** `shell_single_quote`는 POSIX 규칙이라 Windows 분기(PowerShell)에서는 **무효**다 | ①**`open_terminal_command`의 시그니처를 `&'static str`로 좁힌다** — 리터럴만 넘어온다는 전제를 주석이 아니라 **타입으로 강제**해, 런타임 조립 문자열은 컴파일이 되지 않게 한다 ②런타임 값이 섞이는 호출부(`mcp_install`/`mcp_login`, github/cloudflare 연동)는 전부 **`open_terminal_program(program, args)`** 로 보낸다 — 여기서만 플랫폼별 인용(`quote_token`, PowerShell 작은따옴표 / POSIX 작은따옴표)이 적용된다 ③`quote_token`에 대한 악성 입력 테스트(따옴표·`$`·백틱·세미콜론·개행) | E.2/E.3. **`shell_single_quote`는 이 전환 후 남겨 두지 않는다** — 플랫폼별 인용의 정본이 둘이면 다음 사람이 틀린 쪽을 고른다 |
+| **G-7** | **터미널 창 명령 주입** — `-EncodedCommand`로 넘어가는 문자열이 곧 사용자 눈앞에서 실행된다(base64는 인용 층을 없앨 뿐 **내용을 검증하지 않는다** — 조립 단계의 인젝션은 그대로 통과한다). **`open_terminal_command`의 입력은 리터럴과 절대경로뿐이 아니다**: 호출부에 `mcp_manager/mod.rs`의 `mcp_install`(카탈로그 리터럴 + 절대경로 조립)과 **`mcp_login`(`format!("{claude_bin} mcp login {}", shell_single_quote(&name))`)** 이 있고, 그 `name`은 `claude mcp list` 출력 파싱에서 온다 — 실질적으로 `~/.claude.json`·프로젝트 `.mcp.json`에 적힌 값이라 **클론한 저장소가 값을 넣을 수 있다.** `shell_single_quote`는 POSIX 규칙이라 Windows 분기(PowerShell)에서는 **무효**다 | ①**`open_terminal_command`의 시그니처를 `&'static str`로 좁힌다** — 리터럴만 넘어온다는 전제를 주석이 아니라 **타입으로 강제**해, 런타임 조립 문자열은 컴파일이 되지 않게 한다 ②런타임 값이 섞이는 호출부(`mcp_install`/`mcp_login`, github/cloudflare 연동)는 전부 **`open_terminal_program(program, args)`** 로 보낸다 — 여기서만 플랫폼별 인용(`quote_token`, PowerShell 작은따옴표 / POSIX 작은따옴표)이 적용된다 ③`quote_token`에 대한 악성 입력 테스트(따옴표·`$`·백틱·세미콜론·개행) | E.2/E.3. **`shell_single_quote`는 이 전환 후 남겨 두지 않는다** — 플랫폼별 인용의 정본이 둘이면 다음 사람이 틀린 쪽을 고른다 |
 | **G-8** | **로그 유출** — winget stdout에 사용자명 포함 경로가 찍혀 `log_tail`(4,000자)로 프론트에 간다 | 기존 macOS와 동일 수준(brew/npm도 홈 경로를 찍는다). **표면 확대 아님** — 신규 완화 불필요 | 기록만 |
 | **G-9** | **탐지용 PATH 스캔의 빈/상대 항목** — Windows PATH는 후행 `;`이나 `;;`이 흔하다. 빈 항목으로 만든 후보는 `npm.exe`, 상대 항목(`tools`, `.`)으로 만든 후보는 `tools\npm.exe` 같은 **상대 경로**가 되고, 이는 프로세스 CWD 기준으로 해석된다 → G-1에서 없앤 "이름 해석이 우리 통제 밖으로 나가는" 상태를 스캔이 도로 만든다. 자식 PATH를 합성하는 `compose_path_env`에만 빈 항목 배제 규칙이 있으면 이 경로는 비어 있다 | `path_scan_candidates`에서 **①빈 항목 skip ②상대 경로 항목 skip**(절대 판정은 `std::path::Path::is_absolute`가 아니라 문자열 규칙으로 — D.1-a) ③생성된 후보가 절대 경로(`X:\…` 또는 UNC `\\…`)인지 확인. 가짜 PATH 문자열(`"C:\\a;;;rel\\dir;.;C:\\b"`)을 주입하는 테스트로 macOS에서 검증 가능 | D.2/D.3 |
 
@@ -528,7 +551,28 @@ fn spawn_terminal_line(line: &str) -> Result<(), String>                        
 
 ## 8. 미검증 목록 (실기 Windows PC 필요) — **정직 규율**
 
-이 문서의 Windows 관련 주장 중 **실행으로 확인된 것은 하나도 없다.** 이 머신은 macOS다. 아래는 Phase 1/2 머지 전에 실기에서 반드시 확인할 항목이다.
+### 8.0 CI가 확보한 것 / 확보하지 못한 것
+
+**설계 A항목(검증 백본)은 작동한다.** `ci.yml`의 `rust-test` 잡이 `windows-latest`·`macos-latest` 양쪽에서 초록이다 — **windows-latest 334 passed / 0 failed / 17 ignored, macos-latest 342 passed / 0 failed / 17 ignored.** Windows 코드가 실제 Windows에서 컴파일되고 그 위 테스트가 실제로 돈다. A.2가 로컬 크로스체크를 포기하며 걸었던 전제가 실측으로 성립했다.
+
+**CI가 관측할 수 있게 된 것 — GitHub `windows-latest` 러너에는 `gh`와 `winget`이 기본 설치돼 있다.** 이 사실은 아래 표의 몇 항목을 "전혀 모름"에서 "일부 관측됨"으로 옮긴다. 그리고 그 관측은 처음부터 선물로 온 것이 아니라 **거짓 초록을 깨는 형태로** 왔다 — 러너에 winget이 있었기 때문에 `path_for(Winget)`의 struct 우회(B.2 이탈 #1)가 드러났고, gh가 PATH에 있었기 때문에 `compute_path_visibility_windows` 테스트가 환경을 통제하지 못한다는 사실이 드러났다. **"러너에 도구가 깔려 있다"는 것은 테스트가 환경을 주입으로 통제해야 한다는 압력이지, 검증이 공짜로 늘어난다는 뜻이 아니다.**
+
+**CI가 대체하지 못하는 것 — `windows-latest`는 AV/EDR·그룹정책이 없는 데이터센터 VM이다.** 사내 PC와 다른 축은 최소 넷이다: ①실시간 검사·EDR이 자식 프로세스 생성·종료에 개입한다 ②그룹정책이 스크립트 실행·winget 소스를 제한할 수 있다 ③도구가 설치되는 자리가 조직 표준 이미지에 따라 다르다 ④사용자 계정이 관리자가 아닐 수 있다(UAC 흐름 자체가 달라진다). **CI 초록은 "테스트가 통과했다"이지 "사내 PC에서 동작한다"가 아니다.**
+
+### 8.1 실기에서만 확인되는 항목
+
+이 문서의 Windows 관련 주장 중 **사내 PC 실기로 확인된 것은 하나도 없다.** 아래는 Phase 1/2 머지 전에 실기에서 반드시 확인할 항목이며, **위험 순서**로 정렬돼 있다 — 위쪽이 틀리면 기능 자체가 서지 않는다.
+
+| 순위 | 실기 검증 항목 | 왜 CI가 답하지 못하는가 | 확인 방법 |
+|---|---|---|---|
+| **①** | **EDR/AV가 `powershell.exe -EncodedCommand`를 차단하는가.** 차단되면 manual 안내 실행(Phase 1)과 터미널 연동 전체가 죽는다. 함께 확인: 타임아웃 시 `force_kill_process_group`이 EDR 개입 아래에서도 자식을 실제로 죽이는가 | CI 러너에 EDR이 없다. base64 인코딩된 PowerShell 명령은 EDR의 대표적 휴리스틱 탐지 대상이다 | 사내 표준 이미지 PC에서 manual 안내를 `execute=true`로 실행 + 타임아웃 재현 후 작업 관리자로 잔존 프로세스 확인 |
+| **②** | **gh가 실제로 어디에 설치되는가** — `%LOCALAPPDATA%\Microsoft\WinGet\Links\gh.exe`인가 `C:\Program Files\GitHub CLI\gh.exe`인가, user 스코프 설치가 UAC 없이 되는가(B.1 G3 근거·§B.5 후보·`WingetPackage` 분류가 전부 이 자리에 걸려 있다) | CI 러너의 gh는 **winget이 아니라 러너 이미지가 미리 깔아 둔 것**이라 설치 자리가 우리 경로와 무관하다 | `winget install --id GitHub.cli -e --scope user` 후 `where gh` |
+| **③** | **Git이 "only for me"(user 스코프)로 설치된 PC의 경로** — `C:\Program Files\Git\`을 전제한 `SystemManaged` 분류가 `%LOCALAPPDATA%\Programs\Git\`에서 깨진다 | CI 러너의 Git은 머신 스코프 표준 설치다. 사내 PC는 관리자 권한이 없어 user 스코프로 깔린 경우가 섞인다 | 해당 PC에서 `where git` + 앱의 분류 결과 대조 |
+| **④** | **설치 직후 PATH 미반영 빈도**(아래 "가장 위험한 항목")**와 pnpm의 실제 디렉터리 레이아웃**(`%LOCALAPPDATA%\pnpm\` 전제) | 둘 다 "설치기가 환경을 어떻게 바꾸는가"의 문제라 사전설치된 러너에서는 재현되지 않는다 | 미설치 PC에서 설치→즉시 재조회, `PNPM_HOME` 확인 |
+
+### 8.2 항목별 미검증 표
+
+**CI 초록이 이 표에서 지운 행은 하나도 없다.** 확인한 결과 `windows-latest`의 334건 중 아래 항목의 **반환값을 실제로 단언하는 테스트는 없다** — 예컨대 `ResolvedRunners::resolve()`는 Windows CI에서도 호출되므로 항목 1의 `Path::is_file()`이 앱 실행 별칭에 대해 실행되기는 하지만, 그 결과를 보는 어서션이 없어 **무엇을 돌려줬는지 아무도 기록하지 않는다.** "코드가 그 줄을 지나갔다"와 "그 줄의 값이 검사됐다"는 다르다 — 이 구분이 흐려지면 §8이 실기 전에 스스로 비워진다.
 
 | # | 미검증 항목 | 확인 방법 | 어느 Phase |
 |---|---|---|---|
@@ -537,7 +581,7 @@ fn spawn_terminal_line(line: &str) -> Result<(), String>                        
 | 3 | `.cmd` shim(`npm.cmd`)을 `Command::new(절대경로)`로 실행했을 때 stdout이 정상 캡처되는가 | 실기에서 `npm --version` 왕복 | 1 |
 | 4 | `command.env("PATH", …)`가 Windows의 `Path`(대소문자 다름)를 실제로 덮어쓰는가 | 실기에서 자식 PATH 출력 | 1 |
 | 5 | `CREATE_NEW_CONSOLE`로 뜬 PowerShell 창에서 `gh auth login` 브라우저 인증이 완주되는가 | 실기 수동 | 1 |
-| 5-a | **manual 안내를 `execute=true`로 실행했을 때** `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile …` 창이 뜨고, `winget install --id Git.Git`(머신 스코프 MSI)에서 **UAC 승격 창이 뜨는가**. 사용자가 거부했을 때 앱이 `Failed`로 정직하게 끝나는가(멈추거나 성공으로 표시하지 않는가) | 실기 수동 — Git 미설치 PC에서 Git 안내 실행 | **1** ← UAC는 Phase 1에서 처음 뜬다(C.1) |
+| 5-a | **manual 안내를 `execute=true`로 실행했을 때** `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo -NoProfile -NoExit -EncodedCommand …` 창이 뜨고, `winget install --id Git.Git`(머신 스코프 MSI)에서 **UAC 승격 창이 뜨는가**. 사용자가 거부했을 때 앱이 `Failed`로 정직하게 끝나는가(멈추거나 성공으로 표시하지 않는가) | 실기 수동 — Git 미설치 PC에서 Git 안내 실행 | **1** ← UAC는 Phase 1에서 처음 뜬다(C.1) |
 | 6 | `GitHub.cli`가 user 스코프로 설치되는가(= winget 자동 설치 경로에서 UAC를 **피할 수 있는가**) | 실기에서 `winget install --id GitHub.cli -e --scope user` | **2** |
 | 7 | `winget upgrade`가 최신일 때 `-1978335189`를 실제로 반환하는가 | 실기 | **2** |
 | 8 | 설치 후 새 바이너리가 **재조회(`resolve_tool_path`)로 즉시 잡히는가** (PATH 갱신이 프로세스에 반영되지 않아 못 찾을 수 있다 — 결정 4의 "exit code는 주장, 재조회가 확인"이 Windows에서 `UnknownAfter`를 남발할 위험) | 실기에서 설치→즉시 재조회 | **2** |
@@ -558,7 +602,7 @@ fn spawn_terminal_line(line: &str) -> Result<(), String>                        
 
 ## 10. 자기 검증 (설계 4대 의무)
 
-- **① 트레이드오프**: A(5개 선택지 비교표 + 포기한 것/감당), B.2(대안 A·B 기각 근거 + winget 캐시 필드를 포기하고 기존 테스트 무수정을 지킨 교환), B.3(프리뷰를 `winget show`로 채우는 대신 검증 불가능한 실행 경로를 늘리지 않는 교환), B.4(변형에 id를 담지 않는 교환), C.2(플래그 기각 3근거), D.3/D.4(대안 기각), D.5(`plat` 인자 번짐 대신 완전 일치 성질을 못 박는 교환), E.1(터미널 3대안 기각 + `-NoProfile`로 사용자 프로필 별칭을 잃는 교환), F.3 — **주요 선택마다 대안 ≥1개와 포기한 것을 명시했다.**
+- **① 트레이드오프**: A(5개 선택지 비교표 + 포기한 것/감당), B.2(대안 A·B 기각 근거 + **이탈 #1 철회** — "기존 테스트 무수정"이라는 편의 지표를 지키려 winget 캐시 필드를 포기했더니 fail-closed 불변식을 테스트가 검사할 수 없게 되어, 교환을 뒤집고 C.3.1을 재정의했다), B.3(프리뷰를 `winget show`로 채우는 대신 검증 불가능한 실행 경로를 늘리지 않는 교환), B.4(변형에 id를 담지 않는 교환), C.2(플래그 기각 3근거), D.3/D.4(대안 기각), D.5(`plat` 인자 번짐 대신 완전 일치 성질을 못 박는 교환), E.1(터미널 3대안 기각 + `-NoProfile`로 사용자 프로필 별칭을 잃는 교환), F.3 — **주요 선택마다 대안 ≥1개와 포기한 것을 명시했다.**
 - **② 프로젝트 고유성**: 이 저장소에 `docs/prd.md`는 없다. 비교 기준은 선행 설계와 같은 축 — **현행 방식(사용자가 스스로 설치 명령을 찾아 실행)** 이며, 이 설계가 다르게 하는 지점은 §B(같은 G1~G4 게이트를 Windows에 적용해 run/manual이 macOS와 도구 단위로 일치)와 §D(플랫폼을 `cfg`가 아니라 인자로 — 이 코드베이스가 `classify_install_method`에서 이미 쓰고 있는 기법의 확장)다. 표준 CRUD·3계층은 이 작업에 없고, 분량은 **검증 불가라는 이 프로젝트 고유 제약(A·8절)** 에 집중시켰다.
 - **③ 비정상 케이스**: B.3(약관 프롬프트·EULA·이미 최신·UAC·타임아웃 손자·프리뷰 부재·env 상속·인코딩 8종), G-6, 8절 항목 8(설치 후 재조회 실패), G-9(PATH의 빈/상대 항목), G-2 잔여(자식 CWD 미고정), E.1(`%SystemRoot%` 확장 실패 시 터미널을 열지 않는다). 멱등성: `perform_install`의 "이미 설치됨 → update 위임"(§6.3 요구 2)을 그대로 상속한다.
 - **④ 완결성**: 모든 실행 argv를 리터럴로 확정했고(B.1), 신규 `InstallMethod` 변형의 분류 규칙·업데이트 행·fail-closed 경로를 지정했으며(B.4), 프론트 계약 변경이 0임을 필드 단위로 확인했다(`preview_reliable`·`AlreadyLatest`·`TerminalLaunchResult` 재사용). 파일 크기는 F.1에서 줄 단위로 추정했다. 이 설계 방식(플랫폼을 인자로 받는 순수함수)을 쓰는 사람이 반드시 알아야 할 함정 — `std::path`가 **컴파일 호스트의 구분자**를 쓰므로 Windows 경로 로직은 순수 문자열 연산이어야 한다는 것 — 은 **D.1-a에 별도 절로** 두었다. 이 함정은 macOS 테스트에서 "녹색"으로 위장되므로 표 한 칸이 아니라 절이 필요하다.
