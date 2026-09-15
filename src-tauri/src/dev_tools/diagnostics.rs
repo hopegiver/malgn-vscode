@@ -235,20 +235,37 @@ pub(crate) struct PathVisibility {
     pub(crate) hint_target: Option<String>,
 }
 
-pub(crate) fn compute_path_visibility(resolved_binary_path: &str) -> PathVisibility {
-    let Some(dir) = Path::new(resolved_binary_path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-    else {
-        return PathVisibility {
-            visible: false,
+/// Windows 분기(설계 §D.5): "새 프로세스 PATH에 이 디렉터리가 있는가"로
+/// 판정한다 — Windows GUI 앱은 macOS의 launchd와 달리 로그인 시점 사용자 PATH를
+/// 상속하므로 이게 타당한 근사다(§D.5). 레지스트리(`HKCU\Environment`)는
+/// 일부러 읽지 않는다 — `winreg` 크레이트 추가가 필요한데 얻는 정확도가 힌트
+/// 문구 하나에 비해 과하다. 순수 판정은 `platform::dir_in_path_var`(§D.2)가
+/// 맡는다.
+fn compute_path_visibility_windows(dir: &str) -> PathVisibility {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    if super::platform::dir_in_path_var(super::platform::Platform::Win, dir, &path_var) {
+        PathVisibility {
+            visible: true,
             hint: None,
             hint_target: None,
-        };
-    };
+        }
+    } else {
+        PathVisibility {
+            visible: false,
+            hint: Some(
+                "새 터미널을 열거나 로그아웃 후 다시 로그인하면 PATH가 갱신됩니다.".to_string(),
+            ),
+            hint_target: None,
+        }
+    }
+}
+
+/// macOS 분기(기존 그대로, 무변경) — `/etc/paths`(+`/etc/paths.d/*`)와 로그인
+/// 셸 rc 파일을 읽어 판정한다.
+fn compute_path_visibility_mac(dir: &str) -> PathVisibility {
     let etc_entries = read_etc_paths_entries();
     let home = dirs::home_dir();
-    if is_dir_in_shell_path(&dir, &etc_entries, home.as_deref()) {
+    if is_dir_in_shell_path(dir, &etc_entries, home.as_deref()) {
         PathVisibility {
             visible: true,
             hint: None,
@@ -261,6 +278,23 @@ pub(crate) fn compute_path_visibility(resolved_binary_path: &str) -> PathVisibil
             hint: Some(format!("export PATH=\"{dir}:$PATH\"")),
             hint_target: Some(hint_target_for_shell(&shell).to_string()),
         }
+    }
+}
+
+pub(crate) fn compute_path_visibility(resolved_binary_path: &str) -> PathVisibility {
+    let Some(dir) = Path::new(resolved_binary_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+    else {
+        return PathVisibility {
+            visible: false,
+            hint: None,
+            hint_target: None,
+        };
+    };
+    match super::platform::platform_now() {
+        super::platform::Platform::Win => compute_path_visibility_windows(&dir),
+        super::platform::Platform::Mac => compute_path_visibility_mac(&dir),
     }
 }
 
@@ -463,5 +497,24 @@ libpsl
             "~/.config/fish/config.fish"
         );
         assert_eq!(hint_target_for_shell(""), "~/.profile");
+    }
+
+    // 설계 §D.5: Windows 분기는 프로세스 PATH만 본다(rc 파일이나 /etc/paths를
+    // 읽지 않는다) — 이 프로세스(cargo test, Mac)의 실제 PATH는 `:`로 구분된
+    // POSIX 형식이라 Windows 분기(`;` 구분)와 형식이 근본적으로 달라, 임의의
+    // Windows 스타일 경로는 항상 "찾지 못함"으로 판정돼야 한다(오탐지가
+    // 나지 않는다는 것 자체가 의미 있는 계약). "찾음" 케이스의 순수 판정
+    // 로직(`dir_in_path_var`)은 platform.rs가 합성 `;`-PATH로 이미 검증한다 —
+    // 여기서 전역 `PATH` 환경변수를 덮어써 재현하면 병렬 테스트 실행과
+    // 레이스가 생겨 오히려 신뢰도를 낮춘다.
+    #[test]
+    fn compute_path_visibility_windows_uses_process_path_only() {
+        let visible = compute_path_visibility_windows(r"C:\Program Files\GitHub CLI");
+        assert!(!visible.visible);
+        assert_eq!(
+            visible.hint.as_deref(),
+            Some("새 터미널을 열거나 로그아웃 후 다시 로그인하면 PATH가 갱신됩니다.")
+        );
+        assert_eq!(visible.hint_target, None);
     }
 }

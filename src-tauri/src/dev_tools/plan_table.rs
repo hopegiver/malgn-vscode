@@ -46,6 +46,11 @@ pub(crate) enum Runner {
     // 도구"로 실행한다. RUN_PNPM_SELF_UPDATE의 SelfBinary(자기 자신을 갱신)와는
     // 용도가 달라 구분되는 변형이 필요하다.
     Pnpm,
+    // Windows 전용(설계 §B.1/§B.2) — winget으로 gh를 설치/업데이트한다. 이
+    // 러너에는 install_prefix_writable이 검사할 "prefix" 개념이 없어(winget이
+    // 스스로 설치 경로를 관리) 그 검사는 건너뛴다(runners.rs의 와일드카드
+    // 매치가 자동으로 처리한다 — 새 분기가 필요 없다).
+    Winget,
     SelfBinary,
 }
 
@@ -233,6 +238,63 @@ pub(crate) const RUN_BREW_INSTALL_GH: RunPlan = RunPlan {
     env: &BREW_INSTALL_ENV,
     timeout_secs: 600,
 };
+// ── winget(Windows 전용, 설계 §B) ──
+// G-5(보안): `--source winget` 고정(msstore 배제) + `-e`(exact) + `--id` 고정
+// 리터럴 + `--accept-*`/`--disable-interactivity`로 모든 프롬프트를 argv에서
+// 차단. `--ignore-security-hash`는 이 코드베이스 어디에도 등장하지 않는다(오설치
+// = 임의 코드 실행이므로 금지). G-4(보안): 앱은 `runas`/`ShellExecute` 승격을
+// 스스로 호출하지 않는다 — 이 RunPlan들은 std::process::Command로만 spawn되고,
+// winget 자신이 승격을 요구하면 OS가 사용자에게 묻는다(거부 시 non-zero 종료로
+// 드러난다, B.3). 전부 `Arg::Lit`(§1.1 불변식 — 동적 argv 토큰 0개).
+pub(crate) const RUN_WINGET_INSTALL_GH: RunPlan = RunPlan {
+    runner: Runner::Winget,
+    args: &[
+        Arg::Lit("install"),
+        Arg::Lit("--id"),
+        Arg::Lit("GitHub.cli"),
+        Arg::Lit("-e"),
+        Arg::Lit("--source"),
+        Arg::Lit("winget"),
+        Arg::Lit("--accept-source-agreements"),
+        Arg::Lit("--accept-package-agreements"),
+        Arg::Lit("--disable-interactivity"),
+        Arg::Lit("--silent"),
+    ],
+    // winget에는 `brew install -n`류 dry-run이 없다(B.3) — 프리뷰는
+    // query::build_install_preview가 installer_label=="winget"일 때 별도
+    // 안내(고정 preview_reliable:false)로 대체한다. 여기서 `winget show`를
+    // 실제로 호출하지 않는 이유는 이 머신에 winget이 없어 그 실행 경로
+    // 자체가 검증 불가능하기 때문이다(정직 규율) — preview_reliable:false가
+    // 이미 "거짓 안심을 주지 않는다"는 B.3의 목표를 달성한다.
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 600,
+};
+pub(crate) const RUN_WINGET_UPGRADE_GH: RunPlan = RunPlan {
+    runner: Runner::Winget,
+    args: &[
+        Arg::Lit("upgrade"),
+        Arg::Lit("--id"),
+        Arg::Lit("GitHub.cli"),
+        Arg::Lit("-e"),
+        Arg::Lit("--source"),
+        Arg::Lit("winget"),
+        Arg::Lit("--accept-source-agreements"),
+        Arg::Lit("--disable-interactivity"),
+        Arg::Lit("--silent"),
+    ],
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 600,
+};
+
+/// winget이 "이미 최신"일 때 돌려주는 종료 코드(`0x8A15002B` =
+/// `APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE`, 부호있는 i32로는
+/// `-1978335189`). 이걸 `Failed`로 두면 화면이 거짓을 말한다 — actions.rs의
+/// `perform_update`가 이 값을 `Outcome::AlreadyLatest`로 매핑한다(B.3). 미검증
+/// (이 머신에 winget이 없어 실측 불가, microsoft/winget-cli 문서 근거).
+pub(crate) const WINGET_ALREADY_LATEST_EXIT_CODE: i32 = -1978335189;
+
 // devtools-install-matrix §2.1/§3.1/§7: Claude Code npm 패키지명이 공식 문서에
 // 고정돼 있다(G1) — npm 전역 설치는 셸 불필요(G2), 결과가 <npm prefix>/bin/claude
 // 심볼릭 링크로 기존 NpmGlobal 판별기에 물린다(G3), Claude를 버전매니저로 관리하는
@@ -317,7 +379,10 @@ const MANUAL_UNKNOWN_METHOD: ManualPlan = ManualPlan {
 };
 pub(crate) const MANUAL_NO_RUNNER: ManualPlan = ManualPlan {
     reason: ManualReason::NoRunner,
-    message_ko: "필요한 실행 도구(brew/npm)를 찾을 수 없어 앱이 자동으로 실행하지 않습니다.",
+    // 설계 §B.2: winget 슬롯 추가로 실행기 후보가 하나 더 늘었으므로 문구도
+    // 함께 넓힌다(새 분기를 만들지 않고 기존 강등 경로를 그대로 재사용 — 해석
+    // 실패 시 이 상수로 자동 강등된다).
+    message_ko: "필요한 실행 도구(brew/npm/winget)를 찾을 수 없어 앱이 자동으로 실행하지 않습니다.",
     copyable_command: None,
     doc_url: None,
 };
@@ -361,6 +426,13 @@ static UPDATE_TABLE: &[Row] = &[
         method: MethodKind::ClaudeNative,
         action: Action::Run(RUN_CLAUDE_UPDATE),
     },
+    // Windows 전용(설계 §B.4): winget으로 설치된 gh만 이 행에 매칭된다 —
+    // 도구별 행(tool: Some(..))이라 제네릭 행보다 먼저 검사된다.
+    Row {
+        tool: Some(ToolId::Gh),
+        method: MethodKind::WingetPackage,
+        action: Action::Run(RUN_WINGET_UPGRADE_GH),
+    },
     Row {
         tool: None,
         method: MethodKind::SystemManaged,
@@ -403,6 +475,16 @@ pub(crate) fn lookup_action(tool_id: ToolId, kind: MethodKind) -> Action {
 ///     (설계 §4.2 "NoRunner" 시나리오 — 무엇이 없어서 안 되는지 구체적으로
 ///     말한다).
 pub(crate) fn install_manual_plan(tool: ToolId) -> ManualPlan {
+    match super::platform::platform_now() {
+        super::platform::Platform::Win => install_manual_plan_windows(tool),
+        super::platform::Platform::Mac => install_manual_plan_mac(tool),
+    }
+}
+
+/// 기존 내용 그대로(함수명만 분리) — macOS 안내 문구를 Windows에 그대로
+/// 보여주는 것(brew 명령 등)은 이 작업 전체가 고치려는 바로 그 종류의 거짓
+/// 표시이므로, 플랫폼별로 분리한다.
+fn install_manual_plan_mac(tool: ToolId) -> ManualPlan {
     match tool {
         ToolId::Claude => ManualPlan {
             reason: ManualReason::NotInstalled,
@@ -432,6 +514,52 @@ pub(crate) fn install_manual_plan(tool: ToolId) -> ManualPlan {
             reason: ManualReason::NotInstalled,
             message_ko: "pnpm이 설치되어 있지 않습니다. Homebrew가 있으면 아래 명령이 가장 간단합니다. 공식 설치 문서는 현재 `npx get-pnpm`만 제시하지만, 대화형 확인(Ok to proceed?)에 앱이 응답할 수 없어 자동 실행하지 않습니다.",
             copyable_command: Some("brew install pnpm"),
+            doc_url: Some("https://pnpm.io/installation"),
+        },
+        ToolId::Wrangler => ManualPlan {
+            reason: ManualReason::NotInstalled,
+            message_ko: "Wrangler CLI가 설치되어 있지 않습니다. pnpm 또는 npm을 찾을 수 없어 앱이 자동으로 설치하지 못합니다.",
+            copyable_command: Some("npm install -g wrangler"),
+            doc_url: Some("https://developers.cloudflare.com/workers/wrangler/install-and-update/"),
+        },
+    }
+}
+
+/// Windows 안내(설계 §B.1 매뉴얼 가이드 열 — 전부 미검증, 실기 Windows PC
+/// 필요). Claude/Wrangler의 `npm install -g ...` 명령은 크로스플랫폼으로
+/// PowerShell에서도 그대로 유효해 mac과 동일한 copyable_command를 쓴다.
+fn install_manual_plan_windows(tool: ToolId) -> ManualPlan {
+    match tool {
+        ToolId::Claude => ManualPlan {
+            reason: ManualReason::NotInstalled,
+            message_ko: "Claude Code가 설치되어 있지 않습니다. npm을 찾을 수 없다면 Node.js를 먼저 설치해주세요(winget install OpenJS.NodeJS.LTS).",
+            copyable_command: Some("npm install -g @anthropic-ai/claude-code"),
+            doc_url: Some("https://docs.claude.com/en/docs/claude-code/setup"),
+        },
+        ToolId::Node => ManualPlan {
+            reason: ManualReason::NotInstalled,
+            message_ko: "Node.js가 설치되어 있지 않습니다. 이미 nvm-windows/fnm/volta 등으로 관리 중이라면 그쪽에서 설치해주세요. 그렇지 않다면 아래 명령으로 설치할 수 있습니다(winget).",
+            copyable_command: Some("winget install OpenJS.NodeJS.LTS"),
+            doc_url: Some("https://nodejs.org/en/download"),
+        },
+        ToolId::Gh => ManualPlan {
+            reason: ManualReason::NotInstalled,
+            message_ko: "GitHub CLI가 설치되어 있지 않거나 winget(앱 설치 관리자)을 찾을 수 없습니다. Microsoft Store에서 '앱 설치 관리자'를 업데이트한 뒤 아래 명령을 시도해주세요.",
+            copyable_command: Some(
+                "winget install --id GitHub.cli -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent",
+            ),
+            doc_url: Some("https://cli.github.com/"),
+        },
+        ToolId::Git => ManualPlan {
+            reason: ManualReason::NotInstalled,
+            message_ko: "Git이 설치되어 있지 않습니다. 관리자 권한 승인 창이 뜰 수 있습니다(머신 스코프 설치).",
+            copyable_command: Some("winget install --id Git.Git -e --source winget"),
+            doc_url: Some("https://git-scm.com/downloads"),
+        },
+        ToolId::Pnpm => ManualPlan {
+            reason: ManualReason::NotInstalled,
+            message_ko: "pnpm이 설치되어 있지 않습니다. 아래 명령으로 설치할 수 있습니다(winget). 설치 후 새 터미널을 열어야 PATH가 반영됩니다.",
+            copyable_command: Some("winget install pnpm.pnpm"),
             doc_url: Some("https://pnpm.io/installation"),
         },
         ToolId::Wrangler => ManualPlan {
@@ -618,5 +746,97 @@ mod tests {
     fn manual_plan_reasons_are_distinguishable_for_ui_branching() {
         assert_ne!(MANUAL_XCODE_CLT.reason, MANUAL_VERSION_MANAGED.reason);
         assert_ne!(MANUAL_COREPACK_MANAGED.reason, MANUAL_NOT_WRITABLE.reason);
+    }
+
+    // 설계 §B: install_manual_plan()이 이 머신(Mac)에서는 기존 그대로 brew
+    // 문구를 낸다는 계약(무변경) — install_manual_plan_mac을 직접 호출해
+    // platform_now()의 실제 플랫폼과 무관하게 회귀를 잡는다.
+    #[test]
+    fn install_manual_plan_mac_variant_keeps_brew_wording() {
+        let gh = install_manual_plan_mac(ToolId::Gh);
+        assert_eq!(gh.copyable_command, Some("brew install gh"));
+        let node = install_manual_plan_mac(ToolId::Node);
+        assert_eq!(node.copyable_command, Some("brew install node"));
+    }
+
+    // Windows 분기(설계 §B.1, 전부 미검증)는 brew가 아니라 winget 명령을
+    // 내야 한다 — mac 문구가 그대로 새어나가면 이 작업의 핵심 결함(거짓 안내)이
+    // 재발한 것이다.
+    #[test]
+    fn install_manual_plan_windows_variant_uses_winget_not_brew() {
+        let gh = install_manual_plan_windows(ToolId::Gh);
+        assert!(gh
+            .copyable_command
+            .unwrap_or("")
+            .starts_with("winget install --id GitHub.cli"));
+        assert!(!gh.copyable_command.unwrap_or("").contains("brew"));
+
+        let node = install_manual_plan_windows(ToolId::Node);
+        assert_eq!(node.copyable_command, Some("winget install OpenJS.NodeJS.LTS"));
+        assert!(!node.message_ko.contains("Homebrew"));
+
+        let git = install_manual_plan_windows(ToolId::Git);
+        assert_eq!(
+            git.copyable_command,
+            Some("winget install --id Git.Git -e --source winget")
+        );
+
+        let pnpm = install_manual_plan_windows(ToolId::Pnpm);
+        assert_eq!(pnpm.copyable_command, Some("winget install pnpm.pnpm"));
+
+        // npm 계열 명령은 크로스플랫폼이라 mac과 동일 값을 재사용해도 된다.
+        let claude = install_manual_plan_windows(ToolId::Claude);
+        assert_eq!(
+            claude.copyable_command,
+            Some("npm install -g @anthropic-ai/claude-code")
+        );
+        let wrangler = install_manual_plan_windows(ToolId::Wrangler);
+        assert_eq!(wrangler.copyable_command, Some("npm install -g wrangler"));
+    }
+
+    // 설계 §B.3: winget "이미 최신" 종료 코드 상수가 실제 문서값(0x8A15002B)과
+    // 일치하는지 고정한다 — actions.rs가 이 값을 Outcome::AlreadyLatest로
+    // 매핑하므로 상수가 틀리면 그 매핑 자체가 조용히 무력화된다.
+    #[test]
+    fn winget_already_latest_exit_code_matches_documented_hresult() {
+        assert_eq!(WINGET_ALREADY_LATEST_EXIT_CODE, -1978335189);
+        assert_eq!(WINGET_ALREADY_LATEST_EXIT_CODE as u32, 0x8A15002B);
+    }
+
+    // 설계 §B.4: (Gh, WingetPackage) 조합이 UPDATE_TABLE에서 Run으로 매칭되고,
+    // 다른 도구는 이 method로 매칭되지 않아야 한다(도구별 행이 제네릭 행보다
+    // 우선 매칭되는 기존 lookup_action 규칙과 동일).
+    #[test]
+    fn winget_package_method_maps_to_run_only_for_gh() {
+        assert!(matches!(
+            lookup_action(ToolId::Gh, MethodKind::WingetPackage),
+            Action::Run(plan) if plan.runner == Runner::Winget
+        ));
+    }
+
+    // G-5(보안): winget RunPlan 어디에도 `--ignore-security-hash`가 없어야
+    // 한다(오설치=임의 코드 실행 위험) — 문자열 검색으로 고정한다.
+    #[test]
+    fn winget_run_plans_never_include_ignore_security_hash_or_msstore_source() {
+        for plan in [RUN_WINGET_INSTALL_GH, RUN_WINGET_UPGRADE_GH] {
+            for arg in plan.args {
+                if let Arg::Lit(s) = arg {
+                    assert_ne!(*s, "--ignore-security-hash");
+                    assert_ne!(*s, "msstore");
+                }
+            }
+            // --source가 있다면 반드시 다음 리터럴이 "winget"이어야 한다.
+            let lits: Vec<&str> = plan
+                .args
+                .iter()
+                .filter_map(|a| match a {
+                    Arg::Lit(s) => Some(*s),
+                    _ => None,
+                })
+                .collect();
+            if let Some(idx) = lits.iter().position(|s| *s == "--source") {
+                assert_eq!(lits.get(idx + 1), Some(&"winget"));
+            }
+        }
     }
 }

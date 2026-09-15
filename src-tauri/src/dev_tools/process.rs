@@ -5,7 +5,6 @@ use crate::process_util::SilentCommand;
 use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -285,36 +284,18 @@ pub(crate) fn run_process_with_timeout_cancellable(
     }
 }
 
-/// `<brew_prefix>/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` — 절대경로
-/// 실행만으로는 부족하다(brew/npm 내부에서 git/curl/ruby/node를 셔뱅으로 부른다).
-/// runner_path의 bin 디렉터리를 최우선으로 넣고 표준 경로를 뒤에 덧붙인다.
+/// `<brew_prefix>/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`(mac) /
+/// `<runner bin>;%SystemRoot%\system32;...`(win) — 절대경로 실행만으로는
+/// 부족하다(brew/npm 내부에서 git/curl/ruby/node를 셔뱅으로 부른다). 정본은
+/// `platform::compose_path_env`(설계 §D.2) — 이 함수는 시그니처를 유지한 채
+/// 플랫폼을 다시 읽어 위임하는 얇은 래퍼다. mac 분기는 기존 로직과 완전히
+/// 동일한 값을 내야 한다(기존 3개 테스트가 무수정으로 이를 증명한다).
 pub(crate) fn build_child_path_env(runner_path: Option<&str>) -> String {
-    let mut dirs: Vec<String> = Vec::new();
-    if let Some(rp) = runner_path {
-        if let Some(bin_dir) = Path::new(rp).parent() {
-            let s = bin_dir.to_string_lossy().to_string();
-            // 빈 문자열은 POSIX PATH에서 CWD를 의미한다(예: bare name "brew"의
-            // parent()는 Some("")) — 자식 프로세스가 CWD에서 git/curl 등을
-            // 먼저 찾게 되므로 반드시 배제한다.
-            if !s.is_empty() {
-                dirs.push(s);
-            }
-        }
-    }
-    for d in [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ] {
-        let s = d.to_string();
-        if !dirs.contains(&s) {
-            dirs.push(s);
-        }
-    }
-    dirs.join(":")
+    super::platform::compose_path_env(
+        super::platform::platform_now(),
+        runner_path,
+        &super::platform::EnvRoots::from_env(),
+    )
 }
 
 pub(crate) fn check_tool_version(def: &DevTool, resolved_path: &str) -> Option<String> {
