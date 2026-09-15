@@ -12,10 +12,11 @@
 //                않은 도구는 "전체 업데이트"의 동의 범위 밖이라 "N개를 설치합니다"
 //                요약 확인 1회를 받은 경우에만 같은 배치에 포함된다(M1,
 //                handleUpdateAll).
-//   - "manual" : 이 앱이 별도 프로세스로 실행하지 않는다(예: git은 macOS 시스템
-//                도구). "안내 보기"로 안내문과 복사 가능한 명령을 보여주며,
-//                "터미널에서 실행"은 어떤 명령이 실행될지 먼저 보여주고 확인을
-//                받은 뒤에만 터미널 창에서 그 명령을 실행한다(M2).
+//   - "manual" : 이 앱이 별도 프로세스로 실행하지 않는다(예: git처럼 이 앱이 직접
+//                설치/업데이트를 실행하지 않는 도구). "안내 보기"로 안내문과 복사
+//                가능한 명령을 보여주며, "터미널에서 실행"은 어떤 명령이 실행될지
+//                먼저 보여주고 확인을 받은 뒤에만 터미널 창에서 그 명령을
+//                실행한다(M2).
 //   - "none"   : 설치 경로 자체를 찾지 못해 아무 것도 할 수 없다. 버튼은 비활성이다.
 // 실행 결과는 성공/실패 2상태가 아니라 updated/alreadyLatest/unknownAfter/failed/
 // timedOut/notSupported 3+ 상태로 구분해 보여준다 — exit code만으로 "성공"을
@@ -299,7 +300,7 @@ async function handleUpdateAll(): Promise<void> {
 
     if (!preview.previewReliable) {
       state.devTools.preview[tool.id] = preview;
-      showToast(`${tool.name}: 미리보기를 확인하지 못했습니다(실패/시간 초과) — 개별 확인이 필요합니다`);
+      showToast(`${tool.name}: 미리보기로 영향 범위를 확인할 수 없습니다 — 개별 확인이 필요합니다`);
       notifyChange();
       continue;
     }
@@ -480,7 +481,7 @@ function renderPreviewPanel(tool: DevToolStatus, preview: DevToolPreview): HTMLE
   if (!preview.previewReliable) {
     children.push(
       el('div', { className: 'devtool-panel devtool-panel-warn' }, [
-        '⚠ 미리보기 확인에 실패했거나 시간이 초과되어 위 "영향받는 항목"이 실제 범위를 반영하지 못할 수 있습니다. 신중히 확인 후 실행하세요.',
+        '⚠ 미리보기로 영향 범위를 확인할 수 없어 위 "영향받는 항목"이 실제 범위를 반영하지 못할 수 있습니다. 신중히 확인 후 실행하세요.',
       ])
     );
   }
