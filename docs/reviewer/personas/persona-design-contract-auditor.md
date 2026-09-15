@@ -60,3 +60,6 @@
 - 2026-09-15 / target_id `devtools-windows-parity` / 3차(축소 — 새 리스크 표면 0, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r3.md`
   — 재사용 사유: 2차에서 "조항은 있는데 강제 수단이 없다"(§B.3)를 잡은 축이, 이번엔 "강제 수단이 생겼다고 주장하는 가드가 실제로 무엇을 강제하는가"를 판정해야 했다. 6대 요소 무수정.
   — 이번 라운드 집중: 신규 가드 4종의 단언을 한 줄씩 읽어 항진명제(`plan.runner == Winget` 분기 안의 `!winget_preview_is_reliable(plan.runner)`) 식별, 설치 경로 판정(`installer_label == "winget"` 문자열)이 새 정본에 배선되지 않은 이중 진실원 확인, `assert_eq!(checked, total)`이 면제시키지 못하는 축(빈 후보 배열·새 Runner·순회 배열과 match의 분리) 색출.
+- 2026-09-15 / target_id `devtools-windows-parity` / 4차(증분, 풀패널 강제승격) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r4.md`
+  — 이번 라운드 집중: 설계 §B.2 "이탈 #1"(winget 캐시 필드 미도입)의 철회가 설계 정본에 반영되지 않아 코드와 3곳이 어긋난 문제(D5),
+    §C.3.1의 macOS 무변경 증명 수단("기존 테스트 0개 수정")이 소멸한 문제, 승격으로 얻은 주입 능력의 양성 방향이 비어 있는 문제(D3). D3·D5 미충족 판정.

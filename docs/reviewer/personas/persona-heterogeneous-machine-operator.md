@@ -58,3 +58,6 @@ Intel 맥 6대와 nvm·volta·corepack이 뒤섞인 머신이 아직 살아 있�
 - 2026-09-15 / target_id `devtools-windows-parity` / 3차(축소 — 새 리스크 표면 0, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r3.md`
   — 재사용 사유: 이번 라운드의 단일 질문("Windows 사용자가 사실이 아닌 것을 보는 클래스가 닫혔는가")이 이 페르소나의 O1~O3 기준 그 자체다. 6대 요소 무수정.
   — 이번 라운드 집중: 14개 Windows 후보를 수정 후 분류기·`compute_action_for_platform`로 재추적해 macOS 문구 잔존 0 확인, 그리고 **가드가 덮지 않는 계층**(`resolve_plan`의 NoRunner 강등, `compute_path_visibility_windows` → 프론트 PATH 힌트 패널)에서 같은 클래스가 살아 있는지 수색 — 후자에서 신규 Major 1건 발견.
+- 2026-09-15 / target_id `devtools-windows-parity` / 4차(증분, 풀패널 강제승격) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r4.md`
+  — 이번 라운드 집중: `PING.EXE -n 31 127.0.0.1` 타임아웃 테스트가 사내 PC로 일반화되는지(부하 요소 3개 머신 무관 확인, EDR 환경은 미검증으로 남김),
+    winget 캐시 승격이 화면 1회 로드의 스폰 수를 바꾸는지(O5 — macOS에서 실패 spawn +1). O1~O3 충족.
