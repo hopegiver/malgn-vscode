@@ -63,3 +63,6 @@
 - 2026-09-11 / target_id `malgn-vscode-session-chat-registry-dedup` / 2차(증분 — 새 리스크 표면 1개, 신규 페르소나 0) / 최종응답 인라인 보고
   — 재사용 사유: 역할개념("이 앱이 실행하는 명령의 argv·셸·env·프로세스 수명이 안전한가")의 관심사 1(동적 값의 출처와 검증 지점)이 이번 새 표면(파일시스템 읽기 대상을 고르는 경로 화이트리스트)에 그대로 적용된다. 실행 표면이 argv에서 read 경로로 옮겨갔을 뿐 "문자열을 어디서 받아 어디서 검증하는가"라는 축은 동일하다. 6대 요소 무수정.
   — 이번 라운드 집중: `is_allowed_project_dir()`의 접두사 매칭이 형제 디렉터리를 통과시키는지, `-private-tmp-` 접두사 문자열 판정의 우회 형태(대소문자/`/tmp`), registry 오버레이 경로가 안전장치 2개를 우회하는지, `find_session_title`이 게이트 밖 경로의 파일을 여는지.
+- 2026-09-15 / target_id `devtools-windows-parity` / 1차(최초, 풀패널) / `docs/reviewer/review-devtools-windows-parity-2026-09-15.md`
+  — 재사용 사유: 역할개념("이 앱이 실행하는 명령의 argv·셸·env·프로세스 수명이 안전한가")이 그대로 과녁이다. 이번 변경은 실행 표면이 플랫폼 축으로 하나 더 늘어난 것(PowerShell·winget·`.cmd` shim)이지 실행 안전성의 축이 바뀐 것이 아니다. 직전 라운드 차단 3건(B1 셸 인용, B2 bare-name spawn, B3 PATH 상대항목)이 전부 이 페르소나의 기준이다. 6대 요소 무수정.
+  — 이번 라운드 집중: `open_terminal_command` 잔여 호출부 전수와 `&'static str` 시그니처가 동적 값 유입을 타입으로 막는지, `windows_system_tool` 절대경로가 powershell/taskkill 양쪽에 일관 적용됐는지, `is_absolute_dir`의 PATH 항목 거부 규칙 우회 형태(`C:` 드라이브 상대·UNC·정방향 슬래시), winget RunPlan argv의 리터럴 전용 불변식과 그 가드의 구조적 순회 여부, `child_current_dir`의 CWD 고정이 `.cmd` shim 경유 하이재킹을 실제로 덮는지.
