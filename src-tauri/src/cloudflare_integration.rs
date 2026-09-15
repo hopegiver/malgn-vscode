@@ -26,7 +26,7 @@
 // 함께 확인해 그 경우 종료코드와 무관하게 connected:false로 판정한다.
 
 use crate::cli_launcher::{
-    open_terminal_command, resolve_binary_expand_home, TerminalLaunchResult,
+    open_terminal_program, resolve_binary_expand_home, TerminalLaunchResult,
 };
 use crate::process_util::SilentCommand;
 use serde::Serialize;
@@ -136,7 +136,8 @@ pub fn cloudflare_connect() -> Result<TerminalLaunchResult, String> {
             message: "Wrangler CLI가 설치되어 있지 않습니다. 프로젝트에 devDependency로 추가하거나 `npm install -g wrangler`로 설치한 뒤 다시 시도해주세요.".to_string(),
         });
     };
-    open_terminal_command(&format!("{wrangler} login"))?;
+    // 설계 §E.3: 구조화된 진입점으로 전환(github_integration.rs와 동일 이유).
+    open_terminal_program(&wrangler, &["login"])?;
     Ok(TerminalLaunchResult {
         opened: true,
         message: "터미널 창에서 Cloudflare 로그인 절차를 진행해주세요.".to_string(),
@@ -153,7 +154,7 @@ pub fn cloudflare_disconnect() -> Result<TerminalLaunchResult, String> {
             message: "Wrangler CLI가 설치되어 있지 않습니다.".to_string(),
         });
     };
-    open_terminal_command(&format!("{wrangler} logout"))?;
+    open_terminal_program(&wrangler, &["logout"])?;
     Ok(TerminalLaunchResult {
         opened: true,
         message: "터미널 창에서 Cloudflare 로그아웃 절차를 진행해주세요.".to_string(),

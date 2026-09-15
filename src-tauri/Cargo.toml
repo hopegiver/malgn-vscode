@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+# BatBadBut(CVE-2024-24576) 완화가 1.77.2, 후속(CVE-2024-43402)이 1.81.0에서
+# 각각 들어갔다 — Windows에서 npm/pnpm/wrangler의 `.cmd` 전역 shim을
+# `std::process::Command`로 직접 실행하는 것(dev_tools 설계 §D.4)이 안전하려면
+# 이 completion을 컴파일러가 강제해야 한다. 이 값을 낮추면 그 전제가 깨진다.
+rust-version = "1.81"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

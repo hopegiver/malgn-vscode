@@ -16,42 +16,15 @@ use super::install_resolver::{
 };
 use super::plan_table::{install_manual_plan, manual_display_message, MANUAL_XCODE_CLT};
 use super::process::{build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout};
-use super::{resolve_tool_path, tool_definition, DevTool, ToolId, DEV_TOOLS, MACOS_ONLY_MESSAGE};
+use super::{resolve_tool_path, tool_definition, tool_path_candidates, DevTool, ToolId, DEV_TOOLS};
 use std::time::Duration;
 
-/// 설계 §5.2 채택(대안 "범위를 더 줄인다" 쪽): §5.1이 권고한 Windows
-/// path_candidates cfg 분기(+ %USERPROFILE%/%LOCALAPPDATA% 등 토큰 확장,
-/// build_child_path_env 구분자 분기)는 이번 스프린트 범위 밖으로 미룬다 — 이
-/// 머신에 winget이 없어 Windows 10칸을 단 한 줄도 실행 검증할 수 없고(위임서
-/// 실측), Sensitive 등급에서 검증 없이 탐지 범위를 넓히는 것 자체가 이 설계의
-/// 원칙에 어긋난다. 대신 §5.2의 최소 요건 — "아무 표시 없이 전부 '설치 안
-/// 됨'으로 보이는(=거짓을 말하는) 상태는 남기지 않는다" — 를 충족한다:
-/// Windows 빌드에서는 진단을 아예 시도하지 않고 "이 화면은 현재 macOS만
-/// 지원합니다"를 명시적으로 보여준다. action_kind는 계약을 지키기 위해 여전히
-/// "run"|"manual"|"none" 중 하나여야 하므로 "manual"을 쓰고, manual_hint에
-/// 이유를 담는다(신규 필드 추가 없음 — 계약 불변). 순수 함수로 분리해 플랫폼과
-/// 무관하게 테스트할 수 있게 한다.
-fn windows_unsupported_dev_tools_status() -> Vec<DevToolStatus> {
-    DEV_TOOLS
-        .iter()
-        .map(|def| DevToolStatus {
-            id: def.key.to_string(),
-            name: def.label.to_string(),
-            installed: false,
-            version: None,
-            path: None,
-            install_method: None,
-            action_kind: "manual".to_string(),
-            manual_hint: Some(MACOS_ONLY_MESSAGE.to_string()),
-        })
-        .collect()
-}
-
+/// Windows 완전 지원(devtools-windows-parity.md Phase 1): macOS 전용 게이트를
+/// 제거했으므로 이 함수는 항상 실제 탐지를 수행한다 — macOS 분기는 아래
+/// `resolve_tool_path`/`resolve_install_plan` 호출이 기존과 완전히 동일한 값을
+/// 낸다(무변경). Windows 분기는 `tool_path_candidates`/`classify_install_method_windows`
+/// 등 플랫폼 인자를 받는 순수함수가 처리한다(§D).
 pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
-    if !cfg!(target_os = "macos") {
-        return windows_unsupported_dev_tools_status();
-    }
-
     // 요구 4(성능): brew/npm/pnpm 러너를 도구 6개 루프 전체에서 1회만 해석한다.
     let runners = ResolvedRunners::resolve();
 
@@ -210,6 +183,31 @@ fn build_run_preview(
     })
 }
 
+/// 설계 §B.3 "프리뷰(무엇이 함께 바뀌나)": `preview_args`가 없는 설치 후보의
+/// notes/preview_reliable을 만드는 순수함수. winget은 brew `-n`/`--dry-run`류
+/// 사전 시뮬레이션이 없어 다른 러너와 문구·신뢰도가 달라야 한다 — 이 분기를
+/// 순수함수로 떼어내 winget이 없는 이 머신(Mac)에서도 텍스트 로직 자체는
+/// 테스트로 검증한다(실제 `winget show` 호출 여부는 이 함수가 관여하지 않는다
+/// — RUN_WINGET_INSTALL_GH.preview_args가 애초에 None이라 이 분기까지 오는
+/// 것 자체가 "호출하지 않기로 한 결정"의 결과다).
+fn no_dry_run_install_notes(installer_label: &str, tool_label: &str, searched: &str) -> (String, bool) {
+    if installer_label == "winget" {
+        (
+            format!(
+                "winget(으)로 {tool_label}을(를) 전역 설치합니다. 패키지 id가 공식 문서에 고정돼 있어 자동 실행이 안전합니다. winget은 사전 시뮬레이션을 제공하지 않아 함께 변경될 항목을 미리 확인할 수 없습니다. 앱이 확인한 경로: {searched}"
+            ),
+            false,
+        )
+    } else {
+        (
+            format!(
+                "{installer_label}(으)로 {tool_label}을(를) 전역 설치합니다. 패키지명이 공식 문서에 고정돼 있어 자동 실행이 안전합니다. 앱이 확인한 경로: {searched}"
+            ),
+            true,
+        )
+    }
+}
+
 /// 미설치 도구용 설치 프리뷰(요구 1의 단일 정본 `resolve_install_plan`을 통해서만
 /// Run/Manual을 가른다). Wrangler 전용이던 `build_wrangler_install_preview`를
 /// 대체하며, gh/Claude 모두 이 함수 하나로 처리된다.
@@ -306,16 +304,13 @@ fn build_install_preview(def: &DevTool, tool: ToolId, runners: &ResolvedRunners)
                 None => {
                     // §7.1/§0.1 사고①: 프리뷰가 없는 설치도 "앱이 뒤진 경로
                     // 목록"을 notes에 채워 사용자가 "나 이미 깔려 있는데?"를
-                    // 스스로 잡아낼 수 있게 한다.
-                    let searched = def.path_candidates.join(", ");
-                    (
-                        vec![def.label.to_string()],
-                        format!(
-                            "{installer_label}(으)로 {}을(를) 전역 설치합니다. 패키지명이 공식 문서에 고정돼 있어 자동 실행이 안전합니다. 앱이 확인한 경로: {searched}",
-                            def.label
-                        ),
-                        true,
-                    )
+                    // 스스로 잡아낼 수 있게 한다. tool_path_candidates로
+                    // 플랫폼에 맞는 후보를 보여준다(mac은 기존 def.path_candidates와
+                    // 동일한 값 — 무변경).
+                    let searched = tool_path_candidates(def).join(", ");
+                    let (notes, preview_reliable) =
+                        no_dry_run_install_notes(installer_label, def.label, &searched);
+                    (vec![def.label.to_string()], notes, preview_reliable)
                 }
             };
 
@@ -444,22 +439,31 @@ mod tests {
         }
     }
 
-    // 설계 §5.2 최소 요건: Windows 빌드에서는 "설치 안 됨"이라는 거짓 표시
-    // 대신 명시적으로 미지원임을 알려야 한다. 플랫폼과 무관하게 순수 함수로
-    // 분리했으므로 이 머신(macOS)에서도 그 분기 자체를 직접 검증할 수 있다.
+    // Windows 완전 지원 전환(devtools-windows-parity.md Phase 1+2)으로
+    // macOS 전용 게이트와 그 배후 함수(windows_unsupported_dev_tools_status,
+    // MACOS_ONLY_MESSAGE)가 삭제됐다 — 이 테스트가 검증하던 "Windows에서는
+    // 항상 미지원 안내만 보여준다"는 계약 자체가 이번 작업의 목적과 정반대라
+    // 함께 제거한다(설계 §C.1 Phase 표, §9 미해결쟁점 4가 이 삭제를 이미
+    // 예정해 두었다). 대체 검증은 이 파일의
+    // `check_dev_tools_blocking_follows_run_manual_policy_and_never_returns_none`
+    // 및 `platform.rs`/`classify.rs`의 Windows 순수함수 테스트가 맡는다.
+
+    // 설계 §B.3: winget 경로는 preview_reliable:false + "사전 시뮬레이션을
+    // 제공하지 않아" 문구를 내야 한다 — 거짓 안심을 주지 않는다는 목표를
+    // 텍스트 로직만 떼어내 이 머신(winget 없음)에서도 검증한다.
     #[test]
-    fn windows_unsupported_status_never_lies_about_installed_and_uses_manual() {
-        let tools = windows_unsupported_dev_tools_status();
-        assert_eq!(tools.len(), 6);
-        for tool in &tools {
-            assert!(!tool.installed);
-            assert_eq!(tool.action_kind, "manual");
-            let hint = tool.manual_hint.as_deref().unwrap_or("");
-            assert!(
-                hint.contains("macOS"),
-                "{}: manual_hint가 미지원 사유를 밝혀야 합니다: {hint}",
-                tool.id
-            );
-        }
+    fn no_dry_run_install_notes_marks_winget_as_unreliable_preview() {
+        let (notes, preview_reliable) = no_dry_run_install_notes("winget", "GitHub CLI", "C:\\gh.exe");
+        assert!(!preview_reliable);
+        assert!(notes.contains("사전 시뮬레이션을 제공하지 않아"));
+        assert!(notes.contains("winget"));
+    }
+
+    #[test]
+    fn no_dry_run_install_notes_keeps_other_installers_reliable() {
+        let (notes, preview_reliable) = no_dry_run_install_notes("npm", "Claude Code", "/opt/homebrew/bin/claude");
+        assert!(preview_reliable);
+        assert!(notes.contains("npm"));
+        assert!(!notes.contains("사전 시뮬레이션"));
     }
 }

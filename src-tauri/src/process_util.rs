@@ -48,11 +48,29 @@ pub fn pid_alive(_pid: u32) -> bool {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+// ---------------- Windows 콘솔 창 명시(터미널 열기 전용) ----------------
+// dev_tools 설계 §E: 사용자가 직접 보고 조작하도록 여는 터미널 창(PowerShell)은
+// `silent()`의 정반대가 필요하다 — GUI 부모가 콘솔 자식을 띄우면 Windows가
+// 콘솔을 자동 생성하므로 `.silent()`를 안 붙이기만 해도 창이 뜨지만, 암묵적
+// 동작에 기대지 않고 `CREATE_NEW_CONSOLE`을 명시한다. `f983216`(`CREATE_NO_WINDOW`
+// 도입)이 `cli_launcher::open_terminal_command` 경로를 의도적으로 제외해 둔
+// 자리를 채우는 것이지, 그 결정을 뒤집는 것이 아니다(process_util.rs:41-45의
+// 기존 주석이 이미 이 예외를 명시해 두었다).
+#[cfg(windows)]
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
 /// 백그라운드로 조용히 실행할 자식 프로세스에 붙이는 확장.
 pub trait SilentCommand {
     /// Windows에서 `CREATE_NO_WINDOW`를 적용해 콘솔 창이 뜨지 않게 한다.
     /// 다른 플랫폼에서는 아무 일도 하지 않는다.
     fn silent(&mut self) -> &mut Self;
+
+    /// Windows에서 `CREATE_NEW_CONSOLE`을 적용해 사용자가 보고 조작할 새 콘솔
+    /// 창을 명시적으로 띄운다. 다른 플랫폼에서는 아무 일도 하지 않는다(그
+    /// 플랫폼들은 애초에 별도 터미널 앱을 여는 방식이 다르다 —
+    /// `cli_launcher::open_terminal_command`의 macOS 분기가 `osascript`로
+    /// Terminal.app을 연다).
+    fn windowed(&mut self) -> &mut Self;
 }
 
 impl SilentCommand for std::process::Command {
@@ -64,6 +82,17 @@ impl SilentCommand for std::process::Command {
 
     #[cfg(not(windows))]
     fn silent(&mut self) -> &mut Self {
+        self
+    }
+
+    #[cfg(windows)]
+    fn windowed(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(CREATE_NEW_CONSOLE)
+    }
+
+    #[cfg(not(windows))]
+    fn windowed(&mut self) -> &mut Self {
         self
     }
 }
@@ -137,6 +166,32 @@ mod tests {
         let output = std::process::Command::new("cmd")
             .args(["/C", "echo ok"])
             .silent()
+            .output()
+            .expect("cmd 실행 실패");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    }
+
+    /// 신규: `.windowed()`도 `.silent()`와 같은 계약(체이닝해도 정상 spawn·실행)을
+    /// 지켜야 한다. non-Windows에서는 no-op이라 회귀 없이 통과해야 한다.
+    #[cfg(unix)]
+    #[test]
+    fn windowed_does_not_break_spawning_on_unix() {
+        let output = std::process::Command::new("echo")
+            .arg("ok")
+            .windowed()
+            .output()
+            .expect("echo 실행 실패");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windowed_does_not_break_spawning_on_windows() {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "echo ok"])
+            .windowed()
             .output()
             .expect("cmd 실행 실패");
         assert!(output.status.success());
