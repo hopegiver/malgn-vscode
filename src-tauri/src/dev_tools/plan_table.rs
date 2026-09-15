@@ -246,6 +246,19 @@ pub(crate) const RUN_BREW_INSTALL_GH: RunPlan = RunPlan {
 // 스스로 호출하지 않는다 — 이 RunPlan들은 std::process::Command로만 spawn되고,
 // winget 자신이 승격을 요구하면 OS가 사용자에게 묻는다(거부 시 non-zero 종료로
 // 드러난다, B.3). 전부 `Arg::Lit`(§1.1 불변식 — 동적 argv 토큰 0개).
+// 판단(2라운드 위임 사항 — `--scope user`를 고정할지): 고정하지 **않는다**.
+// GitHub CLI의 공식 winget 매니페스트(`GitHub.cli`)는 MSI 인스톨러 기술을
+// 쓴다 — winget에서 MSI 인스톨러는 통상 머신 스코프 전용이라(그 패키지
+// 매니페스트에 별도 User 스코프 인스톨러 변형이 없는 한) `--scope user`를
+// 강제하면 winget이 "No applicable installer found"로 항상 실패할 위험이
+// 크다(이 머신에 winget이 없어 실측 불가 — winget 공식 문서의
+// 스코프-인스톨러기술 매칭 규칙에 근거한 판단, §8 미검증 항목과 동일 계열).
+// 그 실패를 Failed가 아니라 Manual로 강등하는 새 분기를 추가하는 비용 대비,
+// scope를 아예 지정하지 않아 winget이 그 패키지가 지원하는 유일한 스코프를
+// 스스로 고르게 하는 편이 더 단순하고 안전하다 — 관리자 승인(UAC) 프롬프트는
+// 그대로 뜨지만(머신 스코프 설치이므로 예상된 동작), 그건 화면이 거짓을
+// 말하는 문제가 아니라 OS 표준 동작이다(기존 Git 매뉴얼 안내 문구 "관리자
+// 권한 승인 창이 뜰 수 있습니다"와 같은 전제).
 pub(crate) const RUN_WINGET_INSTALL_GH: RunPlan = RunPlan {
     runner: Runner::Winget,
     args: &[
@@ -837,6 +850,90 @@ mod tests {
             if let Some(idx) = lits.iter().position(|s| *s == "--source") {
                 assert_eq!(lits.get(idx + 1), Some(&"winget"));
             }
+        }
+    }
+
+    // N3(2라운드 비차단): 위 테스트는 `[RUN_WINGET_INSTALL_GH, RUN_WINGET_UPGRADE_GH]`를
+    // 손으로 나열한다 — 나중에 winget 행이 하나 더 추가되고 이 배열에 빠뜨려도
+    // 이 테스트는 여전히 통과한다(가드가 무의미해진다). 이 테스트는 UPDATE_TABLE
+    // (여기, 내부 테이블)과 install_candidates()(install_resolver.rs, 도구
+    // 하드코딩 없이 DEV_TOOLS 전체를 순회 — `install_candidates_run_plan_slots_are_
+    // literal_only`와 동일 패턴)를 **구조적으로** 순회해 Runner::Winget인 모든
+    // RunPlan을 자동으로 모은다. 새 winget 행이 어느 테이블에 추가되든 이
+    // 가드가 자동으로 걸린다.
+    #[test]
+    fn all_winget_run_plans_in_install_and_update_tables_pass_security_gate() {
+        use super::super::install_resolver::install_candidates;
+        use super::super::DEV_TOOLS;
+
+        let mut winget_plans: Vec<RunPlan> = Vec::new();
+
+        // UPDATE_TABLE(이 파일의 내부 정적 테이블) 전체를 순회한다.
+        for row in UPDATE_TABLE {
+            if let Action::Run(plan) = row.action {
+                if plan.runner == Runner::Winget {
+                    winget_plans.push(plan);
+                }
+            }
+        }
+        // install_candidates()(도구별 설치 후보 테이블)도 DEV_TOOLS 전체를
+        // 순회해 하드코딩 없이 모은다.
+        for def in DEV_TOOLS.iter() {
+            for candidate in install_candidates(def.id) {
+                if candidate.plan.runner == Runner::Winget {
+                    winget_plans.push(candidate.plan);
+                }
+            }
+        }
+
+        assert!(
+            !winget_plans.is_empty(),
+            "winget RunPlan이 하나도 발견되지 않았습니다 — 이 가드가 무의미해집니다"
+        );
+
+        for plan in winget_plans {
+            // ③ 전부 Arg::Lit.
+            let lits: Vec<&str> = plan
+                .args
+                .iter()
+                .filter_map(|a| match a {
+                    Arg::Lit(s) => Some(*s),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                lits.len(),
+                plan.args.len(),
+                "winget RunPlan.args는 전부 Arg::Lit이어야 합니다: {:?}",
+                plan.args
+            );
+
+            // ② --ignore-security-hash / --scope machine 부재(scope 자체를
+            // 아예 지정하지 않는 현재 판단 — 위 주석 참고. 그래도 향후 실수로
+            // "--scope machine"이 추가되는 것은 막는다).
+            assert!(
+                !lits.contains(&"--ignore-security-hash"),
+                "winget RunPlan에 --ignore-security-hash가 있으면 안 됩니다(오설치=임의 코드 실행)"
+            );
+            assert!(
+                !lits.contains(&"msstore"),
+                "winget 소스가 msstore이면 안 됩니다"
+            );
+            if let Some(idx) = lits.iter().position(|s| *s == "--scope") {
+                assert_ne!(
+                    lits.get(idx + 1),
+                    Some(&"machine"),
+                    "--scope machine을 명시적으로 고정하면 안 됩니다(UAC 승격을 앱이 유도하는 모양이 된다)"
+                );
+            }
+
+            // ① --source winget 존재(있다면 다음 리터럴이 반드시 "winget").
+            let source_idx = lits.iter().position(|s| *s == "--source");
+            assert_eq!(
+                source_idx.and_then(|i| lits.get(i + 1)),
+                Some(&"winget"),
+                "winget RunPlan은 --source winget을 고정해야 합니다: {lits:?}"
+            );
         }
     }
 }

@@ -162,10 +162,17 @@ pub(crate) fn kill_process_group_with_grace(pid: u32) {
 
 /// Windows에는 POSIX 프로세스 그룹이 없다. `taskkill /T /F`는 셸을 거치지
 /// 않는 직접 프로세스 실행(S1 불변식 유지)이며 대상 트리를 강제 종료하므로
-/// 별도의 유예 폴링이 필요 없다.
+/// 별도의 유예 폴링이 필요 없다. B2(2라운드 차단): `taskkill`을 bare-name으로
+/// 스폰하지 않는다 — `dev_tools::platform::windows_system_tool`로
+/// `%SystemRoot%\System32\taskkill.exe` 절대경로를 조립해 실행한다(이 앱의
+/// Windows 배포물은 단일 포터블 exe라 보통 다운로드 폴더에 놓이고, 거기
+/// 동명의 악성 실행파일이 있으면 bare-name spawn이 그것을 대신 실행할 수
+/// 있다).
 #[cfg(windows)]
 pub(crate) fn kill_process_group_with_grace(pid: u32) {
-    let _ = Command::new("taskkill")
+    let roots = crate::dev_tools::platform::EnvRoots::from_env();
+    let taskkill = crate::dev_tools::platform::windows_system_tool(&roots, r"System32\taskkill.exe");
+    let _ = Command::new(taskkill)
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .silent()
         .output();

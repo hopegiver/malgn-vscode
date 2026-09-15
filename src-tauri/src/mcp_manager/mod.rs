@@ -16,9 +16,9 @@ mod catalog;
 mod parsing;
 mod process;
 
-use crate::cli_launcher::{open_terminal_command, TerminalLaunchResult};
+use crate::cli_launcher::{open_terminal_program, open_terminal_program_sequence, TerminalLaunchResult};
 use add_args::{build_add_args, EnvVarPair};
-use catalog::{build_catalog_list, build_install_command, find_catalog_entry, McpCatalogItem};
+use catalog::{build_catalog_list, find_catalog_entry, McpCatalogEntry, McpCatalogItem};
 use parsing::{parse_mcp_get, parse_mcp_list, McpServerDetail, McpServerSummary};
 use process::{run_mcp_command, run_mcp_command_with_env, CLAUDE_PATH_CANDIDATES};
 
@@ -173,7 +173,32 @@ pub async fn mcp_catalog_list() -> Vec<McpCatalogItem> {
         .unwrap_or_default()
 }
 
-/// catalog_id로 표에서 항목을 찾아 `claude mcp add && claude mcp login`을
+/// `claude mcp add ...`의 argv를 조립한다(부작용 없음 — claude 바이너리를
+/// 건드리지 않고 터미널도 열지 않는다). B1(2라운드 차단): 토큰 배열로만
+/// 반환하고 셸 문자열을 조립하지 않는다 — 인용은 전적으로
+/// `open_terminal_program_sequence`(`platform::quote_token`) 몫이다. `entry`가
+/// `MCP_CATALOG`의 고정 항목뿐이라 지금은 모든 슬롯이 신뢰 가능한 값이지만,
+/// argv 배열 구조 자체가 향후 이 표에 외부 데이터가 섞여도 안전하다.
+fn build_install_add_args(entry: &McpCatalogEntry) -> [&'static str; 8] {
+    [
+        "mcp",
+        "add",
+        "--scope",
+        "user",
+        "--transport",
+        entry.transport,
+        entry.label,
+        entry.target,
+    ]
+}
+
+/// `claude mcp login <label>`의 argv — `build_install_add_args`와 짝을 이뤄
+/// `mcp_install`이 두 커맨드를 한 터미널 세션에서 이어 실행한다.
+fn build_install_login_args(entry: &McpCatalogEntry) -> [&'static str; 3] {
+    ["mcp", "login", entry.label]
+}
+
+/// catalog_id로 표에서 항목을 찾아 `claude mcp add` → `claude mcp login`을
 /// 이어 실행하는 터미널 창을 연다. 알 수 없는 catalog_id는 프론트가 임의
 /// 문자열을 보낼 수 없다는 불변식을 지키기 위해 즉시 에러로 거절한다
 /// (claude 바이너리 탐색보다 먼저 검사 — 미지 id는 claude 설치 여부와
@@ -192,32 +217,31 @@ pub fn mcp_install(catalog_id: String) -> Result<TerminalLaunchResult, String> {
         });
     };
 
-    let command = build_install_command(&claude_bin, entry);
-    open_terminal_command(&command)?;
+    let add_args = build_install_add_args(entry);
+    let login_args = build_install_login_args(entry);
+    open_terminal_program_sequence(&[
+        (claude_bin.as_str(), &add_args[..]),
+        (claude_bin.as_str(), &login_args[..]),
+    ])?;
     Ok(TerminalLaunchResult {
         opened: true,
         message: format!("터미널 창에서 {} 설치 및 로그인 절차를 진행해주세요.", entry.label),
     })
 }
 
-/// POSIX 셸 싱글쿼트 이스케이프 — `s`에 들어있는 모든 `'`를 `'\''`로 치환한
-/// 뒤 전체를 `'...'`로 감싼다. `mcp_login`의 `name`처럼 사용자가 자유
-/// 입력한 문자열을 `open_terminal_command`가 만드는 AppleScript `do script`
-/// 문자열(그 안에서 다시 사용자의 로그인 셸로 실행된다)에 안전하게
-/// 끼워넣기 위한 순수함수다. 이 함수를 거치지 않고 `name`을 문자열
-/// 포맷팅에 직접 넣으면 셸 메타문자 인젝션으로 이어질 수 있다.
-fn shell_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 /// 등록 후(특히 OAuth 방식) 로그인을 마치려면 `claude mcp login <name>`을
 /// 실행해야 하는데, 브라우저 인증이 끼는 대화형 흐름이라 카탈로그 설치와
-/// 동일하게 `open_terminal_command`로 사용자가 직접 보는 터미널 창을 연다.
+/// 동일하게 사용자가 직접 보는 터미널 창을 연다.
 ///
 /// `mcp_install`의 `catalog_id`(Rust 코드에 고정된 label만 쓰는 불변식)와
-/// 달리 이 커맨드의 `name`은 사용자가 자유롭게 입력한 내부 서버 이름이다
-/// — 반드시 `shell_single_quote`로 이스케이프한 뒤에만 명령 문자열에
-/// 넣는다(이 함수 없이 직접 포맷팅하지 않는다).
+/// 달리 이 커맨드의 `name`은 `claude mcp list` 파싱 결과다(`parsing.rs`) —
+/// 실질적으로 `~/.claude.json`·프로젝트 `.mcp.json`에 적힌 서버 이름이라
+/// 클론한 저장소가 채울 수 있는 외부 출처 데이터다(B1, 2라운드 차단). POSIX
+/// 셸 인용 규칙만으로 이스케이프해 셸 문자열 하나로 조립하면, Windows
+/// `powershell.exe -Command` 경로에서는 그 규칙이 무효라 인젝션 표면이 된다
+/// — `open_terminal_program`에 argv 원소로 그대로 넘겨
+/// `platform::quote_token`(플랫폼별 인용 규칙)이 전담하게 한다. 이 함수 안에는
+/// 문자열 포맷팅이 전혀 없다.
 #[tauri::command]
 pub fn mcp_login(name: String) -> Result<TerminalLaunchResult, String> {
     let Some(claude_bin) =
@@ -230,8 +254,7 @@ pub fn mcp_login(name: String) -> Result<TerminalLaunchResult, String> {
         });
     };
 
-    let command = format!("{claude_bin} mcp login {}", shell_single_quote(&name));
-    open_terminal_command(&command)?;
+    open_terminal_program(&claude_bin, &["mcp", "login", &name])?;
     Ok(TerminalLaunchResult {
         opened: true,
         message: format!("터미널 창에서 '{name}' 로그인 절차를 진행해주세요."),
@@ -250,61 +273,49 @@ mod tests {
         assert_eq!(result.unwrap_err(), "알 수 없는 카탈로그 항목입니다");
     }
 
-    // ---------------- shell_single_quote ----------------
+    // ---------------- build_install_add_args / build_install_login_args ----------------
+    // B1(2라운드 차단): 셸 문자열을 직접 포맷팅해 조립하던 이전 라운드의 함수
+    // 두 개(카탈로그 설치 커맨드 조립 + POSIX 전용 이스케이프)가 이 테스트들이
+    // 있던 자리를 대체한다 — 둘 다 함수 자체가 삭제됐으므로(`open_terminal_command`
+    // 시그니처가 `&'static str`로 좁아져 컴파일이 깨졌다), argv 배열 조립
+    // 로직을 대신 회귀 고정한다. 실제 인용(POSIX/PowerShell 양쪽)의 안전성은
+    // `dev_tools::platform`의 `quote_token`/`build_terminal_command_line`
+    // 테스트가 실측(sh -c 왕복 포함)으로 검증한다 — 이 파일은 "어떤 토큰이
+    // 몇 번째 argv 원소로 들어가는가"만 책임진다.
 
     #[test]
-    fn shell_single_quote_wraps_plain_name_in_single_quotes() {
-        assert_eq!(shell_single_quote("my-internal-mcp"), "'my-internal-mcp'");
-    }
-
-    #[test]
-    fn shell_single_quote_wraps_name_with_spaces() {
+    fn build_install_add_args_fixes_scope_user_and_reads_transport_label_target_from_entry() {
+        let entry = find_catalog_entry("gmail").unwrap();
         assert_eq!(
-            shell_single_quote("my internal mcp"),
-            "'my internal mcp'"
+            build_install_add_args(entry),
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "--transport",
+                "http",
+                "Gmail",
+                "https://gmailmcp.googleapis.com/mcp/v1",
+            ]
         );
     }
 
     #[test]
-    fn shell_single_quote_escapes_malicious_shell_metacharacters() {
-        // 표준 POSIX 싱글쿼트 이스케이프: 각 `'`를 `'\''`로 치환한다.
-        // `'; rm -rf ~ #` -> `'\''; rm -rf ~ #`를 전체 싱글쿼트로 감싼 결과.
-        let malicious = "'; rm -rf ~ #";
-        let escaped = shell_single_quote(malicious);
-        assert_eq!(escaped, "''\\''; rm -rf ~ #'");
-        // 결과 문자열을 셸이 그대로 파싱하면 원래 문자열이 안전하게
-        // 하나의 인자로 복원된다는 것을 sh -c로 직접 검증한다.
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("printf %s {escaped}"))
-            .output()
-            .expect("sh must be available to verify the escape round-trips");
-        assert_eq!(String::from_utf8_lossy(&output.stdout), malicious);
+    fn build_install_add_args_keeps_label_with_parens_as_single_argv_element() {
+        // 예전 build_install_command는 label을 `"..."`로 감싼 셸 문자열에 직접
+        // interpolate했다 — 이제는 argv 배열의 원소 하나일 뿐이라 괄호·공백이
+        // 있어도 별도 인용 처리가 필요 없다(인용은 실행 시점에
+        // open_terminal_program_sequence가 담당).
+        let entry = find_catalog_entry("atlassian").unwrap();
+        let args = build_install_add_args(entry);
+        assert_eq!(args[6], "Atlassian (Jira/Confluence)");
+        assert_eq!(args.len(), 8, "argv 원소 하나 = label 전체(공백 포함)");
     }
 
     #[test]
-    fn shell_single_quote_handles_multiple_embedded_quotes() {
-        let input = "it's a 'test'";
-        let escaped = shell_single_quote(input);
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("printf %s {escaped}"))
-            .output()
-            .expect("sh must be available to verify the escape round-trips");
-        assert_eq!(String::from_utf8_lossy(&output.stdout), input);
-    }
-
-    #[test]
-    fn mcp_login_message_and_command_never_panic_on_malicious_name() {
-        // 실제 claude 바이너리/터미널을 건드리지 않고 shell_single_quote를
-        // 통해 안전하게 이스케이프된 명령 문자열이 만들어지는지 확인한다
-        // (mcp_login 자체는 claude 바이너리 탐색·터미널 오픈이라는 부작용이
-        // 있어 여기서는 순수 조립 로직만 shell_single_quote로 회귀 고정한다).
-        let name = "'; rm -rf ~ #";
-        let command = format!("/opt/homebrew/bin/claude mcp login {}", shell_single_quote(name));
-        assert_eq!(
-            command,
-            "/opt/homebrew/bin/claude mcp login ''\\''; rm -rf ~ #'"
-        );
+    fn build_install_login_args_reuses_label_as_login_target() {
+        let entry = find_catalog_entry("figma").unwrap();
+        assert_eq!(build_install_login_args(entry), ["mcp", "login", "Figma"]);
     }
 }
