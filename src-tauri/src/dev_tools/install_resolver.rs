@@ -107,7 +107,9 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
 
 pub(crate) struct InstallCandidate {
     runner: Runner,
-    plan: RunPlan,
+    // N3(2라운드 비차단): plan_table.rs의 winget 가드 테스트가 이 필드를
+    // UPDATE_TABLE과 함께 순회하려면 크레이트 전역에서 읽을 수 있어야 한다.
+    pub(crate) plan: RunPlan,
     installer_label: &'static str,
 }
 

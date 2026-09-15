@@ -4,13 +4,15 @@
 // 않고 브라우저 인증이 끼는 `claude mcp login <name>`까지 이어서 실행해야
 // 한다. 이건 GitHub/Cloudflare 연동(`github_integration::github_connect`)과
 // 같은 이유로 앱이 조용히 백그라운드 spawn하지 않고 `cli_launcher::
-// open_terminal_command`로 사용자가 직접 보는 터미널 창을 연다.
+// open_terminal_program_sequence`로 사용자가 직접 보는 터미널 창을 연다(B1,
+// 2라운드 — 예전에는 이 표의 값들로 셸 문자열을 직접 포맷팅해 `open_terminal_
+// command`에 넘겼지만, 그 함수는 이제 `&'static str` 리터럴만 받는다).
 //
 // 프론트는 `catalog_id: String` 하나만 보낼 수 있고, transport/URL 조합은
-// 이 표 밖으로 절대 나가지 않는다 — `open_terminal_command`의 불변식("절대
-// 경로로 해석된 신뢰 가능한 바이너리 + 고정 서브커맨드 문자열만 넘어온다,
-// 사용자 자유입력 없음")을 지키기 위해서다. 프론트가 침해돼도 임의 셸
-// 커맨드를 터미널에 주입할 경로가 없다.
+// 이 표 밖으로 절대 나가지 않는다 — `mcp_install`(mod.rs)이 이 표의 label/
+// transport/target을 argv 배열의 원소로만 조립하고, 인용은
+// `open_terminal_program_sequence`(`platform::quote_token`)가 전담한다.
+// 프론트가 침해돼도 임의 셸 커맨드를 터미널에 주입할 경로가 없다.
 
 use serde::Serialize;
 
@@ -18,11 +20,14 @@ use serde::Serialize;
 /// 추측/변형 없이 이 값 그대로 유지한다.
 pub(super) struct McpCatalogEntry {
     id: &'static str,
-    /// `mcp_manager::mod`의 `mcp_install`이 성공 메시지 조립에 직접 읽는다.
+    /// `mcp_manager::mod`의 `mcp_install`이 성공 메시지 조립 + `claude mcp add`/
+    /// `claude mcp login` argv 조립에 직접 읽는다.
     pub(super) label: &'static str,
     /// "http" | "sse" — `build_add_args`가 받는 transport 값과 동일한 어휘.
-    transport: &'static str,
-    target: &'static str,
+    /// `mcp_install`이 `claude mcp add --transport <값>` argv 조립에 직접 읽는다.
+    pub(super) transport: &'static str,
+    /// `mcp_install`이 `claude mcp add <target>` argv 조립에 직접 읽는다.
+    pub(super) target: &'static str,
 }
 
 const MCP_CATALOG: [McpCatalogEntry; 5] = [
@@ -89,22 +94,6 @@ pub(super) fn build_catalog_list(installed_targets: &[String]) -> Vec<McpCatalog
             }
         })
         .collect()
-}
-
-/// `claude mcp add --scope user --transport <transport> "<label>" <target> &&
-/// claude mcp login "<label>"` 형태의 고정 셸 커맨드 문자열을 조립한다.
-/// `claude_bin`은 호출자가 이미 절대경로로 해석해 넘긴 값이고, `entry`는
-/// `MCP_CATALOG`의 고정 항목뿐이다 — 둘 다 사용자 자유입력이 섞이지 않는다.
-/// 프로세스를 실행하지 않는 순수 문자열 조립이라 테스트가 실제 claude/
-/// 터미널 없이 돈다.
-pub(super) fn build_install_command(claude_bin: &str, entry: &McpCatalogEntry) -> String {
-    format!(
-        "{claude_bin} mcp add --scope user --transport {transport} \"{label}\" {target} && {claude_bin} mcp login \"{label}\"",
-        claude_bin = claude_bin,
-        transport = entry.transport,
-        label = entry.label,
-        target = entry.target,
-    )
 }
 
 #[cfg(test)]
@@ -180,25 +169,5 @@ mod tests {
     fn build_catalog_list_with_no_installed_targets_marks_everything_false() {
         let list = build_catalog_list(&[]);
         assert!(list.iter().all(|i| !i.installed));
-    }
-
-    #[test]
-    fn build_install_command_for_http_entry_chains_add_and_login() {
-        let entry = find_catalog_entry("gmail").unwrap();
-        let command = build_install_command("/opt/homebrew/bin/claude", entry);
-        assert_eq!(
-            command,
-            "/opt/homebrew/bin/claude mcp add --scope user --transport http \"Gmail\" https://gmailmcp.googleapis.com/mcp/v1 && /opt/homebrew/bin/claude mcp login \"Gmail\""
-        );
-    }
-
-    #[test]
-    fn build_install_command_for_sse_entry_quotes_label_with_special_chars() {
-        let entry = find_catalog_entry("atlassian").unwrap();
-        let command = build_install_command("/opt/homebrew/bin/claude", entry);
-        assert_eq!(
-            command,
-            "/opt/homebrew/bin/claude mcp add --scope user --transport sse \"Atlassian (Jira/Confluence)\" https://mcp.atlassian.com/v1/sse && /opt/homebrew/bin/claude mcp login \"Atlassian (Jira/Confluence)\""
-        );
     }
 }
