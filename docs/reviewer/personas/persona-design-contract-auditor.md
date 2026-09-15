@@ -51,3 +51,6 @@
 - 2026-09-10 / target_id `malgn-vscode-devtools-real-update` / 2차(풀패널, 새 실행경로 다수 등장으로 승격) / `docs/reviewer/review-devtools-install-2026-09-10.md`
   — 신규 생성 사유: 1차 리뷰에는 판정 기준이 될 설계 정본이 없었다(원 설계는 저장소에서 삭제된 상태였고 리뷰는 코드 자체의 안전성만 봤다). 2차에서 `docs/design/devtools-install-matrix.md` 340줄이 판정 정본으로 지정되면서 "구현이 설계 조항을 조항 단위로 지켰는가"라는 리스크 표면이 처음 생겼다. 기존 4개 페르소나 중 이 개념을 가진 것이 없다 — `claimed-vs-verified`는 코드↔주석·코드↔계약 일치를 보지 설계서 조항 대조를 보지 않는다.
   — 이번 라운드 집중: §1.1 리터럴 전용 불변식 전수 대조와 그 강제 수단, §4.2 쓰기권한 사전검사 조항의 생존 여부, §4.2와 §6.3의 상호 모순.
+- 2026-09-15 / target_id `devtools-windows-parity` / 1차(최초, 풀패널) / `docs/reviewer/review-devtools-windows-parity-2026-09-15.md`
+  — 재사용 사유: 역할개념("구현이 설계 정본의 조항·불변식을 조항 단위로 지켰는가, 사라진 조항은 없는가")이 그대로 유효하다. 이번 라운드는 판정 정본 `docs/design/devtools-windows-parity.md` 577줄이 명시적으로 지정됐고, 그 §B.2가 "Windows도 run 3 / manual 3, 도구 단위까지 정확히 일치"라는 검사 가능한 단언을 내놓아 조항 대조의 과녁이 뚜렷하다. 6대 요소 무수정.
+  — 이번 라운드 집중: §B.2 run/manual 도구 단위 일치 단언의 강제 수단 존재 여부(조용한 누락 판정), §B.3 winget 종료코드·프리뷰 조항의 구현 도달 지점, §D.2 골든 테스트 조항, §1.1 리터럴 전용 불변식의 가드가 손 나열인지 구조적 순회인지, 설계 스케치를 기각한 자리들(ResolvedRunners 캐시 필드·WingetPackage id·`--scope user`)의 기각 근거가 코드에 남아 있는지, 강제 수단이 "사람의 주의력"인 조항 색출.

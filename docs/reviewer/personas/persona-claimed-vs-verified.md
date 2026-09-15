@@ -64,3 +64,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-09-14 / target_id `malgn-vscode-uiux-round1` / 3차(축소 모드 — 신규 페르소나 0) / `docs/reviewer/round3-uiux-review.md`
   — 재사용 사유: 역할개념("무엇을 관측해서 그렇게 말하는가")이 그대로 과녁이다. 이번 라운드의 핵심 과제가 라운드2 지적 V-03("v?로 설치되었습니다 / 확인됨(verified)")이 **실재 결함인지 캡처 픽스처가 만든 허구인지** 가리는 일이고, 그것은 이 페르소나의 V1(재조회 개입)·V2(미확인이 성공으로 안 그려지는가)·V3(계약 전수 일치) 기준 자체다. 6대 요소 무수정.
   — 이번 라운드 집중: `perform_update`/`run_install_plan`의 Outcome 결정 조건표를 다시 그려 `versionBefore=null`이 도달 가능한 경로 전수 확인(참고파일의 `src-tauri/src/dev_tools.rs`는 현재 `src-tauri/src/dev_tools/{actions,process,contract,query}.rs`로 분할돼 있다), 캡처 픽스처(`scripts/capture/fixtures.mjs:449,463`)가 백엔드로선 만들 수 없는 조합을 주입하는지, 픽스처 날짜 키의 UTC/로컬 어긋남이 리뷰 근거 자체를 오염시키는지.
+- 2026-09-15 / target_id `devtools-windows-parity` / 1차(최초, 풀패널) / `docs/reviewer/review-devtools-windows-parity-2026-09-15.md`
+  — 재사용 사유: 역할개념("무엇을 관측해서 그렇게 말하는가, 코드가 자기 주석과 일치하는가")이 이번 위임의 제1질문 그 자체다 — "플랫폼을 인자로 받는 순수함수 테스트가 진짜 Windows 동작을 등가로 모사하는가, 아니면 자기가 정한 규칙을 자기가 확인하는 동어반복인가". Windows 실기 검증이 누구에게도 불가능한 상태라 V2(미확인이 성공으로 그려지지 않는가)가 특히 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: 합성 골든 테스트의 입력 경로가 앱 자신의 탐지기가 실제로 만들어내는 경로와 일치하는지 대조, `assert_eq!(결과, 구현식을 그대로 재작성한 기대값)` 형태의 동어반복 테스트 전수, `preview_reliable:false`가 백엔드에서 프런트로 건너가며 의미가 뒤집히는지, 삭제된 7개 테스트의 대체물이 동등 이상인지 직접 대조, 주석의 "컴파일 호스트/타깃" 단언 정확성, CI 잡이 보증한다고 주장하는 범위와 실제 실행되는 `cfg(windows)` 테스트 수.
