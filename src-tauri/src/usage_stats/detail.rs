@@ -471,7 +471,10 @@ mod tests {
     // 이 세션 자체가 지금 malgn-vscode 프로젝트에서 오늘 날짜의 활동을 만들어내고
     // 있으니, 오늘 날짜로 상세 집계를 요청하면 이 프로젝트 세션이 0보다 큰 토큰으로
     // 잡혀야 한다 — "하루만 스캔"하는 실제 파일 I/O 경로가 정말 동작함을 증명한다.
+    // 머신 의존(오늘 날짜 실사용 로그가 있어야 함) — CI 러너에는 없어 #[ignore].
+    // 로컬 실행: cargo test -- --ignored usage_stats::detail::tests::aggregates_daily_detail_for_today_from_real_data
     #[test]
+    #[ignore]
     fn aggregates_daily_detail_for_today_from_real_data() {
         let today = Local::now().format("%Y-%m-%d").to_string();
         let report = aggregate_daily_detail(&today);

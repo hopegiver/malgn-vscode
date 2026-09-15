@@ -199,7 +199,10 @@ mod tests {
     // 확인한다(이 프로젝트 세션 자체의 메타데이터 파일이 그 디렉토리에 있어야 한다).
     // GUI 없는 환경에서 네이티브 창을 스크린샷할 수 없을 때 이 fs 읽기 로직 자체가
     // 실제로 동작함을 증명하는 자동화된 근거로 쓴다.
+    // 머신 의존 — CI 러너에는 ~/.claude/sessions가 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored session_list::tests::finds_at_least_one_real_session_file
     #[test]
+    #[ignore]
     fn finds_at_least_one_real_session_file() {
         let sessions = read_claude_sessions();
         assert!(
@@ -215,7 +218,10 @@ mod tests {
     // 실제 세션 중 최소 하나는 대화 로그(jsonl)에서 제목을 뽑아낼 수 있어야 한다 —
     // 이 세션 자체가 malgn-vscode 프로젝트에서 지금 실행 중이라 그 jsonl이 실제로
     // 존재하고 자라고 있다.
+    // 머신 의존 — CI 러너에는 그 jsonl이 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored session_list::tests::extracts_title_for_at_least_one_real_session
     #[test]
+    #[ignore]
     fn extracts_title_for_at_least_one_real_session() {
         let sessions = read_claude_sessions();
         assert!(

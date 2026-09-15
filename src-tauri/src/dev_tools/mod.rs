@@ -335,6 +335,9 @@ mod tests {
     // resolve_tool_path의 플랫폼 선택 로직 자체를 이 머신(Mac)에서 직접
     // 검증한다 — tool_path_candidates가 platform_now()에 따라 서로 다른 배열을
     // 돌려준다는 계약.
+    // 플랫폼 전제: 이 머신이 Mac이라는 전제 — CI의 windows-latest에서는 컴파일을
+    // 건너뛴다.
+    #[cfg(target_os = "macos")]
     #[test]
     fn tool_path_candidates_selects_mac_array_on_this_machine() {
         for def in DEV_TOOLS.iter() {

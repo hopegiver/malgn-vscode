@@ -29,6 +29,11 @@
 
     // ── expand_path_tokens ──
 
+    // 플랫폼 전제: 실제 호스트가 Mac일 때만 성립(PathBuf::join이 실제 OS의
+    // 구분자로 렌더링하므로, Platform::Mac을 논리 인자로 넘겨도 Windows
+    // 호스트에서는 결과 문자열의 구분자가 달라진다) — CI의 windows-latest에서는
+    // 컴파일 자체를 건너뛴다.
+    #[cfg(target_os = "macos")]
     #[test]
     fn expand_path_tokens_mac_expands_tilde_and_passes_through_absolute() {
         let roots = mac_roots();
@@ -792,11 +797,17 @@
     // ── platform_now (잔여 cfg 표면 자체는 CI만 검증 가능하지만, 이 머신에서
     // 실행되는 값이 Mac이어야 한다는 사실 자체는 검증할 수 있다) ──
 
+    // 플랫폼 전제: 이 개발 머신이 Mac이라는 사실 자체를 검증하는 테스트라 다른
+    // OS에서는 성립할 수 없다 — CI의 windows-latest에서는 컴파일을 건너뛴다.
+    #[cfg(target_os = "macos")]
     #[test]
     fn platform_now_is_mac_on_this_development_machine() {
         assert_eq!(platform_now(), Platform::Mac);
     }
 
+    // 플랫폼 전제: 이름대로 non-Windows(Mac) 전용 — CI의 windows-latest에서는
+    // 컴파일을 건너뛴다.
+    #[cfg(not(windows))]
     #[test]
     fn path_exists_non_windows_matches_is_file_semantics() {
         assert!(path_exists("/usr/bin/env") || path_exists("/bin/sh"));

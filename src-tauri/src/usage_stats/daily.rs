@@ -311,7 +311,10 @@ mod tests {
     // 이 세션 자체가 지금 malgn-vscode 프로젝트에서 대량의 assistant 메시지를
     // 만들어내고 있으니, 오늘 날짜의 집계가 0보다 커야 한다 — 실제 로컬 대화
     // 로그(usage 필드)를 정말로 읽어서 합산한다는 실증 근거로 쓴다.
+    // 머신 의존(오늘 날짜 실사용 로그가 있어야 함) — CI 러너에는 없어 #[ignore].
+    // 로컬 실행: cargo test -- --ignored usage_stats::daily::tests::aggregates_daily_usage_and_includes_today_with_nonzero_tokens
     #[test]
+    #[ignore]
     fn aggregates_daily_usage_and_includes_today_with_nonzero_tokens() {
         let daily = aggregate_daily_usage();
         assert!(!daily.is_empty(), "최근 30일 사용량 집계가 비어 있습니다");

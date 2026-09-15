@@ -266,7 +266,11 @@ mod tests {
 
     // 보안 케이스 4: scan_workspace_projects()가 실제로 찾아낸 정상 프로젝트
     // 경로는 통과한다(이 저장소 자신 — CLAUDE.md가 있어 항상 스캔된다).
+    // 머신 의존(~/workspace/malgn-vscode가 실제로 있어야 함) — CI 러너의 홈에는
+    // 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored session_chat::tests::validate_project_path_accepts_a_real_scanned_project_path
     #[test]
+    #[ignore]
     fn validate_project_path_accepts_a_real_scanned_project_path() {
         let projects = crate::scan_workspace_projects();
         let project = projects

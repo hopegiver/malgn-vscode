@@ -216,7 +216,10 @@ mod tests {
 
     // 이 머신에 실제로 설치된 malgn-agent 플러그인(user scope)을 찾아 agents/skills/
     // knowledge 실물 목록까지 비어있지 않은지 확인한다.
+    // 머신 의존 — CI에는 이 플러그인이 설치돼 있지 않아 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored plugins::installed::tests::finds_this_machines_malgn_agent_plugin
     #[test]
+    #[ignore]
     fn finds_this_machines_malgn_agent_plugin() {
         let plugins = read_installed_plugins();
         let found = plugins.iter().find(|p| p.name == "malgn-agent");

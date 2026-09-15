@@ -127,7 +127,11 @@ mod tests {
     /// GUI(.app) 실행 시 PATH가 제한될 수 있다는 `cli_launcher.rs`의 실측
     /// 문제를 이 모듈도 겪지 않는지 회귀로 고정한다 — `autonomy.rs`의 동일
     /// 테스트와 같은 취지다.
+    // 머신 의존(이 개발 머신에 claude가 실제로 설치돼 있어야 함) — CI에는 그
+    // 전제가 없어 #[ignore]. 로컬 실행: cargo test -- --ignored
+    // mcp_manager::process::tests::claude_path_candidates_resolve_to_something_on_a_machine_with_claude_installed
     #[test]
+    #[ignore]
     fn claude_path_candidates_resolve_to_something_on_a_machine_with_claude_installed() {
         let resolved =
             crate::cli_launcher::resolve_binary_expand_home(&CLAUDE_PATH_CANDIDATES, "claude");

@@ -209,7 +209,11 @@ mod tests {
     // depth-1만 스캔한다: 이 머신의 실제 ~/.claude/projects에는 서브에이전트
     // 트랜스크립트(`<sid>/subagents/agent-*.jsonl`, depth 2 이상)가 실제로
     // 존재하는데(실측: 1,000건 이상), 후보 목록에 하나도 섞여 있으면 안 된다.
+    // 머신 의존(~/.claude/projects에 실제 jsonl이 있어야 함) — CI 러너에는 없어
+    // #[ignore]. 로컬 실행:
+    // cargo test -- --ignored session_list::jsonl_scan::tests::scan_candidates_exclude_subagent_transcripts_depth1_only
     #[test]
+    #[ignore]
     fn scan_candidates_exclude_subagent_transcripts_depth1_only() {
         let candidates = scan_jsonl_candidate_paths();
         assert!(

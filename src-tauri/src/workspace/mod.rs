@@ -166,7 +166,11 @@ mod tests {
 
     // 이 머신의 실제 ~/workspace를 스캔해 이 프로젝트(malgn-vscode) 자신이 목록에
     // 있는지 확인한다 — CLAUDE.md가 있으니 반드시 인식되어야 한다.
+    // 머신 의존(~/workspace/malgn-vscode가 실제로 있어야 함) — CI 러너의 홈에는
+    // 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored workspace::tests::finds_this_project_in_workspace
     #[test]
+    #[ignore]
     fn finds_this_project_in_workspace() {
         let projects = scan_workspace_projects();
         assert!(
@@ -189,7 +193,11 @@ mod tests {
     }
 
     // 경로 트래버설 차단 — 보안 관련이라 회귀 방지용으로 고정해둔다.
+    // 머신 의존(~/workspace/malgn-vscode가 실제로 있어야 함) — CI 러너의 홈에는
+    // 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored workspace::tests::blocks_path_traversal_in_file_preview
     #[test]
+    #[ignore]
     fn blocks_path_traversal_in_file_preview() {
         let projects = scan_workspace_projects();
         let project = projects
@@ -210,7 +218,11 @@ mod tests {
         );
     }
 
+    // 머신 의존(~/workspace/malgn-vscode가 실제로 있어야 함) — CI 러너의 홈에는
+    // 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored workspace::tests::reads_a_real_text_file_from_this_project
     #[test]
+    #[ignore]
     fn reads_a_real_text_file_from_this_project() {
         let projects = scan_workspace_projects();
         let project = projects
@@ -224,7 +236,11 @@ mod tests {
         }
     }
 
+    // 머신 의존(~/workspace/malgn-vscode가 실제로 있어야 함) — CI 러너의 홈에는
+    // 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored workspace::tests::builds_tree_excluding_node_modules
     #[test]
+    #[ignore]
     fn builds_tree_excluding_node_modules() {
         let projects = scan_workspace_projects();
         let project = projects

@@ -214,6 +214,9 @@ mod tests {
         assert!(runners.brew.is_some() || runners.npm.is_some());
     }
 
+    // 플랫폼 전제: 이 머신이 Mac이라 winget 후보가 항상 미스매치라는 전제 —
+    // CI의 windows-latest에서는 컴파일을 건너뛴다.
+    #[cfg(target_os = "macos")]
     #[test]
     fn path_for_winget_resolves_fresh_each_call_and_is_none_on_this_mac_machine() {
         let runners = ResolvedRunners::resolve();

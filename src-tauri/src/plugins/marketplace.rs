@@ -55,7 +55,11 @@ pub(crate) fn read_known_marketplaces() -> Vec<MarketplaceInfo> {
 mod tests {
     use super::*;
 
+    // 머신 의존(이 머신에 malgnsoft-plugins 마켓플레이스가 등록돼 있어야 함) — CI
+    // 러너에는 없어 #[ignore]. 로컬 실행:
+    // cargo test -- --ignored plugins::marketplace::tests::finds_known_marketplaces
     #[test]
+    #[ignore]
     fn finds_known_marketplaces() {
         let marketplaces = read_known_marketplaces();
         assert!(
