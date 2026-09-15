@@ -214,7 +214,8 @@ fn build_run_preview(
 /// 것 자체가 "호출하지 않기로 한 결정"의 결과다).
 ///
 /// T2①(review-devtools-windows-parity-2026-09-15-r3.md) 재발 방지: 이 함수는
-/// 원래 `installer_label == "winget"` 문자열 비교로 신뢰도를 판정했다 —
+/// 원래 installer_label 문자열이 리터럴 "winget"과 같은지 비교해 신뢰도를
+/// 판정했다 —
 /// `winget_preview_is_reliable(Runner)`가 "install/update 두 경로가 판정을
 /// 공유한다"고 주석에 적은 것과 실제로 다른 정본이 하나 더 있었던 것이다(N2와
 /// 같은 결함이 재발할 수 있는 통로). `runner: Runner`를 받아
