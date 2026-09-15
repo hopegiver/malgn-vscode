@@ -14,7 +14,7 @@ use super::install_resolver::{
     build_command_display, is_git_stub_without_clt, resolve_args, resolve_install_plan,
     resolve_plan, InstallResolution, ResolvedAction, ResolvedPlan, ResolvedRunners,
 };
-use super::plan_table::{install_manual_plan, manual_display_message, MANUAL_XCODE_CLT};
+use super::plan_table::{install_manual_plan, manual_display_message, Runner, MANUAL_XCODE_CLT};
 use super::process::{build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout};
 use super::{resolve_tool_path, tool_definition, tool_path_candidates, DevTool, ToolId, DEV_TOOLS};
 use std::time::Duration;
@@ -99,6 +99,16 @@ pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
 
 // ==================== 12. preview (부록 C) ====================
 
+/// N2(review-devtools-windows-parity-2026-09-15-r2.md) 재발 방지 — 정본:
+/// winget은 사전 시뮬레이션(dry-run)이 없으므로(§B.3) `preview_args`가 없는
+/// winget RunPlan은 install/update 어느 경로든 "신뢰할 수 있다"고 말하면
+/// 안 된다. `no_dry_run_install_notes`(설치 경로)와 `build_run_preview`의
+/// `None` 폴백(업데이트 경로) 둘 다 이 함수 하나로 판정을 공유해, 새 winget
+/// 행이 어느 쪽에 추가되든 이 판정을 놓치지 않게 한다.
+pub(crate) fn winget_preview_is_reliable(runner: Runner) -> bool {
+    runner != Runner::Winget
+}
+
 fn build_run_preview(
     def: &DevTool,
     tool_id: ToolId,
@@ -167,7 +177,19 @@ fn build_run_preview(
                 (affected, notes, true)
             }
         }
-        None => (vec![def.label.to_string()], String::new(), true),
+        None => {
+            // N2 재발 방지: preview_args가 없다고 무조건 "신뢰 가능"으로 두지
+            // 않는다 — winget처럼 사전 시뮬레이션 자체가 없는 러너는 업데이트
+            // 경로에서도 install 경로(no_dry_run_install_notes)와 동일하게
+            // preview_reliable:false + 이유를 밝히는 notes를 낸다.
+            let reliable = winget_preview_is_reliable(plan.runner);
+            let notes = if reliable {
+                String::new()
+            } else {
+                "winget은 사전 시뮬레이션을 제공하지 않아 함께 변경될 항목을 미리 확인할 수 없습니다.".to_string()
+            };
+            (vec![def.label.to_string()], notes, reliable)
+        }
     };
 
     let plan_id = compute_plan_id(&runner_path, &args, &normalized_before);
@@ -465,5 +487,132 @@ mod tests {
         assert!(preview_reliable);
         assert!(notes.contains("npm"));
         assert!(!notes.contains("사전 시뮬레이션"));
+    }
+
+    // N2(review-devtools-windows-parity-2026-09-15-r2.md) 재발 방지 — 정본
+    // 함수 자체의 계약: winget만 신뢰 불가, 나머지 러너는 신뢰 가능.
+    #[test]
+    fn winget_preview_is_reliable_is_false_only_for_winget_runner() {
+        assert!(!winget_preview_is_reliable(Runner::Winget));
+        assert!(winget_preview_is_reliable(Runner::Brew));
+        assert!(winget_preview_is_reliable(Runner::Npm));
+        assert!(winget_preview_is_reliable(Runner::Pnpm));
+        assert!(winget_preview_is_reliable(Runner::SelfBinary));
+    }
+
+    // N2 핵심 재발 방지 — 통합 테스트: build_run_preview의 실제 None 폴백
+    // 분기가(수정 전에는 무조건 `true`였다) RUN_WINGET_UPGRADE_GH(업데이트
+    // 경로)에 대해 preview_reliable=false를 실제로 반환하는지 확인한다.
+    // preview_args가 None이라 dry-run 프로세스를 spawn하지 않으므로 이
+    // 머신(winget 없음)에서도 안전하게 실행된다.
+    #[test]
+    fn build_run_preview_marks_winget_update_path_as_unreliable() {
+        use super::super::plan_table::RUN_WINGET_UPGRADE_GH;
+
+        let def = tool_definition(ToolId::Gh);
+        // RUN_WINGET_UPGRADE_GH.args는 전부 Arg::Lit이라 어떤 method를 넘겨도
+        // resolve_args가 성공한다(install_resolver의 dummy_method와 동일 전제).
+        let method = InstallMethod::Unknown(String::new());
+        let preview = build_run_preview(
+            def,
+            ToolId::Gh,
+            "gh_runner_path_placeholder".to_string(),
+            RUN_WINGET_UPGRADE_GH,
+            method,
+        )
+        .expect("RUN_WINGET_UPGRADE_GH의 인자는 전부 리터럴이라 항상 성공해야 합니다");
+
+        assert!(
+            !preview.preview_reliable,
+            "winget 업데이트 프리뷰가 신뢰 가능하다고 잘못 표시됩니다(N2 재발)"
+        );
+        assert!(preview.notes.contains("winget"));
+        assert!(preview.notes.contains("사전 시뮬레이션"));
+    }
+
+    // N2 클래스 가드 — 구조적 순회: (설치 경로) install_candidates() +
+    // (업데이트 경로) lookup_action(모든 도구 × 모든 MethodKind 조합)을 함께
+    // 순회해 Runner::Winget인 RunPlan을 하드코딩 없이 모은다. UPDATE_TABLE은
+    // plan_table 모듈 밖에서 직접 순회할 수 없으므로(비공개 static)
+    // lookup_action(공개 조회 함수)으로 같은 효과를 낸다. MethodKind 전수성은
+    // 컴파일 타임에 강제한다 — 새 variant가 추가되면 `assert_kind_is_covered`의
+    // match가 컴파일에 실패한다.
+    #[test]
+    fn all_winget_run_plans_report_unreliable_preview_in_both_install_and_update_paths() {
+        use super::super::classify::MethodKind;
+        use super::super::plan_table::{lookup_action, Action};
+        use super::super::DEV_TOOLS;
+
+        fn assert_kind_is_covered(kind: MethodKind) {
+            match kind {
+                MethodKind::HomebrewFormula
+                | MethodKind::HomebrewCask
+                | MethodKind::PnpmStandalone
+                | MethodKind::PnpmGlobalPackage
+                | MethodKind::NpmGlobal
+                | MethodKind::ClaudeNative
+                | MethodKind::SystemManaged
+                | MethodKind::VersionManager
+                | MethodKind::WingetPackage
+                | MethodKind::Unknown => {}
+            }
+        }
+        const ALL_METHOD_KINDS: [MethodKind; 10] = [
+            MethodKind::HomebrewFormula,
+            MethodKind::HomebrewCask,
+            MethodKind::PnpmStandalone,
+            MethodKind::PnpmGlobalPackage,
+            MethodKind::NpmGlobal,
+            MethodKind::ClaudeNative,
+            MethodKind::SystemManaged,
+            MethodKind::VersionManager,
+            MethodKind::WingetPackage,
+            MethodKind::Unknown,
+        ];
+        for k in ALL_METHOD_KINDS {
+            assert_kind_is_covered(k);
+        }
+
+        let mut winget_plans_found = 0usize;
+
+        // 업데이트 경로: 도구 × MethodKind 전수 조합을 lookup_action으로 순회.
+        for def in DEV_TOOLS.iter() {
+            for kind in ALL_METHOD_KINDS {
+                if let Action::Run(plan) = lookup_action(def.id, kind) {
+                    if plan.runner == Runner::Winget {
+                        winget_plans_found += 1;
+                        assert!(
+                            !winget_preview_is_reliable(plan.runner),
+                            "{}/{kind:?} winget RunPlan이 신뢰 가능하다고 잘못 판정됩니다",
+                            def.key
+                        );
+                        assert!(
+                            plan.preview_args.is_none(),
+                            "{}/{kind:?} winget RunPlan에 preview_args가 생겼습니다 — 이 \
+                             경우 build_run_preview의 Some 분기(실제 dry-run 실행 결과)가 \
+                             신뢰도를 정하므로 이 가드의 None-폴백 전제가 더 이상 맞지 \
+                             않습니다. no_dry_run_install_notes/winget_preview_is_reliable \
+                             전제를 재검토하세요.",
+                            def.key
+                        );
+                    }
+                }
+            }
+        }
+
+        // 설치 경로: install_candidates()를 DEV_TOOLS 전체로 순회.
+        for def in DEV_TOOLS.iter() {
+            for candidate in install_candidates(def.id) {
+                if candidate.plan.runner == Runner::Winget {
+                    winget_plans_found += 1;
+                    assert!(!winget_preview_is_reliable(candidate.plan.runner));
+                }
+            }
+        }
+
+        assert!(
+            winget_plans_found > 0,
+            "winget RunPlan이 하나도 발견되지 않았습니다 — 이 가드가 무의미해집니다"
+        );
     }
 }

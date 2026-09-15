@@ -81,6 +81,12 @@ pub(crate) enum ManualReason {
     // 의도적으로 제공하지 않는 경우. 일반 UnknownMethod(=분류 자체가
     // 실패했다는 뜻)와 의미가 다르므로 별도 사유로 구분한다.
     UnsupportedMethod,
+    // N1(review-devtools-windows-parity-2026-09-15-r2.md) 재발 방지: Windows에서
+    // SystemManaged로 분류되는 경로(Program Files\Git, \nodejs 등 — 설치기가
+    // 시스템 전역에 심는 자리)는 macOS의 Xcode CLT와 근본적으로 다른 사실이다.
+    // UPDATE_TABLE의 SystemManaged 행 하나(MANUAL_XCODE_CLT)를 그대로 보여주면
+    // 존재하지 않는 OS 안내가 된다 — 별도 사유로 구분해 두 문구가 섞이지 않게 한다.
+    WindowsSystemManaged,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -370,6 +376,47 @@ pub(crate) const MANUAL_XCODE_CLT: ManualPlan = ManualPlan {
     copyable_command: Some("softwareupdate --list"),
     doc_url: None,
 };
+// N1(review-devtools-windows-parity-2026-09-15-r2.md): classify_install_method_windows
+// 5번 분기(SystemManaged)에 실제로 도달하는 도구는 Git과 Node뿐이다(Program
+// Files\Git\, Program Files (x86)\Git\, Program Files\nodejs\). 각 도구별
+// winget 패키지 id는 이미 install_manual_plan_windows(아래)가 쓰는 값과
+// 동일하게 맞춘다(Git.Git, OpenJS.NodeJS.LTS) — 새 id를 지어내지 않는다.
+// copyable_command는 사용자가 터미널에서 직접 실행하는 안내일 뿐 앱이 자동
+// 실행하지 않는다(Manual) — 실행 경계를 넓히는 구조적 변경이 아니다.
+const MANUAL_WINDOWS_SYSTEM_MANAGED_GIT: ManualPlan = ManualPlan {
+    reason: ManualReason::WindowsSystemManaged,
+    message_ko: "Git이 시스템 설치 경로(Program Files)에 설치되어 있습니다. winget으로 설치했다면 아래 명령으로 업데이트하거나, Git 공식 설치 프로그램을 다시 실행해주세요.",
+    copyable_command: Some("winget upgrade --id Git.Git -e --source winget"),
+    doc_url: Some("https://git-scm.com/downloads"),
+};
+const MANUAL_WINDOWS_SYSTEM_MANAGED_NODE: ManualPlan = ManualPlan {
+    reason: ManualReason::WindowsSystemManaged,
+    message_ko: "Node.js가 시스템 설치 경로(Program Files)에 설치되어 있습니다. winget으로 설치했다면 아래 명령으로 업데이트하거나, Node.js 공식 설치 프로그램을 다시 실행해주세요.",
+    copyable_command: Some("winget upgrade --id OpenJS.NodeJS.LTS -e --source winget"),
+    doc_url: Some("https://nodejs.org/en/download"),
+};
+// 현재 classify_install_method_windows는 Git/Node 외 도구를 SystemManaged로
+// 분류하지 않는다 — 그래도 분류기가 바뀌어 다른 도구가 이 분기로 들어오는
+// 경우를 대비해 안전한 일반 문구를 둔다(§4 완결성, 잘못된 상태를 표현하지
+// 않는다 — macOS 문구가 새어나가는 대신 이 문구가 나간다).
+const MANUAL_WINDOWS_SYSTEM_MANAGED_GENERIC: ManualPlan = ManualPlan {
+    reason: ManualReason::WindowsSystemManaged,
+    message_ko: "이 도구는 시스템 설치 경로에 설치되어 있어 앱이 자동으로 업데이트하지 않습니다. 설치 프로그램에서 직접 업데이트해주세요.",
+    copyable_command: None,
+    doc_url: None,
+};
+
+/// N1 재발 방지: Windows에서 SystemManaged로 분류된 도구에 macOS 전용
+/// MANUAL_XCODE_CLT 대신 실제 사실(설치기 관리 경로)을 안내하는 플랫폼별
+/// ManualPlan을 고른다. `compute_action`이 lookup_action보다 먼저 이 함수로
+/// 분기한다(UPDATE_TABLE의 SystemManaged 행은 macOS 전용으로 남긴다).
+fn windows_system_managed_plan(tool_id: ToolId) -> ManualPlan {
+    match tool_id {
+        ToolId::Git => MANUAL_WINDOWS_SYSTEM_MANAGED_GIT,
+        ToolId::Node => MANUAL_WINDOWS_SYSTEM_MANAGED_NODE,
+        _ => MANUAL_WINDOWS_SYSTEM_MANAGED_GENERIC,
+    }
+}
 const MANUAL_VERSION_MANAGED: ManualPlan = ManualPlan {
     reason: ManualReason::VersionManaged,
     message_ko:
@@ -655,12 +702,37 @@ pub(crate) fn is_writable_by_current_user(path: &Path) -> bool {
 }
 
 /// 결정 1~3을 조합해 tool_id + 이미 resolve된 바이너리 경로로부터 (설치방식,
-/// 정적 Action)을 계산한다. corepack 가드는 "최우선"이라 라우팅 자체를 우회한다.
+/// 정적 Action)을 계산한다. 실제 실행 경로는 항상 이 함수를 쓴다 — 아래
+/// `compute_action_for_platform`에 실제 플랫폼(`platform_now()`)을 주입하는
+/// 얇은 래퍼일 뿐이다.
 pub(crate) fn compute_action(tool_id: ToolId, method: &InstallMethod) -> Action {
+    compute_action_for_platform(tool_id, method, super::platform::platform_now())
+}
+
+/// `compute_action`의 순수 버전 — platform을 인자로 주입받는다.
+/// `classify_install_method_windows`/`install_manual_plan_windows`와 동일한
+/// "순수함수 + 플랫폼 주입" 패턴(§D)이라, 이 머신(Mac)의 `cargo test`에서도
+/// `Platform::Win` 분기를 직접 실행 검증할 수 있다 — `compute_action` 자체는
+/// `platform_now()`가 항상 Mac을 반환해 Windows 분기를 테스트에서 통과시킬
+/// 방법이 없었다(N1 재발 방지 가드가 이 함수를 직접 호출하는 이유).
+pub(crate) fn compute_action_for_platform(
+    tool_id: ToolId,
+    method: &InstallMethod,
+    platform: super::platform::Platform,
+) -> Action {
     if tool_id == ToolId::Pnpm
         && is_corepack_managed(std::env::var("COREPACK_ROOT").ok().as_deref())
     {
         return Action::Manual(MANUAL_COREPACK_MANAGED);
+    }
+
+    // N1(review-devtools-windows-parity-2026-09-15-r2.md): UPDATE_TABLE의
+    // SystemManaged 행은 macOS Xcode CLT 문구 하나로 고정돼 있다 — Windows에서
+    // SystemManaged로 분류되는 것은 전혀 다른 사실(설치기 관리 경로)이므로
+    // lookup_action에 맡기지 않고 여기서 먼저 갈라낸다(corepack 가드와 같은
+    // "최우선 override" 위치).
+    if method.kind() == MethodKind::SystemManaged && platform == super::platform::Platform::Win {
+        return Action::Manual(windows_system_managed_plan(tool_id));
     }
 
     let action = lookup_action(tool_id, method.kind());
@@ -696,274 +768,5 @@ pub(crate) fn compute_action(tool_id: ToolId, method: &InstallMethod) -> Action 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn corepack_guard_overrides_before_table_lookup() {
-        assert!(!is_corepack_managed(None));
-        assert!(!is_corepack_managed(Some("")));
-        assert!(is_corepack_managed(Some(
-            "/opt/homebrew/lib/node_modules/corepack"
-        )));
-
-        // pnpm이 우연히 HomebrewFormula로도 분류될 수 있는 경로라도, corepack 가드가
-        // compute_action에서 최우선으로 걸려야 한다. compute_action은 실제로
-        // std::env::var를 읽으므로 여기서는 is_corepack_managed 자체의 우선순위
-        // 계약만 검증한다(env 변형은 병렬 테스트 안전성을 위해 하지 않는다).
-        let method = InstallMethod::HomebrewFormula {
-            formula: "pnpm".to_string(),
-            keg_version: "11.9.0".to_string(),
-            prefix: "/opt/homebrew".to_string(),
-        };
-        assert!(matches!(
-            lookup_action(ToolId::Pnpm, method.kind()),
-            Action::Run(_)
-        ));
-    }
-
-    // 쓰기 권한 검사는 읽기 전용 syscall이라 실제 경로로 안전하게 검증 가능.
-    #[test]
-    fn writability_check_matches_known_real_paths() {
-        if let Some(home) = dirs::home_dir() {
-            assert!(
-                is_writable_by_current_user(&home),
-                "홈 디렉터리는 현재 사용자 소유라 쓰기 가능해야 합니다"
-            );
-        }
-        assert!(
-            !is_writable_by_current_user(Path::new("/System")),
-            "/System은 SIP로 보호되어 일반 사용자가 쓸 수 없어야 합니다"
-        );
-    }
-
-    // 과제 2(Major-2): compute_action의 brew 쓰기권한 검사가 prefix 자체가 아니라
-    // <prefix>/Cellar, <prefix>/bin을 보는지 실측으로 확인한다. 홈 디렉터리 아래
-    // 합성 Cellar/bin을 만들어 "쓰기 가능"과 "존재하지 않음"(→ access(W_OK) 실패)
-    // 두 경우 모두 검증한다.
-    #[test]
-    fn compute_action_checks_prefix_cellar_and_bin_not_prefix_itself() {
-        let Some(home) = dirs::home_dir() else {
-            return;
-        };
-        let tmp_prefix = home.join(format!(
-            "malgn_vscode_test_brew_prefix_{}",
-            std::process::id()
-        ));
-        let cellar = tmp_prefix.join("Cellar");
-        let bin = tmp_prefix.join("bin");
-        std::fs::create_dir_all(&cellar).expect("create synthetic Cellar dir");
-        std::fs::create_dir_all(&bin).expect("create synthetic bin dir");
-
-        // 사용자 소유 홈 아래에 만들었으므로 prefix/Cellar, prefix/bin 모두 쓰기
-        // 가능해야 한다 — prefix 경로 조립이 `prefix + "/Cellar"`, `prefix + "/bin"`
-        // 형태로 올바른지가 핵심 확인 대상이다.
-        assert!(is_writable_by_current_user(&cellar));
-        assert!(is_writable_by_current_user(&bin));
-
-        let method = InstallMethod::HomebrewFormula {
-            formula: "example".to_string(),
-            keg_version: "1.0.0".to_string(),
-            prefix: tmp_prefix.to_string_lossy().to_string(),
-        };
-        let action = compute_action(ToolId::Node, &method);
-        assert!(
-            matches!(action, Action::Run(_)),
-            "Cellar·bin 모두 쓰기 가능하면 Manual로 강등되지 않아야 합니다"
-        );
-
-        // bin만 지워 "존재하지 않는 경로"(access(W_OK) 실패)를 흉내내면 Manual로
-        // 강등되어야 한다 — prefix 자체(tmp_prefix, 여전히 쓰기 가능)만 보는 버그였다면
-        // 이 케이스에서 여전히 Action::Run이 나왔을 것이다.
-        std::fs::remove_dir_all(&bin).expect("remove synthetic bin dir");
-        let action_after_bin_removed = compute_action(ToolId::Node, &method);
-        assert!(
-            matches!(action_after_bin_removed, Action::Manual(_)),
-            "bin이 쓰기 불가(부재)면 Manual로 강등되어야 합니다"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp_prefix);
-    }
-
-    #[test]
-    fn manual_plan_reasons_are_distinguishable_for_ui_branching() {
-        assert_ne!(MANUAL_XCODE_CLT.reason, MANUAL_VERSION_MANAGED.reason);
-        assert_ne!(MANUAL_COREPACK_MANAGED.reason, MANUAL_NOT_WRITABLE.reason);
-    }
-
-    // 설계 §B: install_manual_plan()이 이 머신(Mac)에서는 기존 그대로 brew
-    // 문구를 낸다는 계약(무변경) — install_manual_plan_mac을 직접 호출해
-    // platform_now()의 실제 플랫폼과 무관하게 회귀를 잡는다.
-    #[test]
-    fn install_manual_plan_mac_variant_keeps_brew_wording() {
-        let gh = install_manual_plan_mac(ToolId::Gh);
-        assert_eq!(gh.copyable_command, Some("brew install gh"));
-        let node = install_manual_plan_mac(ToolId::Node);
-        assert_eq!(node.copyable_command, Some("brew install node"));
-    }
-
-    // Windows 분기(설계 §B.1, 전부 미검증)는 brew가 아니라 winget 명령을
-    // 내야 한다 — mac 문구가 그대로 새어나가면 이 작업의 핵심 결함(거짓 안내)이
-    // 재발한 것이다.
-    #[test]
-    fn install_manual_plan_windows_variant_uses_winget_not_brew() {
-        let gh = install_manual_plan_windows(ToolId::Gh);
-        assert!(gh
-            .copyable_command
-            .unwrap_or("")
-            .starts_with("winget install --id GitHub.cli"));
-        assert!(!gh.copyable_command.unwrap_or("").contains("brew"));
-
-        let node = install_manual_plan_windows(ToolId::Node);
-        assert_eq!(node.copyable_command, Some("winget install OpenJS.NodeJS.LTS"));
-        assert!(!node.message_ko.contains("Homebrew"));
-
-        let git = install_manual_plan_windows(ToolId::Git);
-        assert_eq!(
-            git.copyable_command,
-            Some("winget install --id Git.Git -e --source winget")
-        );
-
-        let pnpm = install_manual_plan_windows(ToolId::Pnpm);
-        assert_eq!(pnpm.copyable_command, Some("winget install pnpm.pnpm"));
-
-        // npm 계열 명령은 크로스플랫폼이라 mac과 동일 값을 재사용해도 된다.
-        let claude = install_manual_plan_windows(ToolId::Claude);
-        assert_eq!(
-            claude.copyable_command,
-            Some("npm install -g @anthropic-ai/claude-code")
-        );
-        let wrangler = install_manual_plan_windows(ToolId::Wrangler);
-        assert_eq!(wrangler.copyable_command, Some("npm install -g wrangler"));
-    }
-
-    // 설계 §B.3: winget "이미 최신" 종료 코드 상수가 실제 문서값(0x8A15002B)과
-    // 일치하는지 고정한다 — actions.rs가 이 값을 Outcome::AlreadyLatest로
-    // 매핑하므로 상수가 틀리면 그 매핑 자체가 조용히 무력화된다.
-    #[test]
-    fn winget_already_latest_exit_code_matches_documented_hresult() {
-        assert_eq!(WINGET_ALREADY_LATEST_EXIT_CODE, -1978335189);
-        assert_eq!(WINGET_ALREADY_LATEST_EXIT_CODE as u32, 0x8A15002B);
-    }
-
-    // 설계 §B.4: (Gh, WingetPackage) 조합이 UPDATE_TABLE에서 Run으로 매칭되고,
-    // 다른 도구는 이 method로 매칭되지 않아야 한다(도구별 행이 제네릭 행보다
-    // 우선 매칭되는 기존 lookup_action 규칙과 동일).
-    #[test]
-    fn winget_package_method_maps_to_run_only_for_gh() {
-        assert!(matches!(
-            lookup_action(ToolId::Gh, MethodKind::WingetPackage),
-            Action::Run(plan) if plan.runner == Runner::Winget
-        ));
-    }
-
-    // G-5(보안): winget RunPlan 어디에도 `--ignore-security-hash`가 없어야
-    // 한다(오설치=임의 코드 실행 위험) — 문자열 검색으로 고정한다.
-    #[test]
-    fn winget_run_plans_never_include_ignore_security_hash_or_msstore_source() {
-        for plan in [RUN_WINGET_INSTALL_GH, RUN_WINGET_UPGRADE_GH] {
-            for arg in plan.args {
-                if let Arg::Lit(s) = arg {
-                    assert_ne!(*s, "--ignore-security-hash");
-                    assert_ne!(*s, "msstore");
-                }
-            }
-            // --source가 있다면 반드시 다음 리터럴이 "winget"이어야 한다.
-            let lits: Vec<&str> = plan
-                .args
-                .iter()
-                .filter_map(|a| match a {
-                    Arg::Lit(s) => Some(*s),
-                    _ => None,
-                })
-                .collect();
-            if let Some(idx) = lits.iter().position(|s| *s == "--source") {
-                assert_eq!(lits.get(idx + 1), Some(&"winget"));
-            }
-        }
-    }
-
-    // N3(2라운드 비차단): 위 테스트는 `[RUN_WINGET_INSTALL_GH, RUN_WINGET_UPGRADE_GH]`를
-    // 손으로 나열한다 — 나중에 winget 행이 하나 더 추가되고 이 배열에 빠뜨려도
-    // 이 테스트는 여전히 통과한다(가드가 무의미해진다). 이 테스트는 UPDATE_TABLE
-    // (여기, 내부 테이블)과 install_candidates()(install_resolver.rs, 도구
-    // 하드코딩 없이 DEV_TOOLS 전체를 순회 — `install_candidates_run_plan_slots_are_
-    // literal_only`와 동일 패턴)를 **구조적으로** 순회해 Runner::Winget인 모든
-    // RunPlan을 자동으로 모은다. 새 winget 행이 어느 테이블에 추가되든 이
-    // 가드가 자동으로 걸린다.
-    #[test]
-    fn all_winget_run_plans_in_install_and_update_tables_pass_security_gate() {
-        use super::super::install_resolver::install_candidates;
-        use super::super::DEV_TOOLS;
-
-        let mut winget_plans: Vec<RunPlan> = Vec::new();
-
-        // UPDATE_TABLE(이 파일의 내부 정적 테이블) 전체를 순회한다.
-        for row in UPDATE_TABLE {
-            if let Action::Run(plan) = row.action {
-                if plan.runner == Runner::Winget {
-                    winget_plans.push(plan);
-                }
-            }
-        }
-        // install_candidates()(도구별 설치 후보 테이블)도 DEV_TOOLS 전체를
-        // 순회해 하드코딩 없이 모은다.
-        for def in DEV_TOOLS.iter() {
-            for candidate in install_candidates(def.id) {
-                if candidate.plan.runner == Runner::Winget {
-                    winget_plans.push(candidate.plan);
-                }
-            }
-        }
-
-        assert!(
-            !winget_plans.is_empty(),
-            "winget RunPlan이 하나도 발견되지 않았습니다 — 이 가드가 무의미해집니다"
-        );
-
-        for plan in winget_plans {
-            // ③ 전부 Arg::Lit.
-            let lits: Vec<&str> = plan
-                .args
-                .iter()
-                .filter_map(|a| match a {
-                    Arg::Lit(s) => Some(*s),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                lits.len(),
-                plan.args.len(),
-                "winget RunPlan.args는 전부 Arg::Lit이어야 합니다: {:?}",
-                plan.args
-            );
-
-            // ② --ignore-security-hash / --scope machine 부재(scope 자체를
-            // 아예 지정하지 않는 현재 판단 — 위 주석 참고. 그래도 향후 실수로
-            // "--scope machine"이 추가되는 것은 막는다).
-            assert!(
-                !lits.contains(&"--ignore-security-hash"),
-                "winget RunPlan에 --ignore-security-hash가 있으면 안 됩니다(오설치=임의 코드 실행)"
-            );
-            assert!(
-                !lits.contains(&"msstore"),
-                "winget 소스가 msstore이면 안 됩니다"
-            );
-            if let Some(idx) = lits.iter().position(|s| *s == "--scope") {
-                assert_ne!(
-                    lits.get(idx + 1),
-                    Some(&"machine"),
-                    "--scope machine을 명시적으로 고정하면 안 됩니다(UAC 승격을 앱이 유도하는 모양이 된다)"
-                );
-            }
-
-            // ① --source winget 존재(있다면 다음 리터럴이 반드시 "winget").
-            let source_idx = lits.iter().position(|s| *s == "--source");
-            assert_eq!(
-                source_idx.and_then(|i| lits.get(i + 1)),
-                Some(&"winget"),
-                "winget RunPlan은 --source winget을 고정해야 합니다: {lits:?}"
-            );
-        }
-    }
-}
+#[path = "plan_table_tests.rs"]
+mod tests;
