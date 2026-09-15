@@ -406,35 +406,33 @@ mod tests {
     // 뜻이므로, install 전용 형태의 plan_id를 주면 거부되어야 한다(직전 리뷰
     // 지적 #3의 "막다른 골목"이 재발하지 않는지 확인).
     //
-    // 머신 의존 판정 근거(review-devtools-windows-parity CI 8건 조사): 이
-    // 테스트는 `check_dev_tools_blocking()`이 실제로 찾아낸, 이 머신에 진짜
-    // 설치된 도구 중 **첫 번째**를 대상으로 한다. `perform_update`는 그 도구의
-    // `resolve_plan` 결과가 `ResolvedAction::Manual`이면(예: git/node — install
-    // matrix상 G4 탈락으로 항상 manual) plan_id를 아예 대조하지 않고 즉시
-    // `Ok(not_supported_result(..))`를 반환한다(§ manual 경로는 아무것도
-    // 실행하지 않아 위조 plan_id로 재생할 실행이 없으므로 이 게이트가 원래도
-    // 불필요하다 — 로직 결함이 아니라 의도된 비대칭이다). 따라서 이 테스트의
-    // 성패는 "이 머신·이 CI 러너에 실제로 뭐가 설치돼 있고 그중 어떤 게
-    // DEV_TOOLS 순서상 먼저 걸리는가"에 좌우된다 — 실측: 이 머신은 항상 Run
-    // 경로(claude/gh 등)에 먼저 걸려 통과하지만, windows-latest/macos-latest
-    // CI 러너는 git처럼 시스템 소유라 항상 manual인 도구가 먼저 잡혀 실패했다.
-    // `check_dev_tools_blocking()`(파일시스템·레지스트리 실조회) 자체가
-    // 통째로 주입 불가능해 이 라운드의 범위로 환경 주입 전환이 불가능하다 —
-    // #[ignore]가 최후 수단이 아니라 유일한 수단이다. 로컬 실행: cargo test
-    // -- --ignored dev_tools::actions::tests::perform_install_delegates_to_update_when_already_installed
+    // 머신 의존 재판정(4차 리뷰 V4): "환경 주입이 불가능해 #[ignore]가 유일한
+    // 수단"이라던 이전 근거는 과장이었다 — `check_dev_tools_blocking()` 자체를
+    // 주입 가능하게 만들 필요가 없다. 문제는 선택자였다: 옛 선택자
+    // `t.path.is_some()`는 "설치돼 있기만 하면" 골랐으므로 git/node처럼 항상
+    // Manual인 도구가 먼저 잡히는 머신(CI 러너)에서 전제(Run 경로 진입)가
+    // 깨졌다. `t.action_kind == "run"`을 추가로 걸면 된다 —
+    // `check_dev_tools_blocking()`이 설치된 도구마다 이미 `resolve_plan(..)
+    // .action`으로 action_kind를 계산해 두므로(query.rs:78-84,
+    // `ResolvedAction::Run` → "run") 이 필드만 보면 "설치돼 있고 Run 경로로
+    // 해석되는 첫 도구"를 얻는다 — 새 주입 지점이 아니라 이미 계산된 값을
+    // 더 좁게 읽을 뿐이다. 그런 도구가 없는 머신(모두 manual)에서는 지금과
+    // 똑같이 `if let Some(..)`가 no-op이 되어 조용히 통과한다 — 있는 머신
+    // (이 개발 머신·macos-latest CI)에서는 계속 검사한다. `#[ignore]`를
+    // 제거해 기본 `cargo test`에서도 돈다.
     #[test]
-    #[ignore]
     fn perform_install_delegates_to_update_when_already_installed() {
-        // 이 머신에 실제로 설치된 도구(claude/node/gh/git/pnpm 중 하나)를 찾아
-        // install 전용 plan_id로 호출하면 update 경로의 검증을 타면서 거부되어야
-        // 한다(perform_update도 동일하게 stale plan_id를 거부하므로 Err 자체는
-        // 두 경로 모두에서 나오지만, 이 테스트의 목적은 "패닉하지 않고 항상
-        // 하나의 일관된 경로로 처리된다"는 구조적 보장을 확인하는 것이다).
-        // 단, 위 #[ignore] 사유대로 그 도구의 resolve_plan이 Manual이면 이
-        // 전제 자체가 성립하지 않는다 — 로컬에서 수동 실행할 때는 Run 경로로
-        // 해석되는 도구(claude/gh 등)가 먼저 잡히는 머신에서 확인한다.
+        // 이 머신에 실제로 설치돼 있고 Run 경로로 해석되는 도구(claude/gh 등)를
+        // 찾아 install 전용 plan_id로 호출하면 update 경로의 검증을 타면서
+        // 거부되어야 한다(perform_update도 동일하게 stale plan_id를 거부하므로
+        // Err 자체는 두 경로 모두에서 나오지만, 이 테스트의 목적은 "패닉하지
+        // 않고 항상 하나의 일관된 경로로 처리된다"는 구조적 보장을 확인하는
+        // 것이다).
         let tools = super::super::query::check_dev_tools_blocking();
-        if let Some(installed) = tools.iter().find(|t| t.path.is_some()) {
+        if let Some(installed) = tools
+            .iter()
+            .find(|t| t.path.is_some() && t.action_kind == "run")
+        {
             let result = perform_install(&installed.id, "not-a-real-plan-id");
             assert!(result.is_err());
         }

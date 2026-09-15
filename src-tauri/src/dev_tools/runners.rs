@@ -65,9 +65,19 @@ pub(crate) fn resolve_runner_path(runner: Runner, self_binary_path: Option<&str>
 /// "러너가 없으면 Manual"이라는 불변식을 테스트가 통제할 수 없게 만든 것이다.
 /// 필드를 추가해 브루/npm/pnpm과 동일하게 주입 가능하게 만드는 편이 "캐시 필드
 /// 안 만들기"보다 이 struct의 원래 목적(요구 1의 단일 정본을 향한 입력 스냅숏)
-/// 에 더 맞는다 — winget 해석은 파일 존재 확인 하나뿐이라(`path_exists`,
-/// 프로세스 스폰 없음) `resolve()`가 매번 호출해도 브루/npm/pnpm과 같은
-/// 비용급이다.
+/// 에 더 맞는다.
+///
+/// 비용 정정(4차 리뷰 V5): Windows에서는 WINGET_CANDIDATES 파일 존재 확인만으로
+/// 끝나 스폰이 없다. 그러나 **macOS에서는 그 후보가(Windows 전용 토큰 문자열이라)
+/// 구조적으로 항상 미스매치**이고, `resolve_binary`가 Mac 분기에서 bare-name
+/// 폴백으로 `Command::new("winget").arg("--version")`을 실제로 spawn한다(즉시
+/// ENOENT로 실패). 이전 이 필드가 없던 시절에는 gh의 후보 순서([Brew, Winget])상
+/// brew가 먼저 잡혀 이 경로에 사실상 도달하지 않았지만, `resolve()`가 네 필드를
+/// 무조건 전부 채우는 지금은 화면 1회 로드(query.rs)·설치/터미널 액션마다
+/// macOS에 존재하지 않는 바이너리 spawn 시도가 1회 새로 생긴다(브루/npm/pnpm과
+/// 같은 "파일 존재 확인" 비용급이 아니다). 실해는 미미하다(ENOENT 즉시 실패,
+/// 도구 루프 밖에서 1회) — 그래도 "macOS 무변경"을 주장하려면 이 사실을
+/// 숨기면 안 된다.
 pub(crate) struct ResolvedRunners {
     pub(crate) brew: Option<String>,
     pub(crate) npm: Option<String>,

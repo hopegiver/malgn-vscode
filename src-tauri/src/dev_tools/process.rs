@@ -468,13 +468,24 @@ mod tests {
             Duration::from_millis(500),
         );
         assert!(output.timed_out);
-        assert!(output.exit_code.is_none());
+        // `exit_code.is_none()`은 여기서 단언하지 않는다 — Windows 분기의
+        // `force_kill_process_group`은 무조건 `None`을 반환하므로(위 함수
+        // 정의 참고) 항상 참인 항진명제라 회귀를 잡지 못한다(4차 리뷰 V6②).
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "타임아웃 뒤 강제종료가 동작하지 않은 것"
         );
     }
 
+    // `/bin/cat`도 Windows에 없어 위와 같은 이유로 거짓 초록이 됐다
+    // (review-devtools-windows-parity 4차 리뷰 V1 — 이전 라운드의 8건 조사가
+    // "로그에 뜬 실패"만 훑어 이 자리를 놓쳤다: spawn 자체가 실패하면
+    // `spawn_error: Some(..)` / `timed_out: false` / `elapsed ≈ 0`이 되어
+    // 아래 두 단언이 **둘 다 통과**해 windows-latest에서 아무것도 검증하지
+    // 않은 채 초록으로 찍혔다). `#[cfg(unix)]` 게이팅 + `spawn_error.is_none()`
+    // 단언을 추가해, 앞으로 같은 유형의 게이팅 누락이 있으면 공허한 초록이
+    // 아니라 즉시 빨강으로 드러나게 한다. Windows 등가물은 바로 아래.
+    #[cfg(unix)]
     #[test]
     fn stdin_is_null_so_a_reading_process_fails_fast_instead_of_hanging() {
         // `cat`은 stdin을 읽으려 하지만 stdin이 null이라 즉시 EOF를 받아 빠르게
@@ -488,9 +499,42 @@ mod tests {
             Duration::from_secs(5),
         );
         assert!(
+            output.spawn_error.is_none(),
+            "spawn 자체가 실패하면 아래 두 단언이 공허하게 통과한다 — 먼저 spawn 성공을 확인한다"
+        );
+        assert!(
             !output.timed_out,
             "stdin=null이 적용되지 않았다면 cat이 멈춰 타임아웃까지 갔을 것"
         );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Windows 등가물. `sort.exe`는 인자 없이 실행하면 stdin을 읽어 정렬한
+    /// 결과를 출력하는 표준 유틸이다 — stdin이 null이면 즉시 EOF를 받아 빈
+    /// 출력·exit code 0으로 빠르게 종료해야 한다(부록 B.1과 동일 취지, `cat`과
+    /// 달리 EOF에서 항상 성공 종료해 exit_code까지 단언할 수 있다). 미검증 —
+    /// 이 개발 머신(Mac)에서는 컴파일조차 되지 않아 Windows CI에서만
+    /// 최초로 실행·확인된다.
+    #[cfg(windows)]
+    #[test]
+    fn stdin_is_null_so_a_reading_process_fails_fast_instead_of_hanging() {
+        let started = Instant::now();
+        let output = run_process_with_timeout(
+            r"C:\Windows\System32\sort.exe",
+            &[],
+            r"C:\Windows\System32;C:\Windows",
+            &[],
+            Duration::from_secs(5),
+        );
+        assert!(
+            output.spawn_error.is_none(),
+            "spawn 자체가 실패하면 아래 단언들이 공허하게 통과한다 — 먼저 spawn 성공을 확인한다"
+        );
+        assert!(
+            !output.timed_out,
+            "stdin=null이 적용되지 않았다면 sort가 멈춰 타임아웃까지 갔을 것"
+        );
+        assert_eq!(output.exit_code, Some(0));
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

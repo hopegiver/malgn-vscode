@@ -183,10 +183,10 @@ pub(crate) fn resolve_install_plan(tool: ToolId, runners: &ResolvedRunners) -> I
     // 항상 성공한다(Formula/Package 슬롯은 여기서 절대 쓰이지 않는다).
     let dummy_method = InstallMethod::Unknown(String::new());
     for candidate in install_candidates(tool) {
-        // §F.2: path_for가 소유 값(String)을 돌려주도록 바뀌었다 — winget은
-        // ResolvedRunners에 캐시 필드가 없어(runners.rs 주석 참고) 요청마다
-        // 새로 해석되기 때문이다. 기존 `.to_string()` 호출은 더 이상 필요
-        // 없다(이미 owned).
+        // §F.2: path_for가 소유 값(String)을 돌려준다 — 네 러너(brew/npm/pnpm/
+        // winget) 모두 `ResolvedRunners::resolve()` 시점에 캐시된 값을 그대로
+        // clone해 돌려주므로(runners.rs) 이 호출이 매번 새로 해석하지 않는다.
+        // 기존 `.to_string()` 호출은 더 이상 필요 없다(이미 owned).
         let Some(runner_path) = runners.path_for(candidate.runner) else {
             continue;
         };
@@ -578,6 +578,47 @@ mod tests {
                 ),
                 "{tool:?}은(는) 러너가 있어도 G4 탈락으로 Manual이어야 합니다"
             );
+        }
+    }
+
+    // 4차 리뷰 V2: winget 필드 승격(위 테스트)이 회수한 것은 "러너가 없으면
+    // Manual"이라는 음성 방향뿐이었다 — 양성 방향("Windows에서 gh가 winget
+    // 러너로 실제로 Run이 된다", 설계 §B.1/§B.2의 핵심 약속)을 검사하는
+    // 테스트가 없었다. `winget: Some(..)`을 주입해 그 약속을 처음으로
+    // 자동 검사한다. brew가 None이라 gh의 후보 순서([Brew, Winget])상 자연히
+    // winget으로 넘어간다 — `install_prefix_writable`이 winget에 대해 항상
+    // true이고(runners.rs) `RUN_WINGET_INSTALL_GH.args`가 `Arg::Lit` 전용이라
+    // `resolve_args`가 항상 Ok이므로(plan_table.rs) 이 테스트는 macOS에서도
+    // 플랫폼 독립적으로 돈다.
+    #[test]
+    fn resolve_install_plan_picks_winget_run_for_gh_when_only_winget_resolved() {
+        let runners = ResolvedRunners {
+            brew: None,
+            npm: None,
+            pnpm: None,
+            winget: Some(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe".to_string()),
+        };
+
+        match resolve_install_plan(ToolId::Gh, &runners) {
+            InstallResolution::Run {
+                runner_path,
+                argv,
+                installer_label,
+                ..
+            } => {
+                assert_eq!(installer_label, "winget");
+                assert_eq!(
+                    runner_path,
+                    r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe"
+                );
+                assert!(
+                    argv.iter().any(|a| a == "GitHub.cli"),
+                    "argv에 winget 패키지 id GitHub.cli가 실려야 합니다: {argv:?}"
+                );
+            }
+            InstallResolution::Manual(_) => {
+                panic!("gh는 winget만 있어도 Run(winget)이어야 합니다")
+            }
         }
     }
 
