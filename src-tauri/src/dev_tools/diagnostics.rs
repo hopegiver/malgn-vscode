@@ -257,9 +257,16 @@ pub(crate) struct PathVisibility {
 /// 조건을 그대로 이용해 패널 자체가 나타나지 않게 한다 — 거짓 지시를 주는
 /// 대신 아무 말도 하지 않는 쪽을 택한다(`visible: false`는 유지해 "PATH에
 /// 아직 없다"는 사실 자체는 잃지 않는다).
-fn compute_path_visibility_windows(dir: &str) -> PathVisibility {
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    if super::platform::dir_in_path_var(super::platform::Platform::Win, dir, &path_var) {
+/// 순수 판정부. `path_var`를 인자로 받아 `dir_in_path_var`(§platform.rs)에
+/// 그대로 위임한다 — 이 파일의 다른 분기(플랫폼 순수함수 + 주입된 환경 인자)와
+/// 같은 기법이다. CI 8건 조사(review-devtools-windows-parity)로 드러난
+/// 재발 방지: `windows-latest` 러너에는 `gh`가 실제로 PATH에 있어, 이 함수가
+/// `std::env::var("PATH")`를 직접 읽으면 테스트가 "PATH에 없다"는 값을 통제할
+/// 수 없었다(러너의 우연한 사전설치 상태에 테스트 결과가 좌우됨) — 그래서
+/// 실제 환경 읽기는 얇은 래퍼(`compute_path_visibility_windows`) 하나로만
+/// 좁히고, 판정 로직은 여기서 순수하게 검증한다.
+fn compute_path_visibility_windows_from_path_var(dir: &str, path_var: &str) -> PathVisibility {
+    if super::platform::dir_in_path_var(super::platform::Platform::Win, dir, path_var) {
         PathVisibility {
             visible: true,
             hint: None,
@@ -272,6 +279,12 @@ fn compute_path_visibility_windows(dir: &str) -> PathVisibility {
             hint_target: None,
         }
     }
+}
+
+/// 실제 환경을 읽는 얇은 래퍼 — 여기만 `std::env::var("PATH")`에 닿는다.
+fn compute_path_visibility_windows(dir: &str) -> PathVisibility {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    compute_path_visibility_windows_from_path_var(dir, &path_var)
 }
 
 /// macOS 분기(기존 그대로, 무변경) — `/etc/paths`(+`/etc/paths.d/*`)와 로그인
@@ -513,27 +526,47 @@ libpsl
         assert_eq!(hint_target_for_shell(""), "~/.profile");
     }
 
-    // 설계 §D.5: Windows 분기는 프로세스 PATH만 본다(rc 파일이나 /etc/paths를
-    // 읽지 않는다) — 이 프로세스(cargo test, Mac)의 실제 PATH는 `:`로 구분된
-    // POSIX 형식이라 Windows 분기(`;` 구분)와 형식이 근본적으로 달라, 임의의
-    // Windows 스타일 경로는 항상 "찾지 못함"으로 판정돼야 한다(오탐지가
-    // 나지 않는다는 것 자체가 의미 있는 계약). "찾음" 케이스의 순수 판정
-    // 로직(`dir_in_path_var`)은 platform.rs가 합성 `;`-PATH로 이미 검증한다 —
-    // 여기서 전역 `PATH` 환경변수를 덮어써 재현하면 병렬 테스트 실행과
-    // 레이스가 생겨 오히려 신뢰도를 낮춘다.
-    // T1(review-devtools-windows-parity-2026-09-15-r3.md) 재발 방지: Windows
-    // 분기는 더 이상 hint에 조언 문장을 담지 않는다 — 프런트가 hint를 항상
-    // "PATH에 붙여넣을 명령"으로 렌더하므로(`devTools.ts`), 실행 불가능한
-    // 한국어 문장을 명령인 것처럼 복사 버튼과 함께 보여주는 결함(T1)이 다시
-    // 생기지 않으려면 hint가 아예 없어야 한다.
+    // CI 8건 조사(review-devtools-windows-parity): 이 테스트는 원래
+    // `compute_path_visibility_windows`(전역 `PATH` 환경변수를 직접 읽음)를
+    // 호출하며 "무조건 찾지 못함"을 기대했다 — 그런데 `windows-latest` CI
+    // 러너에는 `gh`가 실제로 PATH에 설치돼 있어 `visible=true`가 나와 거짓
+    // 실패했다. 로직 자체는 검토 결과 **옳다**(실제로 PATH에 있으면
+    // `visible=true`가 맞는 동작 — 틀린 건 "무조건 false"를 기대한 이 테스트
+    // 쪽이었다). 고친 것은 로직이 아니라 테스트 대상: 순수 판정부
+    // (`compute_path_visibility_windows_from_path_var`)에 통제된 `path_var`를
+    // 주입해 "디렉터리가 없을 때" false를, "있을 때" true를 각각 별도로
+    // 검증한다 — 러너의 우연한 사전설치 상태와 무관해진다.
+    //
+    // T1(review-devtools-windows-parity-2026-09-15-r3.md) 재발 방지는 그대로
+    // 유지한다: Windows 분기는 hint에 조언 문장을 담지 않는다 — 프런트가
+    // hint를 항상 "PATH에 붙여넣을 명령"으로 렌더하므로(`devTools.ts`), 실행
+    // 불가능한 한국어 문장을 명령인 것처럼 복사 버튼과 함께 보여주는 결함(T1)이
+    // 다시 생기지 않으려면 hint가 아예 없어야 한다(visible 값과 무관하게).
     #[test]
-    fn compute_path_visibility_windows_uses_process_path_only() {
-        let visible = compute_path_visibility_windows(r"C:\Program Files\GitHub CLI");
+    fn compute_path_visibility_windows_reports_false_when_dir_absent_from_injected_path_var() {
+        let visible = compute_path_visibility_windows_from_path_var(
+            r"C:\Program Files\GitHub CLI",
+            r"C:\Windows\System32;C:\Windows",
+        );
         assert!(!visible.visible);
         assert_eq!(
             visible.hint, None,
             "Windows에서 실행 불가능한 조언 문장이 hint로 나가면 안 됩니다(T1 재발)"
         );
+        assert_eq!(visible.hint_target, None);
+    }
+
+    // 위 테스트의 대칭 짝(불변식 검증 능력 유지): 디렉터리가 실제로 주입된
+    // PATH에 있으면 `visible=true`여야 한다 — 이 케이스는 원래 테스트가 아예
+    // 검증하지 않던 분기였다(완결성 공백을 이번에 메운다).
+    #[test]
+    fn compute_path_visibility_windows_reports_true_when_dir_present_in_injected_path_var() {
+        let visible = compute_path_visibility_windows_from_path_var(
+            r"C:\Program Files\GitHub CLI",
+            r"C:\Windows\System32;C:\Program Files\GitHub CLI;C:\Windows",
+        );
+        assert!(visible.visible);
+        assert_eq!(visible.hint, None);
         assert_eq!(visible.hint_target, None);
     }
 }

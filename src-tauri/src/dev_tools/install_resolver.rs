@@ -488,12 +488,23 @@ mod tests {
 
     // 실행기가 전혀 해석되지 않는 합성 상황에서도 gh/Claude/Wrangler를 포함해
     // 모든 도구가 패닉 없이 Manual로 강등되어야 한다(fail-closed).
+    //
+    // CI 8건 조사(review-devtools-windows-parity) 재발 방지: `winget: None`을
+    // 빠뜨리면 이 테스트는 "실행기가 하나도 없다"를 실제로 만들어내지
+    // 못한다 — gh의 install 후보는 [Brew, Winget] 순인데, `winget` 필드가
+    // 없던 시절에는 `path_for(Winget)`이 이 struct를 무시하고 매번 실제
+    // 파일시스템을 다시 읽었다. `windows-latest` CI 러너에는 winget이 실제로
+    // 설치돼 있어 gh가 Winget 경로로 Run이 되어버렸고, "러너가 없으면
+    // Manual"이라는 불변식을 이 테스트가 검사하지 못하는 상태였다. `winget`을
+    // 다른 셋과 같은 필드로 캐시하도록 고친 뒤(runners.rs) 여기서도 `None`을
+    // 명시해야 그 불변식이 다시 검사된다.
     #[test]
     fn resolve_install_plan_falls_back_to_manual_when_no_runner_resolved() {
         let no_runners = ResolvedRunners {
             brew: None,
             npm: None,
             pnpm: None,
+            winget: None,
         };
         for tool in [
             ToolId::Gh,
@@ -522,6 +533,7 @@ mod tests {
             brew: Some("/opt/homebrew/bin/brew".to_string()),
             npm: Some("/opt/homebrew/bin/npm".to_string()),
             pnpm: Some("/opt/homebrew/bin/pnpm".to_string()),
+            winget: None,
         };
 
         match resolve_install_plan(ToolId::Gh, &runners) {
@@ -577,6 +589,7 @@ mod tests {
             brew: None,
             npm: Some("/opt/homebrew/bin/npm".to_string()),
             pnpm: None,
+            winget: None,
         };
         match resolve_install_plan(ToolId::Wrangler, &runners) {
             InstallResolution::Run {
@@ -618,6 +631,7 @@ mod tests {
             brew: Some(runner_path.to_string_lossy().to_string()),
             npm: None,
             pnpm: None,
+            winget: None,
         };
 
         // Cellar·bin 모두 쓰기 가능하면 Run이어야 한다.

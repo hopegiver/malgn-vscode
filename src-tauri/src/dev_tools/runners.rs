@@ -47,23 +47,32 @@ pub(crate) fn resolve_runner_path(runner: Runner, self_binary_path: Option<&str>
     }
 }
 
-/// brew/npm/pnpm 실행기 경로를 화면 1회 로드에서 한 번만 해석해 담아 두는
-/// 그릇(요구 4 — resolve_binary의 bare-name PATH 폴백은 타임아웃이 없어
+/// brew/npm/pnpm/winget 실행기 경로를 화면 1회 로드에서 한 번만 해석해 담아
+/// 두는 그릇(요구 4 — resolve_binary의 bare-name PATH 폴백은 타임아웃이 없어
 /// 도구 개수만큼 반복 호출하면 그만큼 블로킹 비용이 커진다. 지적 #12 자체의
 /// 수정은 이 범위 밖이지만 호출 횟수를 1회로 묶어 그 결함의 노출을 늘리지
 /// 않는다).
 ///
-/// winget은 이 구조체에 캐시 필드를 두지 않는다(설계 스케치는 "슬롯 추가"를
-/// 제안했지만, 이 struct는 리터럴로 구성하는 기존 테스트가 여럿 있어 필드
-/// 추가는 그 테스트들을 전부 고쳐야 한다 — 이 파일의 완료 판정("기존 테스트
-/// 0개 수정")과 정면으로 부딪힌다). 대신 `path_for`가 winget 요청 시 그
-/// 자리에서 새로 해석한다 — winget을 실제로 쓰는 도구는 gh 하나뿐이라(§B.2)
-/// 요구 4가 지키려는 "화면 1회 로드당 반복 호출 억제"의 취지(브루/npm/pnpm
-/// 처럼 6개 도구 루프 전체에서 반복되는 비용)를 해치지 않는다.
+/// winget도 다른 셋과 똑같이 이 구조체의 필드로 캐시한다(CI 8건 조사,
+/// review-devtools-windows-parity로 뒤집힌 원래 설계 결정 — 이전 주석은
+/// "리터럴로 구성하는 기존 테스트를 고치지 않기 위해 필드를 두지 않고
+/// `path_for`가 winget만 그 자리에서 새로 해석한다"고 적었었다. 그런데 그
+/// "그 자리에서 새로 해석"이 정확히 문제였다: `resolve_install_plan_falls_
+/// back_to_manual_when_no_runner_resolved` 테스트가 `ResolvedRunners { brew:
+/// None, npm: None, pnpm: None }`으로 "실행기가 하나도 없다"를 주입해도,
+/// winget은 이 struct를 거치지 않고 `windows-latest` 러너의 진짜 파일시스템을
+/// 다시 읽어 — 그 러너에는 winget이 실제로 설치돼 있어 — Some을 돌려줬다.
+/// "러너가 없으면 Manual"이라는 불변식을 테스트가 통제할 수 없게 만든 것이다.
+/// 필드를 추가해 브루/npm/pnpm과 동일하게 주입 가능하게 만드는 편이 "캐시 필드
+/// 안 만들기"보다 이 struct의 원래 목적(요구 1의 단일 정본을 향한 입력 스냅숏)
+/// 에 더 맞는다 — winget 해석은 파일 존재 확인 하나뿐이라(`path_exists`,
+/// 프로세스 스폰 없음) `resolve()`가 매번 호출해도 브루/npm/pnpm과 같은
+/// 비용급이다.
 pub(crate) struct ResolvedRunners {
     pub(crate) brew: Option<String>,
     pub(crate) npm: Option<String>,
     pub(crate) pnpm: Option<String>,
+    pub(crate) winget: Option<String>,
 }
 
 impl ResolvedRunners {
@@ -72,6 +81,7 @@ impl ResolvedRunners {
             brew: resolve_runner_path(Runner::Brew, None),
             npm: resolve_runner_path(Runner::Npm, None),
             pnpm: resolve_runner_path(Runner::Pnpm, None),
+            winget: resolve_runner_path(Runner::Winget, None),
         }
     }
 
@@ -80,7 +90,7 @@ impl ResolvedRunners {
             Runner::Brew => self.brew.clone(),
             Runner::Npm => self.npm.clone(),
             Runner::Pnpm => self.pnpm.clone(),
-            Runner::Winget => resolve_runner_path(Runner::Winget, None),
+            Runner::Winget => self.winget.clone(),
             // SelfBinary는 설치 후보에 쓰이지 않는다(설치 시점엔 자기 자신의
             // 바이너리가 아직 없다) — install_candidates()의 어떤 행도 이
             // 변형을 쓰지 않으므로 항상 None으로 충분하다.
@@ -215,10 +225,12 @@ mod tests {
     }
 
     // 플랫폼 전제: 이 머신이 Mac이라 winget 후보가 항상 미스매치라는 전제 —
-    // CI의 windows-latest에서는 컴파일을 건너뛴다.
+    // CI의 windows-latest에서는 컴파일을 건너뛴다. winget이 이제 다른 러너와
+    // 같이 `resolve()` 시점에 캐시되므로(§ 위 struct 주석) 테스트 이름에서
+    // "fresh each call"을 뺐다 — 검증 내용(Mac에서는 항상 None) 자체는 그대로다.
     #[cfg(target_os = "macos")]
     #[test]
-    fn path_for_winget_resolves_fresh_each_call_and_is_none_on_this_mac_machine() {
+    fn path_for_winget_is_none_on_this_mac_machine() {
         let runners = ResolvedRunners::resolve();
         // 이 머신은 Mac이므로 winget 후보(Windows 전용 토큰 문자열)는 항상
         // 미스매치 — None이어야 한다(패닉 없이).

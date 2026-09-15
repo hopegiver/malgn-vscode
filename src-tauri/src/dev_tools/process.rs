@@ -382,7 +382,12 @@ mod tests {
     }
 
     // 결정 6: 짧게 끝나는 프로세스가 정상적으로 exit code/stdout을 돌려주는지
-    // (파이프 리더 스레드 + try_wait 폴링 경로 자체의 배관 검증).
+    // (파이프 리더 스레드 + try_wait 폴링 경로 자체의 배관 검증). `/bin/echo`는
+    // Windows에 존재하지 않는 Unix 바이너리라(spawn_error가 나 CI에서 거짓
+    // 실패했다 — review-devtools-windows-parity CI 8건 조사) `#[cfg(unix)]`로
+    // 게이팅한다. Windows 등가물은 바로 아래 함수(같은 배관을 `cmd.exe /C
+    // echo`로 검증).
+    #[cfg(unix)]
     #[test]
     fn run_process_with_timeout_captures_output_of_fast_process() {
         let output = run_process_with_timeout(
@@ -398,8 +403,35 @@ mod tests {
         assert!(!output.timed_out);
     }
 
+    /// Windows 등가물(§ 위 유닉스 버전과 동일 취지). `cmd.exe`를 bare-name이
+    /// 아니라 `%SystemRoot%\System32\cmd.exe` 절대경로로 고정한다 —
+    /// bare-name 스폰이 하이재킹 표면이 된다는 이 코드베이스의 기존 원칙
+    /// (`cli_launcher.rs`/`platform.rs::windows_system_tool` 주석)을 테스트
+    /// 코드에도 그대로 적용한다. GitHub Actions `windows-latest`는 표준
+    /// 설치라 `%SystemRoot%`가 항상 `C:\Windows`다. 미검증 — 이 개발 머신은
+    /// Mac이라 `#[cfg(windows)]`가 컴파일조차 되지 않는다(Windows CI에서만
+    /// 실행·확인 가능).
+    #[cfg(windows)]
+    #[test]
+    fn run_process_with_timeout_captures_output_of_fast_process() {
+        let output = run_process_with_timeout(
+            r"C:\Windows\System32\cmd.exe",
+            &["/C".to_string(), "echo".to_string(), "hello".to_string()],
+            r"C:\Windows\System32;C:\Windows",
+            &[],
+            Duration::from_secs(5),
+        );
+        assert!(output.spawn_error.is_none());
+        assert_eq!(output.exit_code, Some(0));
+        assert_eq!(output.stdout.trim(), "hello");
+        assert!(!output.timed_out);
+    }
+
     // 결정 6: 타임아웃이 실제로 프로세스를 강제 종료하는지(짧은 타임아웃으로
-    // `sleep`을 강제 종료 — 프로세스 그룹 kill 경로까지 실행됨).
+    // `sleep`을 강제 종료 — 프로세스 그룹 kill 경로까지 실행됨). `/bin/sleep`도
+    // Windows에 없어 위와 같은 이유로 `#[cfg(unix)]` 게이팅 + Windows 등가물
+    // 분리.
+    #[cfg(unix)]
     #[test]
     fn run_process_with_timeout_kills_hanging_process() {
         let started = Instant::now();
@@ -415,6 +447,31 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "타임아웃+3초 유예를 크게 넘기면 강제종료가 동작하지 않은 것"
+        );
+    }
+
+    /// Windows 등가물. Windows에는 인자 없는 `/bin/sleep` 상당의 표준 유틸이
+    /// 없어 `PING.EXE -n 31 127.0.0.1`(약 30초 이상 응답 없이 대기)로 대신
+    /// 버티는 프로세스를 만든다. `force_kill_process_group`의 Windows 분기는
+    /// 유예 없이 즉시 `TerminateProcess`이므로(process.rs 상단 주석) 500ms
+    /// 타임아웃 뒤 바로 죽어야 한다 — 5초 상한은 유닉스 버전(3초 유예 포함)과
+    /// 동일한 여유를 그대로 둔 것이다. 미검증 — Windows CI 전용.
+    #[cfg(windows)]
+    #[test]
+    fn run_process_with_timeout_kills_hanging_process() {
+        let started = Instant::now();
+        let output = run_process_with_timeout(
+            r"C:\Windows\System32\PING.EXE",
+            &["-n".to_string(), "31".to_string(), "127.0.0.1".to_string()],
+            r"C:\Windows\System32;C:\Windows",
+            &[],
+            Duration::from_millis(500),
+        );
+        assert!(output.timed_out);
+        assert!(output.exit_code.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "타임아웃 뒤 강제종료가 동작하지 않은 것"
         );
     }
 
@@ -437,12 +494,34 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    // `build_child_path_env`는 `platform::platform_now()`로 실행 중인 OS를 직접
+    // 읽는 얇은 래퍼라(주입 불가 — 공개 진입점 자체가 "이 프로세스가 실제로 돌고
+    // 있는 플랫폼"을 답해야 하는 지점이다) mac 전용 기대값은 Windows CI에서
+    // 거짓 실패했다(review-devtools-windows-parity CI 8건 조사) — 순수 로직
+    // 자체(`platform::compose_path_env`)는 이미 `platform_tests.rs`가
+    // `Platform::Mac`/`Platform::Win`을 모두 주입해 골든 테스트로 고정하므로,
+    // 여기 남는 두 테스트는 "이 래퍼가 이 머신의 실제 플랫폼에 맞게 제대로
+    // 배선됐는가"만 각자의 OS에서 검증한다.
+    #[cfg(unix)]
     #[test]
     fn build_child_path_env_prioritizes_runner_bin_dir() {
         let path = build_child_path_env(Some("/opt/homebrew/bin/brew"));
         assert!(path.starts_with("/opt/homebrew/bin:"));
         assert!(path.contains("/usr/bin"));
         assert!(path.contains("/bin"));
+    }
+
+    /// Windows 등가물 — `system_root`가 없으면 `C:\Windows`로 폴백하므로(§
+    /// `platform::system_root_or_default`), 실제 CI 러너의 사용자명/홈 경로에
+    /// 좌우되지 않는 `C:\Windows\system32` 포함 여부만 검증한다(완전 문자열
+    /// 일치는 `compose_path_env_win_prioritizes_runner_bin_dir`가 주입된
+    /// `EnvRoots`로 이미 커버한다). 미검증 — Windows CI 전용.
+    #[cfg(windows)]
+    #[test]
+    fn build_child_path_env_prioritizes_runner_bin_dir() {
+        let path = build_child_path_env(Some(r"C:\Program Files\nodejs\npm.cmd"));
+        assert!(path.starts_with(r"C:\Program Files\nodejs;"));
+        assert!(path.contains(r"C:\Windows\system32"));
     }
 
     // M1 회귀 테스트: resolve_binary()가 절대경로 후보를 못 찾으면 bare name을
@@ -461,9 +540,14 @@ mod tests {
         assert!(!path.split(':').any(|p| p.is_empty()));
     }
 
-    // N1(2라운드 비차단): Mac에서는 `child_current_dir`가 항상 `None`이라
-    // `run_process_with_timeout`이 `.current_dir()`를 호출하지 않는다 — 자식이
-    // 이 프로세스의 실제 CWD를 그대로 상속해야 한다(무변경 보장, 실측).
+    // N1(2라운드 비차단): Mac(및 그 외 Unix 일반)에서는 `child_current_dir`가
+    // 항상 `None`이라 `run_process_with_timeout`이 `.current_dir()`를 호출하지
+    // 않는다 — 자식이 이 프로세스의 실제 CWD를 그대로 상속해야 한다(무변경
+    // 보장, 실측). `/bin/pwd`가 Windows에 없어 CI에서 거짓 실패했다
+    // (review-devtools-windows-parity CI 8건 조사, 이번 라운드가 추가한 테스트라
+    // 게이트 누락 자체가 이번 라운드 책임) — `#[cfg(unix)]`로 게이팅하고,
+    // 바로 아래에 "Windows는 반대로 고정된다"는 불변식을 검증하는 등가물을 둔다.
+    #[cfg(unix)]
     #[test]
     fn run_process_with_timeout_does_not_pin_current_dir_on_mac() {
         let expected = std::env::current_dir().expect("current_dir must be readable");
@@ -475,5 +559,28 @@ mod tests {
             Duration::from_secs(5),
         );
         assert_eq!(output.stdout.trim(), expected.to_string_lossy());
+    }
+
+    /// Windows 대칭 짝. `child_current_dir`(§platform.rs)는 Windows에서 항상
+    /// `Some(%SystemRoot%)`를 돌려줘 자식 CWD를 고정한다(`.cmd` shim이
+    /// `cmd.exe` 해석 시 CWD를 먼저 보는 하이재킹 표면을 막기 위해서 — N1).
+    /// `cmd.exe /C cd`는 인자 없이 실행하면 현재 디렉터리를 stdout에 출력한다.
+    /// 이 테스트가 없으면 Mac 쪽 "고정 안 함" 분기만 검증되고 Windows 쪽
+    /// "고정함" 분기는 아무 테스트도 없는 채로 남는다(완결성 공백) — 미검증은
+    /// "PowerShell/cmd.exe가 실제로 SystemRoot 환경변수를 그대로 노출하는가"
+    /// 뿐이며, 이 개발 머신(Mac)에서는 컴파일조차 되지 않아 Windows CI에서만
+    /// 최초로 실행·확인된다.
+    #[cfg(windows)]
+    #[test]
+    fn run_process_with_timeout_pins_current_dir_to_system_root_on_windows() {
+        let expected = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let output = run_process_with_timeout(
+            r"C:\Windows\System32\cmd.exe",
+            &["/C".to_string(), "cd".to_string()],
+            r"C:\Windows\System32;C:\Windows",
+            &[],
+            Duration::from_secs(5),
+        );
+        assert_eq!(output.stdout.trim(), expected);
     }
 }
