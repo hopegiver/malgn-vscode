@@ -13,7 +13,9 @@ use super::install_resolver::{
     build_command_display, resolve_args, resolve_install_plan, resolve_plan, InstallResolution,
     ResolvedAction, ResolvedPlan, ResolvedRunners,
 };
-use super::plan_table::{manual_display_message, RunPlan};
+use super::plan_table::{
+    manual_display_message, Runner, RunPlan, WINGET_ALREADY_LATEST_EXIT_CODE,
+};
 use super::process::{
     build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout,
     truncate_log, EXECUTION_LOCK,
@@ -21,6 +23,21 @@ use super::process::{
 use super::{resolve_tool_path, tool_definition, DevTool, ToolId};
 use crate::cli_launcher::{open_terminal_command, TerminalLaunchResult};
 use std::time::Duration;
+
+/// 설계 §B.3 "타임아웃 시 손자 프로세스": winget은 msiexec/설치 EXE를 손자
+/// 프로세스로 띄우므로, 타임아웃 kill(직속 자식만 죽인다 —
+/// `process.rs::force_kill_process_group`의 기존 Windows 주석 참고) 후에도
+/// 설치가 백그라운드에서 계속될 수 있다. 이 한계를 메시지로 알려 사용자가
+/// "멈췄나?"라고 오판하지 않게 한다. Job Object 도입은 범위 밖(설계 §9
+/// 미해결쟁점 1).
+fn timed_out_message(runner: Runner) -> String {
+    let base = "실행 시간이 초과되어 강제 종료했습니다. 상태 불명 — 다시 확인해주세요.";
+    if runner == Runner::Winget {
+        format!("{base} 설치 프로그램이 백그라운드에서 계속 진행 중일 수 있습니다. 잠시 후 새로고침해주세요.")
+    } else {
+        base.to_string()
+    }
+}
 
 pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevToolActionResult, String> {
     let tool = ToolId::from_key(tool_id_str)
@@ -83,7 +100,16 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
         (
             Outcome::TimedOut,
             false,
-            "실행 시간이 초과되어 강제 종료했습니다. 상태 불명 — 다시 확인해주세요.".to_string(),
+            timed_out_message(plan.runner),
+        )
+    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_ALREADY_LATEST_EXIT_CODE) {
+        // 설계 §B.3: winget이 이미 최신일 때 돌려주는 "실패처럼 보이는 성공"
+        // 종료 코드(APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE) — Failed로
+        // 두면 화면이 거짓을 말한다. 미검증(이 머신에 winget이 없어 실측 불가).
+        (
+            Outcome::AlreadyLatest,
+            true,
+            format!("{}이(가) 이미 최신 버전입니다.", def.label),
         )
     } else if output.exit_code == Some(0) {
         match &normalized_after {
@@ -243,13 +269,15 @@ fn run_install_plan(
             format!("{installer_label} 실행에 실패했습니다: {spawn_err}"),
         )
     } else if output.timed_out {
-        (
-            Outcome::TimedOut,
-            false,
-            format!(
-                "{installer_label} 설치 실행이 시간 초과되어 강제 종료했습니다. 상태 불명 — 다시 확인해주세요."
-            ),
-        )
+        let base = format!(
+            "{installer_label} 설치 실행이 시간 초과되어 강제 종료했습니다. 상태 불명 — 다시 확인해주세요."
+        );
+        let message = if plan.runner == Runner::Winget {
+            format!("{base} 설치 프로그램이 백그라운드에서 계속 진행 중일 수 있습니다. 잠시 후 새로고침해주세요.")
+        } else {
+            base
+        };
+        (Outcome::TimedOut, false, message)
     } else if output.exit_code == Some(0) {
         match &normalized_after {
             Some(after) => (
@@ -389,5 +417,29 @@ mod tests {
             let result = perform_install(&installed.id, "not-a-real-plan-id");
             assert!(result.is_err());
         }
+    }
+
+    // 설계 §B.3: winget 타임아웃 메시지만 "백그라운드에서 계속 진행 중일 수
+    // 있습니다" 추가 안내가 붙어야 한다 — 다른 러너는 기존 문구 그대로(무변경).
+    #[test]
+    fn timed_out_message_adds_background_notice_only_for_winget() {
+        let brew_msg = timed_out_message(Runner::Brew);
+        assert_eq!(
+            brew_msg,
+            "실행 시간이 초과되어 강제 종료했습니다. 상태 불명 — 다시 확인해주세요."
+        );
+        let npm_msg = timed_out_message(Runner::Npm);
+        assert_eq!(npm_msg, brew_msg);
+
+        let winget_msg = timed_out_message(Runner::Winget);
+        assert!(winget_msg.starts_with(&brew_msg));
+        assert!(winget_msg.contains("백그라운드에서 계속 진행 중일 수 있습니다"));
+    }
+
+    // WINGET_ALREADY_LATEST_EXIT_CODE 상수가 실제로 임포트되어 이 파일에서
+    // 쓰이는지(즉 perform_update의 분기가 살아있는지) 컴파일 타임에 고정한다.
+    #[test]
+    fn winget_already_latest_exit_code_is_reexported_correctly() {
+        assert_eq!(WINGET_ALREADY_LATEST_EXIT_CODE, -1978335189);
     }
 }

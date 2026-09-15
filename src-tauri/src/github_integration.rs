@@ -5,7 +5,7 @@
 // 사용자가 직접 보는 터미널 세션을 열어줄 뿐이다. `gh auth token`은 절대 호출하지
 // 않는다(평문 토큰을 stdout으로 낸다).
 
-use crate::cli_launcher::{open_terminal_command, resolve_binary, TerminalLaunchResult};
+use crate::cli_launcher::{open_terminal_program, resolve_binary, TerminalLaunchResult};
 use crate::process_util::SilentCommand;
 use serde::Serialize;
 use serde_json::Value;
@@ -92,7 +92,11 @@ pub fn github_connect() -> Result<TerminalLaunchResult, String> {
             message: "GitHub CLI(gh)가 설치되어 있지 않습니다. https://cli.github.com 에서 설치한 뒤 다시 시도해주세요.".to_string(),
         });
     };
-    open_terminal_command(&format!("{gh} auth login"))?;
+    // 설계 §E.3: 구조화된 진입점으로 전환 — Windows 경로에 공백이 있으면
+    // (`C:\Program Files\...`) 기존 `format!("{gh} auth login")` 문자열 조립이
+    // 그대로 깨진다. macOS 출력은 무인용 규칙 덕에 바이트 단위로 동일하다(회귀
+    // 없음).
+    open_terminal_program(&gh, &["auth", "login"])?;
     Ok(TerminalLaunchResult {
         opened: true,
         message: "터미널 창에서 GitHub 로그인 절차를 진행해주세요.".to_string(),
@@ -109,7 +113,7 @@ pub fn github_disconnect() -> Result<TerminalLaunchResult, String> {
             message: "GitHub CLI(gh)가 설치되어 있지 않습니다.".to_string(),
         });
     };
-    open_terminal_command(&format!("{gh} auth logout"))?;
+    open_terminal_program(&gh, &["auth", "logout"])?;
     Ok(TerminalLaunchResult {
         opened: true,
         message: "터미널 창에서 GitHub 로그아웃 절차를 진행해주세요.".to_string(),

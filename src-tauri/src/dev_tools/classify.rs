@@ -34,6 +34,15 @@ pub(crate) enum InstallMethod {
     ClaudeNative,
     SystemManaged,
     VersionManager(String),
+    // 설계 §B.4(Windows 전용): winget으로 설치된 패키지. 경로에서 winget 패키지
+    // id를 파싱하는 것은 불가능하고 시도하지도 않는다(`...\WinGet\Links\gh.exe`에
+    // "GitHub.cli"가 적혀 있지 않다) — 그리고 그 id는 애초에 필요하지도 않다:
+    // UPDATE_TABLE의 (tool=Gh, method=WingetPackage) 행이 이미 리터럴 argv를
+    // 고정해 두므로(`RUN_WINGET_UPGRADE_GH`), 어떤 명령을 실행할지는 도구 id +
+    // 이 discriminant만으로 결정된다. 그래서 설계 스케치의 `WingetPackage {
+    // id: String }`과 달리 데이터를 갖지 않는다 — 쓰이지 않을 값을 지어내지
+    // 않기 위한 의도적 단순화다.
+    WingetPackage,
     Unknown(String),
 }
 
@@ -47,6 +56,7 @@ pub(crate) enum MethodKind {
     ClaudeNative,
     SystemManaged,
     VersionManager,
+    WingetPackage,
     Unknown,
 }
 
@@ -61,6 +71,7 @@ impl InstallMethod {
             InstallMethod::ClaudeNative => MethodKind::ClaudeNative,
             InstallMethod::SystemManaged => MethodKind::SystemManaged,
             InstallMethod::VersionManager(_) => MethodKind::VersionManager,
+            InstallMethod::WingetPackage => MethodKind::WingetPackage,
             InstallMethod::Unknown(_) => MethodKind::Unknown,
         }
     }
@@ -76,6 +87,7 @@ pub(crate) fn describe_install_method(method: &InstallMethod) -> String {
         InstallMethod::ClaudeNative => "claudeNative".to_string(),
         InstallMethod::SystemManaged => "systemManaged".to_string(),
         InstallMethod::VersionManager(name) => format!("versionManager({name})"),
+        InstallMethod::WingetPackage => "wingetPackage".to_string(),
         InstallMethod::Unknown(path) => format!("unknown({path})"),
     }
 }
@@ -212,29 +224,200 @@ pub(crate) fn classify_install_method(
 }
 
 /// 실제 환경(홈 디렉터리, PNPM_HOME, HOMEBREW_PREFIX)을 읽어 순수 함수에 주입하는
-/// 얇은 래퍼. 여기만 env/fs에 닿고, 분류 로직 자체는 순수하게 유지한다.
+/// 얇은 래퍼. 여기만 env/fs에 닿고, 분류 로직 자체는 순수하게 유지한다. macOS
+/// 분기는 기존 로직과 완전히 동일하다(무변경) — Windows는 별도 순수함수
+/// `classify_install_method_windows`로 위임한다(설계 §B.4, Homebrew 전용 개념인
+/// Cellar/Caskroom 세그먼트 스캔과 섞지 않는다).
 pub(crate) fn classify_install_method_with_defaults(path: &Path) -> InstallMethod {
-    let home = dirs::home_dir();
-    let pnpm_home = std::env::var("PNPM_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from);
-    let mut prefixes = vec!["/opt/homebrew".to_string(), "/usr/local".to_string()];
-    if let Ok(p) = std::env::var("HOMEBREW_PREFIX") {
-        if !p.is_empty() && !prefixes.contains(&p) {
-            prefixes.push(p);
+    match super::platform::platform_now() {
+        super::platform::Platform::Win => {
+            let roots = super::platform::EnvRoots::from_env();
+            classify_install_method_windows(path, &roots)
+        }
+        super::platform::Platform::Mac => {
+            let home = dirs::home_dir();
+            let pnpm_home = std::env::var("PNPM_HOME")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from);
+            let mut prefixes = vec!["/opt/homebrew".to_string(), "/usr/local".to_string()];
+            if let Ok(p) = std::env::var("HOMEBREW_PREFIX") {
+                if !p.is_empty() && !prefixes.contains(&p) {
+                    prefixes.push(p);
+                }
+            }
+            classify_install_method(path, home.as_deref(), pnpm_home.as_deref(), &prefixes)
         }
     }
-    classify_install_method(path, home.as_deref(), pnpm_home.as_deref(), &prefixes)
+}
+
+/// **중요**: 이 함수 전체가 `std::path::Path`의 구조적 API(`.join()`,
+/// `.parent()`, `.strip_prefix()`, `.components()`, `.file_stem()`)를 쓰지
+/// 않는다 — 그 API들은 **컴파일 호스트**(이 크레이트는 macOS에서 빌드된다)의
+/// 구분자 규칙(`/`)을 따르므로, `\`로 구분된 Windows 경로 문자열에 적용하면
+/// 전체 문자열을 구분자 없는 파일명 하나로 오인한다(실측: 최초 구현에서 이
+/// 함수의 모든 분기가 `Unknown`으로 떨어지는 회귀를 `cargo test`가 그대로
+/// 잡아냈다 — "macOS에서 Windows 로직을 실행 검증한다"는 설계 §D의 전제가
+/// 바로 이런 함정을 잡으라고 있는 것이다). 그래서 순수 문자열 연산(대소문자
+/// 무시 접두사 매칭 + `split('\\')`)만 쓴다.
+fn win_dir_with_trailing_sep(dir: &str) -> String {
+    let mut p = dir.to_string();
+    if !p.ends_with('\\') {
+        p.push('\\');
+    }
+    p
+}
+
+/// `full`이 `dir`(디렉터리, 대소문자 무시) 바로 밑에 있으면 그 뒷부분을
+/// 돌려준다. 바이트 길이 기반 슬라이스라 `full`의 해당 위치가 UTF-8 문자
+/// 경계가 아니면(비ASCII 사용자명 등) 안전하게 실패(`None`)한다 — 패닉 대신
+/// 분류 실패로 처리한다(§4 완결성 — fail-closed와 같은 정신, 잘못된 상태를
+/// 표현하지 않는다).
+fn win_strip_dir_prefix<'a>(full: &'a str, dir: &str) -> Option<&'a str> {
+    let prefix = win_dir_with_trailing_sep(dir);
+    if full.len() < prefix.len() || !full.is_char_boundary(prefix.len()) {
+        return None;
+    }
+    if full[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+        Some(&full[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+/// `rest`의 첫 세그먼트(다음 `\`까지, 없으면 끝까지) — 빈 문자열이면 `None`.
+fn win_first_segment(rest: &str) -> Option<&str> {
+    let seg = rest.split('\\').next().unwrap_or("");
+    if seg.is_empty() {
+        None
+    } else {
+        Some(seg)
+    }
+}
+
+/// Windows 전용 분류(설계 §B.4, 순수함수 — `EnvRoots`를 주입받아 이 머신(Mac)의
+/// `cargo test`에서도 합성 경로로 전부 실행 검증된다). 모든 비교는 대소문자
+/// 무시(Windows 파일시스템 관행)로 하고, `canonicalize_best_effort`가 이미
+/// `dunce::canonicalize`로 `\\?\` 확장 길이 접두어를 제거한 값을 넘겨받는다고
+/// 가정한다.
+pub(crate) fn classify_install_method_windows(
+    canonical: &Path,
+    roots: &super::platform::EnvRoots,
+) -> InstallMethod {
+    let full = canonical.to_string_lossy().to_string();
+    let root_str = |root: &Option<PathBuf>| -> Option<String> {
+        root.as_ref().map(|p| p.to_string_lossy().to_string())
+    };
+
+    // 1. WingetPackage: %LOCALAPPDATA%\Microsoft\WinGet\Links\ 또는 \Packages\
+    if let Some(la) = root_str(&roots.local_appdata) {
+        let links_dir = format!(r"{la}\Microsoft\WinGet\Links");
+        let packages_dir = format!(r"{la}\Microsoft\WinGet\Packages");
+        if win_strip_dir_prefix(&full, &links_dir).is_some()
+            || win_strip_dir_prefix(&full, &packages_dir).is_some()
+        {
+            return InstallMethod::WingetPackage;
+        }
+    }
+
+    // 2. PnpmStandalone / PnpmGlobalPackage: %LOCALAPPDATA%\pnpm\ 아래 —
+    // bin\ 서브디렉터리 유무로 "pnpm 자기 자신"과 "pnpm이 설치한 다른 패키지"를
+    // 가른다(POSIX 분기와 동일한 구조적 신호, classify_install_method 참고).
+    if let Some(la) = root_str(&roots.local_appdata) {
+        let pnpm_dir = format!(r"{la}\pnpm");
+        if win_strip_dir_prefix(&full, &pnpm_dir).is_some() {
+            let bin_dir = format!(r"{pnpm_dir}\bin");
+            if let Some(bin_rest) = win_strip_dir_prefix(&full, &bin_dir) {
+                if let Some(name) = win_first_segment(bin_rest) {
+                    return InstallMethod::PnpmGlobalPackage {
+                        package: name.to_string(),
+                    };
+                }
+            }
+            return InstallMethod::PnpmStandalone;
+        }
+    }
+
+    // 3. NpmGlobal: %APPDATA%\npm\node_modules\<package>\... (npm 전역 설치의
+    // 실제 패키지 디렉터리) 또는 %APPDATA%\npm\<name>.cmd(전역 shim 자체 — 이
+    // 경우 스코프 없는 패키지명을 shim 파일명에서 근사한다. 스코프 패키지의
+    // 정확한 이름은 shim 파일명만으로 복원할 수 없어 이 근사가 한계다 — 미검증).
+    if let Some(appdata) = root_str(&roots.appdata) {
+        let npm_dir = format!(r"{appdata}\npm");
+        let node_modules_dir = format!(r"{npm_dir}\node_modules");
+        if let Some(rest) = win_strip_dir_prefix(&full, &node_modules_dir) {
+            if let Some(first) = win_first_segment(rest) {
+                let package = if let Some(scope) = first.strip_prefix('@') {
+                    win_first_segment(&rest[first.len() + 1..])
+                        .map(|pkg| format!("@{scope}/{pkg}"))
+                        .unwrap_or_else(|| first.to_string())
+                } else {
+                    first.to_string()
+                };
+                return InstallMethod::NpmGlobal { package };
+            }
+        } else if let Some(rest) = win_strip_dir_prefix(&full, &npm_dir) {
+            // 하위 세그먼트가 없어야(=shim 파일 자체) 이 분기가 적용된다.
+            if !rest.is_empty() && !rest.contains('\\') {
+                let stem = rest.rsplit_once('.').map(|(s, _)| s).unwrap_or(rest);
+                return InstallMethod::NpmGlobal {
+                    package: stem.to_string(),
+                };
+            }
+        }
+    }
+
+    // 4. ClaudeNative: %USERPROFILE%\.local\bin\claude.exe(POSIX 네이티브
+    // 설치기와 동형 구조).
+    if let Some(home) = root_str(&roots.home) {
+        let claude_dir = format!(r"{home}\.local\bin");
+        if win_strip_dir_prefix(&full, &claude_dir).is_some() {
+            return InstallMethod::ClaudeNative;
+        }
+    }
+
+    // 5. SystemManaged: Program Files 아래 Git/nodejs(설치기가 시스템 전역에
+    // 심는 자리) — 리터럴 후보(B.5)는 대소문자만 무시하고 그대로 비교한다.
+    let full_lower = full.to_lowercase();
+    let system_prefixes = [r"c:\program files\git\", r"c:\program files\nodejs\"];
+    if system_prefixes.iter().any(|p| full_lower.starts_with(p)) {
+        return InstallMethod::SystemManaged;
+    }
+    // Program Files (x86) 아래 Git도 동일하게 취급한다.
+    if let Some(x86) = root_str(&roots.program_files_x86) {
+        let git_dir = format!(r"{x86}\Git");
+        if win_strip_dir_prefix(&full, &git_dir).is_some() {
+            return InstallMethod::SystemManaged;
+        }
+    }
+
+    // 6. VersionManager: %USERPROFILE%\.nvm, \fnm\, \volta\ 세그먼트(G4 근거 —
+    // devtools-install-matrix §3.3과 동일 이유로, 앱이 관리본을 못 보는 것이
+    // 의도된 동작임을 먼저 인지해야 한다).
+    const VERSION_MANAGER_MARKERS: [(&str, &str); 3] =
+        [(r"\.nvm\", "nvm"), (r"\fnm\", "fnm"), (r"\volta\", "volta")];
+    for (marker, name) in VERSION_MANAGER_MARKERS {
+        if full_lower.contains(marker) {
+            return InstallMethod::VersionManager(name.to_string());
+        }
+    }
+
+    // 7. Unknown — canonicalize 실패/깨진 링크/미해석 경로도 여기로 강등된다.
+    InstallMethod::Unknown(full)
 }
 
 /// canonicalize 실패(깨진 심볼릭 링크·권한)나 절대경로가 아닌 경우(PATH 폴백으로
 /// 얻은 bare name) 모두 원본 문자열을 그대로 분류에 넘긴다 — 어차피 알려진 마커에
-/// 걸리지 않아 자연히 Unknown으로 강등된다(에러가 아니다).
+/// 걸리지 않아 자연히 Unknown으로 강등된다(에러가 아니다). `dunce::canonicalize`를
+/// 쓰는 이유: Windows `std::fs::canonicalize()`는 `\\?\`(확장 길이) 접두 경로를
+/// 반환하는데, 이 값이 그대로 UI에 노출되면 사용자가 혼란스럽고 이후 문자열
+/// 비교(§B.4의 접두어 매칭)가 깨진다 — `config/user_config.rs`가 이미 겪은
+/// 문제와 동일하다. mac/linux에서 `dunce::canonicalize`는 `std::fs::canonicalize`와
+/// 동일하게 동작한다(dunce 크레이트 문서) — 기존 동작과 바이트 단위로 같다.
 pub(crate) fn canonicalize_best_effort(resolved_path: &str) -> PathBuf {
     let p = Path::new(resolved_path);
     if p.is_absolute() {
-        p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+        dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
     } else {
         p.to_path_buf()
     }
@@ -556,5 +739,167 @@ mod tests {
         // PATH 폴백으로 얻은 bare name(절대경로 아님) — canonicalize 자체를 건너뛴다.
         let resolved_bare = canonicalize_best_effort("gh");
         assert_eq!(resolved_bare, PathBuf::from("gh"));
+    }
+
+    // ── Windows 분류(설계 §B.4, 합성 경로 — 이 머신(Mac)에서 100% 실행 검증) ──
+
+    fn win_roots() -> super::super::platform::EnvRoots {
+        super::super::platform::EnvRoots {
+            home: Some(PathBuf::from(r"C:\Users\hopegiver")),
+            appdata: Some(PathBuf::from(r"C:\Users\hopegiver\AppData\Roaming")),
+            local_appdata: Some(PathBuf::from(r"C:\Users\hopegiver\AppData\Local")),
+            program_files: Some(PathBuf::from(r"C:\Program Files")),
+            program_files_x86: Some(PathBuf::from(r"C:\Program Files (x86)")),
+            pnpm_home: None,
+            system_root: Some(PathBuf::from(r"C:\Windows")),
+        }
+    }
+
+    #[test]
+    fn classifies_winget_links_and_packages_as_winget_package() {
+        let roots = win_roots();
+        let links = classify_install_method_windows(
+            &PathBuf::from(r"C:\Users\hopegiver\AppData\Local\Microsoft\WinGet\Links\gh.exe"),
+            &roots,
+        );
+        assert_eq!(links, InstallMethod::WingetPackage);
+
+        let packages = classify_install_method_windows(
+            &PathBuf::from(
+                r"C:\Users\hopegiver\AppData\Local\Microsoft\WinGet\Packages\GitHub.cli_Microsoft.Winget.Source_8wekyb3d8bbwe\gh.exe",
+            ),
+            &roots,
+        );
+        assert_eq!(packages, InstallMethod::WingetPackage);
+
+        // UPDATE_TABLE에서 (Gh, WingetPackage) 조합이 실제로 Run으로 이어지는지도
+        // 함께 확인한다 — Windows용 신규 행이 실제로 물리는지 회귀 방지.
+        assert!(matches!(
+            super::super::plan_table::lookup_action(
+                super::super::ToolId::Gh,
+                MethodKind::WingetPackage
+            ),
+            super::super::plan_table::Action::Run(_)
+        ));
+    }
+
+    #[test]
+    fn classifies_pnpm_standalone_and_global_package_on_windows() {
+        let roots = win_roots();
+        let standalone = classify_install_method_windows(
+            &PathBuf::from(r"C:\Users\hopegiver\AppData\Local\pnpm\pnpm.exe"),
+            &roots,
+        );
+        assert_eq!(standalone, InstallMethod::PnpmStandalone);
+
+        let global_package = classify_install_method_windows(
+            &PathBuf::from(r"C:\Users\hopegiver\AppData\Local\pnpm\bin\wrangler.cmd"),
+            &roots,
+        );
+        assert_eq!(
+            global_package,
+            InstallMethod::PnpmGlobalPackage {
+                package: "wrangler.cmd".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_npm_global_shim_and_node_modules_package_on_windows() {
+        let roots = win_roots();
+        // 전역 shim 파일 자체(npm 루트 바로 밑) — 파일명(확장자 제외)으로 근사.
+        let shim = classify_install_method_windows(
+            &PathBuf::from(r"C:\Users\hopegiver\AppData\Roaming\npm\wrangler.cmd"),
+            &roots,
+        );
+        assert_eq!(
+            shim,
+            InstallMethod::NpmGlobal {
+                package: "wrangler".to_string()
+            }
+        );
+
+        // node_modules 아래 실제 패키지 디렉터리(스코프 없음).
+        let node_modules = classify_install_method_windows(
+            &PathBuf::from(
+                r"C:\Users\hopegiver\AppData\Roaming\npm\node_modules\wrangler\bin\wrangler.js",
+            ),
+            &roots,
+        );
+        assert_eq!(
+            node_modules,
+            InstallMethod::NpmGlobal {
+                package: "wrangler".to_string()
+            }
+        );
+
+        // 스코프 패키지.
+        let scoped = classify_install_method_windows(
+            &PathBuf::from(
+                r"C:\Users\hopegiver\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.js",
+            ),
+            &roots,
+        );
+        assert_eq!(
+            scoped,
+            InstallMethod::NpmGlobal {
+                package: "@anthropic-ai/claude-code".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_claude_native_git_system_managed_and_version_manager_on_windows() {
+        let roots = win_roots();
+
+        let claude_native = classify_install_method_windows(
+            &PathBuf::from(r"C:\Users\hopegiver\.local\bin\claude.exe"),
+            &roots,
+        );
+        assert_eq!(claude_native, InstallMethod::ClaudeNative);
+
+        let git = classify_install_method_windows(
+            &PathBuf::from(r"C:\Program Files\Git\cmd\git.exe"),
+            &roots,
+        );
+        assert_eq!(git, InstallMethod::SystemManaged);
+
+        let git_x86 = classify_install_method_windows(
+            &PathBuf::from(r"C:\Program Files (x86)\Git\cmd\git.exe"),
+            &roots,
+        );
+        assert_eq!(git_x86, InstallMethod::SystemManaged);
+
+        let node = classify_install_method_windows(
+            &PathBuf::from(r"C:\Program Files\nodejs\node.exe"),
+            &roots,
+        );
+        assert_eq!(node, InstallMethod::SystemManaged);
+
+        let nvm = classify_install_method_windows(
+            &PathBuf::from(r"C:\Users\hopegiver\.nvm\versions\node\v20.0.0\node.exe"),
+            &roots,
+        );
+        assert_eq!(nvm, InstallMethod::VersionManager("nvm".to_string()));
+    }
+
+    #[test]
+    fn classifies_unknown_windows_path_without_panicking() {
+        let roots = win_roots();
+        let unknown =
+            classify_install_method_windows(&PathBuf::from(r"D:\portable\tools\git.exe"), &roots);
+        assert!(matches!(unknown, InstallMethod::Unknown(_)));
+    }
+
+    #[test]
+    fn classify_install_method_windows_case_insensitive_matching() {
+        // Windows 파일시스템은 대소문자를 구분하지 않는 것이 관행이다 — 후보
+        // 경로가 실제 canonical과 대소문자가 달라도 매칭돼야 한다.
+        let roots = win_roots();
+        let mixed_case = classify_install_method_windows(
+            &PathBuf::from(r"c:\users\hopegiver\appdata\local\microsoft\winget\links\GH.EXE"),
+            &roots,
+        );
+        assert_eq!(mixed_case, InstallMethod::WingetPackage);
     }
 }

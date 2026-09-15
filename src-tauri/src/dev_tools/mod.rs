@@ -26,10 +26,18 @@ mod contract;
 mod diagnostics;
 mod install_resolver;
 mod plan_table;
+// `pub(crate)`인 이유: cli_launcher.rs(크레이트 루트, dev_tools 밖)가 이 모듈의
+// Platform/EnvRoots/quote_token 등을 터미널 열기(§E) + resolve_binary(§D.3)
+// 구현에 재사용한다 — dev_tools가 cli_launcher를 쓰고 cli_launcher가
+// dev_tools::platform을 쓰는 양방향 참조이지만, Rust는 순환 모듈 참조 자체를
+// 금지하지 않는다(타입 순환이 아니라 아이템 조회일 뿐).
+pub(crate) mod platform;
 mod process;
 mod query;
+mod runners;
 
 use crate::cli_launcher::resolve_binary_expand_home;
+use platform::Platform;
 
 // 이 타입들은 dev_tools 밖에서 이름으로 참조되지 않는다(외부는 `#[tauri::command]`
 // 경로만 쓴다) — 아래 커맨드 함수 시그니처에만 필요하므로 `pub use`로 재노출하지
@@ -55,7 +63,12 @@ pub(crate) struct DevTool {
     pub(crate) key: &'static str,
     pub(crate) label: &'static str,
     pub(crate) version_args: &'static [&'static str],
+    /// macOS 후보 — 무변경(기존 그대로).
     pub(crate) path_candidates: &'static [&'static str],
+    /// Windows 후보(설계 §B.5, 전부 미검증 — 실기 Windows PC 필요). `%APPDATA%`
+    /// 등 토큰은 `resolve_tool_path`가 `resolve_binary_expand_home`을 거쳐
+    /// `platform::expand_path_tokens`로 확장한다.
+    pub(crate) windows_path_candidates: &'static [&'static str],
 }
 
 // docker는 완전 삭제(부록 C 프론트 변경 메모, 7→6).
@@ -76,6 +89,13 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "~/.npm-global/bin/claude",
             "~/.claude/local/claude",
         ],
+        // 설계 §B.5(미검증): 네이티브 설치기(~/.local/bin과 동형), npm 전역
+        // shim, winget 앱 실행 별칭 순.
+        windows_path_candidates: &[
+            r"%USERPROFILE%\.local\bin\claude.exe",
+            r"%APPDATA%\npm\claude.cmd",
+            r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
+        ],
     },
     DevTool {
         id: ToolId::Node,
@@ -83,6 +103,12 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
         label: "Node.js",
         version_args: &["--version"],
         path_candidates: &["/opt/homebrew/bin/node", "/usr/local/bin/node"],
+        // 설계 §B.5(미검증): nvm-windows 등 버전매니저 관리본은 앱이 못 보는 게
+        // 의도된 동작이다(G4 — devtools-install-matrix §3.3과 동일 이유).
+        windows_path_candidates: &[
+            r"C:\Program Files\nodejs\node.exe",
+            r"%LOCALAPPDATA%\Programs\nodejs\node.exe",
+        ],
     },
     DevTool {
         id: ToolId::Gh,
@@ -92,6 +118,11 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
         // github_integration.rs의 GH_CANDIDATES와 값은 같지만, 결정 5.2에 따라
         // 상수를 공유하지 않고 도구 정의 테이블에 별도로 둔다(회귀 위험 0).
         path_candidates: &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"],
+        // 설계 §B.5(미검증): winget 머신 스코프 설치본 + winget 앱 실행 별칭.
+        windows_path_candidates: &[
+            r"C:\Program Files\GitHub CLI\gh.exe",
+            r"%LOCALAPPDATA%\Microsoft\WinGet\Links\gh.exe",
+        ],
     },
     DevTool {
         id: ToolId::Git,
@@ -110,6 +141,13 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "/Library/Developer/CommandLineTools/usr/bin/git",
             "/usr/bin/git",
         ],
+        // 설계 §B.5(미검증): 64/32비트 설치 경로 + PortableGit(Program Files
+        // 밖) 순.
+        windows_path_candidates: &[
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files (x86)\Git\cmd\git.exe",
+            r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe",
+        ],
     },
     DevTool {
         id: ToolId::Pnpm,
@@ -121,6 +159,12 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "/usr/local/bin/pnpm",
             "~/Library/pnpm/pnpm",
             "~/.local/share/pnpm/pnpm",
+        ],
+        // 설계 §B.5(미검증): standalone 설치(winget/공식 스크립트) + npm 경유
+        // 설치 순.
+        windows_path_candidates: &[
+            r"%LOCALAPPDATA%\pnpm\pnpm.exe",
+            r"%APPDATA%\npm\pnpm.cmd",
         ],
     },
     DevTool {
@@ -139,6 +183,12 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "~/Library/pnpm/bin/wrangler",
             "~/.local/share/pnpm/bin/wrangler",
         ],
+        // 설계 §B.5(미검증): pnpm 전역 shim + npm 전역 shim 순(설치 후보 우선순위
+        // — install_resolver::install_candidates의 Wrangler 행과 동일 순서).
+        windows_path_candidates: &[
+            r"%LOCALAPPDATA%\pnpm\wrangler.cmd",
+            r"%APPDATA%\npm\wrangler.cmd",
+        ],
     },
 ];
 
@@ -155,16 +205,21 @@ pub(crate) fn tool_definition(id: ToolId) -> &'static DevTool {
         .expect("DEV_TOOLS 테이블에 모든 ToolId가 있어야 합니다")
 }
 
-pub(crate) fn resolve_tool_path(def: &DevTool) -> Option<String> {
-    resolve_binary_expand_home(def.path_candidates, def.key)
+/// 설계 §D.3/§B.5: 이 도구가 실제로 있을 만한 자리(플랫폼별 후보)를 고른다.
+/// macOS 분기는 기존 `def.path_candidates`를 그대로 넘겨(무변경) 기존 탐지
+/// 동작을 한 글자도 바꾸지 않는다. Windows 분기는 §B.5 후보(전부 미검증)를
+/// 넘긴다 — 실제 확장(`%APPDATA%` 등)과 최종 판정은
+/// `resolve_binary_expand_home`(cli_launcher.rs)이 플랫폼을 다시 읽어 수행한다.
+pub(crate) fn tool_path_candidates(def: &DevTool) -> &'static [&'static str] {
+    match platform::platform_now() {
+        Platform::Mac => def.path_candidates,
+        Platform::Win => def.windows_path_candidates,
+    }
 }
 
-// ==================== 플랫폼 게이트 공용 메시지 ====================
-// M3(review-devtools-install-2026-09-10.md): 화면 데이터(query::check_dev_tools_blocking)
-// 뿐 아니라 아래 IPC 커맨드 4개 각각에도 동일한 게이트를 둔다 — 문구를 한 곳에서만
-// 관리해 드리프트를 막는다.
-pub(crate) const MACOS_ONLY_MESSAGE: &str =
-    "이 화면은 현재 macOS만 지원합니다. Windows 지원은 준비 중입니다.";
+pub(crate) fn resolve_tool_path(def: &DevTool) -> Option<String> {
+    resolve_binary_expand_home(tool_path_candidates(def), def.key)
+}
 
 // ==================== #[tauri::command] 진입점 ====================
 
@@ -181,12 +236,6 @@ pub async fn check_dev_tools() -> Vec<DevToolStatus> {
 
 #[tauri::command]
 pub async fn preview_dev_tool_update(tool_id: String) -> Result<DevToolPreview, String> {
-    // M3: 화면(query::check_dev_tools_blocking)의 macOS 전용 게이트를 커맨드
-    // 계층에도 둔다 — 이 커맨드는 화면이 actionKind를 올바르게 내려줬다고
-    // 신뢰하지 않는다.
-    if !cfg!(target_os = "macos") {
-        return Err(MACOS_ONLY_MESSAGE.to_string());
-    }
     tauri::async_runtime::spawn_blocking(move || query::perform_preview(&tool_id))
         .await
         .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
@@ -197,10 +246,6 @@ pub async fn update_dev_tool(
     tool_id: String,
     plan_id: String,
 ) -> Result<DevToolActionResult, String> {
-    // M3: 커맨드 계층 게이트(preview_dev_tool_update와 동일 이유).
-    if !cfg!(target_os = "macos") {
-        return Err(MACOS_ONLY_MESSAGE.to_string());
-    }
     tauri::async_runtime::spawn_blocking(move || actions::perform_update(&tool_id, &plan_id))
         .await
         .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
@@ -211,10 +256,6 @@ pub async fn install_dev_tool(
     tool_id: String,
     plan_id: String,
 ) -> Result<DevToolActionResult, String> {
-    // M3: 커맨드 계층 게이트(preview_dev_tool_update와 동일 이유).
-    if !cfg!(target_os = "macos") {
-        return Err(MACOS_ONLY_MESSAGE.to_string());
-    }
     tauri::async_runtime::spawn_blocking(move || actions::perform_install(&tool_id, &plan_id))
         .await
         .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
@@ -232,10 +273,6 @@ pub async fn open_manual_instruction(
     tool_id: String,
     execute: bool,
 ) -> Result<crate::cli_launcher::TerminalLaunchResult, String> {
-    // M3: 커맨드 계층 게이트(preview_dev_tool_update와 동일 이유).
-    if !cfg!(target_os = "macos") {
-        return Err(MACOS_ONLY_MESSAGE.to_string());
-    }
     tauri::async_runtime::spawn_blocking(move || {
         actions::perform_open_manual_instruction(&tool_id, execute)
     })
@@ -251,5 +288,52 @@ mod tests {
     fn devtool_table_has_exactly_six_entries_without_docker() {
         assert_eq!(DEV_TOOLS.len(), 6);
         assert!(DEV_TOOLS.iter().all(|d| d.key != "docker"));
+    }
+
+    // 골든 테스트(설계 §C.3.2): macOS path_candidates 배열은 한 글자도 바뀌면
+    // 안 된다 — 전체 배열 내용을 고정해 부분 문자열 매치(starts_with/contains)로
+    // 우연히 통과하는 것을 막는다.
+    #[test]
+    fn macos_path_candidates_are_frozen_exactly() {
+        let claude = tool_definition(ToolId::Claude);
+        assert_eq!(
+            claude.path_candidates,
+            &[
+                "/opt/homebrew/bin/claude",
+                "/usr/local/bin/claude",
+                "~/.local/bin/claude",
+                "~/.npm-global/bin/claude",
+                "~/.claude/local/claude",
+            ]
+        );
+        let node = tool_definition(ToolId::Node);
+        assert_eq!(
+            node.path_candidates,
+            &["/opt/homebrew/bin/node", "/usr/local/bin/node"]
+        );
+    }
+
+    // 설계 §B.5: 6개 도구 전부 Windows 후보가 최소 1개는 있어야 한다(빈 배열은
+    // 탐지가 구조적으로 항상 실패한다는 뜻이라, Phase 1의 "정확한 탐지" 목표에
+    // 어긋난다).
+    #[test]
+    fn every_tool_has_at_least_one_windows_path_candidate() {
+        for def in DEV_TOOLS.iter() {
+            assert!(
+                !def.windows_path_candidates.is_empty(),
+                "{}은(는) windows_path_candidates가 비어 있습니다",
+                def.key
+            );
+        }
+    }
+
+    // resolve_tool_path의 플랫폼 선택 로직 자체를 이 머신(Mac)에서 직접
+    // 검증한다 — tool_path_candidates가 platform_now()에 따라 서로 다른 배열을
+    // 돌려준다는 계약.
+    #[test]
+    fn tool_path_candidates_selects_mac_array_on_this_machine() {
+        for def in DEV_TOOLS.iter() {
+            assert_eq!(tool_path_candidates(def), def.path_candidates);
+        }
     }
 }

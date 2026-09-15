@@ -4,12 +4,18 @@
 
 use super::classify::{canonicalize_best_effort, classify_install_method_with_defaults, InstallMethod};
 use super::plan_table::{
-    compute_action, install_manual_plan, is_writable_by_current_user, Action, Arg, ManualPlan,
-    Runner, RunPlan, MANUAL_NOT_WRITABLE, MANUAL_NO_RUNNER, RUN_BREW_INSTALL_GH,
-    RUN_NPM_GLOBAL_INSTALL_WRANGLER, RUN_NPM_INSTALL_CLAUDE, RUN_PNPM_GLOBAL_ADD,
+    compute_action, install_manual_plan, Action, Arg, ManualPlan, Runner, RunPlan,
+    MANUAL_NOT_WRITABLE, MANUAL_NO_RUNNER, RUN_BREW_INSTALL_GH, RUN_NPM_GLOBAL_INSTALL_WRANGLER,
+    RUN_NPM_INSTALL_CLAUDE, RUN_PNPM_GLOBAL_ADD, RUN_WINGET_INSTALL_GH,
 };
-use super::{resolve_tool_path, tool_definition, ToolId};
-use crate::cli_launcher::resolve_binary_expand_home;
+// 설계 §F.2: 실행기(runner) 해석 자체는 runners.rs로 분리했다(install_resolver.rs
+// 1,000줄 규율 + Windows 증분이 거의 전부 그쪽에 떨어지는 경계 — F.2 근거).
+// `ResolvedRunners`는 query.rs/actions.rs가 `super::install_resolver::ResolvedRunners`
+// 경로로 계속 쓰므로 재노출한다(그 두 파일의 기존 import 문을 한 글자도 고치지
+// 않기 위함).
+pub(crate) use super::runners::ResolvedRunners;
+use super::runners::{install_prefix_writable, resolve_runner_path};
+use super::ToolId;
 use std::path::Path;
 
 /// `^[A-Za-z0-9@][A-Za-z0-9@._+/-]*$`, `..` 불포함, `-` 시작 금지를 수기 구현한다
@@ -27,26 +33,6 @@ pub(crate) fn validate_argv_token(s: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '+' | '/' | '-'))
-}
-
-// ── 실행기(runner) 해석 — 실행기 자체도 절대경로 해석 대상(결정 5.3) ──
-const BREW_CANDIDATES: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
-const NPM_CANDIDATES: [&str; 3] = [
-    "/opt/homebrew/bin/npm",
-    "/usr/local/bin/npm",
-    "~/.npm-global/bin/npm",
-];
-
-fn resolve_runner_path(runner: Runner, self_binary_path: Option<&str>) -> Option<String> {
-    match runner {
-        Runner::Brew => resolve_binary_expand_home(&BREW_CANDIDATES, "brew"),
-        Runner::Npm => resolve_binary_expand_home(&NPM_CANDIDATES, "npm"),
-        // pnpm 자신의 DevTool 정의(path_candidates)를 그대로 재사용한다 — 이미
-        // 검증된 후보 목록(brew Cellar + standalone 두 경로)이 있으므로 별도
-        // PNPM_CANDIDATES 상수를 새로 만들지 않는다(중복 방지).
-        Runner::Pnpm => resolve_tool_path(tool_definition(ToolId::Pnpm)),
-        Runner::SelfBinary => self_binary_path.map(|s| s.to_string()),
-    }
 }
 
 /// 실행 준비까지 끝난 최종 계획. `Action`(정적 테이블 값)과 달리 runner의 실제
@@ -97,33 +83,27 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
 // G4 오탐 피해가 국소적 : 이미 설치돼 있는데 앱이 못 보고 설치를 실행해도
 //                  기존 환경이 깨지지 않는다(버전매니저 관리본이 대표 반례)
 //
-// ── 도구별 run/manual 판정(§2.1 그대로) ──
+// ── 도구별 run/manual 판정(§2.1, devtools-windows-parity.md §B.1로 Windows까지
+// 확장) ──
 // | 도구      | run/manual | 근거 한 줄                                                    |
 // |-----------|-----------|-----------------------------------------------------------------|
 // | Claude    | run       | npm 패키지명이 공식 문서에 고정 + 결과가 기존 NpmGlobal 판별기에 물림 |
-// | gh        | run       | brew formula명이 "gh" 하나로 고정, 버전 접미 없음(단, brew install이 |
-// |           |           | 의존성을 함께 올릴 수 있어 dry-run 프리뷰 필수 — §3.4 실측)          |
+// | gh        | run       | mac: brew formula명 "gh" 고정(dry-run 프리뷰 필수 — §3.4 실측).      |
+// |           |           | win: winget id "GitHub.cli" 고정(§B.1/§B.2, 전용 winget 러너)        |
 // | Wrangler  | run       | npm 레지스트리 패키지명이 "wrangler"로 고정(원 설계 §12.5 결정 승계) |
 // | pnpm      | manual    | 공식 설치기가 셸 스크립트 + rc 파일 수정(G2·G3 탈락) — §3.2          |
 // | Node.js   | manual    | 공식 고정 식별자 없음 + 버전매니저 관리본을 앱이 못 봄(G1·G4 탈락)    |
 // |           |           | — §3.3(승격 트리거: 사내 표준 major 확정 또는 버전매니저 무셸 탐지)  |
-// | Git       | manual    | 시스템(Xcode CLT) 소유, 해결책이 GUI 대화상자(G4 탈락) — §4.3        |
+// | Git       | manual    | mac: 시스템(Xcode CLT) 소유(G4 탈락, §4.3). win: 머신 스코프         |
+// |           |           | MSI라 UAC 승격이 뜸(G4 탈락, §B.1)                                   |
 //
-// Windows: 아래 install_candidates()는 플랫폼과 무관하게 동일한 테이블을 쓴다.
-// 리뷰 정정(review-devtools-install-2026-09-10.md M3): 예전 이 자리의 주석은
-// "후보가 전부 POSIX 절대경로라서 Windows 빌드에서는 구조적으로 전부 None이
-// 되어 Run으로 해석될 수 없다"고 적었는데, 이는 사실이 아니다 —
-// resolve_binary(cli_launcher.rs)는 절대경로 후보가 전부 실패하면 bare-name
-// PATH 폴백(`Command::new(bare_name).arg("--version").output()`)을 시도하므로,
-// Windows에 예컨대 pnpm.exe가 PATH에 있으면 Some이 될 수 있다. 즉 "구조적으로
-// 불가능"이 아니라 "런타임 해석이 우연히 실패하는 경우가 많다"에 가깝다.
-// 실제로 Windows에서 설치/업데이트 실행을 막는 것은 명시적 게이트 둘이다:
-// ① query::check_dev_tools_blocking() 최상단의 `!cfg!(target_os = "macos")` 분기
-//   (§5.2 채택 — 화면에 내려가는 데이터 전체를 manual로 고정한다)
-// ② preview_dev_tool_update/update_dev_tool/install_dev_tool/
-//   open_manual_instruction 네 IPC 커맨드 각각에 있는 동일한 cfg 게이트 — 화면을
-//   거치지 않고 커맨드가 직접 호출돼도 막힌다("IPC 커맨드는 화면을 신뢰하면 안
-//   된다" 원칙, M3).
+// Windows 완전 지원(devtools-windows-parity.md, Phase 1+2): 예전 이 자리의
+// 주석은 macOS 전용 게이트(`!cfg!(target_os = "macos")`) 4곳이 Windows 실행을
+// 막는다고 적었는데, 그 게이트는 이제 전부 제거됐다(mod.rs). install_candidates()
+// 자체는 플랫폼과 무관하게 같은 테이블이지만, gh는 Windows에서 도달 가능한
+// 후보가 하나 더 있다(winget) — Brew가 먼저 오므로 macOS 결과·순서는
+// 무변경이다(Windows에서는 brew 후보가 항상 None으로 실패해 자연히 winget으로
+// 넘어간다).
 
 pub(crate) struct InstallCandidate {
     runner: Runner,
@@ -137,11 +117,21 @@ pub(crate) struct InstallCandidate {
 /// 없으므로(미설치 도구에는 canonical 경로가 없다) 이 테이블에 올릴 수 없다.
 pub(crate) fn install_candidates(tool: ToolId) -> &'static [InstallCandidate] {
     match tool {
-        ToolId::Gh => &[InstallCandidate {
-            runner: Runner::Brew,
-            plan: RUN_BREW_INSTALL_GH,
-            installer_label: "brew",
-        }],
+        // brew가 먼저 온다 — macOS는 winget 후보가 구조적으로 항상 None이라
+        // 순서와 무관하게 brew만 시도된다(무변경). Windows는 brew가 항상 None
+        // (그런 바이너리가 없다)이라 자연히 winget으로 넘어간다(§B.1/§B.2).
+        ToolId::Gh => &[
+            InstallCandidate {
+                runner: Runner::Brew,
+                plan: RUN_BREW_INSTALL_GH,
+                installer_label: "brew",
+            },
+            InstallCandidate {
+                runner: Runner::Winget,
+                plan: RUN_WINGET_INSTALL_GH,
+                installer_label: "winget",
+            },
+        ],
         ToolId::Claude => &[InstallCandidate {
             runner: Runner::Npm,
             plan: RUN_NPM_INSTALL_CLAUDE,
@@ -168,39 +158,6 @@ pub(crate) fn install_candidates(tool: ToolId) -> &'static [InstallCandidate] {
     }
 }
 
-/// brew/npm/pnpm 실행기 경로를 화면 1회 로드에서 한 번만 해석해 담아 두는
-/// 그릇(요구 4 — resolve_binary의 bare-name PATH 폴백은 타임아웃이 없어
-/// 도구 개수만큼 반복 호출하면 그만큼 블로킹 비용이 커진다. 지적 #12 자체의
-/// 수정은 이 범위 밖이지만 호출 횟수를 1회로 묶어 그 결함의 노출을 늘리지
-/// 않는다).
-pub(crate) struct ResolvedRunners {
-    pub(crate) brew: Option<String>,
-    pub(crate) npm: Option<String>,
-    pub(crate) pnpm: Option<String>,
-}
-
-impl ResolvedRunners {
-    pub(crate) fn resolve() -> Self {
-        ResolvedRunners {
-            brew: resolve_runner_path(Runner::Brew, None),
-            npm: resolve_runner_path(Runner::Npm, None),
-            pnpm: resolve_runner_path(Runner::Pnpm, None),
-        }
-    }
-
-    fn path_for(&self, runner: Runner) -> Option<&str> {
-        match runner {
-            Runner::Brew => self.brew.as_deref(),
-            Runner::Npm => self.npm.as_deref(),
-            Runner::Pnpm => self.pnpm.as_deref(),
-            // SelfBinary는 설치 후보에 쓰이지 않는다(설치 시점엔 자기 자신의
-            // 바이너리가 아직 없다) — install_candidates()의 어떤 행도 이
-            // 변형을 쓰지 않으므로 항상 None으로 충분하다.
-            Runner::SelfBinary => None,
-        }
-    }
-}
-
 /// 실행 준비까지 끝난 설치 계획. `query::check_dev_tools_blocking`(actionKind
 /// 산출)·`query::build_install_preview`(미설치 분기)·`actions::perform_install`
 /// (실행 직전 재계산) 세 곳이 모두 이 함수만 호출한다(요구 1 — 단일 정본). 세
@@ -216,58 +173,25 @@ pub(crate) enum InstallResolution {
     Manual(ManualPlan),
 }
 
-/// M2(devtools-install-matrix §4.2, 직전 리뷰 지적) — 설치 경로 쓰기권한
-/// 사전검사. gh(brew)는 `<prefix>/Cellar`·`<prefix>/bin`을, Claude(npm)는
-/// `<npm prefix>/lib/node_modules`(없으면 `<prefix>/lib`, 그마저 없으면 검사
-/// 생략)를 본다 — `plan_table::compute_action`(update 경로)이 이미 하는 검사를
-/// 설치 경로에도 재사용한다. prefix는 runner 경로의 조부모다
-/// (`/opt/homebrew/bin/brew` → `/opt/homebrew`).
-///
-/// §4.2 단서 그대로: 없는 경로에 대해 `access(W_OK)`가 무조건 false를 주므로,
-/// "아직 없는 경로"를 "쓰기 불가"로 오판해 fail-closed로 기능을 죽이지 않도록
-/// 경로가 존재할 때만 검사한다(존재하지 않으면 통과시키고, 실제로 못 쓰면
-/// exit code로 드러난다). 설계 §4.2 표는 gh·Claude 두 행만 요구하므로 그 외
-/// 조합(Wrangler의 pnpm/npm)은 대상이 아니다.
-fn install_prefix_writable(tool: ToolId, runner: Runner, runner_path: &str) -> bool {
-    let Some(prefix) = Path::new(runner_path).parent().and_then(Path::parent) else {
-        return true;
-    };
-
-    match (tool, runner) {
-        (ToolId::Gh, Runner::Brew) => {
-            let cellar = prefix.join("Cellar");
-            let bin = prefix.join("bin");
-            (!cellar.exists() || is_writable_by_current_user(&cellar))
-                && (!bin.exists() || is_writable_by_current_user(&bin))
-        }
-        (ToolId::Claude, Runner::Npm) => {
-            let node_modules = prefix.join("lib").join("node_modules");
-            if node_modules.exists() {
-                is_writable_by_current_user(&node_modules)
-            } else {
-                let lib = prefix.join("lib");
-                !lib.exists() || is_writable_by_current_user(&lib)
-            }
-        }
-        _ => true,
-    }
-}
-
 pub(crate) fn resolve_install_plan(tool: ToolId, runners: &ResolvedRunners) -> InstallResolution {
     // 미설치 도구에는 canonical 경로가 없다 — install_candidates()의 모든
     // RunPlan이 Arg::Lit 전용이므로(§1.1 불변식) 이 더미 값으로도 resolve_args가
     // 항상 성공한다(Formula/Package 슬롯은 여기서 절대 쓰이지 않는다).
     let dummy_method = InstallMethod::Unknown(String::new());
     for candidate in install_candidates(tool) {
+        // §F.2: path_for가 소유 값(String)을 돌려주도록 바뀌었다 — winget은
+        // ResolvedRunners에 캐시 필드가 없어(runners.rs 주석 참고) 요청마다
+        // 새로 해석되기 때문이다. 기존 `.to_string()` 호출은 더 이상 필요
+        // 없다(이미 owned).
         let Some(runner_path) = runners.path_for(candidate.runner) else {
             continue;
         };
-        if !install_prefix_writable(tool, candidate.runner, runner_path) {
+        if !install_prefix_writable(tool, candidate.runner, &runner_path) {
             return InstallResolution::Manual(MANUAL_NOT_WRITABLE);
         }
         if let Ok(argv) = resolve_args(candidate.plan.args, &dummy_method) {
             return InstallResolution::Run {
-                runner_path: runner_path.to_string(),
+                runner_path,
                 argv,
                 plan: candidate.plan,
                 installer_label: candidate.installer_label,
