@@ -154,14 +154,19 @@ fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option
     }
 }
 
-/// Windows에는 POSIX 프로세스 그룹이 없다. 이 함수가 다루는 러너(Npm/Pnpm/
-/// SelfBinary)는 현재 macOS 전용 게이트(install_resolver 모듈 참고)로 Windows에서
-/// 실행에 도달하지 않지만, 그 게이트를 걷어내 Windows 지원을 열 때를 대비해 정의는
-/// 유지한다 — 그 시점에도 손자 프로세스를 남기는 경우가 드물어, 직속
-/// 자식만 종료(`Child::kill` → `TerminateProcess`)하는 것으로 MVP 범위에서는
-/// 충분하다고 판단했다(50인 미만 내부 도구, Job Object 등 고급 처리는 과설계).
-/// 손자 프로세스는 정리되지 않을 수 있다는 제약을 감수한다. pid 인자는 unix
-/// 버전과 시그니처를 맞추기 위해서만 존재하며 사용하지 않는다.
+/// Windows에는 POSIX 프로세스 그룹이 없다 — 직속 자식만 종료한다(`Child::kill`
+/// → `TerminateProcess`). Npm/Pnpm/SelfBinary 러너는 손자 프로세스를 남기는
+/// 경우가 드물어 이것으로 충분하다.
+///
+/// Winget 러너는 다르다(N4, 2라운드): winget이 UAC로 승격해서 띄우는 msiexec
+/// 등 손자 프로세스는 우리 프로세스보다 높은 무결성 수준(elevated token)으로
+/// 실행된다 — 그 PID를 알아내 `kill`을 시도해도 권한 부족으로 ACCESS_DENIED가
+/// 난다. "드물게 남는다"가 아니라 "구조적으로 죽일 수 없다"이다. 타임아웃
+/// 시 winget.exe 자신(직속 자식)은 종료되지만, 이미 승격되어 독립한 설치
+/// 프로세스는 백그라운드에서 계속 진행될 수 있다(`actions.rs`의
+/// `timed_out_message`가 이 사실을 사용자에게 알린다). Job Object 도입은
+/// 범위 밖(설계 §9 미해결쟁점 1). pid 인자는 unix 버전과 시그니처를 맞추기
+/// 위해서만 존재하며 사용하지 않는다.
 #[cfg(windows)]
 fn force_kill_process_group(_pid: i32, child: &mut std::process::Child) -> Option<i32> {
     let _ = child.kill();
@@ -212,6 +217,17 @@ pub(crate) fn run_process_with_timeout_cancellable(
     command.env("PATH", path_env);
     for (k, v) in extra_env {
         command.env(k, v);
+    }
+    // N1(2라운드 비차단): Windows에서만 현재 디렉터리를 `%SystemRoot%`로
+    // 고정한다(`super::platform::child_current_dir` 참고 — `.cmd` shim은
+    // `cmd.exe`가 해석하는데 그 명령 해석이 현재 디렉터리를 먼저 본다). Mac은
+    // `child_current_dir`가 항상 `None`이라 이 블록이 아무 것도 하지 않는다
+    // (기존 동작 무변경 — 이 머신은 항상 Mac이라 실행 시 검증됨).
+    if let Some(dir) = super::platform::child_current_dir(
+        super::platform::platform_now(),
+        &super::platform::EnvRoots::from_env(),
+    ) {
+        command.current_dir(dir);
     }
     // HOME은 상속(brew/npm 캐시·설정이 필요) — PATH만 명시적으로 덮어쓴다.
     // 새 프로세스 그룹으로 스폰(force_kill_process_group의 그룹 kill이 작동하려면
@@ -443,5 +459,21 @@ mod tests {
     fn build_child_path_env_excludes_empty_entry_for_none() {
         let path = build_child_path_env(None);
         assert!(!path.split(':').any(|p| p.is_empty()));
+    }
+
+    // N1(2라운드 비차단): Mac에서는 `child_current_dir`가 항상 `None`이라
+    // `run_process_with_timeout`이 `.current_dir()`를 호출하지 않는다 — 자식이
+    // 이 프로세스의 실제 CWD를 그대로 상속해야 한다(무변경 보장, 실측).
+    #[test]
+    fn run_process_with_timeout_does_not_pin_current_dir_on_mac() {
+        let expected = std::env::current_dir().expect("current_dir must be readable");
+        let output = run_process_with_timeout(
+            "/bin/pwd",
+            &[],
+            "/usr/bin:/bin",
+            &[],
+            Duration::from_secs(5),
+        );
+        assert_eq!(output.stdout.trim(), expected.to_string_lossy());
     }
 }

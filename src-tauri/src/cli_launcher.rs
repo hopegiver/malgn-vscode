@@ -25,9 +25,13 @@ use std::process::Command;
 /// 후보 절대경로를 순서대로 확인하고, 전부 없으면(macOS만) PATH 안에 있을
 /// 가능성(예: 터미널에서 `pnpm tauri dev`로 실행한 개발 모드)에 대비해 이름
 /// 그대로도 한 번 시도한다. Windows는 bare-name 서브프로세스 프로브를 쓰지
-/// 않는다 — Windows `CreateProcess`의 기본 검색 경로에 현재 디렉터리(CWD)가
-/// 포함되어 있어, 악성 `npm.exe` 등이 CWD에 있으면 그것이 실행될 수 있다(설계
-/// G-1). 대신 실제 PATH를 명시적으로 스캔해 절대경로를 확정한 뒤에만
+/// 않는다 — (정정, 2라운드: Windows `CreateProcessW`에 이름을 넘기지 않고
+/// Rust std가 자체 해석하며, 그 검색 순서에 현재 작업 디렉터리(CWD)는
+/// 포함되지 않는다. 실제 위험은 검색 순서 2번 "현재 실행 파일(이 앱)의
+/// 디렉터리"다 — 이 앱의 Windows 배포물은 단일 포터블 exe라 보통 다운로드
+/// 폴더에 놓이고, 거기 악성 `npm.exe` 등이 있으면 bare-name spawn이 그것을
+/// 실행할 수 있다). 그래서 Windows는 bare-name으로 프로세스를 스폰(프로브)조차
+/// 하지 않고, 실제 PATH를 명시적으로 스캔해 절대경로를 확정한 뒤에만
 /// 반환한다(`platform::resolve_binary_with`, 프로세스를 하나도 띄우지 않는다).
 /// 어느 쪽도 찾지 못하면 `None` — 이때 "미설치"는 예외가 아니라 정상 값이다.
 pub fn resolve_binary(absolute_candidates: &[&str], bare_name: &str) -> Option<String> {
@@ -92,35 +96,45 @@ pub struct TerminalLaunchResult {
     pub message: String,
 }
 
-/// macOS: Terminal.app 새 창에서, Windows: PowerShell 새 콘솔 창에서
-/// `shell_command`를 실행한다. 두 플랫폼 모두 앱이 자식 프로세스로 조용히
-/// spawn해 출력을 캡처하는 것과 달리 사용자가 그 창을 직접 보고 입력(예: 브라우저
-/// 인증 코드 확인, 2FA)할 수 있는 진짜 대화형 세션을 연다 — RFC 8252가 전제하는
-/// 것과 같은 상호작용 방식이다.
-///
-/// `shell_command`는 이 모듈 안에서 절대경로로 해석된 신뢰 가능한 바이너리 + 고정
-/// 서브커맨드 문자열, 또는 설치 안내 테이블의 리터럴 문자열만 넘어온다(사용자
-/// 자유입력 없음) — 그럼에도 macOS AppleScript 문자열 이스케이프는 방어적으로
-/// 처리한다(Windows는 PowerShell에 문자열을 그대로 넘기고 별도 이스케이프가
-/// 필요 없다 — `-Command` 인자 자체가 argv 배열 원소이지 셸이 다시 파싱하는
-/// 텍스트가 아니다).
+/// `open_terminal_command`/`open_terminal_program`/`open_terminal_program_sequence`
+/// 세 공개 진입점이 최종적으로 위임하는 실제 OS 스폰 로직(사설) — macOS:
+/// Terminal.app 새 창, Windows: PowerShell 새 콘솔 창에서 `shell_command`를
+/// 실행한다. 두 플랫폼 모두 앱이 자식 프로세스로 조용히 spawn해 출력을
+/// 캡처하는 것과 달리 사용자가 그 창을 직접 보고 입력(예: 브라우저 인증 코드
+/// 확인, 2FA)할 수 있는 진짜 대화형 세션을 연다 — RFC 8252가 전제하는 것과
+/// 같은 상호작용 방식이다.
 ///
 /// 두 플랫폼 모두 의도적으로 `SilentCommand::silent()`를 쓰지 않는다 — 이
 /// 파일의 다른 호출부(`resolve_binary`)와 달리, 애초에 이 창을 사용자가 보고
 /// 조작하게 하는 것이 목적이라 "조용히" 실행하면 기능 자체가 무너진다. Windows는
 /// 대신 `.windowed()`로 `CREATE_NEW_CONSOLE`을 **명시**한다(암묵적 콘솔 자동
-/// 생성에 기대지 않는다 — 설계 §E.1). Windows 분기는 이 머신에서 실행
-/// 검증이 불가능하다(미검증 — 실기 Windows PC 필요, 설계 §8 항목 5).
-pub fn open_terminal_command(shell_command: &str) -> Result<(), String> {
+/// 생성에 기대지 않는다 — 설계 §E.1). B2(2라운드 차단): `powershell.exe`를
+/// bare-name으로 스폰하지 않는다 — `platform::windows_system_tool`로
+/// `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` 절대경로를
+/// 조립해 실행한다(포터블 exe 배포물을 다운로드 폴더에 두고 쓰는 이 앱의
+/// 실제 배포 형태에서 "현재 실행 파일의 디렉터리"에 동명의 악성 실행파일이
+/// 놓이는 표면을 차단한다). `-NoProfile`도 함께 준다 — PowerShell 프로필
+/// (`%USERPROFILE%\Documents\WindowsPowerShell\profile.ps1`)은 사용자 쓰기
+/// 가능하고 OneDrive 동기화 대상인 경우가 흔한데, 하필 이 창은 gh/wrangler
+/// 인증 흐름이 뜨는 창이다. Windows 분기는 이 머신에서 실행 검증이
+/// 불가능하다(미검증 — 실기 Windows PC 필요, 설계 §8 항목 5).
+fn spawn_terminal_window(shell_command: &str) -> Result<(), String> {
     match platform::platform_now() {
-        Platform::Win => Command::new("powershell.exe")
-            .args(["-NoLogo", "-NoExit", "-Command", shell_command])
-            .windowed()
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("터미널을 여는 데 실패했습니다: {e}")),
+        Platform::Win => {
+            let roots = platform::EnvRoots::from_env();
+            let powershell =
+                platform::windows_system_tool(&roots, r"System32\WindowsPowerShell\v1.0\powershell.exe");
+            Command::new(powershell)
+                .args(["-NoLogo", "-NoProfile", "-NoExit", "-Command", shell_command])
+                .windowed()
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("터미널을 여는 데 실패했습니다: {e}"))
+        }
         Platform::Mac => {
-            // 기존 그대로(변경 없음).
+            // 기존 그대로(변경 없음) — 인용 순서는 반드시 "셸 인용(quote_token
+            // 이 이미 적용된 shell_command) → 그 결과 전체를 AppleScript
+            // 이스케이프"다. 순서를 뒤집으면 백슬래시가 어긋난다.
             let escaped = shell_command.replace('\\', "\\\\").replace('"', "\\\"");
             let script = format!(
                 "tell application \"Terminal\"\n  activate\n  do script \"{escaped}\"\nend tell"
@@ -135,17 +149,42 @@ pub fn open_terminal_command(shell_command: &str) -> Result<(), String> {
     }
 }
 
-/// 구조화된 진입점(설계 §E.3) — `open_terminal_command`가 문자열을 조립해
-/// 받는 것과 달리 프로그램 경로와 인자를 분리된 값으로 받는다. Windows 경로에
-/// 공백이 있으면(`C:\Program Files\...`) 문자열 `format!()` 조립이 그대로
-/// 깨지는 문제를 구조적으로 없앤다. 인용은 `platform::quote_token`/
-/// `build_terminal_command_line`이 담당한다 — macOS 출력은 무인용 규칙 덕에
-/// 기존 `format!("{program} {args}")` 문자열과 바이트 단위로 동일하다(회귀
-/// 없음).
+/// B1(2라운드 차단): 외부 출처 문자열(예: MCP 서버 이름 — `claude mcp list`
+/// 파싱 결과, 클론한 저장소의 `.mcp.json`이 채울 수 있다)이 이 경로로 조립되어
+/// 들어오면 POSIX 인용 규칙(mac)과 PowerShell 인용 규칙(win)이 어긋나는
+/// 인젝션 표면이 생긴다(macOS는 지금 방어가 맞게 작동하지만, Windows 분기를
+/// 켜는 순간 같은 데이터에 대해 방어가 무효가 된다 — PowerShell은 POSIX
+/// 작은따옴표 규칙을 따르지 않는다). 시그니처를 `&'static str`로 좁혀
+/// "리터럴만 이 경로로 간다"는 전제를 주석이 아니라 **타입**으로 강제한다 —
+/// 동적으로 조립해야 하는 호출부(예: mcp_install/mcp_login)는 컴파일이 깨져
+/// 구조적으로 `open_terminal_program`/`open_terminal_program_sequence`(인용
+/// 책임이 `platform::quote_token` 한 곳으로 모이는 구조화된 진입점)로
+/// 이관된다.
+pub fn open_terminal_command(shell_command: &'static str) -> Result<(), String> {
+    spawn_terminal_window(shell_command)
+}
+
+/// 구조화된 진입점(설계 §E.3) — `open_terminal_command`가 리터럴 문자열만
+/// 받는 것과 달리 프로그램 경로와 인자를 분리된 값(둘 다 런타임에 동적으로
+/// 조립 가능)으로 받는다. Windows 경로에 공백이 있으면(`C:\Program Files\...`)
+/// 문자열 `format!()` 조립이 그대로 깨지는 문제를 구조적으로 없앤다. 인용은
+/// `platform::quote_token`/`build_terminal_command_line`이 전담한다 — macOS
+/// 출력은 무인용 규칙 덕에 기존 `format!("{program} {args}")` 문자열과
+/// 바이트 단위로 동일하다(회귀 없음).
 pub fn open_terminal_program(program: &str, args: &[&str]) -> Result<(), String> {
     let plat = platform::platform_now();
     let line = platform::build_terminal_command_line(plat, program, args);
-    open_terminal_command(&line)
+    spawn_terminal_window(&line)
+}
+
+/// `open_terminal_program`의 다중 커맨드 버전 — `commands`(각 원소는
+/// `(program, args)`)를 순서대로 실행하는 체인 명령을 한 터미널 세션에서
+/// 연다(예: `claude mcp add` → `claude mcp login`, B1). 각 커맨드의 인용도
+/// 동일하게 `platform::quote_token`이 전담한다.
+pub fn open_terminal_program_sequence(commands: &[(&str, &[&str])]) -> Result<(), String> {
+    let plat = platform::platform_now();
+    let line = platform::build_chained_terminal_command_line(plat, commands);
+    spawn_terminal_window(&line)
 }
 
 #[cfg(test)]
