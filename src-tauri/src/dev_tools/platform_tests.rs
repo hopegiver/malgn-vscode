@@ -408,29 +408,44 @@
     }
 
     // 보강 지시: `'`, 공백, `$`, 백틱, `;`, `&`, 후행 백슬래시, `%VAR%`를 표로
-    // 검증한다. Win은 계산된 이스케이프 규칙과 정확히 일치하는지(순수함수
-    // 검증), Mac은 실제 `sh -c`로 왕복시켜(subprocess 실측) 원본이 그대로
+    // 검증한다. Mac은 실제 `sh -c`로 왕복시켜(subprocess 실측) 원본이 그대로
     // 복원되는지 확인한다.
+    //
+    // M3 수정(review-devtools-windows-parity-2026-09-15.md): Win 쪽은 이전에
+    // `format!("'{}'", case.replace('\'', "''"))`로 quote_token **자신의
+    // 구현식을 그대로 재작성**해 비교했다 — 구현이 틀려도 기대값이 같이
+    // 틀려 절대 실패하지 않는 동어반복이었다. 이제 **미리 계산해 고정한
+    // 리터럴** 표와 비교한다(quote_token 호출부와 독립적으로 값을 고정) —
+    // `quote_token_win_always_single_quotes_and_escapes_embedded_quotes`가
+    // 이미 쓰던 것과 같은 패턴이다. 이 표조차도 "PowerShell 파서가 실제로
+    // 이렇게 해석하는가"는 검증하지 못한다 — 그건
+    // `quote_token_win_round_trips_through_real_powershell_encoded_command`
+    // (`#[cfg(windows)]`, 이 파일 하단)가 실제 `powershell.exe`로 왕복시켜
+    // 검증한다(이 머신에서는 실행 불가 — windows-latest CI 러너 전용, 그리고
+    // 이 브랜치가 아직 push되지 않아 당장은 그 러너에서도 돌지 않는다).
     #[test]
     fn quote_token_table_covers_shell_metacharacters_both_platforms() {
-        let cases: &[&str] = &[
-            "'",
-            "has space",
-            "$HOME",
-            "`whoami`",
-            "a;b",
-            "a&b",
-            r"trailing\",
-            "%VAR%",
+        // (입력, Windows에서 기대하는 고정 리터럴) — quote_token의 코드를
+        // 다시 실행해 만들지 않고 손으로 미리 계산해 둔 값이다.
+        let win_cases: &[(&str, &str)] = &[
+            ("'", "''''"),
+            ("has space", "'has space'"),
+            ("$HOME", "'$HOME'"),
+            ("`whoami`", "'`whoami`'"),
+            ("a;b", "'a;b'"),
+            ("a&b", "'a&b'"),
+            (r"trailing\", r"'trailing\'"),
+            ("%VAR%", "'%VAR%'"),
         ];
-        for case in cases {
+        for (case, expected_win) in win_cases {
             let win = quote_token(Platform::Win, case);
             assert_eq!(
-                win,
-                format!("'{}'", case.replace('\'', "''")),
-                "Win quote_token 결과가 예상 이스케이프 규칙과 다릅니다: {case:?}"
+                win, *expected_win,
+                "Win quote_token 결과가 고정된 기대값과 다릅니다: {case:?}"
             );
+        }
 
+        for (case, _) in win_cases {
             let mac = quote_token(Platform::Mac, case);
             let output = std::process::Command::new("sh")
                 .arg("-c")
@@ -510,9 +525,15 @@
             .trim_end()
             .ends_with(&malicious));
 
-        // Windows(powershell.exe 5.1)는 이 머신에서 실행할 수 없다 — quote_token의
-        // 결정적 이스케이프 규칙(작은따옴표 안에서는 `;`가 문장 구분자로
-        // 해석되지 않는다, G-7)을 순수함수 등식으로 대신 검증한다.
+        // Windows(powershell.exe 5.1)는 이 머신에서 실행할 수 없다 — `malicious`가
+        // 프로세스 id로 만든 런타임 값(마커 경로)을 담고 있어 정적 리터럴로
+        // 고정할 수 없으므로, 여기서는 quote_token의 결정적 이스케이프 규칙만
+        // 등식으로 확인한다(이 등식 하나만으로는 PowerShell 파서가 실제로
+        // 안전하게 해석하는지 증명하지 못한다 — 알려진 한계). 실제
+        // `powershell.exe`로 이 시나리오 자체를 왕복 검증하는 것은
+        // `build_terminal_command_line_win_neutralizes_malicious_mcp_server_name_via_real_powershell`
+        // (`#[cfg(windows)]`, 아래)이 담당한다 — 그게 이 테스트의 Windows
+        // 쪽 권위 있는 검증이다.
         let win_line =
             build_terminal_command_line(Platform::Win, r"C:\claude.exe", &["mcp", "login", &malicious]);
         assert_eq!(
@@ -522,6 +543,151 @@
                 malicious.replace('\'', "''")
             )
         );
+    }
+
+    // ── #[cfg(windows)] 실제 PowerShell 왕복 검증(M3 처방 a) ──
+    //
+    // review-devtools-windows-parity-2026-09-15.md M3: 위 두 테스트의 Win
+    // 분기는 quote_token의 구현식을 그대로 재작성하거나(수정 전) 고정
+    // 리터럴과 비교할 뿐이라(수정 후) PowerShell **자신의 파서**가 실제로
+    // 이 인용을 안전하게 되돌리는지는 검증하지 못한다. 아래 두 테스트가 그
+    // 마지막 층을 담당한다 — `#[cfg(windows)]`라 이 머신(Mac)에서는 컴파일도
+    // 실행도 되지 않고, windows-latest CI 러너에서만 돈다(그리고 이 브랜치가
+    // 아직 push되지 않아 당장은 그 러너에서도 돌지 않는다 — 위임서 제약).
+    // 프로덕션 경로와 동일하게 `-Command`가 아니라
+    // `platform::encode_powershell_command` + `-EncodedCommand`로 넘긴다(M3
+    // 처방 b — cli_launcher.rs::spawn_terminal_window와 동형).
+    #[cfg(windows)]
+    #[test]
+    fn quote_token_win_round_trips_through_real_powershell_encoded_command() {
+        let cases: &[&str] = &[
+            "'",
+            "has space",
+            "$HOME",
+            "`whoami`",
+            "a;b",
+            "a&b",
+            r"trailing\",
+            "%VAR%",
+        ];
+        for case in cases {
+            let quoted = quote_token(Platform::Win, case);
+            // Write-Output에 그대로 넘겨 PowerShell 자신이 이 인용을 해석한
+            // 결과를 stdout으로 받는다 — quote_token의 이스케이프가 실제
+            // PowerShell 파서를 통과한 뒤에도 원본과 바이트 단위로 같아야
+            // 한다.
+            let script = format!("Write-Output {quoted}");
+            let encoded = encode_powershell_command(&script);
+            let output = std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-EncodedCommand", &encoded])
+                .output()
+                .expect("이 CI 러너에는 powershell.exe가 있어야 합니다");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                stdout.trim_end_matches(['\r', '\n']),
+                *case,
+                "PowerShell 왕복 결과가 원본과 다릅니다: {case:?}, script={script:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_terminal_command_line_win_neutralizes_malicious_mcp_server_name_via_real_powershell() {
+        // Mac 쪽은 위 build_terminal_command_line_neutralizes_malicious_mcp_
+        // server_name_as_single_arg가 실제 `sh -c`로 실측한다 — 이 테스트가
+        // 그 Windows 대응이다. 악성 MCP 서버 이름(외부 출처, `claude mcp
+        // list` 파싱 결과일 수 있다)이 PowerShell 명령 구분자(`;`)로
+        // 해석되지 않고 하나의 리터럴 인자로만 도달하는지 실제
+        // `powershell.exe`로 확인한다.
+        let marker = std::env::temp_dir().join(format!(
+            "malgn_vscode_b1_win_injection_marker_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let malicious = format!(
+            "x'; New-Item -Path '{}' -ItemType File -Force | Out-Null; '",
+            marker.to_string_lossy()
+        );
+
+        // Write-Output을 프로그램으로 써서 각 인자를 그대로 되돌려 받는다
+        // (call 연산자 `&`는 실행파일뿐 아니라 cmdlet 이름도 호출할 수
+        // 있다) — Mac 쪽이 `/bin/echo`로 하는 것과 같은 역할.
+        let line =
+            build_terminal_command_line(Platform::Win, "Write-Output", &["mcp", "login", &malicious]);
+        let encoded = encode_powershell_command(&line);
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-EncodedCommand", &encoded])
+            .output()
+            .expect("이 CI 러너에는 powershell.exe가 있어야 합니다");
+
+        assert!(
+            !marker.exists(),
+            "quote_token이 안전하게 인용하지 못해 인젝션된 New-Item이 실행됐습니다: {line}"
+        );
+        let _ = std::fs::remove_file(&marker);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().last().unwrap_or("").trim_end_matches(['\r', '\n']);
+        assert_eq!(
+            last_line, malicious,
+            "Write-Output의 마지막 출력이 악성 인자 원본과 다릅니다(분리/변형된 것으로 의심): {line}"
+        );
+    }
+
+    // ── encode_powershell_command(M3 처방 b, 순수함수 — 이 머신에서 100% 검증) ──
+    //
+    // review-devtools-windows-parity-2026-09-15.md M3: 이 함수(UTF-16LE 인코딩
+    // + base64)는 PowerShell 실행과 무관한 순수 변환이라, 인코딩 결과를
+    // 손으로(이 함수 내부 구현을 다시 호출하지 않고) UTF-16LE→base64
+    // 디코딩해 원본과 바이트 단위로 비교할 수 있다. PowerShell이 실제로 이
+    // 형식을 기대해 올바르게 디코딩·실행한다는 사실 자체는 Microsoft 공식
+    // 문서 근거이며 이 머신에서 실행 검증은 불가능하다(미검증 — 위 두
+    // `#[cfg(windows)]` 테스트가 그 부분을 담당한다).
+    #[test]
+    fn encode_powershell_command_round_trips_via_manual_utf16le_base64_decode() {
+        use base64::Engine;
+        let cases: &[&str] = &[
+            "",
+            "auth login",
+            "'",
+            "has space",
+            "$HOME",
+            "`whoami`",
+            "a;b",
+            "a&b",
+            r"trailing\",
+            "%VAR%",
+            "한글 사용자명",
+        ];
+        for case in cases {
+            let encoded = encode_powershell_command(case);
+            // base64 표준 알파벳만 쓰는지 — 공백·따옴표·`;`·`&` 같은 특수문자가
+            // 이 인자 자체에는 전혀 나타나지 않는다는, 이 처방의 핵심 값어치를
+            // 직접 확인한다.
+            assert!(
+                encoded
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')),
+                "base64 출력에 예상 밖 문자가 있습니다: {encoded:?}"
+            );
+
+            let decoded_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .expect("encode_powershell_command은 항상 유효한 base64를 내야 합니다");
+            assert_eq!(
+                decoded_bytes.len() % 2,
+                0,
+                "UTF-16LE는 항상 짝수 바이트여야 합니다: {case:?}"
+            );
+            let u16s: Vec<u16> = decoded_bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            let decoded = String::from_utf16(&u16s)
+                .expect("디코딩된 UTF-16LE가 유효한 문자열이어야 합니다");
+            assert_eq!(decoded, *case, "왕복 결과가 원본과 다릅니다: {case:?}");
+        }
     }
 
     // ── windows_system_tool(B2, 2라운드 차단) ──

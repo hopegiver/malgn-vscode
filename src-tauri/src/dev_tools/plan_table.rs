@@ -76,6 +76,11 @@ pub(crate) enum ManualReason {
     // 신규 요구사항: 이 도구는 아직 설치되어 있지 않다(설치 커맨드는 v1에서 항상
     // Manual로만 안내한다 — 근거는 파일 하단 주석 참조).
     NotInstalled,
+    // M1(review-devtools-windows-parity-2026-09-15.md) 재발 방지: 설치방식은
+    // 정확히 분류됐지만(Unknown이 아님) 이 (도구, 방식) 조합에 자동 실행을
+    // 의도적으로 제공하지 않는 경우. 일반 UnknownMethod(=분류 자체가
+    // 실패했다는 뜻)와 의미가 다르므로 별도 사유로 구분한다.
+    UnsupportedMethod,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -390,6 +395,22 @@ const MANUAL_UNKNOWN_METHOD: ManualPlan = ManualPlan {
     copyable_command: None,
     doc_url: None,
 };
+// M1(review-devtools-windows-parity-2026-09-15.md): mod.rs DEV_TOOLS의 Claude
+// Windows 후보 3번째(`%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe`)가
+// 실제로 존재하면 WingetPackage로 분류된다. 설계 §B.2 "대안 A" 기각 근거대로
+// Claude Code는 winget upgrade가 아니라 `claude update`(자기 자신 갱신)가
+// 정본이고, 두 경로가 경쟁하게 두지 않기로 이미 결정했다 — 그래서 여기서
+// winget upgrade로 라우팅하지 않는다(새 실행 경로 추가는 이 라운드의 범위
+// 밖 — 구조적 판단이라 PM 승인 없이 넓히지 않는다). 대신 이 조합을 일반
+// UnknownMethod 문구("설치 방식을 확인할 수 없습니다" — 사실과 다르다, 이미
+// 정확히 알고 있다)로 조용히 흘려보내지 않고 사실 그대로 말하는 전용 문구로
+// 명시적으로 라우팅한다(아래 UPDATE_TABLE 행 참고).
+const MANUAL_CLAUDE_WINGET_UNSUPPORTED: ManualPlan = ManualPlan {
+    reason: ManualReason::UnsupportedMethod,
+    message_ko: "Claude Code가 winget으로 설치된 것으로 보이지만, 이 방식의 자동 업데이트는 아직 지원하지 않습니다. 터미널에서 `claude update`를 직접 실행해주세요.",
+    copyable_command: Some("claude update"),
+    doc_url: Some("https://docs.claude.com/en/docs/claude-code/setup"),
+};
 pub(crate) const MANUAL_NO_RUNNER: ManualPlan = ManualPlan {
     reason: ManualReason::NoRunner,
     // 설계 §B.2: winget 슬롯 추가로 실행기 후보가 하나 더 늘었으므로 문구도
@@ -445,6 +466,15 @@ static UPDATE_TABLE: &[Row] = &[
         tool: Some(ToolId::Gh),
         method: MethodKind::WingetPackage,
         action: Action::Run(RUN_WINGET_UPGRADE_GH),
+    },
+    // M1 재발 방지(위 MANUAL_CLAUDE_WINGET_UNSUPPORTED 주석 참고): Claude가
+    // WingetPackage로 분류돼도 winget upgrade로 라우팅하지 않는다 — 대신
+    // 이 행이 명시적으로 매칭돼 일반 UnknownMethod 폴백(사실과 다른 문구)이
+    // 아니라 전용 문구로 안내한다.
+    Row {
+        tool: Some(ToolId::Claude),
+        method: MethodKind::WingetPackage,
+        action: Action::Manual(MANUAL_CLAUDE_WINGET_UNSUPPORTED),
     },
     Row {
         tool: None,
