@@ -110,7 +110,35 @@ jobs:
       # 스텝과 같은 `src-tauri -> target` 캐시를 재사용하므로 추가 컴파일 비용은
       # 증분 빌드 수준이다. 출력이 짧고 단일 스텝 로그로 충분히 읽히므로 별도
       # 아티팩트 업로드는 추가하지 않는다(복잡도 대비 이득이 없음).
+      #
+      # `shell: bash`를 명시한다 — windows-latest의 기본 셸은 pwsh라 `\` 줄바꿈
+      # 연속 문자(bash 관례)가 단항 연산자 뒤 문장 종료로 오파싱되어 `--ignored`가
+      # ParserError를 냈다(run 35057848027). GitHub 호스티드 windows-latest에는
+      # Git for Windows의 bash가 기본 내장되어 있어 `shell: bash` 지정만으로 두
+      # OS에서 동일한 스크립트가 해석된다. 이 지정은 이 스텝에만 적용되며 잡의
+      # 다른 `run:` 스텝(`cargo test (debug profile)`)은 여전히 OS 기본 셸을 그대로
+      # 쓴다 — 이미 통과하던 스텝의 셸을 바꿔 새 위험을 얹지 않기 위함이다.
+      # 잡 전체에 `defaults.run.shell: bash`를 거는 방식도 검토했으나, 이미 초록인
+      # `cargo test (debug profile)` 스텝까지 굳이 셸을 바꿔 불필요한 회귀 위험을
+      # 추가하므로 배제했다.
+      #
+      # 이름 필터가 0건을 매칭하면 `cargo test`는 "0 passed; 0 failed"로 exit 0을
+      # 반환해 조용히 통과한다(테스트 스위트가 우연히 비어도 초록으로 보이는 함정).
+      # 이를 막기 위해 출력에서 정확히 "1 passed"를 grep으로 확인하고, 없으면 이
+      # 스텝 자체를 실패시킨다 — 실패 시에도 cargo test의 원출력을 먼저 echo하여
+      # 로그에서 원인을 바로 읽을 수 있게 한다.
       - name: cargo test -- dev-tools 탐지 증거 덤프 (ignored, evidence)
+        shell: bash
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml -- \
-            --ignored --nocapture dump_dev_tool_status_for_ci_evidence
+          set -uo pipefail
+          output=$(cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture dump_dev_tool_status_for_ci_evidence 2>&1)
+          status=$?
+          echo "$output"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::cargo test 실행 자체가 실패했습니다 (exit $status)"
+            exit "$status"
+          fi
+          if ! grep -q "test result: ok\. 1 passed" <<< "$output"; then
+            echo "::error::dump_dev_tool_status_for_ci_evidence 가 정확히 1건 매칭/통과하지 않았습니다 — 이름 필터 0건 매칭 시 조용히 통과하는 함정 방지"
+            exit 1
+          fi
