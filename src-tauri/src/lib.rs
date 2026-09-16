@@ -68,6 +68,7 @@ pub fn run() {
             otel_settings::otel_settings_get,
             otel_settings::otel_settings_save,
             plugins::update_plugin,
+            plugins::install_plugin,
             plugins::refresh_marketplaces,
             workspace::list_project_tree,
             workspace::read_project_file,

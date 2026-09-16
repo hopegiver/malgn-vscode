@@ -55,6 +55,13 @@ export async function refreshMarketplaces(): Promise<CommandResult> {
   return invoke<CommandResult>('refresh_marketplaces');
 }
 
+// 사용자가 명시적으로 승인한 실제 실행 — `claude plugin install <id>`를 그대로
+// 호출한다. 자유 입력 필드 없음(호출부가 고정된 기본 플러그인 id만 넘긴다).
+// 성공해도 Claude Code 재시작 전까지는 적용되지 않는다.
+export async function installPlugin(pluginId: string): Promise<CommandResult> {
+  return invoke<CommandResult>('install_plugin', { pluginId });
+}
+
 // 플러그인에 속하지 않은 개인 전역 에이전트/스킬 — ~/.claude/agents/*.md,
 // ~/.claude/skills/*/SKILL.md 실물을 그대로 읽는다(조회 전용, 쓰기 없음).
 // status가 "invalid"면 name은 파일/디렉터리명으로 채워지고 description은

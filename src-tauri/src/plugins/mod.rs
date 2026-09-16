@@ -116,8 +116,17 @@ pub fn refresh_marketplaces() -> CommandResult {
     run_claude_command(&["plugin", "marketplace", "update"])
 }
 
-// ⚠️ update_plugin()/refresh_marketplaces()를 실제로 호출하는 테스트는 의도적으로
-// 두지 않는다 — 이 머신에 실제 설치된 malgn-agent 플러그인(이 에이전트 자신이
-// 로드되어 있는 바로 그 플러그인)을 `cargo test`를 돌릴 때마다 매번 실제로
-// 업데이트해버리는 부작용은 누구도 원하지 않는다. 컴파일 통과(`cargo check`)로만
-// 검증했고, 실제 클릭 검증은 사용자가 직접 GUI에서 해야 한다.
+/// `plugin_id`는 "name@marketplace" 형식(예: "malgn-agent@malgnsoft-plugins")만 받는다
+/// — update_plugin과 동일한 id 포맷. `-y`로 비대화형 확인을 건너뛰고,
+/// `-s user`로 설치 스코프를 user로 고정한다(installed_plugins.json에서
+/// scope="user"만 "설치된 플러그인"으로 취급하는 기존 규칙과 맞춘다 — plugins/installed.rs 참고).
+#[tauri::command]
+pub fn install_plugin(plugin_id: String) -> CommandResult {
+    run_claude_command(&["plugin", "install", &plugin_id, "-y", "-s", "user"])
+}
+
+// ⚠️ update_plugin()/refresh_marketplaces()/install_plugin()을 실제로 호출하는
+// 테스트는 의도적으로 두지 않는다 — 이 머신에 실제 설치된 malgn-agent 플러그인
+// (이 에이전트 자신이 로드되어 있는 바로 그 플러그인)을 `cargo test`를 돌릴 때마다
+// 매번 실제로 업데이트/재설치해버리는 부작용은 누구도 원하지 않는다. 컴파일 통과
+// (`cargo check`)로만 검증했고, 실제 클릭 검증은 사용자가 직접 GUI에서 해야 한다.
