@@ -4,14 +4,17 @@
 
 use super::log;
 use super::runtime::{self, RunStatus, TaskKey};
+use super::schedule::ScheduleSnapshot;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// 실행 대상으로 확정된 task 하나의 스냅숏 — "running으로 마킹" 시점의
-/// prompt/subagent/timeout을 그대로 들고 다닌다. 실제 `claude -p` 실행(수초~
-/// 수분) 도중 사용자가 같은 task를 편집해도 이번 실행은 마킹 시점 값으로
-/// 끝까지 진행한다(현행 `DueTaskSnapshot` 규율 유지).
+/// prompt/subagent/timeout/schedule을 그대로 들고 다닌다. 실제 `claude -p`
+/// 실행(수초~수분) 도중 사용자가 같은 task를 편집해도 이번 실행은 마킹
+/// 시점 값으로 끝까지 진행한다(현행 `DueTaskSnapshot` 규율 유지) — 다음
+/// 회차 계산(`schedule::next_run_after_finish`)도 이 스냅숏의 `schedule`
+/// 값을 기준으로 한다.
 pub(crate) struct TaskSnapshot {
     pub key: TaskKey,
     pub project_path: PathBuf,
@@ -19,7 +22,7 @@ pub(crate) struct TaskSnapshot {
     pub task_name: String,
     pub prompt: String,
     pub subagent: Option<String>,
-    pub interval_minutes: u32,
+    pub schedule: ScheduleSnapshot,
     pub timeout_minutes: u32,
 }
 
@@ -207,7 +210,7 @@ pub(crate) fn run_task(snapshot: TaskSnapshot, app_handle: tauri::AppHandle) {
     let next_run_at = if runtime::SHUTTING_DOWN.load(Ordering::Relaxed) {
         None
     } else {
-        Some(finished_at + chrono::Duration::minutes(snapshot.interval_minutes as i64))
+        super::schedule::next_run_after_finish(&snapshot.schedule, finished_at)
     };
 
     runtime::mark_finished(

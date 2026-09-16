@@ -17,6 +17,10 @@ export interface MalgnAgentConfigLimits {
   readonly maxTimeout: number;
   readonly maxConcurrency: number;
   readonly startupGraceMinutes: number;
+  // 고정시각 스케줄 "따라잡기 창"(분) — src-tauri/src/config/mod.rs에서
+  // 항상 내려주는 비-옵셔널 값이다. 프론트는 이 숫자를 하드코딩하지 않고
+  // 이 필드에서만 읽는다(views/autonomousTasks.ts).
+  readonly missedRunGraceMinutes: number;
 }
 
 export interface MalgnAgentConfigStatus {

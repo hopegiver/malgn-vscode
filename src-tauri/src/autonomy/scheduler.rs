@@ -8,6 +8,7 @@ use super::config::{self, AutonomyTaskConfig};
 use super::log;
 use super::runner::{self, TaskSnapshot};
 use super::runtime::{self, TaskKey, TaskRuntime};
+use super::schedule;
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -132,14 +133,14 @@ pub(crate) fn tick(app_handle: &tauri::AppHandle) {
 
     let scanned = scan_all_tasks(&roots);
     let now = Utc::now();
-    let startup_grace = chrono::Duration::minutes(config::STARTUP_GRACE_MINUTES as i64);
 
-    // reconcile: 새 키 등록(`next_run_at = now + STARTUP_GRACE`), 사라진 키는
-    // 실행 중이 아닐 때만 제거.
+    // reconcile: 새 키 등록(`next_run_at = schedule::initial_next_run_at(task, now)`
+    // — Interval은 `now + STARTUP_GRACE`로 현행 100% 동일, FixedTime은 놓친
+    // 회차 따라잡기/건너뛰기까지 포함), 사라진 키는 실행 중이 아닐 때만 제거.
     let mut seen_keys: HashSet<TaskKey> = HashSet::new();
     for item in &scanned {
         let key: TaskKey = (item.project_path_str.clone(), item.task.id.clone());
-        runtime::ensure_registered(&key, startup_grace);
+        runtime::ensure_registered(&key, schedule::initial_next_run_at(&item.task, now));
         seen_keys.insert(key);
     }
     runtime::prune_missing(&seen_keys);
@@ -181,11 +182,17 @@ pub(crate) fn tick(app_handle: &tauri::AppHandle) {
             task_name: item.task.name.clone(),
             prompt: item.task.prompt.clone(),
             subagent: item.task.subagent.clone(),
-            interval_minutes: item.task.interval,
+            schedule: schedule::ScheduleSnapshot::from(&item.task),
             timeout_minutes,
         };
 
-        runtime::mark_started(&key);
+        // M1: select_due(조회 락)와 mark_started(마킹 락) 사이의 창에서
+        // "지금 실행"(try_start_now)이 같은 키를 먼저 시작시켰을 수 있다 —
+        // mark_started가 false를 반환하면(이미 running) 두 번째 워커를
+        // spawn하지 않는다.
+        if !runtime::mark_started(&key) {
+            continue;
+        }
         runner::emit_status(app_handle, &key);
 
         let handle = app_handle.clone();

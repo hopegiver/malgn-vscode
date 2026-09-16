@@ -19,12 +19,50 @@ pub(crate) mod config;
 mod log;
 mod runner;
 mod runtime;
+mod schedule;
 mod scheduler;
 
 use serde::Serialize;
 use std::time::Duration;
 
 pub use runtime::AutonomyRuntimeStatus;
+
+/// TaskKey의 `project_path` 컴포넌트를 만드는 정본(C1) — `resolve_validated_project_root`
+/// (`workspace/tree.rs:39`)가 돌려주는 **std** `canonicalize()` 결과를,
+/// 스케줄러 스캐너(`scheduler::scan_all_tasks`/`autonomy_list_blocking`)가
+/// 쓰는 **`dunce::canonicalize`** 기반 경로 표현으로 다시 맞춘다.
+///
+/// Windows에서 std `std::fs::canonicalize()`는 `\\?\`(확장 길이) 접두를
+/// 붙이는데, 이 저장소가 `dev_tools/classify.rs:456-464`에 이미 문서화해 둔
+/// 바로 그 함정이다 — 스케줄러 쪽 워크스페이스 루트는
+/// `config/user_config.rs:221`의 `dunce::canonicalize`에서 오므로, 접두
+/// 유무가 갈리면 이 커맨드들이 만드는 TaskKey가 스케줄러 키와 **항상**
+/// 달라진다(유령 키 → 중복 실행·상태 미표시). `dunce::canonicalize`를 한 번
+/// 더 통과시키면 접두가 제거돼 두 문자열이 같아진다(이미 절대경로이므로
+/// 재정규화 비용만 들고, unix에서는 no-op).
+///
+/// 근본 수정(`resolve_validated_project_root` 자체를 `dunce`로 바꾸는 것)은
+/// `session_chat`까지 영향이 번지므로 이번 브랜치 스코프 밖이다 — 리뷰
+/// 권고대로 국소 수정(이 헬퍼 + 호출부 2곳)만 적용한다.
+fn task_key_root(root: &std::path::Path) -> String {
+    dunce::canonicalize(root)
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+/// 저장(신규 등록/편집) 직후 즉시 재스케줄해야 하는지 판정하는 순수 함수 —
+/// M3(FixedTime으로 저장되면 항상 재계산)와 m1(모드 자체가 바뀌면 Interval↔
+/// FixedTime 어느 방향이든 재계산, "옛 고정 시각이 그대로 남는" 문제 해소)을
+/// 하나의 조건으로 합친다. Interval 모드 그대로 값만 바뀐 저장(모드 불변)은
+/// `false` — 기존 "편집은 다음 회차부터 반영" 동작을 그대로 보존한다.
+fn should_reschedule_on_save(
+    previous_mode: Option<config::ScheduleMode>,
+    new_mode: config::ScheduleMode,
+) -> bool {
+    new_mode == config::ScheduleMode::FixedTime
+        || previous_mode.map(|m| m != new_mode).unwrap_or(false)
+}
 
 #[derive(Serialize, Clone, Debug)]
 pub struct AutonomyProjectTasks {
@@ -94,11 +132,36 @@ pub fn autonomy_save_task(
 ) -> Result<(), String> {
     let root = crate::resolve_validated_project_root(&project_path)
         .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
+    let task_id = task.id.clone();
 
     let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
     let mut file = config::read_autonomy_file(&root);
+    let previous_mode = file
+        .tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .map(|t| t.schedule_mode);
     config::upsert_task(&mut file, task);
-    config::write_autonomy_file(&root, &file)
+    config::write_autonomy_file(&root, &file)?;
+    drop(_guard);
+
+    // 재스케줄 조건은 `should_reschedule_on_save`(M3·m1) 참조. `initial_next_run_at`
+    // (앱 시작 전용 30분 따라잡기 앵커)은 편집 경로에 쓰지 않는다 — 대신
+    // 앵커 없는 `schedule::reschedule_next_run_at`을 쓴다(M3: "오늘 이미
+    // 돈 회차"가 편집 저장마다 다시 잡혀 같은 날 두 번째 실행이 되는 것을
+    // 막는다). 미등록 키도 즉시 삽입하는 upsert형 `reschedule_or_register`를
+    // 쓴다(M4: 신규 등록 직후 다음 tick까지 이어지던 "실행 시각이 올바르지
+    // 않습니다" 거짓 오류 창을 없앤다).
+    // TaskKey의 경로 컴포넌트는 `task_key_root`로 스캐너와 같은 표현으로
+    // 맞춘다(C1).
+    if let Some(saved) = file.tasks.iter().find(|t| t.id == task_id) {
+        if should_reschedule_on_save(previous_mode, saved.schedule_mode) {
+            let key: runtime::TaskKey = (task_key_root(&root), task_id);
+            runtime::reschedule_or_register(&key, schedule::reschedule_next_run_at(saved, chrono::Utc::now()));
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -124,11 +187,88 @@ pub fn autonomy_set_enabled(
 
     let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
     let mut file = config::read_autonomy_file(&root);
-    let Some(task) = file.tasks.iter_mut().find(|t| t.id == task_id) else {
+    let (should_reschedule, saved) = {
+        let Some(task) = file.tasks.iter_mut().find(|t| t.id == task_id) else {
+            return Err("해당 자율업무를 찾을 수 없습니다.".to_string());
+        };
+        task.enabled = enabled;
+        let should_reschedule = enabled && task.schedule_mode == config::ScheduleMode::FixedTime;
+        (should_reschedule, task.clone())
+    };
+    config::write_autonomy_file(&root, &file)?;
+    drop(_guard);
+
+    // PM 결정(M2): 중지했던 FixedTime task를 재개하면 밀린 회차를 즉시
+    // 돌리지 않고 다음 예정 시각까지 기다린다 — 설계 §5가 세운 "앱이
+    // 꺼져 있던 동안 지난 회차는 건너뛴다" 원칙을 재개(중지→enabled) 전이
+    // 에도 동일 적용한다. Interval 모드 재개는 손대지 않는다(완료 후
+    // interval 경과분을 즉시 도는 것은 기존에도 있던 동작이고 이번 리뷰의
+    // 지적 대상이 아니다 — 리뷰 M2 사유).
+    if should_reschedule {
+        let key: runtime::TaskKey = (task_key_root(&root), task_id);
+        runtime::reschedule_or_register(&key, schedule::reschedule_next_run_at(&saved, chrono::Utc::now()));
+    }
+
+    Ok(())
+}
+
+/// "지금 실행" 수동 트리거 — `next_run_at` 도래를 기다리지 않고 해당 task를
+/// 즉시 실행시킨다. 프론트 계약: `Ok(())` 성공 / `Err(한국어 메시지)` 실패
+/// (프론트가 그대로 토스트로 띄운다). 트리거 패턴은 `scheduler::tick`의
+/// due 실행 경로(mark_started → emit_status → 워커 스레드 spawn)를 그대로
+/// 재사용하고 due 판정(`select_due`)만 건너뛴다.
+///
+/// 결정 1(이미 실행 중이면 거부)·2(concurrency 한도 존중)는
+/// `runtime::try_start_now` 한 곳에서 원자적으로 처리한다. 결정 3(수동 실행
+/// 후 `next_run_at` 특별 처리 없음)은 이 함수가 `next_run_at`을 전혀 건드리지
+/// 않는 것으로 구현된다 — `runner::run_task`가 완료 시점에 기존
+/// `schedule::next_run_after_finish`로 정상 재계산한다.
+#[tauri::command]
+pub fn autonomy_run_now(
+    app_handle: tauri::AppHandle,
+    project_path: String,
+    task_id: String,
+) -> Result<(), String> {
+    let root = crate::resolve_validated_project_root(&project_path)
+        .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
+
+    let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
+    let file = config::read_autonomy_file(&root);
+    drop(_guard);
+
+    let Some(task) = file.tasks.iter().find(|t| t.id == task_id) else {
         return Err("해당 자율업무를 찾을 수 없습니다.".to_string());
     };
-    task.enabled = enabled;
-    config::write_autonomy_file(&root, &file)
+
+    let cfg = crate::config::load().map_err(|e| format!("전역 설정을 불러오지 못했습니다: {e}"))?;
+    let concurrency = cfg
+        .autonomy
+        .concurrency
+        .unwrap_or(config::DEFAULT_CONCURRENCY)
+        .clamp(1, config::MAX_CONCURRENCY) as usize;
+
+    let key: runtime::TaskKey = (task_key_root(&root), task_id.clone());
+    runtime::try_start_now(&key, concurrency)?;
+
+    let timeout_minutes = config::effective_timeout_minutes(task, cfg.autonomy.default_timeout);
+    let snapshot = runner::TaskSnapshot {
+        key: key.clone(),
+        project_path: root,
+        task_id: task.id.clone(),
+        task_name: task.name.clone(),
+        prompt: task.prompt.clone(),
+        subagent: task.subagent.clone(),
+        schedule: schedule::ScheduleSnapshot::from(task),
+        timeout_minutes,
+    };
+
+    runner::emit_status(&app_handle, &key);
+
+    std::thread::spawn(move || {
+        runner::run_task(snapshot, app_handle);
+    });
+
+    Ok(())
 }
 
 /// 메모리 런타임 상태 조회 — 설정(파일)과 별개 커맨드로 분리해, "설정의 값"과
@@ -168,6 +308,8 @@ pub(crate) fn request_shutdown_and_wait(max_wait: Duration) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     // 경로 트래버설 차단 — 보안 관련이라 회귀 방지용으로 고정해둔다. 이
     // 커맨드가 직접 정의한 로직은 아니지만(`crate::resolve_validated_project_root`
     // 위임), 자율업무 3개 커맨드 전부가 이 게이트를 통과시킨다는 전제를 이
@@ -176,5 +318,91 @@ mod tests {
     fn resolve_validated_project_root_rejects_path_outside_workspace() {
         assert!(crate::resolve_validated_project_root("/etc").is_none());
         assert!(crate::resolve_validated_project_root("/etc/passwd").is_none());
+    }
+
+    // C1 회귀(핵심) — 리뷰 §9-4가 요구한 "구현 단계에서 두 경로 문자열이
+    // 일치하는지 실측으로 확인할 것"의 이행. 스캐너(`scan_all_tasks`/
+    // `autonomy_list_blocking`)가 만드는 경로 문자열
+    // (`dunce::canonicalize(workspace_root)` + `read_dir` 엔트리)과, 커맨드가
+    // `task_key_root`로 만드는 TaskKey 경로 문자열이 같은 프로젝트에 대해
+    // 바이트 단위로 일치해야 한다. 이게 어긋나면 "지금 실행"이 유령 키를
+    // 만들어 스케줄러의 중복 방어를 우회한다(mac/linux에서는 애초에
+    // `dunce::canonicalize == std::fs::canonicalize`라 이 테스트가 항상
+    // 통과하지만, Windows의 `\\?\` 접두 불일치를 코드로 못 박아 두는 것이
+    // 목적이다).
+    #[test]
+    fn task_key_root_matches_scanner_path_string_for_same_project() {
+        let base = std::env::temp_dir().join(format!(
+            "malgn-c1-taskkey-test-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace_root = base.join("workspace");
+        let project_dir = workspace_root.join("demo-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        // 스캐너 쪽 문자열 — `config/user_config.rs:221`(workspace_roots_checked
+        // 경유)이 워크스페이스 루트에 쓰는 것과 동일한 관용구
+        // (`dunce::canonicalize`) 뒤에, `scan_all_tasks`/`autonomy_list_blocking`이
+        // 그대로 쓰는 `read_dir` 엔트리 경로를 이어붙인다.
+        let scanner_root = dunce::canonicalize(&workspace_root).unwrap();
+        let mut scanner_path_str = None;
+        for entry in std::fs::read_dir(&scanner_root).unwrap().flatten() {
+            if entry.file_name() == "demo-project" {
+                scanner_path_str = Some(entry.path().to_string_lossy().to_string());
+            }
+        }
+        let scanner_path_str = scanner_path_str.expect("read_dir에서 project 엔트리를 찾아야 한다");
+
+        // 커맨드 쪽 — `resolve_validated_project_root`(`workspace/tree.rs:39`)가
+        // 실제로 반환하는 std `canonicalize()` 결과를 그대로 재현한 뒤(워크스페이스
+        // 등록 자체는 이 테스트 범위 밖 — 위 `resolve_validated_project_root_rejects_*`
+        // 테스트가 그 가드를 별도로 고정한다) `task_key_root`를 적용한다.
+        let std_canonical = project_dir.canonicalize().unwrap();
+        let command_key = task_key_root(&std_canonical);
+
+        assert_eq!(
+            command_key, scanner_path_str,
+            "커맨드가 만드는 TaskKey 경로 문자열이 스캐너 경로 문자열과 일치해야 한다(C1)"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    // M3 회귀 — 신규 등록·편집(FixedTime으로 저장)은 항상 재계산한다.
+    #[test]
+    fn should_reschedule_on_save_is_true_for_new_or_edited_fixed_time_task() {
+        assert!(should_reschedule_on_save(None, config::ScheduleMode::FixedTime));
+        assert!(should_reschedule_on_save(
+            Some(config::ScheduleMode::FixedTime),
+            config::ScheduleMode::FixedTime
+        ));
+    }
+
+    // 기존 동작 보존 — Interval 모드 그대로 값만 바뀐 저장은 "다음 회차부터
+    // 반영"을 유지한다(재계산하지 않는다).
+    #[test]
+    fn should_reschedule_on_save_is_false_when_interval_mode_unchanged() {
+        assert!(!should_reschedule_on_save(
+            Some(config::ScheduleMode::Interval),
+            config::ScheduleMode::Interval
+        ));
+    }
+
+    // m1 회귀 — 모드 자체가 바뀌면 방향과 무관하게 재계산한다(FixedTime→
+    // Interval 전환 시 옛 고정 시각이 최대 24시간 남는 문제 해소).
+    #[test]
+    fn should_reschedule_on_save_is_true_when_mode_switches_either_direction() {
+        assert!(should_reschedule_on_save(
+            Some(config::ScheduleMode::FixedTime),
+            config::ScheduleMode::Interval
+        ));
+        assert!(should_reschedule_on_save(
+            Some(config::ScheduleMode::Interval),
+            config::ScheduleMode::FixedTime
+        ));
     }
 }

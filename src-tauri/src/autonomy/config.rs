@@ -25,6 +25,22 @@ pub(crate) const DEFAULT_CONCURRENCY: u32 = 3;
 pub(crate) const MAX_CONCURRENCY: u32 = 8;
 pub(crate) const DEFAULT_LOG_RETENTION_DAYS: u32 = 30;
 pub(crate) const MAX_LOG_RETENTION_DAYS: u32 = 365;
+/// 앱이 꺼져 있는 동안 지나간 고정시각 회차를, 앱을 켠 뒤 따라잡아 실행해
+/// 줄 최대 창(분). 이 값은 반드시 "회차 간 최소 간격"(현재 24시간)보다
+/// 작아야 한다 — 그래야 따라잡기가 최대 1회로 자연히 제한된다
+/// (`schedule.rs` 상단 불변식 주석 참조).
+pub(crate) const MISSED_RUN_GRACE_MINUTES: u32 = 30;
+
+/// 스케줄 모드. 레거시 파일에는 이 키가 없으므로 `default` = `Interval`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ScheduleMode {
+    /// 이전 실행 "완료" 후 `interval`분 뒤 재실행. 레거시 파일의 유일한 동작이자 기본값.
+    #[default]
+    Interval,
+    /// 로컬 벽시계 기준 고정 시각(+요일)에 실행.
+    FixedTime,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AutonomyTaskConfig {
@@ -36,12 +52,42 @@ pub struct AutonomyTaskConfig {
     /// 분(分). 이전 실행 "완료" 후 대기 시간(설계 §1 — 완료 기준 interval).
     /// 레거시 파일의 `intervalMinutes`도 읽을 수 있지만, 쓰기는 `interval`
     /// 하나로만 한다(`skip_serializing`이 없어도 alias는 직렬화에 나가지 않는다).
+    /// **모드와 무관하게 항상 존재하고 항상 clamp된다** — FixedTime 모드에서는
+    /// 사용되지 않을 뿐 제거하지 않는다(레거시 파일 호환·기존 clamp 테스트 보존).
     #[serde(alias = "intervalMinutes")]
     pub interval: u32,
+    /// 스케줄 모드. `skip_serializing_if`를 붙이지 않는다 — 다음 저장 때
+    /// 파일에 명시적으로 적혀 사람이 읽었을 때 모드가 자명해진다.
+    #[serde(default, rename = "scheduleMode")]
+    pub schedule_mode: ScheduleMode,
+    /// FixedTime 모드의 실행 시각. **기기 로컬 벽시계** "HH:MM"(24시간,
+    /// 0패딩). UTC로 변환해 저장하지 않는다. Interval 모드면 `None`.
+    #[serde(default, rename = "atTime", skip_serializing_if = "Option::is_none")]
+    pub at_time: Option<String>,
+    /// FixedTime 모드의 실행 요일. 0=일 … 6=토. **빈 배열 = 매일.**
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub days: Vec<u8>,
     pub enabled: bool,
     /// 분(分). 미지정이면 전역 `autonomy.defaultTimeout` → `DEFAULT_TIMEOUT_MINUTES`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u32>,
+}
+
+impl AutonomyTaskConfig {
+    /// FixedTime 모드이고 `at_time`이 유효하게 파싱될 때만 spec을 만든다.
+    /// `normalize_task()`를 거친 값이면 항상 정규형이지만, 손으로 만든 값이
+    /// 들어올 수도 있으므로 여기서도 다시 한번 파싱을 확인한다(방어적).
+    pub(crate) fn fixed_time_spec(&self) -> Option<super::schedule::FixedTimeSpec> {
+        if self.schedule_mode != ScheduleMode::FixedTime {
+            return None;
+        }
+        let (hour, minute) = super::schedule::parse_hhmm(self.at_time.as_deref()?)?;
+        Some(super::schedule::FixedTimeSpec {
+            hour,
+            minute,
+            days: self.days.clone(),
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -73,10 +119,27 @@ pub(crate) fn autonomy_file_path(project_root: &Path) -> PathBuf {
 /// `MIN_INTERVAL_MINUTES` 하한이 더 중요해졌다 — 5분은 "직전 실행이 끝난 뒤
 /// 5분"이라 사실상 연속 실행에 가깝다. `MAX_INTERVAL_MINUTES`(7일)는 오타 방어.
 pub(crate) fn normalize_task(mut task: AutonomyTaskConfig) -> AutonomyTaskConfig {
+    // ── 기존 2줄: 손대지 않는다 ──────────────────────────────
     task.interval = task.interval.clamp(MIN_INTERVAL_MINUTES, MAX_INTERVAL_MINUTES);
     if let Some(t) = task.timeout {
         task.timeout = Some(t.clamp(MIN_TIMEOUT_MINUTES, MAX_TIMEOUT_MINUTES));
     }
+
+    // ── 신규: 고정시각 필드 정규화 ───────────────────────────
+    task.days.retain(|d| *d <= 6);
+    task.days.sort_unstable();
+    task.days.dedup();
+    // 파싱 불가한 시각은 보존하지 않고 버린다 → FixedTime 모드가 스케줄
+    // 불가 상태가 되고, select_due가 `next_run_at == None`으로 이미
+    // 제외한다(fail-closed, 설계 §4.5 #14). 여기서 모드를 Interval로
+    // "다운그레이드"하지 않는다 — 그러면 하루 1회 의도가 interval(최소
+    // 5분) 실행으로 바뀌어 최대 288배 과잉 실행이 된다.
+    task.at_time = task
+        .at_time
+        .as_deref()
+        .and_then(super::schedule::parse_hhmm)
+        .map(|(h, m)| super::schedule::format_hhmm(h, m));
+
     task
 }
 
@@ -146,6 +209,9 @@ mod tests {
             prompt: "빌드 로그를 확인하고 실패 원인을 요약하라".to_string(),
             subagent: Some("malgn-agent:qa-engineer".to_string()),
             interval: 30,
+            schedule_mode: ScheduleMode::Interval,
+            at_time: None,
+            days: Vec::new(),
             enabled: true,
             timeout: None,
         }
@@ -346,5 +412,97 @@ mod tests {
         assert_eq!(after_delete.tasks.len(), 0, "삭제 후 다시 읽으면 task가 사라져 있어야 한다");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---------------- 고정시각 모드(설계 §6~§8) ----------------
+
+    #[test]
+    fn legacy_json_without_schedule_fields_defaults_to_interval_mode() {
+        let json = r#"{
+            "id": "legacy-3",
+            "name": "레거시",
+            "prompt": "프롬프트",
+            "interval": 10,
+            "enabled": true
+        }"#;
+        let task: AutonomyTaskConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(task.schedule_mode, ScheduleMode::Interval);
+        assert_eq!(task.at_time, None);
+        assert!(task.days.is_empty());
+    }
+
+    #[test]
+    fn schedule_mode_serializes_as_camel_case_fixed_time() {
+        let mut task = sample_task("fixed-1");
+        task.schedule_mode = ScheduleMode::FixedTime;
+        task.at_time = Some("09:00".to_string());
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(json.contains("\"scheduleMode\":\"fixedTime\""));
+    }
+
+    #[test]
+    fn interval_mode_task_omits_at_time_and_days_from_json() {
+        let task = sample_task("interval-1"); // at_time: None, days: []
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(!json.contains("atTime"));
+        assert!(!json.contains("\"days\""));
+    }
+
+    #[test]
+    fn normalize_sorts_dedups_and_drops_out_of_range_days() {
+        let mut task = sample_task("days-1");
+        task.days = vec![4, 2, 2, 9];
+        let normalized = normalize_task(task);
+        assert_eq!(normalized.days, vec![2, 4]);
+    }
+
+    #[test]
+    fn normalize_canonicalizes_at_time_to_zero_padded() {
+        let mut task = sample_task("time-1");
+        task.schedule_mode = ScheduleMode::FixedTime;
+        task.at_time = Some("9:5".to_string());
+        let normalized = normalize_task(task);
+        assert_eq!(normalized.at_time, None, "\"9:5\"는 분이 2자리가 아니라 거부돼야 한다");
+
+        let mut task2 = sample_task("time-2");
+        task2.schedule_mode = ScheduleMode::FixedTime;
+        task2.at_time = Some("9:05".to_string());
+        let normalized2 = normalize_task(task2);
+        assert_eq!(normalized2.at_time, Some("09:05".to_string()));
+    }
+
+    #[test]
+    fn normalize_clears_unparseable_at_time_without_downgrading_mode() {
+        let mut task = sample_task("bad-time-1");
+        task.schedule_mode = ScheduleMode::FixedTime;
+        task.at_time = Some("25:00".to_string());
+        let normalized = normalize_task(task);
+        assert_eq!(normalized.at_time, None, "파싱 불가 시각은 버려져야 한다(fail-closed)");
+        assert_eq!(
+            normalized.schedule_mode,
+            ScheduleMode::FixedTime,
+            "Interval로 다운그레이드하면 안 된다 — 과잉 실행 위험"
+        );
+    }
+
+    #[test]
+    fn normalize_still_clamps_interval_in_fixed_time_mode() {
+        let mut task = sample_task("fixed-clamp-1");
+        task.schedule_mode = ScheduleMode::FixedTime;
+        task.at_time = Some("09:00".to_string());
+        task.interval = 1;
+        let normalized = normalize_task(task);
+        assert_eq!(normalized.interval, MIN_INTERVAL_MINUTES);
+    }
+
+    #[test]
+    fn fixed_time_task_roundtrip_preserves_mode_time_and_days() {
+        let mut task = sample_task("fixed-roundtrip-1");
+        task.schedule_mode = ScheduleMode::FixedTime;
+        task.at_time = Some("09:00".to_string());
+        task.days = vec![2, 4];
+        let json = serde_json::to_string(&task).unwrap();
+        let roundtripped: AutonomyTaskConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, task);
     }
 }

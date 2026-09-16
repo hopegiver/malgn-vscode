@@ -8,7 +8,7 @@ import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } f
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
 import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsApi';
-import type { AutonomyRunStatus } from './autonomyApi';
+import type { AutonomyRunStatus, AutonomyScheduleMode } from './autonomyApi';
 import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
 import type { OtelSettings } from './otelApi';
 import type { MalgnAgentConfigStatus } from './configApi';
@@ -32,7 +32,10 @@ export interface AutonomousTask {
   name: string;
   prompt: string;
   subagent: string | null;
-  interval: number; // 분 — 이전 실행이 "끝난 뒤" 대기하는 시간
+  interval: number; // 분 — 이전 실행이 "끝난 뒤" 대기하는 시간(scheduleMode='interval'일 때만 사용)
+  scheduleMode: AutonomyScheduleMode;
+  atTime: string | null; // 'HH:MM' 로컬 벽시계. autonomyApi.ts의 옵셔널 필드를 여기서 명시 정규화해 비-옵셔널로 둔다(scheduleMode='interval'이면 null).
+  days: number[]; // 0=일…6=토. 빈 배열 = 매일(scheduleMode='fixedTime'일 때만 사용).
   enabled: boolean;
   timeout: number | null; // 분. null이면 전역 기본값 사용.
   running: boolean;

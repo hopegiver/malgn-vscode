@@ -51,6 +51,8 @@ pub struct LimitsSection {
     pub max_concurrency: u32,
     #[serde(rename = "startupGraceMinutes")]
     pub startup_grace_minutes: u32,
+    #[serde(rename = "missedRunGraceMinutes")]
+    pub missed_run_grace_minutes: u32,
 }
 
 /// 안전 임계값 정본은 `autonomy::config`(설계 §1) 한 곳뿐이다 — 여기서는
@@ -64,6 +66,7 @@ fn limits() -> LimitsSection {
         max_timeout: autonomy_config::MAX_TIMEOUT_MINUTES,
         max_concurrency: autonomy_config::MAX_CONCURRENCY,
         startup_grace_minutes: autonomy_config::STARTUP_GRACE_MINUTES,
+        missed_run_grace_minutes: autonomy_config::MISSED_RUN_GRACE_MINUTES,
     }
 }
 

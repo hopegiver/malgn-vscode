@@ -9,12 +9,25 @@ import { listen } from '@tauri-apps/api/event';
 
 export type AutonomyRunStatus = 'success' | 'failed' | 'timeout';
 
+// 'interval' = 이전 실행 완료 후 N분 뒤 재실행(레거시 파일의 유일한 동작이자
+// 기본값). 'fixedTime' = 로컬 벽시계 기준 고정 시각(+요일)에 실행. 백엔드가
+// 레거시 파일도 'interval'로 채워 항상 내려준다.
+export type AutonomyScheduleMode = 'interval' | 'fixedTime';
+
 export interface AutonomyTaskConfig {
   id: string;
   name: string;
   prompt: string;
   subagent: string | null;
-  interval: number; // 분 — "이전 실행이 끝난 뒤" 대기하는 시간(완료 기준, 시작 기준이 아니다)
+  interval: number; // 분 — "이전 실행이 끝난 뒤" 대기하는 시간(완료 기준, 시작 기준이 아니다). scheduleMode와 무관하게 항상 전송한다(fixedTime 모드에서는 사용되지 않을 뿐).
+  scheduleMode: AutonomyScheduleMode;
+  // 'HH:MM' 로컬 벽시계(24시간, 0패딩). interval 모드면 키 자체가 없을 수
+  // 있다 — 기존 subagent/timeout과 같은 "옵셔널 필드" 함정을 반복하지 않도록
+  // `?`로 선언한다. 화면 모델(state.ts의 AutonomousTask)에서는
+  // toDisplayTask()가 `?? null`로 명시 정규화해 비-옵셔널로 만든다.
+  atTime?: string | null;
+  // 0=일…6=토. 빈 배열/키 부재 = 매일. 위와 동일한 이유로 `?`로 선언한다.
+  days?: number[];
   enabled: boolean;
   timeout: number | null; // 분. null이면 전역 기본값(malgn-agent.json의 autonomy.defaultTimeout)을 쓴다.
 }
@@ -62,6 +75,16 @@ export async function setAutonomyTaskEnabled(projectPath: string, taskId: string
 // 항상 성공한다(설계 §11) — 손상될 파일이 없는 순수 메모리 스냅숏이라 Err 경로가 없다.
 export async function fetchAutonomyRuntimeStatus(): Promise<AutonomyRuntimeStatus[]> {
   return invoke<AutonomyRuntimeStatus[]>('autonomy_runtime_status');
+}
+
+// next_run_at 도래를 기다리지 않고 즉시 실행을 요청한다. 성공해도 실행 완료를
+// 기다리지 않고 바로 resolve된다(실제 실행 시작/진행은 항상 그랬듯
+// autonomy_runtime_status 폴링 또는 onAutonomyRuntimeChanged 이벤트로 반영된다
+// — 이 함수는 트리거일 뿐 상태 채널이 아니다). 실패(이미 실행 중 / 동시 실행
+// 한도 초과 등)는 한국어 에러 메시지로 reject되며, 그 메시지를 그대로
+// 사용자에게 보여준다(백엔드 계약, 프론트에서 문구를 새로 짓지 않는다).
+export async function runAutonomyTaskNow(projectPath: string, taskId: string): Promise<void> {
+  return invoke<void>('autonomy_run_now', { projectPath, taskId });
 }
 
 // 실행 시작/종료 시 1회씩 emit되는 이벤트 — payload는 바뀐 task 1건. 구독
