@@ -95,3 +95,22 @@ jobs:
       # 구성한다(러너 시간 절약).
       - name: cargo test (debug profile)
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Windows 실기 PC 테스트 생략의 대체 증거: dev-tools 탐지/설치경로 로직을
+      # windows-latest/macos-latest 러너에서 실제로 실행해 DevToolStatus
+      # (installed/version/path/install_method/action_kind) 전체를 로그에 남긴다.
+      # `--ignored`에 이름 필터(dump_dev_tool_status_for_ci_evidence)를 함께 주면
+      # 그 이름을 포함하는 ignore 테스트만 실행된다 — 머신 의존 전제를 가진 다른
+      # 16건의 #[ignore] 테스트(예: finds_this_project_in_workspace)는 이름이
+      # 일치하지 않으므로 계속 건너뛴다. 로컬에서 기존 ignore 테스트 이름 하나로
+      # 같은 필터를 실측한 결과 정확히 1건만 실행되고 나머지는 "filtered out"으로
+      # 빠지는 것을 확인했다(동일 필터 메커니즘이므로 이 신규 테스트에도 동일하게
+      # 적용된다). `--nocapture`로 표준출력을 그대로 노출하며, 이 스텝은
+      # `continue-on-error`를 쓰지 않아 실패 시 잡을 실패시킨다. 위 `cargo test`
+      # 스텝과 같은 `src-tauri -> target` 캐시를 재사용하므로 추가 컴파일 비용은
+      # 증분 빌드 수준이다. 출력이 짧고 단일 스텝 로그로 충분히 읽히므로 별도
+      # 아티팩트 업로드는 추가하지 않는다(복잡도 대비 이득이 없음).
+      - name: cargo test -- dev-tools 탐지 증거 덤프 (ignored, evidence)
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml -- \
+            --ignored --nocapture dump_dev_tool_status_for_ci_evidence
