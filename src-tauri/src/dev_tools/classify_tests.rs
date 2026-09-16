@@ -360,6 +360,37 @@ fn classifies_winget_links_and_packages_as_winget_package() {
     ));
 }
 
+// N4(실기 증거: CI run 35058176751, windows-latest) — gh가
+// `C:\Program Files\GitHub CLI\gh.exe`에서 관측됐다. 이 경로가 WingetPackage로
+// 분류되고(classify.rs 1b), UPDATE_TABLE의 기존 (Gh, WingetPackage) 행을 타고
+// run으로 이어지는지 끝까지 확인한다 — 분류만 바뀌고 라우팅이 안 물리면
+// M1과 같은 결함이 재발한다.
+#[test]
+fn classifies_gh_program_files_msi_path_as_winget_package_and_routes_to_run() {
+    let roots = win_roots();
+    let observed = classify_install_method_windows(
+        &PathBuf::from(r"C:\Program Files\GitHub CLI\gh.exe"),
+        &roots,
+    );
+    assert_eq!(observed, InstallMethod::WingetPackage);
+
+    // 대소문자 무시 매칭도 함께 확인한다(Windows 파일시스템 관행, 다른
+    // 분기들과 동일한 기대).
+    let mixed_case = classify_install_method_windows(
+        &PathBuf::from(r"c:\program files\github cli\GH.EXE"),
+        &roots,
+    );
+    assert_eq!(mixed_case, InstallMethod::WingetPackage);
+
+    assert!(matches!(
+        super::super::plan_table::lookup_action(
+            super::super::ToolId::Gh,
+            MethodKind::WingetPackage
+        ),
+        super::super::plan_table::Action::Run(_)
+    ));
+}
+
 // M1 수정(review-devtools-windows-parity-2026-09-15.md): 이 테스트는
 // 원래 `...\pnpm\bin\wrangler.cmd`(\bin\ 있음) 입력 하나만으로
 // `package: "wrangler.cmd"`(확장자 미제거)를 기대했다 — 리뷰가 지목한
@@ -535,7 +566,7 @@ fn classify_install_method_windows_case_insensitive_matching() {
 // 제외가 `matches!(method, Unknown(_)) => continue`라는 **판정식**이었다 —
 // 새 후보가 추가돼 Unknown으로 떨어지면 아무 신호 없이 조용히 면제
 // 집합에 합류했다(이 파일의 `scratch_dump_windows_classification`로 실측한
-// 결과, 4개가 아니라 정확히 3개가 이 상태다: gh의 `C:\Program Files\GitHub
+// 결과, 4개가 아니라 정확히 3개가 이 상태였다: gh의 `C:\Program Files\GitHub
 // CLI\gh.exe`, git의 `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`, node의
 // `%LOCALAPPDATA%\Programs\nodejs\node.exe`. `C:\Program Files
 // (x86)\Git\cmd\git.exe`는 classify_install_method_windows 5번 분기가 이미
@@ -544,9 +575,14 @@ fn classify_install_method_windows_case_insensitive_matching() {
 // `assert_eq!`로 대조한다 — 허용목록에 없는 후보가 새로 Unknown이 되면
 // 이 assert가 즉시 깨져 "허용목록에 올려도 되는 결함인지" 사람이 검토하게
 // 만든다(조용한 면제 합류를 구조적으로 차단).
-const KNOWN_UNKNOWN_WINDOWS_CANDIDATES: [(&str, &str); 3] = [
+//
+// N4(CI run 35058176751, windows-latest 실기): gh의 `C:\Program Files\GitHub
+// CLI\gh.exe`가 실제로 관측되어, classify.rs 1b가 이 경로를 WingetPackage로
+// 분류하도록 고쳤다 — 더 이상 Unknown으로 떨어지지 않으므로 이 허용목록에서
+// 뺀다. node/git 나머지 둘은 실측 증거가 없어 그대로 둔다(추측으로 넓히지
+// 않는다는 N3의 조건은 gh 한 항목에만 해소됐다).
+const KNOWN_UNKNOWN_WINDOWS_CANDIDATES: [(&str, &str); 2] = [
     ("node", r"%LOCALAPPDATA%\Programs\nodejs\node.exe"),
-    ("gh", r"C:\Program Files\GitHub CLI\gh.exe"),
     ("git", r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe"),
 ];
 

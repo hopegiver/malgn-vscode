@@ -305,6 +305,7 @@ pub(crate) fn classify_install_method_windows(
     roots: &super::platform::EnvRoots,
 ) -> InstallMethod {
     let full = canonical.to_string_lossy().to_string();
+    let full_lower = full.to_lowercase();
     let root_str = |root: &Option<PathBuf>| -> Option<String> {
         root.as_ref().map(|p| p.to_string_lossy().to_string())
     };
@@ -318,6 +319,37 @@ pub(crate) fn classify_install_method_windows(
         {
             return InstallMethod::WingetPackage;
         }
+    }
+
+    // 1b. Gh 전용, 실측 경로(N4 근거): CI run 35058176751(windows-latest,
+    // dump_dev_tool_status_for_ci_evidence)에서 실제로 관측된
+    // `C:\Program Files\GitHub CLI\gh.exe` — 이전에는 이 경로가 3번 분기의
+    // system_prefixes 확장 후보였으나(N3), "gh 실제 설치 자리는 실기 1호 PC가
+    // 결정한다"는 조건으로 보류됐다. 이제 그 실측이 나왔다.
+    //
+    // 이 경로가 winget으로 설치됐는지 수동 MSI 설치인지는 경로만으로 구분되지
+    // 않는다(GitHub CLI 공식 배포가 winget 매니페스트와 수동 다운로드 모두
+    // 동일한 WiX MSI를 쓰고, 기본 설치 위치도 동일하다 — cli/cli
+    // docs/install_windows.md, winget-pkgs GitHub.cli 매니페스트). 그래도
+    // `run`으로 라우팅하는 근거: winget은 ARP(제어판 프로그램 목록) 항목을
+    // ProductCode/UpgradeCode로 대조해 설치본을 찾는다 — "어떤 방식으로
+    // 설치됐든" 감지 대상이 된다는 것이 winget-cli 공식 이슈/토론에서 반복
+    // 확인된다(microsoft/winget-cli#2186, #2417, #2481). 즉 `winget upgrade
+    // --id GitHub.cli`는 winget이 직접 설치하지 않은 MSI 사본에도 동작할
+    // 가능성이 높다 — 다만 이 머신에 winget이 없어 실행 자체는 미검증이다
+    // (RUN_WINGET_UPGRADE_GH의 기존 미검증 표시와 동일한 한계).
+    //
+    // system_prefixes(git/nodejs, 5번 분기)처럼 도구를 가리지 않는 문자열
+    // 리터럴이지만, 이 자리에 gh 외 어떤 도구도 설치되지 않으므로(mod.rs
+    // DEV_TOOLS 전체에서 이 후보를 선언하는 도구는 Gh뿐이다) 안전하다. 5번
+    // 분기(SystemManaged)로 넣지 않는 이유: SystemManaged는 Windows에서
+    // compute_action_for_platform이 최우선으로 Manual로 강등하는 카테고리라
+    // (N1), gh를 거기 넣으면 다시 manual로 떨어져 이번 수정의 목적(run
+    // 라우팅)을 못 이룬다 — WingetPackage로 분류해야 기존 UPDATE_TABLE의
+    // (Gh, WingetPackage) → RUN_WINGET_UPGRADE_GH 행이 그대로 물린다.
+    const GH_MSI_INSTALL_PREFIX: &str = r"c:\program files\github cli\";
+    if full_lower.starts_with(GH_MSI_INSTALL_PREFIX) {
+        return InstallMethod::WingetPackage;
     }
 
     // 2. PnpmStandalone / PnpmGlobalPackage: %LOCALAPPDATA%\pnpm\ 아래.
@@ -393,7 +425,7 @@ pub(crate) fn classify_install_method_windows(
 
     // 5. SystemManaged: Program Files 아래 Git/nodejs(설치기가 시스템 전역에
     // 심는 자리) — 리터럴 후보(B.5)는 대소문자만 무시하고 그대로 비교한다.
-    let full_lower = full.to_lowercase();
+    // full_lower는 위 1b에서 이미 계산해 두었다.
     let system_prefixes = [r"c:\program files\git\", r"c:\program files\nodejs\"];
     if system_prefixes.iter().any(|p| full_lower.starts_with(p)) {
         return InstallMethod::SystemManaged;
