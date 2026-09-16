@@ -10,8 +10,12 @@
 import { el, showToast } from '../dom';
 import { state, notifyChange } from '../state';
 import type { CatalogTab } from '../state';
-import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, updatePlugin } from '../catalogApi';
+import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, updatePlugin, installPlugin } from '../catalogApi';
 import type { InstalledPlugin, CatalogEntryItem, CommandResult, GlobalEntry } from '../catalogApi';
+
+// malgn-agent는 이 회사의 필수 표준 플러그인이다 — 설치된 플러그인이 하나도
+// 없을 때 원클릭 설치 버튼의 기본 대상으로 쓴다.
+const DEFAULT_PLUGIN_ID = 'malgn-agent@malgnsoft-plugins';
 
 // 성공 결과 노트는 확인 후 후속 조치가 없으므로 잠시 보여준 뒤 자동으로 치운다.
 // 실패 노트는 메시지를 계속 봐야 하니 그대로 남긴다.
@@ -109,6 +113,33 @@ async function handleUpdatePlugin(plugin: InstalledPlugin): Promise<void> {
   }
 }
 
+// 설치된 플러그인이 없을 때 빈 상태 화면의 "malgn-agent 설치" 버튼 핸들러 —
+// 사용자가 명시적으로 버튼을 눌러야 실행된다(자동 실행 아님).
+async function handleInstallDefaultPlugin(): Promise<void> {
+  state.catalog.installingDefault = true;
+  state.catalog.installDefaultResult = null;
+  notifyChange();
+  try {
+    const result = await installPlugin(DEFAULT_PLUGIN_ID);
+    state.catalog.installDefaultResult = result;
+    showToast(
+      result.success
+        ? 'malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요'
+        : `malgn-agent 설치 실패: ${result.message}`
+    );
+    if (result.success) {
+      await loadCatalog();
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    state.catalog.installDefaultResult = { success: false, message };
+    showToast(`malgn-agent 설치 실패: ${message}`);
+  } finally {
+    state.catalog.installingDefault = false;
+    notifyChange();
+  }
+}
+
 async function handleUpdateAll(): Promise<void> {
   const targets = state.catalog.plugins;
   if (targets.length === 0) return;
@@ -200,6 +231,18 @@ function renderPluginsTabBody(): HTMLElement[] {
       el('div', { className: 'state-block' }, [
         el('div', { className: 'state-block-title' }, ['설치된 플러그인이 없습니다']),
         el('div', { className: 'state-block-desc' }, ['~/.claude/plugins/installed_plugins.json에 user scope 항목이 없습니다.']),
+        el(
+          'button',
+          {
+            className: 'btn btn-primary btn-large',
+            disabled: state.catalog.installingDefault,
+            onClick: () => void handleInstallDefaultPlugin(),
+          },
+          [state.catalog.installingDefault ? '설치 중…' : 'malgn-agent 설치']
+        ),
+        ...(state.catalog.installDefaultResult && !state.catalog.installDefaultResult.success
+          ? [renderInstallDefaultResultNote(state.catalog.installDefaultResult)]
+          : []),
       ])
     );
   } else {
@@ -295,6 +338,14 @@ function renderPluginCard(plugin: InstalledPlugin): HTMLElement {
   const children = [head, ...(lastResult ? [renderUpdateResultNote(lastResult)] : []), sections];
 
   return el('div', { className: 'plugin-card' }, children);
+}
+
+// renderUpdateResultNote와 같은 스타일이지만 "업데이트"가 아닌 "설치" 문맥의
+// 문구를 쓴다 — 기본 플러그인 원클릭 설치 버튼의 실패 결과 전용.
+function renderInstallDefaultResultNote(result: CommandResult): HTMLElement {
+  return el('div', { className: `plugin-update-note ${result.success ? 'ok' : 'fail'}` }, [
+    result.success ? `✓ 설치 완료 — 적용하려면 Claude Code를 재시작하세요. (${result.message})` : `⚠ 설치 실패: ${result.message}`,
+  ]);
 }
 
 function renderUpdateResultNote(result: CommandResult): HTMLElement {

@@ -201,6 +201,8 @@ export interface AppState {
     updating: Record<string, boolean>;
     updatingAll: boolean;
     lastResult: Record<string, CommandResult | null>;
+    installingDefault: boolean;
+    installDefaultResult: CommandResult | null;
   };
   // 전역(user-level) 에이전트/스킬 — 플러그인에 안 묶인 개인 항목
   // (~/.claude/agents/*.md, ~/.claude/skills/*/SKILL.md). 조회+상태표시만 —
@@ -341,7 +343,17 @@ export const state: AppState = {
     logExpanded: {},
     manualOpen: {},
   },
-  catalog: { plugins: [], loading: false, error: null, loaded: false, updating: {}, updatingAll: false, lastResult: {} },
+  catalog: {
+    plugins: [],
+    loading: false,
+    error: null,
+    loaded: false,
+    updating: {},
+    updatingAll: false,
+    lastResult: {},
+    installingDefault: false,
+    installDefaultResult: null,
+  },
   globalCatalog: { data: null, loading: false, error: null, loaded: false },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
