@@ -76,3 +76,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-09-15 / target_id `devtools-windows-parity` / 4차(증분, 풀패널 강제승격) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r4.md`
   — 이번 라운드 집중: 커밋 `d906867` 단건. "테스트를 초록으로 만들려고 검증 능력을 잃은 자리"가 있는지(V1 공허한 초록·V4 #[ignore] 과장·V6 항진 단언),
     새 주석 3곳의 단언이 실제 분기와 일치하는지("#[ignore]가 유일한 수단"·"프로세스 스폰 없음"·"캐시 필드가 없어 매번 재해석"). V4 미충족 판정.
+- 2026-09-16 / target_id `autonomy-fixed-schedule` / 1차(최초, 약식 2인 패널 — Standard 등급) / `docs/review-autonomy-schedule-modes.md`
+  — 재사용 사유: 이번 위임의 중점 질문("`try_start_now`의 락 구간이 tick과 경합할 때 중복 spawn을 **실제로** 막는가")이 이 페르소나의 "코드가 자기 주석과 일치하는가" 기준 그 자체다. 6대 요소 무수정.
+  — 이번 라운드 집중: `try_start_now` doc 주석의 TOCTOU 방어 단언이 양방향인지 단방향인지 대조(경합 상대 `mark_started`에 가드 없음 → M1), `mod.rs` "안전하게 퇴화할 뿐 오동작하지 않는다"가 20줄 아래 신규 커맨드에도 성립하는지(불성립 → C1), `configApi.ts` "backend-dev가 병렬로 추가 중"이 같은 diff 안에서 이미 끝난 과도기를 현재형으로 서술하는지(m3), FE "파싱 실패로 영구 null"이 유일한 원인인지(등록 직후 미등록 창이 같은 값 → M4). 반대로 `pick()` 순수함수 분리·`Tz` 제네릭 주입은 주석이 약속한 결정성을 코드가 실제로 지킨 사례로 확인.
