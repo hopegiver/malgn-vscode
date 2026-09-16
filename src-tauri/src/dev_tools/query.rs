@@ -674,4 +674,120 @@ mod tests {
             "winget RunPlan이 하나도 발견되지 않았습니다 — 이 가드가 무의미해집니다"
         );
     }
+
+    // ==================== CI 증거 테스트(Windows 실기 테스트 생략의 대체 게이트) ====================
+    // 배경: 실기 Windows PC 테스트를 생략하고 GH Actions windows-latest 러너에서
+    // `check_dev_tools_blocking()`을 실제로 실행해 그 결과를 승인 게이트로 삼기로
+    // 했다. `#[ignore]`를 붙여 일반 `cargo test`에서는 돌지 않고, CI가
+    // `--ignored --nocapture`로 이 테스트 하나만 지정해 stdout을 그대로 로그에
+    // 남긴다.
+    //
+    // (A) 증거 출력: 6개 도구 각각의 판정 필드 전부 + platform + PATH를 사람이
+    // 나중에 역추적할 수 있게 필드명과 함께 찍는다.
+    // (B) 실질 단언(공허한 초록 방지): "이 러너엔 이 도구가 있다"를 하드코딩하지
+    // 않는다 — 독립 수단(`which`/`where`)으로 OS에 직접 물어 도구 실재를 먼저
+    // 확인하고, 그 관측과 앱의 판정이 어긋나면(OS는 있다는데 앱은 없다고 하면)
+    // 실패시킨다. "실제로 있는데 앱이 없다고 한다"가 이 프로젝트가 원래 고치려던
+    // 버그라, 이 대조가 그 버그의 회귀 검출이다. 러너에 없는 도구에 대해
+    // "installed=false여야 한다"고는 단언하지 않는다(환경 가정 금지).
+
+    /// `which`(mac) / `where`(win)로 OS에 독립적으로 도구 실재를 확인한다.
+    /// 이 앱의 탐지 로직(`resolve_tool_path`)과는 완전히 다른 수단이다 —
+    /// 이 함수가 앱 로직을 흉내 내면 대조 자체가 무의미해진다.
+    fn locate_via_os(name: &str) -> Option<String> {
+        let program = if cfg!(windows) { "where" } else { "which" };
+        let output = std::process::Command::new(program).arg(name).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let first_line = stdout.lines().next()?.trim();
+        if first_line.is_empty() {
+            None
+        } else {
+            Some(first_line.to_string())
+        }
+    }
+
+    /// B3에서 구조적으로 막은 "절대경로만 통과" 불변식의 테스트측 회귀 검출용
+    /// 판정. `platform::is_absolute_dir`(비공개)과 규칙은 같지만, 프로덕션
+    /// 코드를 이 테스트를 위해 공개로 바꾸지 않기 위해 여기서 독립적으로
+    /// 다시 판정한다.
+    fn looks_like_absolute_path(plat: super::super::platform::Platform, path: &str) -> bool {
+        use super::super::platform::Platform;
+        match plat {
+            Platform::Mac => path.starts_with('/'),
+            Platform::Win => {
+                if path.starts_with(r"\\") {
+                    return true;
+                }
+                let bytes = path.as_bytes();
+                bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && (bytes[2] == b'\\' || bytes[2] == b'/')
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn dump_dev_tool_status_for_ci_evidence() {
+        let plat = super::super::platform::platform_now();
+        println!("=== dev_tools CI evidence dump ===");
+        println!("platform={plat:?}");
+        println!("PATH={}", std::env::var("PATH").unwrap_or_default());
+
+        let statuses = check_dev_tools_blocking();
+        assert_eq!(statuses.len(), 6, "DEV_TOOLS 테이블은 6개여야 합니다");
+
+        for s in &statuses {
+            println!(
+                "id={} installed={} version={:?} path={:?} install_method={:?} action_kind={} manual_hint={:?}",
+                s.id, s.installed, s.version, s.path, s.install_method, s.action_kind, s.manual_hint
+            );
+        }
+
+        for s in &statuses {
+            match locate_via_os(&s.id) {
+                Some(observed) => {
+                    println!("observed[{}] via OS lookup: {}", s.id, observed);
+                    assert!(
+                        s.installed,
+                        "{}: OS({}로 확인)는 실재를 확인했는데(관측 경로: {}) 앱은 \
+                         installed=false로 판정했습니다 — 이 프로젝트가 고치려던 바로 그 \
+                         버그(실제로 있는데 앱이 없다고 한다)의 회귀입니다",
+                        s.id,
+                        if cfg!(windows) { "where" } else { "which" },
+                        observed
+                    );
+                }
+                None => {
+                    println!("observed[{}] via OS lookup: (not found by OS)", s.id);
+                    // 러너에 이 도구가 없을 수 있다 — "installed=false여야 한다"고는
+                    // 단언하지 않는다(환경 가정 금지).
+                }
+            }
+
+            if s.installed {
+                let path = s.path.as_deref().unwrap_or_else(|| {
+                    panic!("{}: installed=true인데 path가 None입니다", s.id)
+                });
+                assert!(
+                    looks_like_absolute_path(plat, path),
+                    "{}: installed=true인데 path가 절대경로가 아닙니다(B3 회귀): {}",
+                    s.id,
+                    path
+                );
+                assert!(
+                    matches!(s.action_kind.as_str(), "run" | "manual" | "none"),
+                    "{}: action_kind가 계약(run/manual/none) 밖입니다: {}",
+                    s.id,
+                    s.action_kind
+                );
+            }
+        }
+
+        println!("=== end dev_tools CI evidence dump ===");
+    }
 }
