@@ -796,6 +796,48 @@ function renderGithubMcpQuickstartRow(): HTMLElement {
   ]);
 }
 
+// ---------------- Telegram MCP 빠른시작 (stdio, npx 실행) ----------------
+// mcp-telegram-agent는 공식 벤더가 호스팅하는 원격 서버가 없어 카탈로그
+// (원클릭 OAuth 설치)에는 넣지 않는다 — GitHub 퀵스타트와 같은 패턴으로 수동
+// 추가 폼을 이름/transport/target/args/env까지 미리 채워서 열어주고, 사용자는
+// 본인의 봇 토큰·챗 ID만 입력해 저장하면 된다.
+const TELEGRAM_MCP_DISPLAY_TARGET = 'npx -y mcp-telegram-agent';
+
+// stdio 서버는 target이 CLI가 재작성한 실행 경로로 바뀔 수 있어(예: npx가
+// 절대경로로 해석됨) URL 문자열 매칭이 신뢰할 수 없다 — 이름으로 이미
+// 등록됐는지 판단한다(buildInstallableMcpRows 참고).
+function renderTelegramMcpQuickstartRow(): HTMLElement {
+  const actionEl = el(
+    'button',
+    {
+      className: 'btn btn-primary',
+      onClick: () => {
+        mcpAddPrefill = {
+          name: 'Telegram',
+          transport: 'stdio',
+          target: 'npx',
+          args: '-y mcp-telegram-agent',
+          env: 'BOT_TELEGRAM_TOKEN=\nBOT_TELEGRAM_CHAT_ID=',
+        };
+        mcpAddFormOpen = true;
+        notifyChange();
+      },
+    },
+    ['설치']
+  );
+
+  return el('div', { className: 'mcp-row' }, [
+    el('div', { className: 'mcp-row-main' }, [
+      el('div', { className: 'mcp-row-top' }, [
+        el('span', { className: 'mcp-row-name' }, ['Telegram']),
+        el('span', { className: 'badge badge-unknown' }, ['stdio']),
+      ]),
+      el('div', { className: 'mcp-row-target' }, [TELEGRAM_MCP_DISPLAY_TARGET]),
+    ]),
+    el('div', { className: 'mcp-row-actions' }, [actionEl]),
+  ]);
+}
+
 let mcpAddFormOpen = false;
 let mcpAddPrefill: McpAddPrefill | null = null;
 
@@ -901,6 +943,13 @@ function buildInstallableMcpRows(): HTMLElement[] {
     rows.push({ name: 'GitHub', el: renderGithubMcpQuickstartRow() });
   }
 
+  // stdio 서버는 target이 CLI 실행 경로로 재작성될 수 있어 URL 매칭이
+  // 신뢰할 수 없다 — 이름으로 이미 등록됐는지 판단한다.
+  const telegramAlreadyRegistered = state.mcp.items.some((item) => item.name.toLowerCase() === 'telegram');
+  if (!telegramAlreadyRegistered) {
+    rows.push({ name: 'Telegram', el: renderTelegramMcpQuickstartRow() });
+  }
+
   return sortMalgnAgentFirst(rows).map((r) => r.el);
 }
 
@@ -908,6 +957,8 @@ interface McpAddPrefill {
   readonly name: string;
   readonly transport: McpTransport;
   readonly target: string;
+  readonly args?: string;
+  readonly env?: string;
 }
 
 function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
@@ -936,6 +987,7 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
   argsInput.className = 'settings-input';
   argsInput.placeholder = '예: run server.js --port 3000 (공백으로 구분해 args 배열로 변환)';
   argsInput.autocomplete = 'off';
+  if (prefill?.args) argsInput.value = prefill.args;
   const argsField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['실행 인자 (args)']), argsInput]);
 
   const headerInput = document.createElement('input');
@@ -980,6 +1032,7 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
   envInput.rows = 3;
   envInput.placeholder = '한 줄에 KEY=VALUE 하나씩 입력\n예: GRAFANA_URL=http://localhost:3000\nGRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_xxx';
   envInput.autocomplete = 'off';
+  if (prefill?.env) envInput.value = prefill.env;
   const envField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['환경변수 (선택)']), envInput]);
 
   // stdio/http/sse에 따라 target placeholder와 args/header/env 필드 노출 여부가
@@ -1080,7 +1133,11 @@ function renderMcpPanel(): HTMLElement {
   if (state.mcp.loading && !state.mcp.loaded) return loadingBlock();
   if (state.mcp.error) return errorBlock(state.mcp.error, () => void loadMcp());
 
-  const refreshBtn = el('button', { className: 'btn', onClick: () => void loadMcp() }, ['↻ 새로고침']);
+  const refreshBtn = el(
+    'button',
+    { className: 'btn', onClick: () => { void loadMcp(); void loadMcpCatalog(); } },
+    ['↻ 새로고침']
+  );
   // V-06: 폼이 열리면 라벨만 "취소"로 바뀌고 className은 primary 그대로라 화면에서
   // 가장 강조된 버튼이 "취소"가 됐다. 열린 상태에서는 보조 버튼으로 낮춘다.
   const addToggleBtn = el(
