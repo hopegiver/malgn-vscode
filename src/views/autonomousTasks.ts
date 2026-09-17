@@ -1100,7 +1100,7 @@ export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
     overviewRow('프로젝트', task.projectName),
     overviewRow('서브에이전트', task.subagent ?? '지정 안 함'),
     overviewRow('실행 주기', task.scheduleLabel),
-    overviewRow('타임아웃', task.timeout !== null ? `${task.timeout}분` : '전역 기본값 사용'),
+    overviewRow('타임아웃', task.timeout != null ? `${task.timeout}분` : '전역 기본값 사용'),
     overviewRow('마지막 실행', task.lastRunLabel),
     overviewRow('마지막 실행 결과', task.status ? RUN_STATUS_LABEL[task.status] : '기록 없음'),
     overviewRow('다음 실행', task.nextRunLabel),
