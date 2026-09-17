@@ -5,11 +5,15 @@
 // 둘을 (projectPath, taskId) 키로 합쳐 그릴 뿐, 스스로 스케줄을 실행하지 않고
 // preventOverlap 같은 옵션도 없다(직렬 실행이 백엔드 구조로 이미 보장된다).
 //
-// 과거 실행 이력은 더 이상 이 화면이 아니라 프로젝트의
-// .claude/logs/autonomy/<날짜>/ 아래 로그 파일에 남는다(설계 §9) — 그래서 상세
-// 화면은 "마지막 실행 1건"의 요약/로그 경로만 보여주고, 히스토리 목록을 그리지
-// 않는다.
-import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog } from '../dom';
+// 과거 실행 이력은 프로젝트의 .claude/logs/autonomy/<날짜>/ 아래 로그 파일에서
+// autonomy_task_history(projectPath, taskId, limit?)로 조회해 상세 화면의
+// "기록" 카드에 최근 N건(기본 20건, "더 보기" 클릭 시 20건씩 증가)을 그린다
+// (재설계 docs/design/autonomy-task-detail-redesign.md §4). 설정/런타임 상태와는
+// 분리된 3번째 IPC라 이력 조회 실패가 나머지 블록 표시를 막지 않는다 — 조회
+// 결과는 (projectPath, taskId) 키의 모듈 스코프 캐시(historyCache)에 저장해,
+// 이 화면의 전체 재렌더 구조(notifyChange)에서도 이미 로드했거나 로딩 중이면
+// 재조회하지 않는다.
+import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog, loadingBlock, errorBlock } from '../dom';
 import { state, notifyChange } from '../state';
 import type { AutonomousTask } from '../state';
 import {
@@ -20,8 +24,16 @@ import {
   fetchAutonomyRuntimeStatus,
   onAutonomyRuntimeChanged,
   runAutonomyTaskNow,
+  fetchAutonomyTaskHistory,
 } from '../autonomyApi';
-import type { AutonomyTaskConfig, ProjectAutonomyGroup, AutonomyRuntimeStatus, AutonomyRunStatus, AutonomyScheduleMode } from '../autonomyApi';
+import type {
+  AutonomyTaskConfig,
+  ProjectAutonomyGroup,
+  AutonomyRuntimeStatus,
+  AutonomyScheduleMode,
+  RunHistoryEntry,
+  AutonomyHistoryResult,
+} from '../autonomyApi';
 import { fetchMalgnAgentConfig, saveMalgnAgentConfig } from '../configApi';
 import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
 import { navigate } from '../route';
@@ -43,7 +55,9 @@ const BOARD_COLUMNS: readonly { readonly key: BoardColumn; readonly label: strin
   { key: 'waiting', label: '대기중', statusClass: 'pending' },
 ];
 
-const RUN_STATUS_LABEL: Readonly<Record<AutonomyRunStatus, string>> = { success: '성공', failed: '실패', timeout: '타임아웃' };
+// 상세 화면 재설계(§4-2)로 "마지막 실행 결과"는 더 이상 메타 카드에 단독
+// 표시되지 않고 이력 리스트의 결과 배지(RUN_HISTORY_META, 파일 하단)로만
+// 표현한다 — 그래서 AutonomyRunStatus 전용 라벨 상수는 더 이상 필요 없다.
 
 // 0=일…6=토 — 백엔드(chrono::Weekday::num_days_from_sunday)와 동일한 축. 순서를
 // 바꾸지 않는다(설계서 §3·§4.1).
@@ -531,6 +545,11 @@ function applyRuntimeUpdate(update: AutonomyRuntimeStatus): void {
   const idx = state.autonomousTasks.items.findIndex((t) => runtimeKey(t.projectPath, t.id) === key);
   if (idx === -1) return; // 아직 설정 목록에 없는 task(신규 등록 직후 등) — 다음 전체 재조회 때 합류한다.
   state.autonomousTasks.items[idx] = mergeRuntime(state.autonomousTasks.items[idx], update);
+  // "지금 실행" 직후 새 이력이 상세 화면에 바로 반영되도록, 런타임 상태가
+  // 갱신될 때마다 이력도 함께 재조회한다(설계 §7). 상세 화면을 아직 연 적
+  // 없는 task는 historyCache에 항목이 없으므로 refreshHistoryIfTracked가
+  // 아무 일도 하지 않는다 — 방문한 적 없는 task까지 미리 불러오지 않는다.
+  refreshHistoryIfTracked(update.projectPath, update.taskId);
   notifyChange();
 }
 
@@ -544,7 +563,17 @@ function ensureRuntimeWatcher(): void {
     // live 플래그를 다루는 것과 같은 원칙: 실패를 숨기지 않는다).
     if (pollTimer !== null) return;
     pollTimer = setInterval(() => {
-      if (!state.autonomousTasks.loading) void loadAutonomousTasks();
+      if (!state.autonomousTasks.loading) {
+        void loadAutonomousTasks();
+        // 이벤트 구독이 안 되는 환경에서는 폴링이 유일한 갱신 경로다 — 이미
+        // 상세 화면에서 열어본 적 있는(historyCache에 있는) task들의 이력도
+        // 함께 재조회한다(설계 §7 "폴백 폴링 시 이력도 함께 재조회").
+        for (const key of historyCache.keys()) {
+          const sep = key.indexOf('\0');
+          if (sep === -1) continue;
+          refreshHistoryIfTracked(key.slice(0, sep), key.slice(sep + 1));
+        }
+      }
     }, 30000);
   });
 }
@@ -1231,9 +1260,277 @@ function renderBoardCard(task: AutonomousTask, statusClass: string): HTMLElement
 }
 
 // ---------------- 상세 화면 ----------------
+// 재설계(docs/design/autonomy-task-detail-redesign.md) §1~§7 참고. 좌측
+// 메타 카드(상태/프로젝트/반복/타임아웃/서브에이전트 + 수정·삭제)와 우측
+// 지침(프롬프트)+기록(실행 이력) 2컬럼으로 구성한다(§2 대안 A).
 
 function overviewRow(label: string, body: string): HTMLElement {
   return el('div', { className: 'overview-section' }, [el('div', { className: 'overview-label' }, [label]), el('div', { className: 'overview-body' }, [body])]);
+}
+
+// ---------------- 실행 이력 캐시 (모듈 스코프, (projectPath, taskId) 키) ----------------
+// 이 화면은 notifyChange()가 불릴 때마다 전체가 다시 그려지는 구조라, 렌더
+// 함수 안에서 무조건 fetch하면 무한 재조회 루프가 된다. task 폼 모달의
+// taskFormModal 등과 동일한 원칙으로, 이력 로딩중/결과/에러/현재 limit을
+// 모듈 스코프 Map에 캐시해 이미 로드됐거나 로딩 중이면 재조회하지 않는다.
+interface HistoryCacheEntry {
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly items: readonly RunHistoryEntry[];
+  // 이번에 요청한 limit — undefined는 "백엔드 기본값(20건) 사용"을 뜻하며
+  // 최초 조회에서만 쓴다("더 보기"부터는 항상 명시적인 숫자를 보낸다).
+  readonly requestedLimit: number | undefined;
+  readonly hasMore: boolean;
+}
+
+const historyCache = new Map<string, HistoryCacheEntry>();
+const DEFAULT_HISTORY_LIMIT = 20;
+const HISTORY_LIMIT_STEP = 20;
+
+function loadTaskHistory(projectPath: string, taskId: string, requestedLimit: number | undefined): void {
+  const key = runtimeKey(projectPath, taskId);
+  const prev = historyCache.get(key);
+  historyCache.set(key, { loading: true, error: null, items: prev?.items ?? [], requestedLimit, hasMore: prev?.hasMore ?? false });
+  notifyChange();
+  void (async () => {
+    try {
+      const items = await fetchAutonomyTaskHistory(projectPath, taskId, requestedLimit);
+      const effectiveLimit = requestedLimit ?? DEFAULT_HISTORY_LIMIT;
+      // "더 보기" 숨김 트리거 = 이번 조회 결과 건수가 요청한 limit보다 작다
+      // (설계 §4-6·§8 — 별도의 "총 개수" API 없이도 정확하다).
+      historyCache.set(key, { loading: false, error: null, items, requestedLimit, hasMore: items.length >= effectiveLimit });
+    } catch (err) {
+      historyCache.set(key, {
+        loading: false,
+        error: err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.',
+        items: prev?.items ?? [],
+        requestedLimit,
+        hasMore: prev?.hasMore ?? false,
+      });
+    } finally {
+      notifyChange();
+    }
+  })();
+}
+
+// 렌더 함수에서 호출한다 — 캐시가 없을 때만 최초 조회(limit 생략)를 시작하고,
+// 이미 있으면(로딩중/완료/에러 무엇이든) 그 값을 그대로 반환해 재조회하지 않는다.
+function ensureTaskHistoryLoaded(task: AutonomousTask): HistoryCacheEntry {
+  const key = runtimeKey(task.projectPath, task.id);
+  const cached = historyCache.get(key);
+  if (cached) return cached;
+  loadTaskHistory(task.projectPath, task.id, undefined);
+  return { loading: true, error: null, items: [], requestedLimit: undefined, hasMore: false };
+}
+
+function handleLoadMoreHistory(task: AutonomousTask): void {
+  const key = runtimeKey(task.projectPath, task.id);
+  const cached = historyCache.get(key);
+  if (cached?.loading) return;
+  const nextLimit = (cached?.requestedLimit ?? DEFAULT_HISTORY_LIMIT) + HISTORY_LIMIT_STEP;
+  loadTaskHistory(task.projectPath, task.id, nextLimit);
+}
+
+function handleRetryHistory(task: AutonomousTask): void {
+  const key = runtimeKey(task.projectPath, task.id);
+  const cached = historyCache.get(key);
+  loadTaskHistory(task.projectPath, task.id, cached?.requestedLimit);
+}
+
+// 런타임 갱신 이벤트/폴백 폴링(§7)에서만 호출한다 — 상세 화면을 한 번이라도
+// 연 적 있는(historyCache에 항목이 있는) task에 한해서만 재조회하고, 방문한
+// 적 없는 task까지 미리 불러오지는 않는다. 이미 로딩 중이면 중복 호출하지 않는다.
+function refreshHistoryIfTracked(projectPath: string, taskId: string): void {
+  const key = runtimeKey(projectPath, taskId);
+  const cached = historyCache.get(key);
+  if (!cached || cached.loading) return;
+  loadTaskHistory(projectPath, taskId, cached.requestedLimit);
+}
+
+// 이력 항목별 "세부 보기" 펼침 상태 — logPath는 실행 1건당 유일한 파일이라
+// 이 키로 충분하다(더 보기로 배열이 늘어나도 기존 항목의 순서는 유지된다 —
+// 백엔드가 항상 "최신순 상위 N건"을 돌려주는 계약이라 앞쪽 항목이 안 바뀐다).
+const expandedHistoryRows = new Set<string>();
+function historyRowKey(taskKey: string, entry: RunHistoryEntry): string {
+  return `${taskKey}::${entry.logPath}`;
+}
+
+function handleCopyLogPath(path: string): void {
+  navigator.clipboard.writeText(path).then(
+    () => showToast('로그 경로를 복사했습니다'),
+    () => showToast('경로 복사에 실패했습니다')
+  );
+}
+
+// ---------------- 이력 표기 규칙 (설계 §4-2~§4-4) ----------------
+
+const RUN_HISTORY_META: Readonly<Record<AutonomyHistoryResult, { readonly icon: string; readonly label: string; readonly badgeClass: string }>> = {
+  success: { icon: '✓', label: '성공', badgeClass: 'badge-run-success' },
+  failed: { icon: '✕', label: '실패', badgeClass: 'badge-run-failed' },
+  timeout: { icon: '⏱', label: '타임아웃', badgeClass: 'badge-run-timeout' },
+  aborted: { icon: '⊘', label: '중단됨', badgeClass: 'badge-run-aborted' },
+};
+
+function isSameCalendarDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+// "오늘/어제/그 외" 판정은 24시간 이내가 아니라 로컬 달력 날짜 비교다(자정
+// 직후 실행 건이 "어제"로 잘못 표기되는 것을 방지, 설계 §4-3).
+function formatHistoryTimestamp(startedAtIso: string): { readonly label: string; readonly title: string } {
+  const t = Date.parse(startedAtIso);
+  if (Number.isNaN(t)) return { label: startedAtIso, title: startedAtIso };
+  const d = new Date(t);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const timeOfDay = d.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+  let label: string;
+  if (isSameCalendarDay(d, now)) {
+    label = `오늘 ${timeOfDay}`;
+  } else if (isSameCalendarDay(d, yesterday)) {
+    label = `어제 ${timeOfDay}`;
+  } else {
+    const yearPrefix = d.getFullYear() === now.getFullYear() ? '' : `${d.getFullYear()}/`;
+    label = `${yearPrefix}${d.getMonth() + 1}/${d.getDate()} ${timeOfDay}`;
+  }
+  return { label, title: startedAtIso };
+}
+
+function formatHistoryDuration(durationMs: number): string {
+  const totalSeconds = Math.round(durationMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}초`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}분 ${String(seconds).padStart(2, '0')}초`;
+}
+
+// ---------------- 좌측 메타 카드 / 우측 프롬프트·기록 카드 ----------------
+
+function renderTaskMetaCard(task: AutonomousTask): HTMLElement {
+  const statusLabel = task.running ? '실행 중' : task.enabled ? '대기 중' : '중지됨';
+  const sections = [
+    overviewRow('상태', `● ${statusLabel}\n다음 실행 ${task.nextRunLabel}`),
+    overviewRow('프로젝트', `${task.projectName}\n${task.projectPath}`),
+    overviewRow('반복', task.scheduleLabel),
+    overviewRow('타임아웃', task.timeout != null ? `${task.timeout}분` : '전역 기본값 사용'),
+    overviewRow('서브에이전트', task.subagent ?? '지정 안 함'),
+  ];
+
+  // 수정/삭제는 헤더에서 좌측 메타 카드 하단으로 이동했다(설계 §3) — 설정을
+  // 확인하다가 고치고 싶을 때 접근하는 동선이 자연스럽고, 파괴적인 삭제는
+  // "지금 실행"·"중지" 같은 자주 쓰는 조작 동선에서 최대한 멀리 둔다.
+  const editBtn = el('button', { className: 'btn', onClick: () => openTaskFormModal(task) }, ['수정']);
+  const deleteBtn = el('button', { className: 'btn', onClick: () => void handleDeleteTask(task, () => navigate('#/tasks')) }, ['삭제']);
+  deleteBtn.style.color = 'var(--color-danger)';
+  const footerActions = el('div', { className: 'overview-card-footer-actions' }, [editBtn, deleteBtn]);
+
+  return el('div', { className: 'overview-card' }, [...sections, footerActions]);
+}
+
+function renderPromptCard(task: AutonomousTask): HTMLElement {
+  return el('div', { className: 'overview-card' }, [el('div', { className: 'overview-body' }, [task.prompt])]);
+}
+
+// 세부 보기 펼침 블록 — 로그 파일 경로 + 복사 버튼만 보여준다. 설계 §4-1은
+// "요약(summary)도 함께 보여준다"고 적었지만, 실제 백엔드 계약(autonomy_task_history의
+// RunHistoryEntry)에는 summary 필드가 없다 — summary는 AutonomyRuntimeStatus에만
+// 있는 "가장 최근 실행 1건" 전용 메모리 값이라 과거 이력 각 건에는 없는 데이터다.
+// 없는 필드를 지어내지 않고 로그 경로만 정직하게 보여준다(자기검증용 메모).
+function renderHistoryDetail(entry: RunHistoryEntry): HTMLElement {
+  const pathEl = el('span', { className: 'detail-path' }, [entry.logPath]);
+  pathEl.style.overflow = 'hidden';
+  pathEl.style.textOverflow = 'ellipsis';
+  pathEl.style.whiteSpace = 'nowrap';
+  pathEl.style.flex = '1';
+  pathEl.title = entry.logPath;
+  const copyBtn = el('button', { className: 'btn btn-sm', onClick: () => handleCopyLogPath(entry.logPath) }, ['경로 복사']);
+
+  const wrap = el('div', {}, [pathEl, copyBtn]);
+  wrap.style.display = 'flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.gap = '8px';
+  wrap.style.marginTop = '8px';
+  wrap.style.paddingLeft = '4px';
+  return wrap;
+}
+
+function renderHistoryRow(taskKey: string, entry: RunHistoryEntry): HTMLElement {
+  const meta = RUN_HISTORY_META[entry.result];
+  const { label: timeLabel, title: timeTitle } = formatHistoryTimestamp(entry.startedAt);
+  const expanded = expandedHistoryRows.has(historyRowKey(taskKey, entry));
+
+  const badge = el('span', { className: `badge ${meta.badgeClass}` }, [`${meta.icon} ${meta.label}`]);
+  const timeEl = el('span', {}, [timeLabel]);
+  timeEl.style.flex = '1';
+  timeEl.title = timeTitle;
+  const durationEl = el('span', {}, [formatHistoryDuration(entry.durationMs)]);
+  durationEl.style.textAlign = 'right';
+  const toggleBtn = el(
+    'button',
+    {
+      className: 'btn btn-sm',
+      onClick: () => {
+        const rowKey = historyRowKey(taskKey, entry);
+        if (expandedHistoryRows.has(rowKey)) expandedHistoryRows.delete(rowKey);
+        else expandedHistoryRows.add(rowKey);
+        notifyChange();
+      },
+    },
+    [expanded ? '세부 보기 ▴' : '세부 보기 ▾']
+  );
+
+  return el('div', { className: 'run-history-row' }, [badge, timeEl, durationEl, toggleBtn]);
+}
+
+function renderRunHistoryCard(task: AutonomousTask): HTMLElement {
+  const taskKey = runtimeKey(task.projectPath, task.id);
+  const cache = ensureTaskHistoryLoaded(task);
+
+  const body: HTMLElement[] = [];
+
+  if (cache.loading && cache.items.length === 0) {
+    body.push(loadingBlock());
+  } else if (cache.error) {
+    // 이력 조회 실패는 이 카드 안에만 국한된다 — 좌측 메타/우측 프롬프트
+    // 표시를 막지 않는다(설계 §4-6·§7).
+    body.push(errorBlock(`실행 이력을 불러오지 못했습니다 — ${cache.error}`, () => handleRetryHistory(task)));
+  } else if (cache.items.length === 0) {
+    body.push(
+      el('div', { className: 'state-block' }, [
+        el('div', { className: 'state-block-title' }, ['아직 실행 이력이 없습니다']),
+        el('div', { className: 'state-block-desc' }, ['상단의 "지금 실행"을 눌러 첫 실행을 시작하세요.']),
+      ])
+    );
+  } else {
+    // 각 항목 뒤에 펼침 상세 블록을 평평하게(같은 리스트의 형제 노드로) 이어
+    // 붙인다 — 별도 wrapper div로 감싸면 마지막 자식이 .run-history-row가
+    // 아니게 되어 ":last-child { border-bottom: none }" 규칙이 어긋난다.
+    const rowEls: HTMLElement[] = [];
+    cache.items.forEach((entry) => {
+      const row = renderHistoryRow(taskKey, entry);
+      rowEls.push(row);
+      if (expandedHistoryRows.has(historyRowKey(taskKey, entry))) rowEls.push(renderHistoryDetail(entry));
+    });
+    // 마지막 실제 DOM 자식(펼쳐진 상세 블록일 수도 있다)의 구분선을 확실히
+    // 지운다 — CSS :last-child만으로는 펼침 상태에 따라 어긋날 수 있어서다.
+    const lastEl = rowEls[rowEls.length - 1];
+    if (lastEl) lastEl.style.borderBottom = 'none';
+    body.push(el('div', { className: 'run-history-list' }, rowEls));
+
+    if (cache.hasMore) {
+      const moreBtn = el('button', { className: 'btn', disabled: cache.loading, onClick: () => handleLoadMoreHistory(task) }, [
+        cache.loading ? '불러오는 중…' : '더 보기',
+      ]);
+      const moreWrap = el('div', {}, [moreBtn]);
+      moreWrap.style.marginTop = '12px';
+      moreWrap.style.textAlign = 'center';
+      body.push(moreWrap);
+    }
+  }
+
+  return el('div', { className: 'overview-card run-history-card' }, body);
 }
 
 export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
@@ -1252,18 +1549,8 @@ export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
   }
 
   const statusLabel = task.running ? '실행 중' : task.enabled ? '대기 중' : '중지됨';
-  const header = el('div', { className: 'detail-header' }, [
-    el('div', {}, [el('h1', { className: 'detail-title' }, [task.name]), el('div', { className: 'detail-path' }, [`${task.projectName} · ${task.scheduleLabel}`])]),
-    el('span', { className: `badge ${task.running ? 'badge-active' : task.enabled ? 'badge-unknown' : 'badge-archived'}` }, [statusLabel]),
-  ]);
+  const badgeEl = el('span', { className: `badge ${task.running ? 'badge-active' : task.enabled ? 'badge-unknown' : 'badge-archived'}` }, [statusLabel]);
 
-  const deleteBtn = el(
-    'button',
-    { className: 'btn', onClick: () => void handleDeleteTask(task, () => navigate('#/tasks')) },
-    ['삭제']
-  );
-  deleteBtn.style.color = 'var(--color-danger)';
-  const editBtn = el('button', { className: 'btn', onClick: () => openTaskFormModal(task) }, ['수정']);
   // "지금 실행"은 enabled(자동 스케줄 on/off)와 독립이다 — enabled=false는
   // "다음 예약 실행을 하지 않는다"는 뜻일 뿐, 사용자가 지금 당장 수동으로
   // 한 번 돌려보는 것까지 막을 이유는 없다(프롬프트/설정을 확인하려고 잠시
@@ -1276,32 +1563,38 @@ export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
     { className: 'btn btn-primary', disabled: task.running || runNowPendingHere, onClick: () => void handleRunNow(task) },
     [task.running ? '실행 중…' : runNowPendingHere ? '요청 중…' : '지금 실행']
   );
-  const actions = el('div', { className: 'settings-form-actions' }, [
-    runNowBtn,
-    el('button', { className: 'btn', onClick: () => void handleToggleTask(task) }, [task.enabled ? '중지' : '재개']),
-    editBtn,
-    deleteBtn,
+  const toggleBtn = el('button', { className: 'btn', onClick: () => void handleToggleTask(task) }, [task.enabled ? '중지' : '재개']);
+  // 프라이머리(지금 실행) 버튼 바로 왼쪽에 세컨더리(중지/재개)를 둔다(설계 §3).
+  const headerActions = el('div', { className: 'settings-form-actions' }, [toggleBtn, runNowBtn]);
+
+  // 헤더 우측 영역 — 상태 배지(윗줄) + 액션 버튼(아랫줄)을 세로로 쌓아
+  // 오른쪽 정렬한다(와이어프레임 §2-1). .detail-header 자체는 그대로
+  // 재사용하고(신규 클래스 없음), 이 wrapper만 인라인 스타일로 정렬한다.
+  const headerRight = el('div', {}, [badgeEl, headerActions]);
+  headerRight.style.display = 'flex';
+  headerRight.style.flexDirection = 'column';
+  headerRight.style.alignItems = 'flex-end';
+  headerRight.style.gap = '8px';
+
+  const header = el('div', { className: 'detail-header' }, [
+    el('div', {}, [el('h1', { className: 'detail-title' }, [task.name]), el('div', { className: 'detail-path' }, [`${task.projectName} · ${task.scheduleLabel}`])]),
+    headerRight,
   ]);
 
-  const overviewRows = [
-    overviewRow('프롬프트', task.prompt),
-    overviewRow('프로젝트', task.projectName),
-    overviewRow('서브에이전트', task.subagent ?? '지정 안 함'),
-    overviewRow('실행 주기', task.scheduleLabel),
-    overviewRow('타임아웃', task.timeout != null ? `${task.timeout}분` : '전역 기본값 사용'),
-    overviewRow('마지막 실행', task.lastRunLabel),
-    overviewRow('마지막 실행 결과', task.status ? RUN_STATUS_LABEL[task.status] : '기록 없음'),
-    overviewRow('다음 실행', task.nextRunLabel),
-    ...(task.durationMs !== null ? [overviewRow('마지막 실행 소요 시간', `${Math.round(task.durationMs / 1000)}초`)] : []),
-    ...(task.summary ? [overviewRow('마지막 실행 요약', task.summary)] : []),
-    ...(task.logPath ? [overviewRow('실행 로그 파일', task.logPath)] : []),
-  ];
-  const overview = el('div', { className: 'overview-card' }, overviewRows);
-  const logHint = el('div', { className: 'settings-form-hint' }, [
-    '과거 실행 이력 전체는 이 화면에 쌓이지 않습니다 — 프로젝트의 .claude/logs/autonomy/ 아래 날짜별 로그 파일에서 확인하세요.',
+  // 우측 컬럼 — "지침(프롬프트)"/"기록" 섹션 제목은 이미 있는
+  // .plugin-section-label(카탈로그 화면의 소제목)을 그대로 재사용한다(신규
+  // 클래스 없음). `.overview-card + .plugin-section-label`에 margin-top:20px를
+  // 추가해 두 카드 사이 간격(설계 §5)을 기존 인접 형제 선택자 패턴 그대로 준다.
+  const rightColumn = el('div', {}, [
+    el('div', { className: 'plugin-section-label' }, ['지침(프롬프트)']),
+    renderPromptCard(task),
+    el('div', { className: 'plugin-section-label' }, ['기록']),
+    renderRunHistoryCard(task),
   ]);
 
-  const detailChildren: HTMLElement[] = [back, header, actions, overview, logHint];
+  const grid = el('div', { className: 'task-detail-grid' }, [renderTaskMetaCard(task), rightColumn]);
+
+  const detailChildren: HTMLElement[] = [back, header, grid];
   const taskFormModalEl = renderTaskFormModalIfOpen();
   if (taskFormModalEl) detailChildren.push(taskFormModalEl);
 

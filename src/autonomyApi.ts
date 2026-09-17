@@ -104,3 +104,30 @@ export async function runAutonomyTaskNow(projectPath: string, taskId: string): P
 export async function onAutonomyRuntimeChanged(callback: (status: AutonomyRuntimeStatus) => void): Promise<void> {
   await listen<AutonomyRuntimeStatus>('autonomy-task-updated', (event) => callback(event.payload));
 }
+
+// 'success'/'failed'/'timeout'은 AutonomyRunStatus와 값이 겹치지만, 'aborted'
+// (앱 종료로 인한 강제 중단)는 과거 실행 1건 단위로만 의미가 있어 런타임
+// 상태(AutonomyRunStatus, 항상 최신 1건만 가리킴)와 타입을 분리했다.
+export type AutonomyHistoryResult = 'success' | 'failed' | 'timeout' | 'aborted';
+
+// 과거 실행 이력 1건 — 로그 디렉터리(.claude/logs/autonomy/<날짜>/)에서 읽어온
+// 완료된 실행 기록이다. summary(stdout/stderr 꼬리)는 이 항목에 포함되지 않는다
+// — AutonomyRuntimeStatus.summary는 "가장 최근 실행 1건"에만 한정된 메모리
+// 값이고, 과거 이력 각 건의 요약은 백엔드가 보존하지 않는다(로그 파일 경로로만
+// 추적 가능). 화면(views/autonomousTasks.ts)도 이 항목을 펼쳤을 때 요약 없이
+// 로그 경로만 보여준다.
+export interface RunHistoryEntry {
+  readonly startedAt: string; // RFC3339
+  readonly finishedAt: string; // RFC3339
+  readonly durationMs: number;
+  readonly result: AutonomyHistoryResult;
+  readonly logPath: string;
+}
+
+// 최신순 정렬, limit 생략 시 백엔드 기본값(최근 20건). 로그 디렉터리가 없거나
+// 읽기에 실패해도 Err가 아니라 빈 배열을 반환한다 — 그 경우는 "이력 없음"
+// 정상 상태로 수렴한다. Err는 projectPath가 워크스페이스 밖이거나 존재하지
+// 않을 때만 발생한다(백엔드 계약 — 설계서 §4-6 표와 달리 이쪽이 실제 동작).
+export async function fetchAutonomyTaskHistory(projectPath: string, taskId: string, limit?: number): Promise<RunHistoryEntry[]> {
+  return invoke<RunHistoryEntry[]>('autonomy_task_history', { projectPath, taskId, limit });
+}

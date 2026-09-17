@@ -309,6 +309,51 @@ const AUTONOMY_RUNTIME_NORMAL = [
   },
 ];
 
+// ---------------- autonomy_task_history ----------------
+// 상세 화면(tasks-detail)이 여는 task는 항상 IDS.TASK_ID다(routes.mjs) — 결과
+// 4종(success/failed/timeout/aborted)을 최소 1건씩, 상대시각 분기(오늘/어제/
+// 그 외)가 한 화면에서 전부 보이도록 시각을 섞는다. 소요시간 값은 설계서
+// (docs/design/autonomy-task-detail-redesign.md §2-1 와이어프레임)의 예시
+// (42초/12초/60분 00초/5초)를 그대로 재현해 표기 규칙(§4-4)을 눈으로 검증할
+// 수 있게 한다. 최신순 정렬(백엔드 계약)이라 배열 순서 자체가 곧 표시 순서다.
+const AUTONOMY_TASK_HISTORY_NORMAL = [
+  {
+    startedAt: iso(-4 * MIN),
+    finishedAt: iso(-4 * MIN + 42_000),
+    durationMs: 42_000,
+    result: 'success',
+    logPath: `${IDS.PROJECT_PATH}/.claude/logs/autonomy/2026-09-17/${IDS.TASK_ID}.log`,
+  },
+  {
+    startedAt: iso(-1 * DAY - 2 * HOUR),
+    finishedAt: iso(-1 * DAY - 2 * HOUR + 12_000),
+    durationMs: 12_000,
+    result: 'failed',
+    logPath: `${IDS.PROJECT_PATH}/.claude/logs/autonomy/2026-09-16/${IDS.TASK_ID}.log`,
+  },
+  {
+    startedAt: iso(-3 * DAY),
+    finishedAt: iso(-3 * DAY + 60 * MIN),
+    durationMs: 60 * MIN,
+    result: 'timeout',
+    logPath: `${IDS.PROJECT_PATH}/.claude/logs/autonomy/2026-09-14/${IDS.TASK_ID}.log`,
+  },
+  {
+    startedAt: iso(-4 * DAY),
+    finishedAt: iso(-4 * DAY + 5_000),
+    durationMs: 5_000,
+    result: 'aborted',
+    logPath: `${IDS.PROJECT_PATH}/.claude/logs/autonomy/2026-09-13/${IDS.TASK_ID}.log`,
+  },
+];
+
+// 로그 디렉터리가 없거나 읽기에 실패해도 Err가 아니라 빈 배열을 반환하는
+// 백엔드 계약(PM이 코드로 확인) — "빈 상태" 시나리오는 이 계약을 그대로
+// 재현한다(하위 화면은 실제로 autonomy_list도 비어 task 조회 자체가
+// "찾을 수 없습니다"로 먼저 귀결되지만, 커맨드 자체는 항상 값을 가져야
+// 하네스가 예기치 못한 호출에도 멈추지 않는다).
+const AUTONOMY_TASK_HISTORY_EMPTY = [];
+
 const MALGN_AGENT_CONFIG_NORMAL = {
   ok: true,
   error: null,
@@ -434,6 +479,7 @@ export const READ_FIXTURES = {
     get_daily_detail: DAILY_DETAIL_NORMAL,
     autonomy_list: AUTONOMY_LIST_NORMAL,
     autonomy_runtime_status: AUTONOMY_RUNTIME_NORMAL,
+    autonomy_task_history: AUTONOMY_TASK_HISTORY_NORMAL,
     malgn_agent_config_get: MALGN_AGENT_CONFIG_NORMAL,
     mcp_list: MCP_LIST_NORMAL,
     mcp_catalog_list: MCP_CATALOG_NORMAL,
@@ -458,6 +504,7 @@ export const READ_FIXTURES = {
     get_daily_detail: { date: DAILY_DETAIL_NORMAL.date, sessions: [], totalTokens: 0, costUsd: 0 },
     autonomy_list: [],
     autonomy_runtime_status: [],
+    autonomy_task_history: AUTONOMY_TASK_HISTORY_EMPTY,
     malgn_agent_config_get: { ...MALGN_AGENT_CONFIG_NORMAL, workspaces: [] },
     mcp_list: [],
     mcp_catalog_list: MCP_CATALOG_NORMAL.map((e) => ({ ...e, installed: false })),
@@ -515,6 +562,10 @@ export const ERROR_MESSAGES = {
   get_daily_detail: '해당 날짜의 사용량 데이터를 집계하지 못했습니다.',
   autonomy_list: '전역 설정 파일(malgn-agent.json)이 손상되었습니다: 예상치 못한 토큰 위치 12행.',
   autonomy_runtime_status: 'Tauri IPC 연결이 끊어졌습니다.',
+  // 실제 백엔드 계약: autonomy_task_history는 로그 디렉터리가 없거나 읽기에
+  // 실패해도 Err가 아니라 빈 배열을 반환한다 — Err는 projectPath가 워크스페이스
+  // 밖이거나 존재하지 않을 때만 발생하며, 메시지는 항상 이 문구다(PM이 코드로 확인).
+  autonomy_task_history: '프로젝트 경로가 올바르지 않습니다.',
   malgn_agent_config_get: '전역 설정 파일을 읽을 권한이 없습니다.',
   mcp_list: '`claude mcp list` 명령 실행에 실패했습니다 (command not found).',
   mcp_catalog_list: 'MCP 카탈로그 정의를 불러오지 못했습니다.',

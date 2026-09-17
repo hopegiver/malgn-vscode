@@ -186,7 +186,7 @@ html, body {
 /* ---------------- 상세 화면 ---------------- */
 .back-link { color: var(--color-ink-muted); font-size: 13px; cursor: pointer; margin-bottom: 10px; display: inline-block; }
 .back-link:hover { color: var(--color-ink); }
-.detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
 .detail-title { font-size: 22px; font-weight: 700; margin: 0 0 4px 0; }
 .detail-path { font-size: 12px; color: var(--color-ink-faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 
@@ -195,6 +195,28 @@ html, body {
 .overview-label { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 6px; font-weight: 600; }
 .overview-label.danger { color: var(--color-danger); }
 .overview-body { white-space: pre-wrap; word-break: break-word; line-height: 1.6; font-size: 13.5px; }
+
+/* ---------------- 자율업무 상세 재설계: 2컬럼 + 실행 이력 ---------------- */
+/* 좌측 메타(240~320px 고정)/우측 프롬프트+기록(1fr) 2컬럼 — .project-tree-layout과
+   동일한 840px 붕괴 기준을 재사용한다(실측 근거는 위 project-tree-layout 주석 참고). */
+.task-detail-grid { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 24px; margin-top: 20px; align-items: start; }
+@media (max-width: 840px) {
+  .task-detail-grid { grid-template-columns: 1fr; }
+}
+/* 좌측 메타 카드 하단의 수정/삭제 버튼 묶음 — 파괴적 액션(삭제)을 구분선
+   아래 단독 배치해 "중지"·"수정"과 실수로 나란히 눌리지 않게 한다. */
+.overview-card-footer-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-hairline); }
+/* 기록(이력) 카드 — 리스트 아이템 자체가 좌우 여백을 가지므로 카드 패딩을
+   .overview-card의 20px보다 살짝 좁게 준다. */
+.run-history-card { padding: 16px; }
+.run-history-list { display: flex; flex-direction: column; }
+.run-history-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--color-hairline); }
+.run-history-row:last-child { border-bottom: none; }
+/* 결과 4종 배지 — 색상은 전부 기존 success/danger/warn/archived 토큰 재조합이다(신규 토큰 0개). */
+.badge-run-success { background: var(--color-success-soft); color: var(--color-success-text); }
+.badge-run-failed { background: var(--color-danger-soft); color: var(--color-danger); }
+.badge-run-timeout { background: var(--color-warn-bg); color: var(--color-warn-text); border: 1px solid var(--color-warn-border); }
+.badge-run-aborted { background: #f3f4f6; color: var(--color-ink-muted); }
 
 .raw-fallback-note { font-size: 12px; color: var(--color-ink-faint); margin-bottom: 10px; }
 .raw-fallback-pre {
@@ -274,7 +296,8 @@ html, body {
 .plugin-card-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; }
 .plugin-section-label { font-size: 12px; font-weight: 600; color: var(--color-ink-muted); margin-bottom: 8px; }
 .mcp-list + .plugin-section-label,
-.state-block + .plugin-section-label { margin-top: 20px; }
+.state-block + .plugin-section-label,
+.overview-card + .plugin-section-label { margin-top: 20px; }
 .plugin-entry-list { display: flex; flex-direction: column; gap: 6px; }
 .plugin-entry-row { display: flex; flex-direction: column; gap: 1px; padding: 6px 0; border-bottom: 1px solid var(--color-hairline); }
 .plugin-entry-row:last-child { border-bottom: none; }
