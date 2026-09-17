@@ -36,6 +36,8 @@ export interface AutonomousTask {
   scheduleMode: AutonomyScheduleMode;
   atTime: string | null; // 'HH:MM' 로컬 벽시계. autonomyApi.ts의 옵셔널 필드를 여기서 명시 정규화해 비-옵셔널로 둔다(scheduleMode='interval'이면 null).
   days: number[]; // 0=일…6=토. 빈 배열 = 매일(scheduleMode='fixedTime'일 때만 사용).
+  hourlyMinute: number | null; // 0~59. autonomyApi.ts의 옵셔널 필드를 여기서 `?? null`로 정규화한다(scheduleMode='hourly'일 때만 사용).
+  cron: string | null; // 표준 5필드 표현식. 위와 동일하게 정규화한다(scheduleMode='cron'일 때만 사용).
   enabled: boolean;
   timeout: number | null; // 분. null이면 전역 기본값 사용.
   running: boolean;

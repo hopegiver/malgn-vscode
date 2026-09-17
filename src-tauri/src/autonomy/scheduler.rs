@@ -135,12 +135,19 @@ pub(crate) fn tick(app_handle: &tauri::AppHandle) {
     let now = Utc::now();
 
     // reconcile: 새 키 등록(`next_run_at = schedule::initial_next_run_at(task, now)`
-    // — Interval은 `now + STARTUP_GRACE`로 현행 100% 동일, FixedTime은 놓친
-    // 회차 따라잡기/건너뛰기까지 포함), 사라진 키는 실행 중이 아닐 때만 제거.
+    // — Interval은 `now + STARTUP_GRACE`로 현행 100% 동일, FixedTime/Hourly/
+    // Cron은 놓친 회차 따라잡기/건너뛰기까지 포함), 사라진 키는 실행 중이
+    // 아닐 때만 제거.
+    //
+    // `initial_next_run_at(...)`를 클로저로 감싸 넘긴다 — `ensure_registered`
+    // 가 `or_insert_with` 안에서만 호출하므로, 이미 등록된 task는 이 계산을
+    // 아예 타지 않는다. 클로저 없이 값으로 넘기면 이 인자 자체가 호출 전에
+    // 즉시 평가되어 이미 등록된 task까지 매 tick(10초)마다 전부 재계산되고,
+    // Cron 모드가 섞이면 그 무의미한 재계산에 파싱 비용이 실린다.
     let mut seen_keys: HashSet<TaskKey> = HashSet::new();
     for item in &scanned {
         let key: TaskKey = (item.project_path_str.clone(), item.task.id.clone());
-        runtime::ensure_registered(&key, schedule::initial_next_run_at(&item.task, now));
+        runtime::ensure_registered(&key, || schedule::initial_next_run_at(&item.task, now));
         seen_keys.insert(key);
     }
     runtime::prune_missing(&seen_keys);

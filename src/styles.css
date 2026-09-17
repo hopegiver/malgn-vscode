@@ -343,6 +343,9 @@ html, body {
 .settings-input:focus { outline: none; border-color: var(--color-brand); }
 textarea.settings-input { resize: vertical; }
 .settings-form-actions { margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* 자율업무 폼의 cron 표현식 등 인라인 필드 에러 — settings-form-hint와 같은
+   자리에 놓이되 위험색으로 구분한다(#/tasks 고정시간 "사용자 지정" 탭). */
+.settings-field-error { font-size: 12.5px; color: var(--color-danger); margin-bottom: 18px; overflow-wrap: anywhere; }
 
 /* ---------------- 사용량 통계 ---------------- */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }

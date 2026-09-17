@@ -8,7 +8,10 @@ edition = "2021"
 # 각각 들어갔다 — Windows에서 npm/pnpm/wrangler의 `.cmd` 전역 shim을
 # `std::process::Command`로 직접 실행하는 것(dev_tools 설계 §D.4)이 안전하려면
 # 이 completion을 컴파일러가 강제해야 한다. 이 값을 낮추면 그 전제가 깨진다.
-rust-version = "1.81"
+# (기존 BatBadBut 주석은 그대로 두고 값만 올린다 — 1.85는 1.77.2/1.81 완화를
+# 모두 포함하므로 위 전제는 깨지지 않는다.) 추가 사유: cron-parser 0.11이
+# edition 2024라 컴파일러 1.85 이상을 요구한다.
+rust-version = "1.85"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -43,6 +46,18 @@ keyring = "4"
 rayon = "1"
 libc = "0.2"
 dunce = "1"
+# 자율업무 Cron 모드 — 표준 5필드(분 시 일 월 요일) 전용 파서.
+# 이 저장소의 첫 Cargo 의존성 추가라 "가볍고 감사 가능"을 선정 기준으로 삼았다:
+# 전이 의존성 0개(cargo add 실측 — 잠금에 추가되는 패키지가 자기 자신 1개뿐),
+# lib.rs 단일 파일 520줄, unsafe·build.rs·proc-macro 없음, chrono 피처도 넓히지
+# 않는다. `parse::<TZ: TimeZone>(&str, &DateTime<TZ>) -> Result<DateTime<TZ>, ParseError>`
+# 라서 schedule.rs의 `Tz: TimeZone` 제네릭 관례를 그대로 잇는다(설계 §5.2).
+# 매시간(Hourly) 모드는 이 크레이트를 쓰지 않는다 — chrono만으로 계산한다(설계 §4).
+# 정확 버전 고정(캐럿이 아닌 `=`): 0.9.0 이전에 "필드 5개 미만 입력 시 panic"
+# 이력이 있었고(0.9.0에서 수정), 이 앱은 `panic = "abort"`라 회귀 시 앱 전체가
+# 죽는다. 0.11.2는 다운로드 수가 적어 상대적으로 덜 굴러본 버전이므로 자동
+# 마이너 업데이트를 받지 않는다(보안 검토 조건 4).
+cron-parser = "=0.11.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

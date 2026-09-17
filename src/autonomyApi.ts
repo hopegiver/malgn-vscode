@@ -12,7 +12,11 @@ export type AutonomyRunStatus = 'success' | 'failed' | 'timeout';
 // 'interval' = 이전 실행 완료 후 N분 뒤 재실행(레거시 파일의 유일한 동작이자
 // 기본값). 'fixedTime' = 로컬 벽시계 기준 고정 시각(+요일)에 실행. 백엔드가
 // 레거시 파일도 'interval'로 채워 항상 내려준다.
-export type AutonomyScheduleMode = 'interval' | 'fixedTime';
+// 'hourly' = 매시 정각 기준 M분에 실행(신규, 설계서 §2.2). 'cron' = 표준
+// 5필드(분 시 일 월 요일) cron 표현식으로 실행(신규, 설계서 §2.2). 두 값
+// 모두 UI 2단 계층("고정 시간" 라디오 아래 하위 탭)에서만 선택된다 — 백엔드
+// 계약은 design-autonomy-schedule-cron.md §0 결정 D·§8.1 기준으로 가정했다.
+export type AutonomyScheduleMode = 'interval' | 'fixedTime' | 'hourly' | 'cron';
 
 export interface AutonomyTaskConfig {
   id: string;
@@ -28,6 +32,13 @@ export interface AutonomyTaskConfig {
   atTime?: string | null;
   // 0=일…6=토. 빈 배열/키 부재 = 매일. 위와 동일한 이유로 `?`로 선언한다.
   days?: number[];
+  // Hourly 모드의 실행 "분"(0~59, 매시 이 분에 실행). scheduleMode가 'hourly'가
+  // 아니면 키 자체가 없을 수 있다(백엔드 skip_serializing_if=None, 설계서 §8.2)
+  // — 위 atTime/days와 동일한 이유로 `?`로 선언한다.
+  hourlyMinute?: number | null;
+  // Cron 모드의 표준 5필드(분 시 일 월 요일) 표현식. scheduleMode가 'cron'이
+  // 아니면 키 자체가 없을 수 있다(설계서 §8.2) — 위와 동일한 이유로 `?`로 선언한다.
+  cron?: string | null;
   enabled: boolean;
   timeout: number | null; // 분. null이면 전역 기본값(malgn-agent.json의 autonomy.defaultTimeout)을 쓴다.
 }

@@ -48,9 +48,13 @@ const RUN_STATUS_LABEL: Readonly<Record<AutonomyRunStatus, string>> = { success:
 // 0=일…6=토 — 백엔드(chrono::Weekday::num_days_from_sunday)와 동일한 축. 순서를
 // 바꾸지 않는다(설계서 §3·§4.1).
 const WEEKDAY_LABELS: readonly string[] = ['일', '월', '화', '수', '목', '금', '토'];
-const WEEKDAY_PRESET_DAILY: readonly number[] = [0, 1, 2, 3, 4, 5, 6];
 const WEEKDAY_PRESET_WEEKDAYS: readonly number[] = [1, 2, 3, 4, 5];
 const WEEKDAY_PRESET_WEEKEND: readonly number[] = [0, 6];
+
+// 고정시간(fixedTime 상위 라디오) 아래 2단 하위 탭 — 설계서 §2.2 매핑표 정본.
+// '매일'/'매주'는 백엔드로 둘 다 scheduleMode='fixedTime'을 보내고 days로만
+// 구분한다(§2.2). '매시간'='hourly', '사용자 지정'='cron'.
+type FixedTimeSubTab = 'hourly' | 'daily' | 'weekly' | 'custom';
 
 // 전역 설정 편집 모달 — 열림 상태 자체는 이 화면 전용 값이라 기존 전역 state
 // (state.malgnAgentConfig.editingAutonomy)를 그대로 재사용하지만(sessions.ts의
@@ -148,8 +152,30 @@ function computeFixedTimeScheduleLabel(atTime: string | null, days: readonly num
   return `매주 ${sortedLabels.join('·')} ${time}`;
 }
 
-function computeScheduleLabel(task: { scheduleMode: AutonomyScheduleMode; interval: number; atTime: string | null; days: readonly number[] }): string {
+// 매시간 모드 문구 — "매시 M분"(설계서 §6.4). hourlyMinute이 없으면(손편집 파일
+// 등 이상 데이터) 재설정을 안내한다.
+function computeHourlyScheduleLabel(hourlyMinute: number | null): string {
+  if (hourlyMinute === null) return '스케줄을 다시 지정해 주세요';
+  return `매시 ${hourlyMinute}분`;
+}
+
+// 사용자 지정(cron) 모드 문구 — 표현식 원문을 그대로 보여준다(설계서 §6.4).
+function computeCronScheduleLabel(cron: string | null): string {
+  if (!cron) return '스케줄을 다시 지정해 주세요';
+  return cron;
+}
+
+function computeScheduleLabel(task: {
+  scheduleMode: AutonomyScheduleMode;
+  interval: number;
+  atTime: string | null;
+  days: readonly number[];
+  hourlyMinute: number | null;
+  cron: string | null;
+}): string {
   if (task.scheduleMode === 'fixedTime') return computeFixedTimeScheduleLabel(task.atTime, task.days);
+  if (task.scheduleMode === 'hourly') return computeHourlyScheduleLabel(task.hourlyMinute);
+  if (task.scheduleMode === 'cron') return computeCronScheduleLabel(task.cron);
   return computeIntervalScheduleLabel(task.interval);
 }
 
@@ -185,10 +211,11 @@ function computeLastRunLabel(running: boolean, lastStartedAt: string | null, las
 function computeNextRunLabel(nextRunAt: string | null, enabled: boolean, scheduleMode: AutonomyScheduleMode): string {
   if (!enabled) return '중지됨';
   if (!nextRunAt) {
-    // 고정시각 모드는 "등록 직후라 아직 계산 전"이 아니라 atTime 파싱 실패로
-    // next_run_at이 영구히 None인 경우가 실제로 있다(설계서 §4.5 #14) —
-    // interval 모드의 "첫 실행 대기"와 다른 문구로 구분한다.
-    return scheduleMode === 'fixedTime' ? '실행 시각이 올바르지 않습니다' : '등록 후 첫 실행 대기';
+    // 벽시계 기반 모드(fixedTime/hourly/cron)는 "등록 직후라 아직 계산 전"이
+    // 아니라 스케줄 값 파싱 실패로 next_run_at이 영구히 None인 경우가 실제로
+    // 있다(설계서 §4.5 #14, §6.4) — interval 모드의 "첫 실행 대기"와 다른
+    // 문구로 구분한다. 네 모드 중 null이 정상인 모드는 interval뿐이다.
+    return scheduleMode === 'fixedTime' || scheduleMode === 'hourly' || scheduleMode === 'cron' ? '실행 시각이 올바르지 않습니다' : '등록 후 첫 실행 대기';
   }
   const t = Date.parse(nextRunAt);
   if (Number.isNaN(t)) return '알 수 없음';
@@ -227,6 +254,8 @@ function toDisplayTask(group: ProjectAutonomyGroup, task: AutonomyTaskConfig, ru
   const scheduleMode = task.scheduleMode;
   const atTime = task.atTime ?? null;
   const days = task.days ?? [];
+  const hourlyMinute = task.hourlyMinute ?? null;
+  const cron = task.cron ?? null;
   return mergeRuntime(
     {
       id: task.id,
@@ -239,6 +268,8 @@ function toDisplayTask(group: ProjectAutonomyGroup, task: AutonomyTaskConfig, ru
       scheduleMode,
       atTime,
       days,
+      hourlyMinute,
+      cron,
       enabled: task.enabled,
       timeout: task.timeout,
       running: false,
@@ -249,7 +280,7 @@ function toDisplayTask(group: ProjectAutonomyGroup, task: AutonomyTaskConfig, ru
       summary: null,
       durationMs: null,
       logPath: null,
-      scheduleLabel: computeScheduleLabel({ scheduleMode, interval: task.interval, atTime, days }),
+      scheduleLabel: computeScheduleLabel({ scheduleMode, interval: task.interval, atTime, days, hourlyMinute, cron }),
       lastRunLabel: '없음',
       nextRunLabel: '알 수 없음',
     },
@@ -574,6 +605,17 @@ async function handleDeleteTask(task: AutonomousTask, afterDelete?: () => void):
   }
 }
 
+// cron 입력의 가벼운 즉시 피드백 — 보안 방어선이 아니라 UX 편의다(설계서
+// §7.4, 지시서 필수 요구사항). 빈 값/필드 개수만 본다 — 정교한 cron 파서는
+// 만들지 않는다(신규 의존성 추가 금지이기도 하다). 실제 문법 검증은 저장
+// 시점에 백엔드가 하고, 그 한국어 에러 메시지를 그대로 노출한다.
+function validateCronLight(expr: string): string | null {
+  if (!expr) return 'cron 표현식을 입력하세요.';
+  const fields = expr.split(/\s+/).filter((f) => f.length > 0);
+  if (fields.length !== 5) return 'cron 표현식은 5칸(분 시 일 월 요일)으로 적어야 합니다.';
+  return null;
+}
+
 function tabsRow(active: 'list' | 'board'): HTMLElement {
   return el('div', { className: 'filter-group' }, [
     el('button', { className: `filter-btn${active === 'list' ? ' active' : ''}`, onClick: () => navigate('#/tasks') }, ['목록']),
@@ -755,9 +797,11 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['실행 주기']), intervalSelect, intervalHint]),
   ]);
 
-  // ---- 실행 방식(스케줄 모드) 라디오 + 고정 시각 전용 필드 ----
-  // 기존 상대간격(interval) 동작·문구는 위 두 요소를 그대로 재사용한다 —
-  // 신규 모드 추가일 뿐 기존 모드를 바꾸지 않는다(지시서 금지 범위).
+  // ---- 실행 방식(스케줄 모드) 라디오 + 고정 시간 하위 탭 ----
+  // 1단 라디오(상대간격/고정시간)는 기존 구조 그대로 유지한다 — 상대간격
+  // 선택 시 동작·문구는 아래 두 요소(intervalSelect/intervalFields)를 그대로
+  // 재사용하고 손대지 않는다(지시서 금지 범위). 고정시간 선택 시에만 그 아래
+  // 2단 하위 탭(매시간/매일/매주/사용자 지정, 설계서 §2.2)이 나타난다.
   const initialScheduleMode: AutonomyScheduleMode = editingTask?.scheduleMode ?? 'interval';
 
   const modeIntervalRadio = document.createElement('input');
@@ -770,19 +814,68 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
   modeFixedRadio.type = 'radio';
   modeFixedRadio.name = 'task-form-schedule-mode';
   modeFixedRadio.value = 'fixedTime';
-  modeFixedRadio.checked = initialScheduleMode === 'fixedTime';
+  modeFixedRadio.checked = initialScheduleMode !== 'interval';
 
   const modeField = el('div', { className: 'settings-field' }, [
     el('span', { className: 'settings-field-label' }, ['실행 방식']),
     el('div', { className: 'filter-group' }, [
       el('label', {}, [modeIntervalRadio, ' 상대 간격 (이전 실행 완료 후 N분 뒤)']),
-      el('label', {}, [modeFixedRadio, ' 고정 시각 (매일/특정 요일 지정 시각)']),
+      el('label', {}, [modeFixedRadio, ' 고정 시간 (매시간/매일/매주/사용자 지정)']),
+    ]),
+  ]);
+
+  // 편집 모달을 열 때 어느 하위 탭을 선택할지 판정한다(설계서 §2.3 역매핑
+  // 정본). fixedTime은 days.length로 매일/매주를 가른다 — 7개 전부(레거시
+  // "매일" 저장 형태)도 매일로 접는다(computeFixedTimeScheduleLabel과 동일한
+  // 판단 기준).
+  function initialFixedTimeSubTab(): FixedTimeSubTab {
+    if (!editingTask) return 'daily';
+    if (editingTask.scheduleMode === 'hourly') return 'hourly';
+    if (editingTask.scheduleMode === 'cron') return 'custom';
+    if (editingTask.scheduleMode === 'fixedTime') {
+      return editingTask.days.length === 0 || editingTask.days.length >= 7 ? 'daily' : 'weekly';
+    }
+    return 'daily';
+  }
+  let activeSubTab: FixedTimeSubTab = initialFixedTimeSubTab();
+
+  const SUB_TAB_DEFS: readonly { readonly key: FixedTimeSubTab; readonly label: string }[] = [
+    { key: 'hourly', label: '매시간' },
+    { key: 'daily', label: '매일' },
+    { key: 'weekly', label: '매주' },
+    { key: 'custom', label: '사용자 지정' },
+  ];
+  const subTabButtons: HTMLButtonElement[] = SUB_TAB_DEFS.map((def) => {
+    const btn = el('button', { className: `filter-btn${activeSubTab === def.key ? ' active' : ''}`, onClick: () => setActiveSubTab(def.key) }, [
+      def.label,
+    ]);
+    btn.type = 'button';
+    return btn;
+  });
+  const subTabsRow = el('div', { className: 'filter-group' }, subTabButtons);
+
+  // 매시간 탭 — 분(0~59) 1개. 벽시계 정각 기준이라 "상대 간격 60분"과
+  // 의미가 다르다는 점을 힌트 문구로 고지한다(지시서 필수 요구사항).
+  const hourlyMinuteInput = document.createElement('input');
+  hourlyMinuteInput.type = 'number';
+  hourlyMinuteInput.min = '0';
+  hourlyMinuteInput.max = '59';
+  hourlyMinuteInput.className = 'settings-input';
+  hourlyMinuteInput.autocomplete = 'off';
+  hourlyMinuteInput.value = editingTask?.hourlyMinute !== null && editingTask?.hourlyMinute !== undefined ? String(editingTask.hourlyMinute) : '0';
+  const hourlyMinuteField = el('label', { className: 'settings-field' }, [
+    el('span', { className: 'settings-field-label' }, ['실행 분 (매시)']),
+    hourlyMinuteInput,
+    el('div', { className: 'settings-form-hint' }, [
+      '매시 이 분에 실행합니다(예: 30 → 1:30, 2:30…). 상대 간격 60분과 달리 벽시계 정각에 맞춰 실행합니다.',
     ]),
   ]);
 
   // <input type="time">의 value는 브라우저 로케일과 무관하게 항상 "HH:MM"
   // 24시간 형식이다 — 백엔드 parse_hhmm과 계약이 정확히 맞으므로 별도
-  // 파서·입력 마스킹을 두지 않는다(설계서 §7 필수 계약).
+  // 파서·입력 마스킹을 두지 않는다(설계서 §7 필수 계약). 매일/매주 두 탭이
+  // 이 입력 하나를 공유한다 — 둘 다 "실행 시각"이라는 같은 의미이므로 탭을
+  // 오가도 값이 재해석되지 않는다(지시서 필수 요구사항 2).
   const timeInput = document.createElement('input');
   timeInput.type = 'time';
   timeInput.className = 'settings-input';
@@ -794,16 +887,18 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
   ]);
 
   // 요일 인덱스는 0=일요일…6=토요일(백엔드와 동일 축, 설계서 §3) — 순서를
-  // 바꾸지 않는다. days가 비어 있으면(레거시/손편집 경로에서만 발생) "매일"로
-  // 취급해 전체 선택 상태로 보여준다 — 빈 상태로 보이면 왕복 손실처럼
-  // 오인되기 때문이다(설계서 §3 정규화 규칙).
-  const initialDays: readonly number[] =
-    initialScheduleMode === 'fixedTime' && editingTask && editingTask.days.length > 0 ? editingTask.days : WEEKDAY_PRESET_DAILY;
+  // 바꾸지 않는다. "매일" 프리셋은 독립 탭으로 승격되어 불필요해졌으므로
+  // 없앴다(지시서의 PM 판단) — 평일/주말 프리셋만 매주 탭 전용으로 남긴다.
+  // 새로 추가할 때는 평일(월~금)을 기본값으로 보여준다.
+  const initialWeeklyDays: readonly number[] =
+    editingTask && editingTask.scheduleMode === 'fixedTime' && editingTask.days.length > 0 && editingTask.days.length < 7
+      ? editingTask.days
+      : WEEKDAY_PRESET_WEEKDAYS;
   const dayCheckboxes: HTMLInputElement[] = WEEKDAY_LABELS.map((_, idx) => {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = String(idx);
-    cb.checked = initialDays.includes(idx);
+    cb.checked = initialWeeklyDays.includes(idx);
     return cb;
   });
   function setDayCheckboxes(days: readonly number[]): void {
@@ -811,15 +906,13 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
       cb.checked = days.includes(idx);
     });
   }
-  const dayPresetDailyBtn = el('button', { className: 'filter-btn', onClick: () => setDayCheckboxes(WEEKDAY_PRESET_DAILY) }, ['매일']);
-  dayPresetDailyBtn.type = 'button';
   const dayPresetWeekdaysBtn = el('button', { className: 'filter-btn', onClick: () => setDayCheckboxes(WEEKDAY_PRESET_WEEKDAYS) }, ['평일']);
   dayPresetWeekdaysBtn.type = 'button';
   const dayPresetWeekendBtn = el('button', { className: 'filter-btn', onClick: () => setDayCheckboxes(WEEKDAY_PRESET_WEEKEND) }, ['주말']);
   dayPresetWeekendBtn.type = 'button';
   const daysField = el('div', { className: 'settings-field' }, [
     el('span', { className: 'settings-field-label' }, ['실행 요일']),
-    el('div', { className: 'filter-group' }, [dayPresetDailyBtn, dayPresetWeekdaysBtn, dayPresetWeekendBtn]),
+    el('div', { className: 'filter-group' }, [dayPresetWeekdaysBtn, dayPresetWeekendBtn]),
     el(
       'div',
       { className: 'filter-group' },
@@ -827,7 +920,50 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     ),
     el('div', { className: 'settings-form-hint' }, ['최소 한 요일을 선택하세요.']),
   ]);
-  const fixedTimeFields = el('div', {}, [timeField, daysField]);
+
+  // 사용자 지정(cron) 탭 — 표준 5필드 표현식 원문. 프론트 검증은 UX 편의일
+  // 뿐이라(백엔드가 이중 검증) 빈 값·필드 개수만 가볍게 본다(validateCronLight).
+  // 실패 시 인라인 에러(cronError)를 필드 아래에 표시하고, 저장 시점에
+  // 백엔드가 거부하면 그 한국어 메시지를 그대로 여기에 노출한다(프론트에서
+  // 새 문구를 짓지 않는다, 지시서 필수 요구사항).
+  const cronInput = document.createElement('input');
+  cronInput.type = 'text';
+  cronInput.className = 'settings-input';
+  cronInput.placeholder = '0 9 * * 1-5 (평일 오전 9시)';
+  cronInput.autocomplete = 'off';
+  cronInput.value = editingTask?.cron ?? '';
+  const cronError = el('div', { className: 'settings-field-error' }, ['']);
+  cronInput.addEventListener('input', () => {
+    cronError.textContent = '';
+  });
+  const cronField = el('label', { className: 'settings-field' }, [
+    el('span', { className: 'settings-field-label' }, ['cron 표현식']),
+    cronInput,
+    el('div', { className: 'settings-form-hint' }, [
+      '분 시 일 월 요일, 표준 5칸입니다. 예: 0 9 * * 1-5 (평일 오전 9시). 요일은 0~6이며 일요일은 0입니다(7은 쓸 수 없습니다). ' +
+        '@daily 같은 축약형, JAN/MON 등 일부 영문 이름, L·?·1#2, 역방향 범위(FRI-MON)는 지원하지 않습니다. ' +
+        '일(day)과 요일을 동시에 좁히면 둘 다 맞는 날에만 실행됩니다(AND).',
+    ]),
+    cronError,
+  ]);
+
+  const fixedTimeFields = el('div', {}, [subTabsRow, hourlyMinuteField, timeField, daysField, cronField]);
+
+  function setActiveSubTab(tab: FixedTimeSubTab): void {
+    activeSubTab = tab;
+    subTabButtons.forEach((btn, idx) => btn.classList.toggle('active', SUB_TAB_DEFS[idx].key === tab));
+    updateSubTabVisibility();
+  }
+
+  // 하위 탭 전환은 지역적 표시/숨김만 하고 전체 재렌더를 트리거하지 않는다
+  // (지시서 필수 요구사항 3 — 이 프로젝트의 전체 재렌더 구조에서 포커스가
+  // body로 리셋되는 것을 악화시키지 않기 위함).
+  function updateSubTabVisibility(): void {
+    hourlyMinuteField.style.display = activeSubTab === 'hourly' ? '' : 'none';
+    timeField.style.display = activeSubTab === 'daily' || activeSubTab === 'weekly' ? '' : 'none';
+    daysField.style.display = activeSubTab === 'weekly' ? '' : 'none';
+    cronField.style.display = activeSubTab === 'custom' ? '' : 'none';
+  }
 
   const subagentInput = document.createElement('input');
   subagentInput.className = 'settings-input';
@@ -869,12 +1005,14 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     }
   }
 
-  // 라디오 선택에 따라 상대간격/고정시각 전용 필드 블록을 토글하고 힌트
-  // 문구를 갱신한다.
+  // 라디오 선택에 따라 상대간격/고정시간 전용 필드 블록을 토글하고 힌트
+  // 문구를 갱신한다. 고정시간 4개 하위 탭은 모두 같은 따라잡기 문구를 쓴다
+  // (updateStartupHint는 modeFixedRadio.checked만 보고 하위 탭은 보지 않는다).
   function updateScheduleModeVisibility(): void {
     const isFixed = modeFixedRadio.checked;
     intervalFields.style.display = isFixed ? 'none' : '';
     fixedTimeFields.style.display = isFixed ? '' : 'none';
+    updateSubTabVisibility();
     updateStartupHint();
   }
   modeIntervalRadio.addEventListener('change', updateScheduleModeVisibility);
@@ -921,19 +1059,57 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
       timeout = parsed;
     }
 
-    // 제출 검증: 고정시간 모드인데 시각이 비었거나 요일 0개면 차단한다(지시서 계약).
-    const scheduleMode: AutonomyScheduleMode = modeFixedRadio.checked ? 'fixedTime' : 'interval';
+    // 제출 검증 + scheduleMode 결정: 1단 라디오(상대간격/고정시간) × 2단
+    // 하위 탭(매시간/매일/매주/사용자 지정) → 백엔드 모드 4개(설계서 §2.2
+    // 매핑표). "선택된 탭이 소유한 필드만 보낸다"(지시서 필수 요구사항 2) —
+    // 소유하지 않는 필드는 전부 null/[]로 비워 보낸다.
+    let scheduleMode: AutonomyScheduleMode = 'interval';
     let atTime: string | null = null;
     let days: number[] = [];
-    if (scheduleMode === 'fixedTime') {
-      atTime = timeInput.value || null;
-      days = dayCheckboxes.reduce<number[]>((acc, cb, idx) => {
-        if (cb.checked) acc.push(idx);
-        return acc;
-      }, []);
-      if (!atTime || days.length === 0) {
-        showToast('고정 시각 모드는 실행 시각과 최소 한 요일을 선택해야 합니다.');
-        return;
+    let hourlyMinute: number | null = null;
+    let cron: string | null = null;
+
+    if (modeFixedRadio.checked) {
+      if (activeSubTab === 'hourly') {
+        scheduleMode = 'hourly';
+        const raw = hourlyMinuteInput.value.trim();
+        const parsed = Number(raw);
+        if (raw === '' || !Number.isInteger(parsed) || parsed < 0 || parsed > 59) {
+          showToast('매시간 모드는 0~59 사이의 분을 지정해야 합니다.');
+          return;
+        }
+        hourlyMinute = parsed;
+      } else if (activeSubTab === 'custom') {
+        scheduleMode = 'cron';
+        const rawCron = cronInput.value.trim();
+        const lightError = validateCronLight(rawCron);
+        if (lightError) {
+          cronError.textContent = lightError;
+          return;
+        }
+        cron = rawCron;
+      } else {
+        // daily | weekly — 둘 다 백엔드 모드는 fixedTime을 공유한다(§2.2).
+        // 매일은 days=[](§2.3 역매핑과 대칭되는 저장 형태), 매주는 체크된
+        // 요일을 그대로 보낸다.
+        scheduleMode = 'fixedTime';
+        atTime = timeInput.value || null;
+        if (activeSubTab === 'weekly') {
+          days = dayCheckboxes.reduce<number[]>((acc, cb, idx) => {
+            if (cb.checked) acc.push(idx);
+            return acc;
+          }, []);
+          if (!atTime || days.length === 0) {
+            showToast('매주 탭은 실행 시각과 최소 한 요일을 선택해야 합니다.');
+            return;
+          }
+        } else {
+          days = [];
+          if (!atTime) {
+            showToast('매일 탭은 실행 시각을 선택해야 합니다.');
+            return;
+          }
+        }
       }
     }
 
@@ -946,6 +1122,8 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
       scheduleMode,
       atTime,
       days,
+      hourlyMinute,
+      cron,
       enabled: editingTask ? editingTask.enabled : true,
       timeout,
     };
@@ -958,7 +1136,15 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
         closeTaskFormModal();
         await loadAutonomousTasks();
       } catch (err) {
-        showToast(err instanceof Error ? err.message : '자율업무 저장에 실패했습니다');
+        // cron 탭은 백엔드가 돌려준 한국어 에러 메시지를 필드 아래(cronError)에
+        // 그대로 노출한다(지시서 필수 요구사항 — 프론트에서 문구를 새로 짓지
+        // 않는다). 그 외 탭은 기존과 동일하게 토스트로 보여준다.
+        const message = err instanceof Error ? err.message : '자율업무 저장에 실패했습니다';
+        if (scheduleMode === 'cron') {
+          cronError.textContent = message;
+        } else {
+          showToast(message);
+        }
         saveBtn.disabled = false;
         notifyChange();
       }

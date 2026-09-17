@@ -52,16 +52,39 @@ fn task_key_root(root: &std::path::Path) -> String {
 }
 
 /// 저장(신규 등록/편집) 직후 즉시 재스케줄해야 하는지 판정하는 순수 함수 —
-/// M3(FixedTime으로 저장되면 항상 재계산)와 m1(모드 자체가 바뀌면 Interval↔
-/// FixedTime 어느 방향이든 재계산, "옛 고정 시각이 그대로 남는" 문제 해소)을
-/// 하나의 조건으로 합친다. Interval 모드 그대로 값만 바뀐 저장(모드 불변)은
+/// M3(벽시계 모드로 저장되면 항상 재계산)와 m1(모드 자체가 바뀌면 어느
+/// 방향이든 재계산, "옛 고정 시각이 그대로 남는" 문제 해소)을 하나의
+/// 조건으로 합친다. Interval 모드 그대로 값만 바뀐 저장(모드 불변)은
 /// `false` — 기존 "편집은 다음 회차부터 반영" 동작을 그대로 보존한다.
+///
+/// `new_mode.is_wall_clock()`을 쓴다(`config::ScheduleMode::is_wall_clock`,
+/// exhaustive match 1곳) — 예전에는 `new_mode == FixedTime`으로만 비교해서
+/// `Hourly→Hourly`(분만 변경)·`Cron→Cron`(표현식만 변경) 편집이 재스케줄되지
+/// 않는 결함이 있었다. 이 술어로 바꾸면 다음 모드가 추가될 때도 컴파일
+/// 에러로 판단을 강제한다.
 fn should_reschedule_on_save(
     previous_mode: Option<config::ScheduleMode>,
     new_mode: config::ScheduleMode,
 ) -> bool {
-    new_mode == config::ScheduleMode::FixedTime
-        || previous_mode.map(|m| m != new_mode).unwrap_or(false)
+    new_mode.is_wall_clock() || previous_mode.map(|m| m != new_mode).unwrap_or(false)
+}
+
+/// L1 검증(설계 §7.2) — 저장 전 즉시 피드백. 이 검증이 없어도 L2
+/// (`normalize_task`)+L3(계산 시점 `None`)이 이미 안전하지만(실행되지 않을
+/// 뿐), 이게 없으면 사용자가 "저장은 됐는데 영영 안 돈다"를 겪는다. 파일을
+/// 쓰기 전에 거부해 그 UX 실패를 막는 것이 이 함수의 유일한 존재 이유다.
+fn validate_schedule_fields(task: &config::AutonomyTaskConfig) -> Result<(), String> {
+    match task.schedule_mode {
+        config::ScheduleMode::Hourly => match task.hourly_minute {
+            Some(m) if m <= 59 => Ok(()),
+            _ => Err("매시간 모드는 0~59 사이의 분을 지정해야 합니다.".to_string()),
+        },
+        config::ScheduleMode::Cron => {
+            let expr = task.cron.as_deref().unwrap_or("");
+            schedule::validate_cron(expr)
+        }
+        config::ScheduleMode::Interval | config::ScheduleMode::FixedTime => Ok(()),
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -132,6 +155,7 @@ pub fn autonomy_save_task(
 ) -> Result<(), String> {
     let root = crate::resolve_validated_project_root(&project_path)
         .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
+    validate_schedule_fields(&task)?;
     let task_id = task.id.clone();
 
     let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
@@ -192,18 +216,21 @@ pub fn autonomy_set_enabled(
             return Err("해당 자율업무를 찾을 수 없습니다.".to_string());
         };
         task.enabled = enabled;
-        let should_reschedule = enabled && task.schedule_mode == config::ScheduleMode::FixedTime;
+        let should_reschedule = enabled && task.schedule_mode.is_wall_clock();
         (should_reschedule, task.clone())
     };
     config::write_autonomy_file(&root, &file)?;
     drop(_guard);
 
-    // PM 결정(M2): 중지했던 FixedTime task를 재개하면 밀린 회차를 즉시
-    // 돌리지 않고 다음 예정 시각까지 기다린다 — 설계 §5가 세운 "앱이
-    // 꺼져 있던 동안 지난 회차는 건너뛴다" 원칙을 재개(중지→enabled) 전이
-    // 에도 동일 적용한다. Interval 모드 재개는 손대지 않는다(완료 후
-    // interval 경과분을 즉시 도는 것은 기존에도 있던 동작이고 이번 리뷰의
-    // 지적 대상이 아니다 — 리뷰 M2 사유).
+    // PM 결정(M2, 이번 라운드에서 Hourly/Cron까지 `is_wall_clock()`으로
+    // 확장): 중지했던 벽시계 모드(FixedTime/Hourly/Cron) task를 재개하면
+    // 밀린 회차를 즉시 돌리지 않고 다음 예정 시각까지 기다린다 — 설계 §5가
+    // 세운 "앱이 꺼져 있던 동안 지난 회차는 건너뛴다" 원칙을 재개(중지→
+    // enabled) 전이에도 동일 적용한다. 이 가드가 없으면 매시 30분 task를
+    // 3시간 중지 후 재개하는 순간 `next_run_at`에 남은 과거값이 그대로
+    // due가 되어 즉시 1회 실행된다. Interval 모드 재개는 손대지 않는다
+    // (완료 후 interval 경과분을 즉시 도는 것은 기존에도 있던 동작이고
+    // 이번 리뷰의 지적 대상이 아니다 — 리뷰 M2 사유).
     if should_reschedule {
         let key: runtime::TaskKey = (task_key_root(&root), task_id);
         runtime::reschedule_or_register(&key, schedule::reschedule_next_run_at(&saved, chrono::Utc::now()));
@@ -404,5 +431,85 @@ mod tests {
             Some(config::ScheduleMode::Interval),
             config::ScheduleMode::FixedTime
         ));
+    }
+
+    // T11 — `is_wall_clock()` 경유 S1/S2. Hourly→Hourly(분만 변경)·
+    // Cron→Cron(표현식만 변경) 편집이 재스케줄되지 않던 결함(§6.2 S1)의
+    // 회귀 방지 — PM이 코드로 직접 확인한 실측 버그.
+    #[test]
+    fn should_reschedule_on_save_is_true_for_hourly_or_cron_edit_even_when_mode_unchanged() {
+        assert!(
+            should_reschedule_on_save(Some(config::ScheduleMode::Hourly), config::ScheduleMode::Hourly),
+            "Hourly→Hourly(분만 변경)도 재스케줄돼야 한다"
+        );
+        assert!(
+            should_reschedule_on_save(Some(config::ScheduleMode::Cron), config::ScheduleMode::Cron),
+            "Cron→Cron(표현식만 변경)도 재스케줄돼야 한다"
+        );
+    }
+
+    #[test]
+    fn should_reschedule_on_save_is_true_for_new_hourly_or_cron_task() {
+        assert!(should_reschedule_on_save(None, config::ScheduleMode::Hourly));
+        assert!(should_reschedule_on_save(None, config::ScheduleMode::Cron));
+    }
+
+    // ---------------- validate_schedule_fields(L1, 설계 §7.2) ----------------
+
+    fn task_with_mode(mode: config::ScheduleMode) -> config::AutonomyTaskConfig {
+        config::AutonomyTaskConfig {
+            id: "t".to_string(),
+            name: "n".to_string(),
+            prompt: "p".to_string(),
+            subagent: None,
+            interval: 30,
+            schedule_mode: mode,
+            at_time: None,
+            days: Vec::new(),
+            hourly_minute: None,
+            cron: None,
+            enabled: true,
+            timeout: None,
+        }
+    }
+
+    #[test]
+    fn validate_schedule_fields_rejects_hourly_without_minute() {
+        let task = task_with_mode(config::ScheduleMode::Hourly);
+        let err = validate_schedule_fields(&task).unwrap_err();
+        assert_eq!(err, "매시간 모드는 0~59 사이의 분을 지정해야 합니다.");
+    }
+
+    #[test]
+    fn validate_schedule_fields_rejects_hourly_minute_out_of_range() {
+        let mut task = task_with_mode(config::ScheduleMode::Hourly);
+        task.hourly_minute = Some(75);
+        assert!(validate_schedule_fields(&task).is_err());
+    }
+
+    #[test]
+    fn validate_schedule_fields_accepts_hourly_minute_zero() {
+        let mut task = task_with_mode(config::ScheduleMode::Hourly);
+        task.hourly_minute = Some(0);
+        assert!(validate_schedule_fields(&task).is_ok(), "0은 유효한 분이다(매시 정각)");
+    }
+
+    #[test]
+    fn validate_schedule_fields_rejects_cron_without_expression() {
+        let task = task_with_mode(config::ScheduleMode::Cron);
+        assert!(validate_schedule_fields(&task).is_err());
+    }
+
+    #[test]
+    fn validate_schedule_fields_accepts_valid_cron_expression() {
+        let mut task = task_with_mode(config::ScheduleMode::Cron);
+        task.cron = Some("0 9 * * 1-5".to_string());
+        assert!(validate_schedule_fields(&task).is_ok());
+    }
+
+    #[test]
+    fn validate_schedule_fields_is_noop_for_interval_and_fixed_time() {
+        assert!(validate_schedule_fields(&task_with_mode(config::ScheduleMode::Interval)).is_ok());
+        assert!(validate_schedule_fields(&task_with_mode(config::ScheduleMode::FixedTime)).is_ok());
     }
 }

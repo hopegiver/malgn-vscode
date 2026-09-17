@@ -10,15 +10,39 @@
 // 순수 함수로 분리해 `LocalResult::{Single,Ambiguous,None}` 값을 직접 넣어
 // 검증한다.
 //
-// ⚠️ 불변식(나중에 "하루 여러 시각"이나 "시간 단위 고정 스케줄"을 추가할 때
-// 반드시 재검토): 지금 설계는 회차 간 최소 간격이 24시간이라는 전제 위에서,
+// ⚠️ 불변식(예고했던 재검토가 이번 라운드에서 발동한다 — Hourly/Cron 도입):
+// 지금까지의 설계는 회차 간 최소 간격이 24시간이라는 전제 위에서,
 // `MISSED_RUN_GRACE_MINUTES`(config.rs)가 그 간격보다 짧다는 사실만으로
-// "따라잡기는 최대 1회"를 별도 로직 없이 보장한다
+// "따라잡기는 최대 1회"를 별도 로직 없이 보장해 왔다
 // (`missed_run_grace_is_shorter_than_minimum_occurrence_gap` 테스트로 고정).
-// 이 전제가 깨지면 이 보장도 깨진다.
+// 재검토 결론 — 보장은 유지되지만 근거가 두 겹이 됐다:
+//
+// | 모드     | 회차 간 최소 간격 | grace(30분) 여유 근거가 유효한가                         |
+// |----------|-------------------|-----------------------------------------------------------|
+// | FixedTime| 24시간            | ✅ 여유 48배                                               |
+// | Hourly   | 60분              | ✅ 유효하지만 여유가 2배로 줄었다(60 이상으로 올리면 깨짐) |
+// | Cron     | 하한 없음(`*/5`)  | ❌ 무효 — 대신 `initial_next_run_at`이 회차 "목록"이 아닌  |
+// |          |                   |    단일 인스턴트만 반환하고 그 값을 `startup_floor`가 한   |
+// |          |                   |    점으로 누른다는 별도 근거로 "최대 1회"가 성립한다.      |
+//
+// 즉 가장 촘촘한 벽시계 모드는 이제 Hourly다 — 이 상수를 60 이상으로 올리는
+// 사람은 반드시 위 표를 다시 볼 것.
+//
+// `pick()` DST 3분기 규칙의 모드 간 비대칭(설계 §4.3): FixedTime·Hourly는
+// 봄 부재를 "naive + 1시간"으로 밀어서 실행하고, Cron은 그날 회차를
+// 건너뛴다. 판정 기준은 모드 이름이 아니라 "밀린 인스턴트가 그 표현이
+// 약속한 시각 집합 안에 있는가"다 — Hourly의 계약은 "매시 M분"이라 시(hour)
+// 라벨이 밀려도 그 표현이 약속한 시각 그대로지만, Cron은 시(hour) 자체를
+// 고정할 수 있어 미는 것이 표현식이 지정하지 않은 시각을 만들어낸다.
 
-use super::config::{AutonomyTaskConfig, ScheduleMode, MISSED_RUN_GRACE_MINUTES, STARTUP_GRACE_MINUTES};
-use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
+use super::config::{
+    AutonomyTaskConfig, ScheduleMode, MIN_INTERVAL_MINUTES, MISSED_RUN_GRACE_MINUTES,
+    STARTUP_GRACE_MINUTES,
+};
+use chrono::{
+    DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone,
+    Timelike, Utc,
+};
 
 /// FixedTime 모드의 실행 시각+요일 사양. `AutonomyTaskConfig::fixed_time_spec()`이
 /// 정규화(`normalize_task`)를 이미 거친 값으로만 만들어 돌려준다.
@@ -37,6 +61,12 @@ pub(crate) struct ScheduleSnapshot {
     pub mode: ScheduleMode,
     pub interval_minutes: u32,
     pub fixed: Option<FixedTimeSpec>,
+    /// Hourly 모드 스냅숏(§6.1 X3). 이 필드를 빠뜨리면
+    /// `next_run_after_finish`가 조용히 `None`으로 떨어져 task가 1회 실행
+    /// 후 영영 멈춘다.
+    pub hourly_minute: Option<u8>,
+    /// Cron 모드 스냅숏(§6.1 X3). 위와 같은 이유로 필수.
+    pub cron: Option<String>,
 }
 
 impl From<&AutonomyTaskConfig> for ScheduleSnapshot {
@@ -45,6 +75,8 @@ impl From<&AutonomyTaskConfig> for ScheduleSnapshot {
             mode: task.schedule_mode,
             interval_minutes: task.interval,
             fixed: task.fixed_time_spec(),
+            hourly_minute: task.hourly_minute_spec(),
+            cron: task.cron_expr().map(|s| s.to_string()),
         }
     }
 }
@@ -96,6 +128,19 @@ pub(crate) fn pick<Tz: TimeZone>(
     }
 }
 
+/// `naive`(tz 로컬 벽시계)를 UTC 인스턴트로 해석한다. 봄 DST로 그 벽시계가
+/// 존재하지 않으면 `naive + 1시간`으로 한 번 더 시도한다. `resolve_local_instant`
+/// 와 `next_hourly_in`이 공유하는 DST 해석 정본이다 — 규칙을 두 곳에
+/// 복제하면 두 모드의 DST 처리가 갈라질 자리가 생긴다.
+pub(crate) fn resolve_local_naive<Tz: TimeZone>(
+    tz: &Tz,
+    naive: NaiveDateTime,
+) -> Option<DateTime<Utc>> {
+    let primary = tz.from_local_datetime(&naive);
+    let fallback = tz.from_local_datetime(&(naive + Duration::hours(1)));
+    pick(primary, fallback)
+}
+
 /// `date`의 `hour:minute`(tz 로컬 벽시계)을 UTC 인스턴트로 해석한다. 봄 DST로
 /// 그 벽시계가 존재하지 않으면 `naive + 1시간`으로 한 번 더 시도한다.
 pub(crate) fn resolve_local_instant<Tz: TimeZone>(
@@ -105,9 +150,7 @@ pub(crate) fn resolve_local_instant<Tz: TimeZone>(
     minute: u32,
 ) -> Option<DateTime<Utc>> {
     let naive = date.and_hms_opt(hour, minute, 0)?;
-    let primary = tz.from_local_datetime(&naive);
-    let fallback = tz.from_local_datetime(&(naive + Duration::hours(1)));
-    pick(primary, fallback)
+    resolve_local_naive(tz, naive)
 }
 
 /// `after`보다 "엄격히 큰(>)" 첫 회차의 UTC 인스턴트를 반환한다. 오늘부터
@@ -141,6 +184,193 @@ pub(crate) fn next_occurrence(spec: &FixedTimeSpec, after: DateTime<Utc>) -> Opt
     next_occurrence_in(&Local, spec, after)
 }
 
+/// 매시 `minute`분(로컬 벽시계) 회차 중 `after`보다 "엄격히 큰(>)" 첫
+/// 인스턴트. `next_occurrence_in`의 날짜 루프를 시(hour) 루프로 축소한
+/// 것이고, DST 해석은 같은 `resolve_local_naive`(=`pick`)를 그대로 쓴다 —
+/// 봄 부재는 "naive + 1시간"으로 밀어 실행한다(파일 상단 불변식 참조: 이
+/// fallback이 Hourly에서는 '수용'이 아니라 정답이다. 매시 M분이라는 계약이
+/// 지정하지 않은 시각을 만들지 않는다).
+///
+/// 별도 단조성 가드가 필요 없다(설계 §4.4) — 후보는 로컬 naive 라벨을
+/// +1시간씩 전진시키며 만들고 각 라벨의 확정 인스턴트는 다음 라벨의
+/// 인스턴트를 넘지 않으므로(가을 중복=이른 쪽, 봄 부재=다음 라벨과 동일)
+/// 후보 수열이 비감소다. 거부는 그 수열의 접두부에만 발생하고 실측상
+/// 최대 1회(되감기 구간에서도 두 번째 후보는 항상 `after`보다 크다).
+///
+/// 루프 상한 `4`: 거부 최대 1회 + 해석 실패(2시간 점프 tz, 예:
+/// `Antarctica/Troll`) 최대 1회 + 성공 1회 + 여유 1.
+pub(crate) fn next_hourly_in<Tz: TimeZone>(
+    tz: &Tz,
+    minute: u32,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let after_local = after.with_timezone(tz);
+    let mut naive = after_local
+        .date_naive()
+        .and_hms_opt(after_local.hour(), minute, 0)?;
+    for _ in 0..4 {
+        if let Some(instant) = resolve_local_naive(tz, naive) {
+            if instant > after {
+                return Some(instant);
+            }
+        }
+        naive += Duration::hours(1);
+    }
+    None // fail-closed — 실존 tz에서는 도달하지 않는다.
+}
+
+/// 기기 로컬 타임존(`chrono::Local`)으로 해석하는 얇은 래퍼(`next_occurrence`
+/// 와 같은 관례).
+pub(crate) fn next_hourly(minute: u32, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    next_hourly_in(&Local, minute, after)
+}
+
+/// `next_from(anchor)`가 `after`보다 큰 값을 줄 때까지 앵커를 1시간씩
+/// 밀어가며 재시도한다. `pick()`과 같은 이유로 분리한 순수 함수다 — DST는
+/// `FixedOffset`으로 재현할 수 없으므로 "계산기"를 클로저로 주입해 값으로
+/// 직접 검증한다. Cron 경로(`next_cron_in`) 전용 가드다 — FixedTime/Hourly는
+/// 정방향 라벨 루프 + `> after` 필터 조합이 이 문제를 구조적으로 흡수하지만
+/// (§4.4), Cron은 crate에 "한 번 묻고 끝내는" 구조라 가을 되감기 구간에서
+/// `after`보다 이른 인스턴트가 돌아오는 경로가 실재한다(§5.4).
+///
+/// 되감기 폭은 실존 tz에서 1시간을 넘지 않으므로 1시간씩 최대 3회만 민다
+/// (최초 시도 포함 총 4회). 전부 실패하면 `None`(fail-closed — 실행하지
+/// 않는다. 무한루프 없음).
+pub(crate) fn advance_until_strictly_after(
+    mut next_from: impl FnMut(DateTime<Utc>) -> Option<DateTime<Utc>>,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let mut anchor = after;
+    for _ in 0..4 {
+        let candidate = next_from(anchor)?;
+        if candidate > after {
+            return Some(candidate);
+        }
+        anchor += Duration::hours(1);
+    }
+    None
+}
+
+/// cron-parser 0.11.2의 실측 CPU 소모 경로를 `parse()` 호출 **전에** 차단하는
+/// 형태 가드(보안 조건 1). 어느 필드든 `split(',')` 후 전부 빈 문자열이면
+/// (`", * * * *"` 류) crate 내부에서 빈 `BTreeSet`이 `Ok`로 반환돼 4년치
+/// (약 210만 회)를 매 반복 재파싱하며 순회한다(최악 관측 1.7초, 입력 1자당
+/// 약 14.5ms 선형 증가 — 콤마 2,000개면 29초, 100KB면 약 24분). 실측상 이
+/// 가드가 통과시키는 정상 표현식의 파싱 비용은 최악 0.045ms다.
+///
+/// 두 진입점 모두에서 이 가드를 거친다(보안 조건 2): ① 저장 커맨드
+/// 경계(`validate_cron`, `mod.rs`) ② 계산 경로(`next_cron_in` — 손으로
+/// 고친 `autonomy.json`이 `scan_all_tasks`를 거쳐 이리로 들어올 수 있으므로
+/// `normalize_task`를 믿지 않고 여기서도 다시 막는다).
+fn cron_shape_is_safe(expr: &str) -> bool {
+    const MAX_CRON_LEN: usize = 128;
+    if expr.is_empty() || expr.len() > MAX_CRON_LEN {
+        return false;
+    }
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() != 5 {
+        return false;
+    }
+    fields
+        .iter()
+        .all(|field| field.split(',').any(|part| !part.is_empty()))
+}
+
+/// naive는 우리가 만들지 않는다(설계 §5.2) — `after`를 tz 로컬로 넘겨
+/// crate에 그대로 맡긴다. crate가 `LocalResult::Ambiguous(earlier, _) =>
+/// break earlier` 규칙을 이미 쓰므로(lib.rs) "가을 모호는 이른 쪽" 원칙이
+/// 세 모드에서 저절로 일치한다. 봄 부재는 crate가 그날 회차를 건너뛴다
+/// (FixedTime/Hourly의 "+1시간"과 다름 — 파일 상단 불변식 표 참조, 의도된
+/// 비대칭).
+///
+/// `advance_until_strictly_after`로 감싸는 이유(§5.4): 가을 되감기 구간에서
+/// crate가 `after`보다 이른 인스턴트를 반환하는 경로가 실재한다 — crate에
+/// "한 번 묻고 끝내는" 구조라 FixedTime/Hourly가 가진 정방향 라벨 루프의
+/// 구조적 방어가 없다.
+pub(crate) fn next_cron_in<Tz: TimeZone>(
+    tz: &Tz,
+    expr: &str,
+    after: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    if !cron_shape_is_safe(expr) {
+        return None;
+    }
+    advance_until_strictly_after(
+        |anchor| {
+            let local = anchor.with_timezone(tz);
+            cron_parser::parse(expr, &local)
+                .ok()
+                .map(|d| d.with_timezone(&Utc))
+        },
+        after,
+    )
+}
+
+/// 기기 로컬 타임존으로 해석하는 얇은 래퍼(`next_occurrence`/`next_hourly`와
+/// 같은 관례).
+pub(crate) fn next_cron(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    next_cron_in(&Local, expr, after)
+}
+
+/// `normalize_task`(config.rs)의 L2 정규화 전용 — 공백을 단일화하고, 보안
+/// 가드(`cron_shape_is_safe`)와 파싱 가능성만 확인한다. 과잉 실행 브레이크
+/// (`MIN_INTERVAL_MINUTES` 미만 거부)는 `validate_cron`(L1, 저장 시점 UX
+/// 검증) 전용이라 여기서는 적용하지 않는다 — L2는 "손으로 고친 파일도
+/// 안전한가"만 보장하면 되고, 브레이크 상수가 나중에 바뀌어도 이미 저장된
+/// 정상 파일이 다음 로드 때 재해석되어서는 안 된다.
+pub(crate) fn normalize_cron_expr(expr: &str) -> Option<String> {
+    let normalized = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !cron_shape_is_safe(&normalized) {
+        return None;
+    }
+    cron_parser::parse(&normalized, &Local::now()).ok()?;
+    Some(normalized)
+}
+
+/// 저장 시점 거부(설계 §7.3, L1). crate의 영어 에러를 그대로 노출하지 않고
+/// 한국어 고정 문구로 감싼다 — crate가 어느 칸이 틀렸는지 알려주지 않으므로
+/// 필드 위치는 지어내지 않는다.
+///
+/// 검사 순서: ①길이/형태 가드(`cron_shape_is_safe`, parse() 호출 전) ②파싱
+/// 가능성 ③과잉 실행 브레이크(다음 9회차를 더 뽑아 인접 간격 최솟값이
+/// `MIN_INTERVAL_MINUTES` 이상인지 — 샘플링이라 상한 증명은 아니다. 최종
+/// 브레이크는 `select_due`의 러닝 체크·concurrency 상한·task별 타임아웃).
+///
+/// 4년 하드캡으로 인한 실패(`0 0 29 2 1`처럼 실제로는 유효하나 4년 내
+/// 매치가 없는 경우)는 "유효하지 않은 cron"과 다른 문구로 구분한다 — 최초
+/// 파싱이 성공한 뒤(=구조적으로 유효) 그 다음 회차를 찾는 과정에서만
+/// 실패할 수 있으므로 두 실패를 이 순서만으로 구분할 수 있다.
+pub(crate) fn validate_cron(expr: &str) -> Result<(), String> {
+    const GENERIC_ERR: &str = "cron 표현식이 올바르지 않습니다. 5칸(분 시 일 월 요일)으로 적어 주세요. 요일은 0(일)~6(토)만 지원합니다(7은 미지원). 예: 0 9 * * 1-5";
+
+    let normalized = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return Err("cron 표현식을 입력해야 합니다.".to_string());
+    }
+    if !cron_shape_is_safe(&normalized) {
+        return Err(GENERIC_ERR.to_string());
+    }
+
+    let now = Local::now();
+    let first =
+        cron_parser::parse(&normalized, &now).map_err(|_| GENERIC_ERR.to_string())?;
+
+    let mut prev = first;
+    for _ in 0..9 {
+        let next = cron_parser::parse(&normalized, &prev).map_err(|_| {
+            "4년 내 실행 시각을 찾을 수 없습니다. 표현식을 다시 확인해 주세요.".to_string()
+        })?;
+        if (next - prev).num_minutes() < MIN_INTERVAL_MINUTES as i64 {
+            return Err(format!(
+                "실행 간격이 너무 짧습니다. 최소 {MIN_INTERVAL_MINUTES}분 이상 간격이 되도록 표현식을 조정해 주세요."
+            ));
+        }
+        prev = next;
+    }
+
+    Ok(())
+}
+
 /// (A) 최초 등록 — 앱 시작 직후 / 외부에서 파일이 추가된 것을 tick이 처음
 /// 발견했을 때. `now - MISSED_RUN_GRACE`를 계산 앵커로 써서 "30분 이내에
 /// 지나간 회차"가 과거 인스턴트로 반환되게 하고, 그 결과를
@@ -150,12 +380,22 @@ pub(crate) fn initial_next_run_at(
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
     let startup_floor = now + Duration::minutes(STARTUP_GRACE_MINUTES as i64);
+    let grace = Duration::minutes(MISSED_RUN_GRACE_MINUTES as i64);
     match task.schedule_mode {
         ScheduleMode::Interval => Some(startup_floor),
         ScheduleMode::FixedTime => {
             let spec = task.fixed_time_spec()?;
-            let grace = Duration::minutes(MISSED_RUN_GRACE_MINUTES as i64);
             let candidate = next_occurrence(&spec, now - grace)?;
+            Some(candidate.max(startup_floor))
+        }
+        ScheduleMode::Hourly => {
+            let minute = task.hourly_minute_spec()?;
+            let candidate = next_hourly(minute as u32, now - grace)?;
+            Some(candidate.max(startup_floor))
+        }
+        ScheduleMode::Cron => {
+            let expr = task.cron_expr()?;
+            let candidate = next_cron(expr, now - grace)?;
             Some(candidate.max(startup_floor))
         }
     }
@@ -194,6 +434,14 @@ pub(crate) fn reschedule_next_run_at(
             let spec = task.fixed_time_spec()?;
             next_occurrence(&spec, now)
         }
+        ScheduleMode::Hourly => {
+            let minute = task.hourly_minute_spec()?;
+            next_hourly(minute as u32, now)
+        }
+        ScheduleMode::Cron => {
+            let expr = task.cron_expr()?;
+            next_cron(expr, now)
+        }
     }
 }
 
@@ -211,13 +459,21 @@ pub(crate) fn next_run_after_finish(
             let spec = schedule.fixed.as_ref()?;
             next_occurrence(spec, finished_at)
         }
+        ScheduleMode::Hourly => {
+            let minute = schedule.hourly_minute?;
+            next_hourly(minute as u32, finished_at)
+        }
+        ScheduleMode::Cron => {
+            let expr = schedule.cron.as_deref()?;
+            next_cron(expr, finished_at)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{FixedOffset, Timelike};
+    use chrono::FixedOffset;
 
     fn kst() -> FixedOffset {
         FixedOffset::east_opt(9 * 3600).unwrap()
@@ -379,6 +635,42 @@ mod tests {
             schedule_mode: ScheduleMode::FixedTime,
             at_time: Some(at_time.to_string()),
             days: days.to_vec(),
+            hourly_minute: None,
+            cron: None,
+            enabled: true,
+            timeout: None,
+        }
+    }
+
+    fn hourly_task(minute: u8) -> AutonomyTaskConfig {
+        AutonomyTaskConfig {
+            id: "t".to_string(),
+            name: "n".to_string(),
+            prompt: "p".to_string(),
+            subagent: None,
+            interval: 30,
+            schedule_mode: ScheduleMode::Hourly,
+            at_time: None,
+            days: Vec::new(),
+            hourly_minute: Some(minute),
+            cron: None,
+            enabled: true,
+            timeout: None,
+        }
+    }
+
+    fn cron_task(expr: &str) -> AutonomyTaskConfig {
+        AutonomyTaskConfig {
+            id: "t".to_string(),
+            name: "n".to_string(),
+            prompt: "p".to_string(),
+            subagent: None,
+            interval: 30,
+            schedule_mode: ScheduleMode::Cron,
+            at_time: None,
+            days: Vec::new(),
+            hourly_minute: None,
+            cron: Some(expr.to_string()),
             enabled: true,
             timeout: None,
         }
@@ -449,6 +741,8 @@ mod tests {
             mode: ScheduleMode::Interval,
             interval_minutes: 45,
             fixed: None,
+            hourly_minute: None,
+            cron: None,
         };
         let result = next_run_after_finish(&schedule, finished_at);
         assert_eq!(result, Some(finished_at + Duration::minutes(45)));
@@ -473,6 +767,8 @@ mod tests {
                 minute: finished_at.with_timezone(&Local).minute(),
                 days: Vec::new(),
             }),
+            hourly_minute: None,
+            cron: None,
         };
         let result = next_run_after_finish(&schedule, finished_at).unwrap();
         assert!(result > finished_at, "완료 시각과 정확히 같은 인스턴트를 다시 고르면 안 된다(무한 재실행 방지)");
@@ -522,10 +818,13 @@ mod tests {
         );
     }
 
-    // 상수 불변식 회귀 — §3의 "따라잡기는 최대 1회" 경고를 코드로 고정한다.
+    // 상수 불변식 회귀 — "따라잡기는 최대 1회" 경고를 코드로 고정한다.
+    // Hourly 도입으로 가장 촘촘한 벽시계 모드의 최소 간격이 24시간(FixedTime)
+    // 에서 60분(Hourly)으로 좁혀졌다(파일 상단 불변식 표 참조) — 이 테스트가
+    // MISSED_RUN_GRACE_MINUTES를 60 이상으로 올리는 변경을 막는 방어선이다.
     #[test]
     fn missed_run_grace_is_shorter_than_minimum_occurrence_gap() {
-        const MINIMUM_OCCURRENCE_GAP_MINUTES: u32 = 24 * 60;
+        const MINIMUM_OCCURRENCE_GAP_MINUTES: u32 = 60;
         assert!(MISSED_RUN_GRACE_MINUTES < MINIMUM_OCCURRENCE_GAP_MINUTES);
     }
 
@@ -538,5 +837,383 @@ mod tests {
         let b = next_occurrence_in(&kst(), &s, after);
         assert_eq!(a, b);
         assert_eq!(a, Some(kst_instant(2026, 9, 15, 9, 0)));
+    }
+
+    // =====================================================================
+    // Hourly/Cron 모드(이번 라운드) — 설계 §9 T1~T15
+    // =====================================================================
+
+    // ---------------- next_hourly_in (T1~T4) ----------------
+
+    // T1 — 정상 계산: 아직 이번 시 라벨의 분이 지나지 않았으면 오늘(이번 시).
+    #[test]
+    fn next_hourly_in_returns_this_hour_when_minute_not_yet_passed() {
+        let after = kst_instant(2026, 9, 15, 8, 0);
+        let result = next_hourly_in(&kst(), 30, after);
+        assert_eq!(result, Some(kst_instant(2026, 9, 15, 8, 30)));
+    }
+
+    // T2 — 이번 시 라벨이 이미 지났으면 다음 시로.
+    #[test]
+    fn next_hourly_in_moves_to_next_hour_when_minute_already_passed() {
+        let after = kst_instant(2026, 9, 15, 8, 45);
+        let result = next_hourly_in(&kst(), 30, after);
+        assert_eq!(result, Some(kst_instant(2026, 9, 15, 9, 30)));
+    }
+
+    // T3(최우선) — 엄격 `>` 회귀. 완료 직후 재계산이 같은 회차를 다시 잡아
+    // 무한 재실행하는 것을 막는다(`next_occurrence_excludes_exact_same_instant`
+    // 와 동일 취지).
+    #[test]
+    fn next_hourly_in_excludes_exact_same_instant() {
+        let after = kst_instant(2026, 9, 15, 8, 30); // 정각
+        let result = next_hourly_in(&kst(), 30, after);
+        assert_eq!(result, Some(kst_instant(2026, 9, 15, 9, 30)), "다음 시로 넘어가야 한다");
+    }
+
+    // T4 — 자정 넘김.
+    #[test]
+    fn next_hourly_in_crosses_midnight() {
+        let after = kst_instant(2026, 9, 15, 23, 45);
+        let result = next_hourly_in(&kst(), 30, after);
+        assert_eq!(result, Some(kst_instant(2026, 9, 16, 0, 30)));
+    }
+
+    #[test]
+    fn next_hourly_in_is_deterministic_under_fixed_offset_timezone() {
+        let after = kst_instant(2026, 9, 15, 8, 0);
+        let a = next_hourly_in(&kst(), 30, after);
+        let b = next_hourly_in(&kst(), 30, after);
+        assert_eq!(a, b);
+    }
+
+    // ---------------- Hourly DST(②) — chrono-tz 없이 결정적으로 재현 ----------------
+    //
+    // `FixedOffset`은 전환이 없어 `LocalResult::None`/`Ambiguous`를 자연
+    // 발생시킬 수 없다(설계 §9의 정직한 한계). 아래 `SimulatedDstTz`는 지정된
+    // 한 시간 구간에서만 봄 부재/가을 중복을 흉내 내는 최소 `TimeZone`
+    // 구현이다 — `chrono-tz`를 dev-dependency로 추가하지 않고도
+    // `next_hourly_in`을 실제 DST 분기(`resolve_local_naive`/`pick`)로
+    // 통과시켜 값으로 검증한다. 오프셋 자체(+9)는 임의값이고 실제 KST가
+    // DST를 쓴다는 뜻이 아니다 — 전환 유무만 흉내 낸다.
+    #[derive(Clone, Copy)]
+    struct SimulatedDstTz {
+        /// 이 naive 시각부터 1시간(`start..start+1h`)은 봄 부재 — 존재하지
+        /// 않는 벽시계로 취급한다.
+        spring_gap_start: Option<NaiveDateTime>,
+        /// 이 naive 시각부터 1시간은 가을 중복 — 이른/늦은 두 오프셋으로
+        /// 해석 가능한 벽시계로 취급한다.
+        fall_ambiguous_start: Option<NaiveDateTime>,
+    }
+
+    const SIM_TZ_OFFSET_SECS: i32 = 9 * 3600;
+
+    impl TimeZone for SimulatedDstTz {
+        type Offset = FixedOffset;
+
+        fn from_offset(_offset: &FixedOffset) -> Self {
+            // 이 테스트 픽스처는 항상 구조체 리터럴로 직접 만든다 — 이
+            // 경로는 트레이트 완결성을 위해 존재할 뿐 실행되지 않는다.
+            SimulatedDstTz { spring_gap_start: None, fall_ambiguous_start: None }
+        }
+
+        fn offset_from_local_date(&self, _local: &NaiveDate) -> LocalResult<FixedOffset> {
+            LocalResult::Single(FixedOffset::east_opt(SIM_TZ_OFFSET_SECS).unwrap())
+        }
+
+        fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<FixedOffset> {
+            let normal = FixedOffset::east_opt(SIM_TZ_OFFSET_SECS).unwrap();
+            if let Some(gap) = self.spring_gap_start {
+                if *local >= gap && *local < gap + Duration::hours(1) {
+                    return LocalResult::None;
+                }
+            }
+            if let Some(amb) = self.fall_ambiguous_start {
+                if *local >= amb && *local < amb + Duration::hours(1) {
+                    let earlier = normal;
+                    let later = FixedOffset::east_opt(SIM_TZ_OFFSET_SECS - 3600).unwrap();
+                    return LocalResult::Ambiguous(earlier, later);
+                }
+            }
+            LocalResult::Single(normal)
+        }
+
+        fn offset_from_utc_date(&self, _utc: &NaiveDate) -> FixedOffset {
+            FixedOffset::east_opt(SIM_TZ_OFFSET_SECS).unwrap()
+        }
+
+        fn offset_from_utc_datetime(&self, _utc: &NaiveDateTime) -> FixedOffset {
+            FixedOffset::east_opt(SIM_TZ_OFFSET_SECS).unwrap()
+        }
+    }
+
+    // ② Hourly 봄 DST — `minute=30`인데 그 시각(예: 02:30)이 통째로 존재하지
+    // 않으면(`spring_gap_start`), `pick()`의 "+1시간" fallback이 다음 라벨의
+    // 인스턴트를 그대로 돌려준다(파일 상단 불변식 표 — Hourly는 "밀어서
+    // 실행"이 정답이다: 03:30은 이 표현이 어차피 실행하기로 약속한 시각).
+    #[test]
+    fn next_hourly_in_shifts_forward_one_hour_on_spring_dst_gap() {
+        let tz = SimulatedDstTz {
+            spring_gap_start: Some(NaiveDate::from_ymd_opt(2026, 3, 8).unwrap().and_hms_opt(2, 0, 0).unwrap()),
+            fall_ambiguous_start: None,
+        };
+        let after = kst_instant(2026, 3, 8, 1, 45); // 부재 구간(02:00~03:00) 이전
+        let result = next_hourly_in(&tz, 30, after);
+        assert_eq!(
+            result,
+            Some(kst_instant(2026, 3, 8, 3, 30)),
+            "02:30 라벨이 통째로 없으므로 03:30(다음 라벨의 인스턴트)으로 밀려야 한다"
+        );
+    }
+
+    // ② Hourly 가을 DST — `minute=30`인데 그 시각이 중복되면(`fall_ambiguous_start`),
+    // `pick()`이 이른 쪽 오프셋 1회만 택해 그 라벨이 두 번 실행되지 않는다.
+    #[test]
+    fn next_hourly_in_picks_earlier_instant_on_fall_dst_ambiguity() {
+        let tz = SimulatedDstTz {
+            spring_gap_start: None,
+            fall_ambiguous_start: Some(
+                NaiveDate::from_ymd_opt(2026, 11, 1).unwrap().and_hms_opt(1, 0, 0).unwrap(),
+            ),
+        };
+        let after = kst_instant(2026, 11, 1, 0, 45); // 중복 구간(01:00~02:00) 이전
+        let result = next_hourly_in(&tz, 30, after);
+        assert_eq!(
+            result,
+            Some(kst_instant(2026, 11, 1, 1, 30)),
+            "01:30 라벨은 이른 쪽 오프셋 1회만 실행돼야 한다"
+        );
+    }
+
+    // ---------------- initial_next_run_at / next_run_after_finish(Hourly, T5·T6) ----------------
+
+    // T5 — 놓친 회차 따라잡기: grace(30분) 창 안이면 오늘(이번 시) 회차를
+    // 따라잡는다. `chrono::Local::now()` 기준 동적 값을 써서 CI 러너 tz와
+    // 무관하게 항상 맞도록 한다(기존 FixedTime 테스트와 동일 관용구).
+    #[test]
+    fn initial_next_run_at_for_hourly_catches_up_run_missed_within_grace() {
+        let now = Local::now();
+        let missed = now - Duration::minutes(5); // grace(30분) 안
+        let task = hourly_task(missed.minute() as u8);
+        let now_utc = now.with_timezone(&Utc);
+        let result = initial_next_run_at(&task, now_utc);
+        let floor = now_utc + Duration::minutes(STARTUP_GRACE_MINUTES as i64);
+        assert_eq!(
+            result,
+            Some(floor),
+            "grace 창 안의 회차는 STARTUP_GRACE 시점에 맞춰 즉시 따라잡아야 한다"
+        );
+    }
+
+    // T6 — next_run_after_finish의 Hourly 분기 **프로덕션 사슬**
+    // (`ScheduleSnapshot → next_hourly → Local`) 직접 커버리지. 이 필드를
+    // 스냅숏에 빠뜨리면 이 테스트가 `unwrap()`에서 패닉한다.
+    #[test]
+    fn next_run_after_finish_for_hourly_mode_returns_next_hour_occurrence() {
+        let finished_at = Local::now().with_timezone(&Utc);
+        let minute = finished_at.with_timezone(&Local).minute() as u8;
+        let schedule = ScheduleSnapshot {
+            mode: ScheduleMode::Hourly,
+            interval_minutes: 30,
+            fixed: None,
+            hourly_minute: Some(minute),
+            cron: None,
+        };
+        let result = next_run_after_finish(&schedule, finished_at)
+            .expect("Hourly 스냅숏이면 반드시 다음 회차를 반환해야 한다(T7 취지)");
+        assert!(result > finished_at, "완료 시각과 같은 인스턴트를 다시 고르면 안 된다(무한 재실행 방지)");
+        assert!(result <= finished_at + Duration::hours(1), "매시 반복이면 다음 회차는 1시간 이내여야 한다");
+    }
+
+    // ---------------- next_cron_in (T8) ----------------
+
+    // T8 — 정상 해석.
+    #[test]
+    fn next_cron_in_computes_normal_next_occurrence_with_fixed_offset() {
+        let after = kst_instant(2026, 9, 15, 8, 0);
+        let result = next_cron_in(&kst(), "0 9 * * *", after);
+        assert_eq!(result, Some(kst_instant(2026, 9, 15, 9, 0)));
+    }
+
+    // T8 — 엄격 `>`(정각 입력 → 다음 회차).
+    #[test]
+    fn next_cron_in_excludes_exact_same_instant() {
+        let after = kst_instant(2026, 9, 15, 9, 0); // 정각
+        let result = next_cron_in(&kst(), "0 9 * * *", after);
+        assert_eq!(result, Some(kst_instant(2026, 9, 16, 9, 0)));
+    }
+
+    // T8 — 무효 표현식 → `None`(패닉 없음).
+    #[test]
+    fn next_cron_in_returns_none_for_invalid_expression_without_panicking() {
+        let after = kst_instant(2026, 9, 15, 8, 0);
+        assert_eq!(next_cron_in(&kst(), "not a cron", after), None);
+        assert_eq!(
+            next_cron_in(&kst(), "0 9 * * 7", after),
+            None,
+            "요일 7(일요일 별칭)은 이 crate가 지원하지 않는다"
+        );
+    }
+
+    // ---------------- initial_next_run_at / next_run_after_finish(Cron, T7·T9) ----------------
+
+    // T7 — next_run_after_finish의 Cron 분기 프로덕션 사슬 커버리지.
+    #[test]
+    fn next_run_after_finish_for_cron_mode_returns_next_occurrence_after_finish() {
+        let finished_at = Utc::now();
+        let schedule = ScheduleSnapshot {
+            mode: ScheduleMode::Cron,
+            interval_minutes: 30,
+            fixed: None,
+            hourly_minute: None,
+            cron: Some("*/5 * * * *".to_string()),
+        };
+        let result = next_run_after_finish(&schedule, finished_at)
+            .expect("Cron 스냅숏이면 반드시 다음 회차를 반환해야 한다(T7 취지)");
+        assert!(result > finished_at);
+        assert!(result <= finished_at + Duration::minutes(5));
+    }
+
+    // T9 — §4.5 불변식: `*/5 * * * *`가 grace 창을 여러 번 지나쳤어도 등록
+    // 시 반환값은 "회차 목록"이 아니라 `startup_floor` 한 점이다.
+    #[test]
+    fn initial_next_run_at_for_frequent_cron_still_collapses_to_single_startup_floor() {
+        let now = Utc::now();
+        let task = cron_task("*/5 * * * *");
+        let result = initial_next_run_at(&task, now).unwrap();
+        let floor = now + Duration::minutes(STARTUP_GRACE_MINUTES as i64);
+        assert_eq!(
+            result, floor,
+            "여러 회차를 지나쳤어도 등록 시 반환값은 startup_floor 한 점이어야 한다"
+        );
+    }
+
+    // ---------------- advance_until_strictly_after (T10, ④ Cron DST 되감기 단조성) ----------------
+
+    // T10(a) — 첫 후보가 `after` 이하(가을 되감기에서 실재하는 경로, §5.4)면
+    // 앵커를 밀어 두 번째 값을 반환한다.
+    #[test]
+    fn advance_until_strictly_after_pushes_anchor_forward_when_first_candidate_is_stale() {
+        let after = kst_instant(2026, 11, 1, 1, 0);
+        let stale = kst_instant(2026, 11, 1, 0, 30); // after 이하(되감기 경로 재현)
+        let fresh = kst_instant(2026, 11, 1, 2, 30); // after보다 이후
+        let mut calls = 0;
+        let result = advance_until_strictly_after(
+            |_anchor| {
+                calls += 1;
+                Some(if calls == 1 { stale } else { fresh })
+            },
+            after,
+        );
+        assert_eq!(result, Some(fresh));
+        assert_eq!(calls, 2, "첫 후보가 거부되면 앵커를 밀어 두 번째를 시도해야 한다");
+    }
+
+    // T10(b) — 계속 과거만 주는 스텁 → 3회 재시도 후 `None`(fail-closed,
+    // 무한루프 없음).
+    #[test]
+    fn advance_until_strictly_after_gives_up_after_four_tries_without_looping_forever() {
+        let after = Utc::now();
+        let always_stale = after - Duration::minutes(1);
+        let mut calls = 0;
+        let result = advance_until_strictly_after(
+            |_anchor| {
+                calls += 1;
+                Some(always_stale)
+            },
+            after,
+        );
+        assert_eq!(result, None, "계속 과거만 준다면 fail-closed로 None을 반환해야 한다");
+        assert_eq!(calls, 4, "무한루프 없이 정확히 4회(최초+3회) 시도 후 포기해야 한다");
+    }
+
+    // ---------------- validate_cron (T15) ----------------
+
+    #[test]
+    fn validate_cron_accepts_well_formed_expression() {
+        assert!(validate_cron("0 9 * * 1-5").is_ok());
+    }
+
+    #[test]
+    fn validate_cron_rejects_unparseable_expression_with_korean_message() {
+        let err = validate_cron("not a cron").unwrap_err();
+        assert!(err.contains("cron 표현식이 올바르지 않습니다"), "실제 문구: {err}");
+    }
+
+    #[test]
+    fn validate_cron_rejects_six_field_expression() {
+        let err = validate_cron("0 0 9 * * *").unwrap_err();
+        assert!(err.contains("5칸"), "실제 문구: {err}");
+    }
+
+    #[test]
+    fn validate_cron_rejects_dow_seven_with_sunday_hint() {
+        // 이 crate는 요일을 0~6만 받는다(7=일요일 별칭 미지원) — 가장 흔한
+        // 실수이므로 에러 문구에 "일요일은 0"이라는 안내가 있어야 한다.
+        let err = validate_cron("0 0 * * 7").unwrap_err();
+        assert!(err.contains("0(일)"), "실제 문구: {err}");
+    }
+
+    // T15 — 과잉 실행 브레이크: `* * * * *`(매분)는 거부되고, 문구에
+    // `MIN_INTERVAL_MINUTES` 값이 상수에서 그대로 나와야 한다(하드코딩
+    // 금지 — 값을 바꿀 때 고칠 파일이 1개가 되도록).
+    #[test]
+    fn validate_cron_rejects_too_frequent_expression_mentioning_min_interval_minutes() {
+        let err = validate_cron("* * * * *").unwrap_err();
+        assert!(
+            err.contains(&MIN_INTERVAL_MINUTES.to_string()),
+            "에러 문구에 MIN_INTERVAL_MINUTES 값이 박혀 나와야 한다: {err}"
+        );
+    }
+
+    // ---------------- 보안 가드(⑤) — 느린 경로를 parse() 호출 전에 차단 ----------------
+    //
+    // `", * * * *"`류(필드가 빈 집합이 되는 입력)는 cron-parser 0.11.2에서
+    // 실측 최악 1.7초가 걸리는 경로다(빈 `BTreeSet`이 `Ok`로 반환돼 4년치를
+    // 매 반복 재파싱). 아래 두 테스트가 몇 초씩 걸리면 가드가 parse() 호출을
+    // 막지 못하고 있다는 신호다 — 두 진입점(L1 `validate_cron`, 계산 경로
+    // `next_cron_in`) 모두에서 빠르게 거부돼야 한다(보안 조건 1·2).
+    #[test]
+    fn validate_cron_rejects_empty_field_set_input_quickly() {
+        let start = std::time::Instant::now();
+        let result = validate_cron(", * * * *");
+        let elapsed = start.elapsed();
+        assert!(result.is_err());
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "형태 가드가 parse() 호출을 막지 못하면 이 입력은 초 단위로 느려진다: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn next_cron_in_rejects_empty_field_set_input_quickly() {
+        let start = std::time::Instant::now();
+        let result = next_cron_in(&kst(), ", * * * *", kst_instant(2026, 9, 15, 8, 0));
+        let elapsed = start.elapsed();
+        assert!(result.is_none());
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "계산 경로에도 같은 가드가 없으면 손편집 파일이 스케줄러 tick을 지연시킨다: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn cron_shape_is_safe_rejects_wrong_field_count_and_overlong_input() {
+        assert!(!cron_shape_is_safe("* * * *")); // 4필드
+        assert!(!cron_shape_is_safe("* * * * * *")); // 6필드
+        assert!(!cron_shape_is_safe(&"*".repeat(200))); // 길이 상한 초과
+        assert!(cron_shape_is_safe("0 9 * * 1-5"));
+    }
+
+    // ---------------- normalize_cron_expr(L2) ----------------
+
+    #[test]
+    fn normalize_cron_expr_collapses_whitespace_and_confirms_parseability() {
+        assert_eq!(
+            normalize_cron_expr("0   9  * * 1-5"),
+            Some("0 9 * * 1-5".to_string())
+        );
+        assert_eq!(normalize_cron_expr("not a cron"), None);
+        assert_eq!(normalize_cron_expr(", * * * *"), None, "형태 가드를 통과하지 못해야 한다");
     }
 }

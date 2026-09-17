@@ -88,14 +88,21 @@ pub(crate) fn running_count() -> usize {
 }
 
 /// 미등록 task를 레지스트리에 등록한다 — `next_run_at`은 호출자(scheduler)가
-/// `schedule::initial_next_run_at()`으로 이미 계산해 넘긴 값을 그대로 쓴다.
-/// 이 모듈은 스케줄 해석 방법을 모르는 순수 상태 모듈 성격을 유지한다
+/// `schedule::initial_next_run_at()`으로 계산해 줄 값을 그대로 쓴다. 이
+/// 모듈은 스케줄 해석 방법을 모르는 순수 상태 모듈 성격을 유지한다
 /// (`config`/`schedule`를 몰라도 된다). 이미 등록돼 있으면 아무것도 하지
 /// 않는다.
-pub(crate) fn ensure_registered(key: &TaskKey, initial_next_run_at: Option<DateTime<Utc>>) {
+///
+/// `initial_next_run_at`을 **클로저(지연 평가)**로 받는다 — 예전에는 값을
+/// 즉시 받아 `or_insert_with` 밖에서 매번 계산했는데, 그러면 이미 등록된
+/// task까지 매 tick(10초)마다 무조건 재계산됐다(호출부가 인자를 만들 때
+/// 이미 평가가 끝나 버리므로 `or_insert_with`의 지연이 소용없었다). Cron
+/// 모드가 들어오면 그 무의미한 재계산에 파싱 비용이 실리므로, 신규 키를
+/// 등록할 때만 계산이 실제로 일어나도록 클로저로 감싼다.
+pub(crate) fn ensure_registered(key: &TaskKey, initial_next_run_at: impl FnOnce() -> Option<DateTime<Utc>>) {
     let mut map = RUNTIME.lock().unwrap();
     map.entry(key.clone()).or_insert_with(|| TaskRuntime {
-        next_run_at: initial_next_run_at,
+        next_run_at: initial_next_run_at(),
         ..Default::default()
     });
 }
