@@ -74,6 +74,24 @@ struct ExecOutcome {
 }
 
 fn execute(snapshot: &TaskSnapshot, final_prompt: &str, key: &TaskKey) -> ExecOutcome {
+    // spawn 직전 재확인(session_chat/mod.rs의 S4③과 동일 관례) — scheduler.rs의
+    // scan_all_tasks가 이 project_path를 이미 `is_dir()`로 확인했지만, due
+    // 판정과 이 워커 스레드 실행 사이에 디렉터리가 사라지는 TOCTOU 창이 있다.
+    if !snapshot.project_path.is_dir() {
+        return ExecOutcome {
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            aborted: false,
+            hard_error: Some(format!(
+                "프로젝트 폴더를 찾을 수 없습니다: {}",
+                snapshot.project_path.display()
+            )),
+        };
+    }
+
     let resolved_claude =
         crate::cli_launcher::resolve_binary_expand_home(&CLAUDE_PATH_CANDIDATES, "claude");
 
@@ -108,6 +126,7 @@ fn execute(snapshot: &TaskSnapshot, final_prompt: &str, key: &TaskKey) -> ExecOu
         Duration::from_secs(snapshot.timeout_minutes as u64 * 60),
         Some(&on_spawn),
         Some(&should_abort),
+        Some(&snapshot.project_path),
     );
 
     if let Some(spawn_error) = output.spawn_error {

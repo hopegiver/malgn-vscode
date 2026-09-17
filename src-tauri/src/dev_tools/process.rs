@@ -188,13 +188,25 @@ pub(crate) fn run_process_with_timeout(
     extra_env: &[(&str, &str)],
     timeout: Duration,
 ) -> ProcessRunOutput {
-    run_process_with_timeout_cancellable(binary_path, args, path_env, extra_env, timeout, None, None)
+    run_process_with_timeout_cancellable(
+        binary_path,
+        args,
+        path_env,
+        extra_env,
+        timeout,
+        None,
+        None,
+        None,
+    )
 }
 
 /// `on_spawn`: spawn 직후 자식 pid를 공표한다(자율업무 런타임 레지스트리
 /// 등록용). `should_abort`: `wait_up_to_cancellable`의 100ms 폴링마다 확인해
 /// `true`면 타임아웃과 동일한 경로(`force_kill_process_group`)로 kill한다.
 /// 자율업무는 이 함수를 통해 앱 종료 시 진행 중인 `claude -p`를 정리한다.
+/// `working_dir`: `Some`이면 그 디렉터리로 `current_dir`를 고정한다(자율업무의
+/// project_path). `None`이면 기존 동작대로 Windows 전용 `child_current_dir`
+/// 보정만 적용한다(도구 설치·버전조회 호출부는 전부 `None`).
 ///
 /// 주의: 이 함수는 `EXECUTION_LOCK`을 취하지 않는다(그 락은 도구 설치를
 /// 직렬화하는 락이라 자율업무가 취하면 전역 동시성이 1이 되어 concurrency
@@ -207,6 +219,7 @@ pub(crate) fn run_process_with_timeout_cancellable(
     timeout: Duration,
     on_spawn: Option<&dyn Fn(u32)>,
     should_abort: Option<&dyn Fn() -> bool>,
+    working_dir: Option<&std::path::Path>,
 ) -> ProcessRunOutput {
     let started = Instant::now();
     let mut command = Command::new(binary_path);
@@ -218,12 +231,14 @@ pub(crate) fn run_process_with_timeout_cancellable(
     for (k, v) in extra_env {
         command.env(k, v);
     }
-    // N1(2라운드 비차단): Windows에서만 현재 디렉터리를 `%SystemRoot%`로
-    // 고정한다(`super::platform::child_current_dir` 참고 — `.cmd` shim은
-    // `cmd.exe`가 해석하는데 그 명령 해석이 현재 디렉터리를 먼저 본다). Mac은
-    // `child_current_dir`가 항상 `None`이라 이 블록이 아무 것도 하지 않는다
-    // (기존 동작 무변경 — 이 머신은 항상 Mac이라 실행 시 검증됨).
-    if let Some(dir) = super::platform::child_current_dir(
+    if let Some(dir) = working_dir {
+        command.current_dir(dir);
+    } else if let Some(dir) = super::platform::child_current_dir(
+        // N1(2라운드 비차단): Windows에서만 현재 디렉터리를 `%SystemRoot%`로
+        // 고정한다(`super::platform::child_current_dir` 참고 — `.cmd` shim은
+        // `cmd.exe`가 해석하는데 그 명령 해석이 현재 디렉터리를 먼저 본다). Mac은
+        // `child_current_dir`가 항상 `None`이라 이 블록이 아무 것도 하지 않는다
+        // (기존 동작 무변경 — 이 머신은 항상 Mac이라 실행 시 검증됨).
         super::platform::platform_now(),
         &super::platform::EnvRoots::from_env(),
     ) {
