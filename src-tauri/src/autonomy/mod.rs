@@ -25,6 +25,7 @@ mod scheduler;
 use serde::Serialize;
 use std::time::Duration;
 
+pub use log::RunHistoryEntry;
 pub use runtime::AutonomyRuntimeStatus;
 
 /// TaskKey의 `project_path` 컴포넌트를 만드는 정본(C1) — `resolve_validated_project_root`
@@ -306,6 +307,23 @@ pub fn autonomy_runtime_status() -> Vec<AutonomyRuntimeStatus> {
     runtime::snapshot_all()
 }
 
+/// 과거 실행 이력 조회 — "설정=파일 / 상태=메모리 / 이력=로그" 3분리(설계 §2)의
+/// 세 번째 축을 읽기 전용으로 노출한다. `autonomy.json`에는 `history`를
+/// 되살리지 않기로 한 PM 결정에 따른 대안 경로다. 다른 3개 커맨드와 동일하게
+/// `resolve_validated_project_root`로 경로를 검증한다(워크스페이스 밖 경로·
+/// 존재하지 않는 경로는 여기서 걸러진다). 실제 스캔·파싱은 `log::read_task_history`
+/// 에 위임 — 손상 파일 스킵, limit 적용, 정렬은 전부 그쪽 책임이다.
+#[tauri::command]
+pub fn autonomy_task_history(
+    project_path: String,
+    task_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<RunHistoryEntry>, String> {
+    let root = crate::resolve_validated_project_root(&project_path)
+        .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
+    Ok(log::read_task_history(&root, &task_id, limit))
+}
+
 /// `run()`의 `setup()`에서 한 번 호출한다. `TICK_SECONDS`(10초)마다
 /// `scheduler::tick`을 돈다 — 그 tick 자체가 설정 리로드+reconcile+실행
 /// 트리거를 전부 포함한다.
@@ -345,6 +363,14 @@ mod tests {
     fn resolve_validated_project_root_rejects_path_outside_workspace() {
         assert!(crate::resolve_validated_project_root("/etc").is_none());
         assert!(crate::resolve_validated_project_root("/etc/passwd").is_none());
+    }
+
+    // 비정상 케이스(project_path가 워크스페이스 밖/존재하지 않음) — 신규
+    // 커맨드도 기존 3개 커맨드와 동일한 게이트를 통과시키는지 회귀 고정.
+    #[test]
+    fn autonomy_task_history_rejects_path_outside_workspace() {
+        let result = autonomy_task_history("/etc".to_string(), "t-1".to_string(), None);
+        assert!(result.is_err());
     }
 
     // C1 회귀(핵심) — 리뷰 §9-4가 요구한 "구현 단계에서 두 경로 문자열이
