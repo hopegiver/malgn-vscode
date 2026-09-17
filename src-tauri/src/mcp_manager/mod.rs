@@ -187,15 +187,18 @@ fn build_install_add_args(entry: &McpCatalogEntry) -> [&'static str; 8] {
         "user",
         "--transport",
         entry.transport,
-        entry.label,
+        entry.id,
         entry.target,
     ]
 }
 
-/// `claude mcp login <label>`의 argv — `build_install_add_args`와 짝을 이뤄
-/// `mcp_install`이 두 커맨드를 한 터미널 세션에서 이어 실행한다.
+/// `claude mcp login <id>`의 argv — `build_install_add_args`와 짝을 이뤄
+/// `mcp_install`이 두 커맨드를 한 터미널 세션에서 이어 실행한다. `claude mcp
+/// add`가 등록한 서버 이름은 `entry.id`이므로(위 참조) 로그인도 같은 값을
+/// 써야 한다 — `entry.label`(예: "Atlassian (Jira/Confluence)")은 공백·괄호가
+/// 섞여 있어 "Invalid name"으로 거절된다.
 fn build_install_login_args(entry: &McpCatalogEntry) -> [&'static str; 3] {
-    ["mcp", "login", entry.label]
+    ["mcp", "login", entry.id]
 }
 
 /// catalog_id로 표에서 항목을 찾아 `claude mcp add` → `claude mcp login`을
@@ -284,7 +287,7 @@ mod tests {
     // 몇 번째 argv 원소로 들어가는가"만 책임진다.
 
     #[test]
-    fn build_install_add_args_fixes_scope_user_and_reads_transport_label_target_from_entry() {
+    fn build_install_add_args_fixes_scope_user_and_reads_transport_id_target_from_entry() {
         let entry = find_catalog_entry("gmail").unwrap();
         assert_eq!(
             build_install_add_args(entry),
@@ -295,27 +298,26 @@ mod tests {
                 "user",
                 "--transport",
                 "http",
-                "Gmail",
+                "gmail",
                 "https://gmailmcp.googleapis.com/mcp/v1",
             ]
         );
     }
 
     #[test]
-    fn build_install_add_args_keeps_label_with_parens_as_single_argv_element() {
-        // 예전 build_install_command는 label을 `"..."`로 감싼 셸 문자열에 직접
-        // interpolate했다 — 이제는 argv 배열의 원소 하나일 뿐이라 괄호·공백이
-        // 있어도 별도 인용 처리가 필요 없다(인용은 실행 시점에
-        // open_terminal_program_sequence가 담당).
+    fn build_install_add_args_uses_id_not_label_for_name_argv() {
+        // `claude mcp add`는 이름에 letters/numbers/hyphens/underscores만
+        // 허용한다("Invalid name" 에러) — label(공백·괄호 포함)이 아니라
+        // 카탈로그 슬러그 id를 name 인자로 써야 한다.
         let entry = find_catalog_entry("atlassian").unwrap();
         let args = build_install_add_args(entry);
-        assert_eq!(args[6], "Atlassian (Jira/Confluence)");
-        assert_eq!(args.len(), 8, "argv 원소 하나 = label 전체(공백 포함)");
+        assert_eq!(args[6], "atlassian");
+        assert_eq!(args.len(), 8, "argv 원소 하나 = id 전체");
     }
 
     #[test]
-    fn build_install_login_args_reuses_label_as_login_target() {
+    fn build_install_login_args_reuses_id_as_login_target() {
         let entry = find_catalog_entry("figma").unwrap();
-        assert_eq!(build_install_login_args(entry), ["mcp", "login", "Figma"]);
+        assert_eq!(build_install_login_args(entry), ["mcp", "login", "figma"]);
     }
 }

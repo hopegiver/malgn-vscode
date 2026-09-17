@@ -19,9 +19,13 @@ use serde::Serialize;
 /// 웹 검색 + 이 머신에서의 실측(`claude mcp list`)으로 검증된 고정 값이다.
 /// 추측/변형 없이 이 값 그대로 유지한다.
 pub(super) struct McpCatalogEntry {
-    id: &'static str,
-    /// `mcp_manager::mod`의 `mcp_install`이 성공 메시지 조립 + `claude mcp add`/
-    /// `claude mcp login` argv 조립에 직접 읽는다.
+    /// `mcp_manager::mod`의 `build_install_add_args`/`build_install_login_args`가
+    /// `claude mcp add`/`claude mcp login`의 name 인자로 직접 읽는다 — `claude
+    /// mcp add`는 이름에 letters/numbers/hyphens/underscores만 허용해 label(사람이
+    /// 읽는 표시 문자열, 공백·괄호 포함 가능)을 쓸 수 없다.
+    pub(super) id: &'static str,
+    /// `mcp_manager::mod`의 `mcp_install`이 사람에게 보여주는 성공 메시지 조립에만
+    /// 쓴다 — CLI에 넘기는 name 인자에는 쓰지 않는다.
     pub(super) label: &'static str,
     /// "http" | "sse" — `build_add_args`가 받는 transport 값과 동일한 어휘.
     /// `mcp_install`이 `claude mcp add --transport <값>` argv 조립에 직접 읽는다.
