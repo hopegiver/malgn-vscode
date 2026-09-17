@@ -6,6 +6,7 @@ import { el } from '../dom';
 import { state, notifyChange } from '../state';
 import { loginWithGoogle } from '../authApi';
 import { brandMark } from '../brand';
+import loginBgUrl from '../assets/860x516.jpeg';
 
 async function handleGoogleLogin(): Promise<void> {
   state.auth.loading = true;
@@ -38,5 +39,7 @@ export function renderLoginView(): HTMLElement {
     ),
     el('div', { className: 'login-note' }, ['malgnsoft.com 조직 계정만 허용됩니다.']),
   ]);
-  return el('div', { className: 'login-screen' }, [card]);
+  const screen = el('div', { className: 'login-screen' }, [card]);
+  screen.style.backgroundImage = `linear-gradient(rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.55)), url(${loginBgUrl})`;
+  return screen;
 }

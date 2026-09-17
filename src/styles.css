@@ -211,7 +211,9 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-canvas);
+  background-color: var(--color-canvas);
+  background-size: cover;
+  background-position: center;
 }
 .login-card {
   width: 360px;
@@ -311,7 +313,7 @@ html, body {
 .mcp-row-name { font-weight: 600; font-size: 13.5px; }
 .mcp-row-target { font-size: 11.5px; color: var(--color-ink-faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-row-status-label { font-size: 11px; color: var(--color-ink-faint); margin-top: 2px; }
-.mcp-row-actions { flex-shrink: 0; }
+.mcp-row-actions { flex-shrink: 0; display: flex; gap: 8px; }
 
 /* ---------------- 앱링크 설정 (행 자체는 mcp-row/task-row-actions 재사용) ---------------- */
 .applink-count-label { font-size: 12.5px; color: var(--color-ink-muted); }
