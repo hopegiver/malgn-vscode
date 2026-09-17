@@ -3,6 +3,7 @@ mod autonomy;
 mod cli_launcher;
 mod cloudflare_integration;
 mod config;
+mod dev_auto_login;
 mod dev_tools;
 mod fs_atomic;
 mod github_integration;
@@ -75,6 +76,7 @@ pub fn run() {
             usage_stats::get_daily_usage,
             usage_stats::get_daily_detail,
             google_oauth::google_oauth_login,
+            dev_auto_login::dev_auto_login,
             github_integration::github_status,
             github_integration::github_connect,
             github_integration::github_disconnect,

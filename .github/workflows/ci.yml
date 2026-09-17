@@ -96,6 +96,19 @@ jobs:
       - name: cargo test (debug profile)
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
+      # dev_auto_login.rs의 릴리스 배제 불변식(`dev_auto_login()`이 항상 None을
+      # 반환)을 검증하는 단언은 release 프로필에서만 컴파일된다
+      # (`command_matches_compile_time_configuration`의 `#[cfg(not(debug_assertions))]`
+      # 분기) — debug 프로필로만 도는 위 스텝만으로는 그 단언이 영원히
+      # 실행되지 않는다. 이 스텝이 그 컴파일·실행을 실제로 보증한다.
+      #
+      # ⚠️ `DEV_AUTO_LOGIN_EMAIL`은 절대 이 워크플로의 secret이나 `env:` 블록에
+      # 넣지 말 것 — 로컬 개발 전용 우회 값이고, 여기 넣는 순간 CI 러너 환경에
+      # 그 값이 존재하게 되어 `dev_auto_login.rs`/`build.rs`의 게이트 논의와
+      # 무관하게 이 저장소의 보안 전제 자체가 깨진다.
+      - name: cargo test (release profile)
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release
+
       # Windows 실기 PC 테스트 생략의 대체 증거: dev-tools 탐지/설치경로 로직을
       # windows-latest/macos-latest 러너에서 실제로 실행해 DevToolStatus
       # (installed/version/path/install_method/action_kind) 전체를 로그에 남긴다.

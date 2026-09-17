@@ -376,3 +376,15 @@ export function onStateChange(fn: Listener): void {
 export function notifyChange(): void {
   for (const fn of listeners) fn();
 }
+
+// 실제 인증 성공(Google OAuth `loginWithGoogle()` 또는 로컬 개발 전용
+// `tryDevAutoLogin()`, 둘 다 authApi.ts) 시 인증 상태로 전이하는 유일한 지점.
+// 두 호출부(views/login.ts, main.ts의 bootstrap())가 각자 `userEmail`/
+// `userName`/`authenticated` 3줄을 따로 복제하던 것을 여기로 모았다 — 이 3줄이
+// 실제 인증 분기라, 두 곳이 따로 유지되면 한쪽만 고치는 조용한 드리프트(예: 향후
+// 필드 추가 시 한 곳만 갱신)가 나기 쉽다.
+export function applyAuthenticatedIdentity(email: string, name: string): void {
+  state.auth.userEmail = email;
+  state.auth.userName = name;
+  state.authenticated = true;
+}

@@ -79,3 +79,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-09-16 / target_id `autonomy-fixed-schedule` / 1차(최초, 약식 2인 패널 — Standard 등급) / `docs/review-autonomy-schedule-modes.md`
   — 재사용 사유: 이번 위임의 중점 질문("`try_start_now`의 락 구간이 tick과 경합할 때 중복 spawn을 **실제로** 막는가")이 이 페르소나의 "코드가 자기 주석과 일치하는가" 기준 그 자체다. 6대 요소 무수정.
   — 이번 라운드 집중: `try_start_now` doc 주석의 TOCTOU 방어 단언이 양방향인지 단방향인지 대조(경합 상대 `mark_started`에 가드 없음 → M1), `mod.rs` "안전하게 퇴화할 뿐 오동작하지 않는다"가 20줄 아래 신규 커맨드에도 성립하는지(불성립 → C1), `configApi.ts` "backend-dev가 병렬로 추가 중"이 같은 diff 안에서 이미 끝난 과도기를 현재형으로 서술하는지(m3), FE "파싱 실패로 영구 null"이 유일한 원인인지(등록 직후 미등록 창이 같은 값 → M4). 반대로 `pick()` 순수함수 분리·`Tz` 제네릭 주입은 주석이 약속한 결정성을 코드가 실제로 지킨 사례로 확인.
+- 2026-09-17 / target_id `dev-auto-login` / 1차(최초, 풀패널) / 최종응답 인라인 보고
+  — 재사용 사유: 이번 변경은 주석이 산출물의 절반을 차지하고, 그 주석들이 검증 불가능해 보이는 단언("두 계층 중 하나가 무너져도 다른 하나가 막는다", "이 함수 호출 자체가 기존 로그인 플로우에 어떤 부작용도 남기지 않는다", "Cargo가 PROFILE=dev|release를 넘겨준다")을 근거로 안전을 주장한다. V4(주석 단언 대 실제 분기)가 그대로 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: `build.rs:26-34`의 "이중 보장" 단언을 독립 크레이트 실험으로 반증(`option_env!`는 셸 ambient env도 받는다), `dev_auto_login.rs:64-66`의 "부작용 없음" 단언을 `main.ts:255-259` → `handleNavigation()` → `ensureOtelAutoConfigured()` 호출사슬로 반증, `command_matches_compile_time_configuration` 테스트의 동어반복성과 CI 실행 프로필(`ci.yml`은 `cargo test` 디버그 전용) 대조.

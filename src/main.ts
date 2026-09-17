@@ -38,7 +38,7 @@
 // 이벤트가 쌓여 오히려 계속 느려졌다. 대신 메뉴 클릭 시점에만 새로 불러온다
 // (sidebar.ts).
 import { el } from './dom';
-import { state, onStateChange, notifyChange } from './state';
+import { state, onStateChange, notifyChange, applyAuthenticatedIdentity } from './state';
 import { parseRoute } from './route';
 import { renderSidebar } from './sidebar';
 import { renderLoginView } from './views/login';
@@ -75,6 +75,7 @@ import {
   leaveAutonomousTasksListView,
 } from './views/autonomousTasks';
 import { loadAppLinks } from './views/appLinks';
+import { tryDevAutoLogin } from './authApi';
 
 // 순수 렌더 — 상태를 바꾸지 않는다. onStateChange(renderApp)로 구독되어 있어
 // notifyChange() 한 번으로 항상 최신 상태가 반영된다.
@@ -243,9 +244,32 @@ function initLiveWatchers(): void {
     });
 }
 
+// 앱 시작 직후 첫 렌더 전에 로컬 개발 전용 자동 로그인을 한 번 시도한다
+// (authApi.ts/src-tauri/src/dev_auto_login.rs 참고). 이 await가 끝나기 전에는
+// handleNavigation()을 부르지 않으므로, 자동 로그인이 성공하는 환경에서는 로그인
+// 화면이 잠깐이라도 그려지지 않는다. 릴리스 빌드이거나 로컬 설정값이 없으면
+// tryDevAutoLogin()이 null을 반환해 아래 분기가 아무 일도 하지 않고, 기존 Google
+// 로그인 플로우로 그대로 이어진다.
+//
+// `import.meta.env.DEV` 가드(F7): Rust 쪽 `#[cfg(debug_assertions)]`(dev_auto_login.rs)
+// 와 축을 맞춘 프런트 쪽 게이트다. Vite는 프로덕션 빌드 시 `import.meta.env.DEV`를
+// `false` 리터럴로 치환하므로, Rollup이 이 if 블록 전체를 죽은 코드로 트리쇼킹해
+// 프로덕션 번들에서 아예 제거한다 — 모든 사용자가 시작 시 겪던 무의미한 IPC 왕복
+// 1회(릴리스 빌드에서도 `dev_auto_login` 커맨드는 등록되어 있어 호출 자체는
+// 성공하고 항상 None만 돌아온다)가 사라진다.
+async function bootstrap(): Promise<void> {
+  if (import.meta.env.DEV) {
+    const devLogin = await tryDevAutoLogin();
+    if (devLogin) {
+      applyAuthenticatedIdentity(devLogin.email, devLogin.name);
+    }
+  }
+  handleNavigation();
+  initLiveWatchers();
+}
+
 onStateChange(renderApp);
 window.addEventListener('hashchange', handleNavigation);
 window.addEventListener('DOMContentLoaded', () => {
-  handleNavigation();
-  initLiveWatchers();
+  void bootstrap();
 });

@@ -17,5 +17,38 @@ fn main() {
         println!("cargo:rustc-env=GOOGLE_OAUTH_CLIENT_SECRET={secret}");
     }
 
+    // DEV_AUTO_LOGIN_EMAIL(로컬 개발 전용 자동 로그인 우회, dev_auto_login.rs)도
+    // 같은 방식으로 주입한다. 값이 없으면(대부분의 환경) 위와 동일하게 조용히
+    // 넘어간다. `.env` 값이 바뀌면 이 스크립트가 재실행되도록
+    // rerun-if-env-changed도 함께 등록한다 — 커맨드라인/CI 환경변수로 값을 줄
+    // 수도 있으므로 rerun-if-changed(.env 파일 경로)만으로는 부족하다.
+    //
+    // 릴리스 바이너리에 이 값이 남지 않는 실효 게이트는 단 하나다 —
+    // dev_auto_login.rs의 `option_env!("DEV_AUTO_LOGIN_EMAIL")` 호출 자체가
+    // `#[cfg(debug_assertions)]`로 감싸여 있어, 릴리스 컴파일에서는 그 줄이
+    // 파싱조차 되지 않는다(rustc-env로 값을 넘겨도 읽어가는 코드가 없다).
+    // **이 게이트는 절대 제거하지 말 것** — 아래 build.rs 쪽 PROFILE 분기는
+    // 그것을 대신할 두 번째 독립 방어선이 아니다.
+    //
+    // 아래 `if profile != "release"` 분기는 "이중 방어"가 아니라 `.env` 경로에
+    // 한정된 보조적 억제일 뿐이다 — 두 검증자가 각각 독립 크레이트로
+    // 재현했듯이, `option_env!`는 `cargo:rustc-env`로 명시 주입된 값만이 아니라
+    // **rustc가 상속한 환경변수 전체**를 읽는다. 따라서 셸에서
+    // `export DEV_AUTO_LOGIN_EMAIL=...`을 해 둔 채로 `cargo build --release`를
+    // 실행하면, 이 build.rs가 아래 조건 때문에 rustc-env를 내보내지 않아도
+    // rustc는 상속받은 환경변수를 그대로 읽어 컴파일타임 상수에 반영한다 —
+    // 즉 이 PROFILE 게이트는 완전히 우회된다. 릴리스 빌드가 그런 상황에서도
+    // 여전히 안전한 유일한 이유는 위 `#[cfg(debug_assertions)]` 한 겹이다.
+    println!("cargo:rerun-if-env-changed=DEV_AUTO_LOGIN_EMAIL");
+    // PROFILE 값은 "dev|release"가 아니라 "debug|release"다(Cargo가 빌드
+    // 스크립트에 넘기는 실제 값, 직접 확인함) — 아래 비교식은 release만
+    // 가리므로 이 사실 정정과 무관하게 그대로 둔다.
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    if profile != "release" {
+        if let Ok(dev_email) = std::env::var("DEV_AUTO_LOGIN_EMAIL") {
+            println!("cargo:rustc-env=DEV_AUTO_LOGIN_EMAIL={dev_email}");
+        }
+    }
+
     tauri_build::build()
 }
