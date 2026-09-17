@@ -235,20 +235,34 @@ pub struct RunHistoryEntry {
 /// 스케줄링 자체를 좌우하는 값들이고, 이건 단순 조회 페이지 크기다).
 const DEFAULT_HISTORY_LIMIT: u32 = 20;
 
+/// 손상 파일 때문에 열어보는 파일 수의 상한 배수(리뷰 M3, 2026-09-17).
+/// `limit`개를 채우기 위해 몇 개까지 더 열어볼지를 여기서 못박는다 — 이
+/// 상수를 지우고 "끝까지 backfill"로 바꾸면 30일치가 쌓였을 때 "상위 N개만
+/// 연다"는 성능 보장이 무너진다.
+const HISTORY_BACKFILL_MULTIPLIER: usize = 3;
+
 /// `<project>/.claude/logs/autonomy/<YYYY-MM-DD>/<safeTaskId>-<HHMMSS>.log`를
 /// 스캔해 해당 task의 실행 이력을 최신순으로 반환한다.
 ///
-/// 2단계로 나눈다:
+/// 프론트(`src/views/autonomousTasks.ts`)는 `items.length >= limit`을
+/// "더 볼 게 남았다"는 신호로 쓴다 — 이 계약을 유지하기 위해(프론트 무수정),
+/// 손상 파일이 섞여도 최대한 `limit`개를 채워서 돌려준다. 3단계로 나눈다:
 /// 1) 파일을 열지 않고 디렉터리명(날짜)·파일명(시각)만으로 정렬 키를 만들어
-///    최신순 정렬 후 `limit`개만 남긴다 — 30일치가 쌓여 있어도 나머지는
-///    아예 열지 않는다.
-/// 2) 그렇게 골라진 `limit`개만 헤더를 파싱한다. 개별 파일이 손상됐으면
-///    그 파일만 건너뛰고 나머지는 정상 반환한다(전체 실패 금지) — 이 설계상
-///    손상 파일이 상위 `limit`개 안에 여러 개 섞이면 결과가 `limit`보다
-///    적게 나올 수 있다(사용자가 다시 조회하면 스크롤/새로고침으로 자연히
-///    드러나는 수준의 트레이드오프로 판단 — 손상 파일을 우회해 그 뒤 파일을
-///    추가로 여는 backfill은 하지 않는다. 하지 않으면 "상위 limit개만 연다"는
-///    성능 보장이 깨진다).
+///    최신순 정렬한다 — 이 단계는 파일을 하나도 열지 않으므로 30일치가
+///    쌓여 있어도 비용이 거의 없다.
+/// 2) 정렬된 후보 중 **상위 `limit * HISTORY_BACKFILL_MULTIPLIER`개**까지만
+///    스캔 대상으로 남긴다 — "30일치가 쌓여도 상위 N개 파일만 연다"는 성능
+///    보장은 이 배수로 상한을 두는 형태로 유지한다(무제한 backfill 금지).
+/// 3) 정렬 순서대로 헤더를 파싱하며 유효 항목이 `limit`개 채워지면 즉시
+///    멈춘다. 개별 파일이 손상됐으면 그 파일만 건너뛰고 다음 후보로
+///    넘어간다(전체 실패 금지). 손상 없는 평상시에는 정확히 `limit`개만
+///    열고 멈추므로 이전 동작과 비용이 같다.
+///
+/// 트레이드오프: 상위 `limit * HISTORY_BACKFILL_MULTIPLIER`개 안에 유효한
+/// 항목이 `limit`개 미만이면(극단적으로 손상 파일이 밀집한 경우) 여전히
+/// `limit`보다 적게 반환되고, 프론트는 "더 이상 없음"으로 오판할 수 있다.
+/// 이는 의도적으로 남긴 잔여 위험이다 — 완전히 없애려면 무제한 backfill이
+/// 필요한데, 그러면 정상 케이스의 성능 보장이 사라진다.
 pub(crate) fn read_task_history(
     project_root: &Path,
     task_id: &str,
@@ -307,12 +321,20 @@ pub(crate) fn read_task_history(
 
     // 최신순(날짜 내림차순 → 같은 날이면 시각 내림차순).
     candidates.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
-    candidates.truncate(limit);
+    // 손상 파일을 우회해 backfill할 수 있는 상한 — 무제한 backfill 금지.
+    let scan_cap = limit.saturating_mul(HISTORY_BACKFILL_MULTIPLIER);
+    candidates.truncate(scan_cap);
 
-    candidates
-        .into_iter()
-        .filter_map(|(_, _, path)| parse_history_header(&path))
-        .collect()
+    let mut result = Vec::with_capacity(limit);
+    for (_, _, path) in candidates {
+        if result.len() >= limit {
+            break; // 손상 없는 평상시에는 여기서 정확히 limit개째에 멈춘다.
+        }
+        if let Some(entry) = parse_history_header(&path) {
+            result.push(entry);
+        }
+    }
+    result
 }
 
 /// 로그 파일의 앞부분(헤더 최대 4줄)만 읽어 파싱한다. `read_to_string`으로
@@ -574,6 +596,53 @@ mod tests {
         let history = read_task_history(&dir, "t-hist", None);
         assert_eq!(history.len(), 1, "손상된 1건은 빠지고 나머지 1건만 반환해야 한다");
         assert_eq!(history[0].result, "failed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 신규(M3, 2026-09-17) — 상위 limit개 window 안에 손상 파일이 섞여도
+    // backfill로 limit개를 채워 프론트 계약(`items.length >= limit`이면
+    // "더 볼 게 남았다")이 거짓으로 끊기지 않는지 확인한다. 정상 로그 25건을
+    // 쓰고 그중 최신 20건(더 보기 판정 window) 안에 손상 파일 2건을 섞는다.
+    #[test]
+    fn read_task_history_backfills_past_corrupted_files_within_top_limit_window() {
+        let dir = temp_subdir("history-backfill");
+        let mut written = Vec::new();
+        for minutes_ago in 0..25 {
+            let path =
+                write_run_log(&dir, &history_entry("t-hist", minutes_ago, 100, "success")).unwrap();
+            written.push((minutes_ago, path));
+        }
+
+        // 최신 20건(0~19분 전) 안에서 2건을 손상시킨다 — "더 보기" 판정 window.
+        for (minutes_ago, path) in &written {
+            if *minutes_ago == 5 || *minutes_ago == 10 {
+                std::fs::write(
+                    path,
+                    "task.id / task.name / project / started / finished / durationMs\n",
+                )
+                .unwrap();
+            }
+        }
+
+        // limit=20: backfill이 없었다면(구 구현) 18건만 반환돼 프론트가
+        // "더 보기" 버튼을 영구히 숨겼을 것이다 — backfill로 20건이 그대로
+        // 채워져야 프론트가 "더 볼 게 남았다"를 정확히 신호할 수 있다.
+        let first_page = read_task_history(&dir, "t-hist", Some(20));
+        assert_eq!(
+            first_page.len(),
+            20,
+            "손상 파일 2건이 backfill로 우회되어 limit(20)개가 그대로 채워져야 한다"
+        );
+
+        // 사용자가 "더 보기"를 눌러 limit을 늘리면(프론트는 20씩 증가) 손상
+        // 2건을 제외한 전체 유효 이력(23건)에 실제로 도달할 수 있어야 한다.
+        let second_page = read_task_history(&dir, "t-hist", Some(40));
+        assert_eq!(
+            second_page.len(),
+            23,
+            "손상 2건을 제외한 전체 유효 이력(23건)에 도달할 수 있어야 한다"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

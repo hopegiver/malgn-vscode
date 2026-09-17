@@ -313,8 +313,7 @@ pub fn autonomy_runtime_status() -> Vec<AutonomyRuntimeStatus> {
 /// `resolve_validated_project_root`로 경로를 검증한다(워크스페이스 밖 경로·
 /// 존재하지 않는 경로는 여기서 걸러진다). 실제 스캔·파싱은 `log::read_task_history`
 /// 에 위임 — 손상 파일 스킵, limit 적용, 정렬은 전부 그쪽 책임이다.
-#[tauri::command]
-pub fn autonomy_task_history(
+fn autonomy_task_history_blocking(
     project_path: String,
     task_id: String,
     limit: Option<u32>,
@@ -322,6 +321,24 @@ pub fn autonomy_task_history(
     let root = crate::resolve_validated_project_root(&project_path)
         .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
     Ok(log::read_task_history(&root, &task_id, limit))
+}
+
+/// `autonomy_list`(m4 지적, 리뷰 2026-09-17)와 동일한 이유·관용구 — 이 커맨드는
+/// 날짜 디렉터리 전수 `read_dir` + 정렬 + 최대 `limit`개 파일 `open`+`BufRead`를
+/// 수행하는 동기 파일 I/O라, `pub fn`으로 두면 Tauri 메인(=UI) 스레드가 그
+/// 시간만큼 멈춘다. `spawn_blocking`으로 별도 스레드에 위임한다. 본문 로직은
+/// `autonomy_task_history_blocking`으로 그대로 옮겼을 뿐 변경 없음.
+#[tauri::command]
+pub async fn autonomy_task_history(
+    project_path: String,
+    task_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<RunHistoryEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        autonomy_task_history_blocking(project_path, task_id, limit)
+    })
+    .await
+    .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }
 
 /// `run()`의 `setup()`에서 한 번 호출한다. `TICK_SECONDS`(10초)마다
@@ -367,9 +384,12 @@ mod tests {
 
     // 비정상 케이스(project_path가 워크스페이스 밖/존재하지 않음) — 신규
     // 커맨드도 기존 3개 커맨드와 동일한 게이트를 통과시키는지 회귀 고정.
+    // `autonomy_task_history`는 m4(리뷰 2026-09-17) 이후 `async`라 동기
+    // 테스트에서 직접 호출할 수 없다 — `autonomy_list`/`autonomy_list_blocking`과
+    // 동일한 관례대로, 실제 검증 로직이 들어 있는 블로킹 버전을 테스트한다.
     #[test]
     fn autonomy_task_history_rejects_path_outside_workspace() {
-        let result = autonomy_task_history("/etc".to_string(), "t-1".to_string(), None);
+        let result = autonomy_task_history_blocking("/etc".to_string(), "t-1".to_string(), None);
         assert!(result.is_err());
     }
 

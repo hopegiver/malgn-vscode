@@ -72,3 +72,6 @@
 - 2026-09-17 / target_id `autonomy-schedule-cron` / 1차(최초, 풀패널 — Sensitive 등급) / `docs/reviewer/review-autonomy-schedule-cron-2026-09-17.md`
   — 재사용 사유: 이번 위임에 768줄짜리 설계 정본(`docs/design-autonomy-schedule-cron.md`)이 같은 커밋에 함께 들어왔고, 프런트/백엔드를 **두 에이전트가 동시에 병렬 구현**해 계약 드리프트 위험이 명시됐다 — "조항 번호를 매겨 코드에서 하나씩 찾고, 못 찾은 번호를 산출물로 낸다"는 이 페르소나의 역할개념이 그대로 과녁이다. 6대 요소 무수정.
   — 이번 라운드 집중: §9 테스트 매트릭스 T1~T15를 코드에서 전수 대조(15/15 존재, T5·T11의 일부 절만 미커버), `AutonomyTaskConfig`의 serde 속성과 `src/autonomyApi.ts`·`src/state.ts` 필드를 나란히 놓고 이름·타입·요일 축(0=일…6=토) 대조(드리프트 0건), `hourlyMinute: 0`이 `skip_serializing_if`에 걸리지 않는지 양방향 확인, §2.3 역매핑(`days.length>=7`→매일)이 정규화 후 값에서 타당한지, 그리고 D1/D2 관점에서 `is_wall_clock()`의 와일드카드 없는 match가 "다음 모드 추가자에게 판단을 강제하는" 장치로 실제 성립하는지.
+- 2026-09-17 / target_id `autonomy-detail-redesign` / 1차(최초, 약식 2인 패널 — Standard 등급) / `docs/reviewer/review-autonomy-detail-redesign-2026-09-17.md`
+  — 재사용 사유: 역할개념("사라진 조항의 형태로 오는 불일치")이 그대로 유효하다. 설계 정본 `docs/design/autonomy-task-detail-redesign.md`가 §4-2 결과 4종 표·§4-3 시각 분기·§4-4 소요시간 공식·§4-6 4상태 표·§5 여백 px를 전부 수치로 못박아 조항 대조의 과녁이 뚜렷했다. 6대 요소 무수정.
+  — 이번 라운드 집중: §4-2~§4-6·§5 조항 전수 코드 대조(전행 통과), PM이 승인한 의도적 이탈 2건(에러 트리거·이력 건별 summary 생략)의 **경계 확정** — 승인 범위는 "이력 각 건의 summary"까지이고 런타임 최근 1건 summary(`AutonomyRuntimeStatus.summary`)의 화면 제거는 그 승인에 포함되지 않은 조용한 누락임을 §1 위계표 10번 조항과 대조해 판정(D3 미충족, M2).

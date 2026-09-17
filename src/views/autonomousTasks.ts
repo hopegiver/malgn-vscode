@@ -1291,7 +1291,17 @@ function loadTaskHistory(projectPath: string, taskId: string, requestedLimit: nu
   const key = runtimeKey(projectPath, taskId);
   const prev = historyCache.get(key);
   historyCache.set(key, { loading: true, error: null, items: prev?.items ?? [], requestedLimit, hasMore: prev?.hasMore ?? false });
-  notifyChange();
+  // ensureTaskHistoryLoaded()가 렌더 함수(renderRunHistoryCard) 안에서 이 함수를
+  // 최초 1회 호출하므로, 여기서 notifyChange()를 동기 호출하면 바깥
+  // renderApp()이 아직 return하기 전에 안쪽 renderApp()이 재진입해 사이드바+본문이
+  // 두 벌 그려진다(main.ts:145-147이 저장소 차원에서 금지하는 패턴, 리뷰
+  // M1 — playwright 실측으로 #app 자식 2→4 재현됨). queueMicrotask로 미루면
+  // 현재 콜 스택(=바깥 renderApp())이 완전히 반환한 뒤 마이크로태스크 큐에서
+  // notifyChange()가 실행되므로 재진입 없이 "로딩중 → 데이터 도착" 흐름은
+  // 그대로 유지된다. 더 근본적인 대안(최초 조회를 handleNavigation으로 이전)은
+  // 이 함수가 캐시 유무에 따라 렌더 중 호출되는 구조 자체를 바꿔야 해 범위가
+  // 커지므로, 이번 수정은 재진입만 끊는 최소 처방을 택했다.
+  queueMicrotask(notifyChange);
   void (async () => {
     try {
       const items = await fetchAutonomyTaskHistory(projectPath, taskId, requestedLimit);
@@ -1433,26 +1443,57 @@ function renderPromptCard(task: AutonomousTask): HTMLElement {
   return el('div', { className: 'overview-card' }, [el('div', { className: 'overview-body' }, [task.prompt])]);
 }
 
-// 세부 보기 펼침 블록 — 로그 파일 경로 + 복사 버튼만 보여준다. 설계 §4-1은
-// "요약(summary)도 함께 보여준다"고 적었지만, 실제 백엔드 계약(autonomy_task_history의
-// RunHistoryEntry)에는 summary 필드가 없다 — summary는 AutonomyRuntimeStatus에만
-// 있는 "가장 최근 실행 1건" 전용 메모리 값이라 과거 이력 각 건에는 없는 데이터다.
-// 없는 필드를 지어내지 않고 로그 경로만 정직하게 보여준다(자기검증용 메모).
-function renderHistoryDetail(entry: RunHistoryEntry): HTMLElement {
-  const pathEl = el('span', { className: 'detail-path' }, [entry.logPath]);
-  pathEl.style.overflow = 'hidden';
-  pathEl.style.textOverflow = 'ellipsis';
-  pathEl.style.whiteSpace = 'nowrap';
-  pathEl.style.flex = '1';
-  pathEl.title = entry.logPath;
-  const copyBtn = el('button', { className: 'btn btn-sm', onClick: () => handleCopyLogPath(entry.logPath) }, ['경로 복사']);
+// 세부 보기 펼침 블록 — 로그 파일 경로 + 복사 버튼을 보여준다. 설계 §4-1·§1
+// 위계표 10번은 "요약(summary)도 함께 보여준다"고 적었지만, 실제 백엔드 계약
+// (autonomy_task_history의 RunHistoryEntry)에는 summary 필드가 없다 — summary는
+// AutonomyRuntimeStatus에만 있는 "가장 최근 실행 1건" 전용 메모리 값이라 과거
+// 이력 각 건에는 없는 데이터다(PM 승인 이탈 (b), 없는 필드를 지어내지 않는다).
+//
+// [리뷰 M2 조치] 다만 그 "가장 최근 실행 1건"의 요약 자체는 실재하는 데이터이고,
+// 재설계 전 화면에는 있었는데 지금은 어디에도 렌더되지 않아 회귀였다(설계 §1이
+// 이 화면을 여는 두 목적 중 하나로 든 "왜 실패했는지 진단"에 필요). 위계 판정이
+// "3차 — 이력 항목을 펼쳤을 때만 보이면 충분"이라 명시했으므로, 상시 노출 블록을
+// 새로 만들지 않고 원래 의도대로 이 펼침 블록에 되살린다. 다만 이력 각 건에는
+// summary가 없으므로, latestSummary는 이 entry가 "가장 최근 실행 1건"과 동일한
+// 실행인지(logPath 완전 일치 — 실행 1건당 유일한 파일이라 startedAt 문자열
+// 비교보다 정확하다, historyRowKey와 같은 근거) 호출부에서 판정해 넘겨준다.
+// 일치하지 않으면(예: 방금 끝난 실행이 아직 이력 목록에 반영되지 않은 경합)
+// 아무 데도 지어내 붙이지 않는다 — null이면 이 블록에 요약 자체를 만들지 않는다.
+function renderHistoryDetail(entry: RunHistoryEntry, latestSummary: string | null): HTMLElement {
+  const pathRow = el('div', {}, [
+    (() => {
+      const pathEl = el('span', { className: 'detail-path' }, [entry.logPath]);
+      pathEl.style.overflow = 'hidden';
+      pathEl.style.textOverflow = 'ellipsis';
+      pathEl.style.whiteSpace = 'nowrap';
+      pathEl.style.flex = '1';
+      pathEl.title = entry.logPath;
+      return pathEl;
+    })(),
+    el('button', { className: 'btn btn-sm', onClick: () => handleCopyLogPath(entry.logPath) }, ['경로 복사']),
+  ]);
+  pathRow.style.display = 'flex';
+  pathRow.style.alignItems = 'center';
+  pathRow.style.gap = '8px';
 
-  const wrap = el('div', {}, [pathEl, copyBtn]);
-  wrap.style.display = 'flex';
-  wrap.style.alignItems = 'center';
-  wrap.style.gap = '8px';
+  const children: HTMLElement[] = [];
+  if (latestSummary) {
+    // .devtool-log(개발도구 화면의 stdout/stderr 미리보기)를 그대로 재사용한다
+    // — 신규 클래스·신규 CSS 변수 없이 이미 있는 "로그 미리보기" 시각 패턴과
+    // 통일한다. 설계 §4-1이 명시한 "최대 500자, white-space: pre-wrap"은
+    // .devtool-log에 이미 있다.
+    const summaryLabel = el('div', { className: 'overview-label' }, ['가장 최근 실행 요약']);
+    const summaryBox = el('pre', { className: 'devtool-log' }, [latestSummary]);
+    children.push(summaryLabel, summaryBox);
+  }
+  children.push(pathRow);
+
+  const wrap = el('div', {}, children);
   wrap.style.marginTop = '8px';
   wrap.style.paddingLeft = '4px';
+  wrap.style.display = 'flex';
+  wrap.style.flexDirection = 'column';
+  wrap.style.gap = '6px';
   return wrap;
 }
 
@@ -1511,7 +1552,13 @@ function renderRunHistoryCard(task: AutonomousTask): HTMLElement {
     cache.items.forEach((entry) => {
       const row = renderHistoryRow(taskKey, entry);
       rowEls.push(row);
-      if (expandedHistoryRows.has(historyRowKey(taskKey, entry))) rowEls.push(renderHistoryDetail(entry));
+      if (expandedHistoryRows.has(historyRowKey(taskKey, entry))) {
+        // logPath는 실행 1건당 유일한 파일이라(§1162-1164 주석과 동일 근거),
+        // task.logPath(런타임의 "가장 최근 실행 1건" 로그 경로)와 일치하는 딱
+        // 한 건에만 task.summary를 붙인다 — 그 밖의 이력 건에는 summary가 없다.
+        const latestSummary = task.logPath !== null && task.logPath === entry.logPath ? task.summary : null;
+        rowEls.push(renderHistoryDetail(entry, latestSummary));
+      }
     });
     // 마지막 실제 DOM 자식(펼쳐진 상세 블록일 수도 있다)의 구분선을 확실히
     // 지운다 — CSS :last-child만으로는 펼침 상태에 따라 어긋날 수 있어서다.
