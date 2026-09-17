@@ -69,3 +69,6 @@
 - 2026-09-17 / target_id `dev-auto-login` / 1차(최초, 풀패널) / 최종응답 인라인 보고
   — 재사용 사유: 이번 위임의 제1질문이 "`google_oauth/mod.rs` 상단의 '절대 손대지 말 것' 지시를 문자 그대로 지킨 우회 설계가 타당한가"다. 명시된 조항(지시 주석)과 암묵적 불변식(`hd == malgnsoft.com` 도메인 강제, 로그인 성공 시 상태 전이 계약)이 우회 경로에서도 지켜졌는지 조항 단위로 대조하는 것이 이 페르소나의 역할개념 그 자체. 6대 요소 무수정.
   — 이번 라운드 집중: `google_oauth/mod.rs:1-40`(무변경 확인)과 `dev_auto_login.rs` 전문 대조, `GOOGLE_OAUTH_ALLOWED_DOMAIN` 불변식이 우회 경로에 부재함이 `otel_settings.rs:193-228`의 `employee.*` 귀속에 미치는 영향, 로그인 성공 상태 전이 3줄이 `views/login.ts:16-18`과 `main.ts:256-258`로 이중화된 지점.
+- 2026-09-17 / target_id `autonomy-schedule-cron` / 1차(최초, 풀패널 — Sensitive 등급) / `docs/reviewer/review-autonomy-schedule-cron-2026-09-17.md`
+  — 재사용 사유: 이번 위임에 768줄짜리 설계 정본(`docs/design-autonomy-schedule-cron.md`)이 같은 커밋에 함께 들어왔고, 프런트/백엔드를 **두 에이전트가 동시에 병렬 구현**해 계약 드리프트 위험이 명시됐다 — "조항 번호를 매겨 코드에서 하나씩 찾고, 못 찾은 번호를 산출물로 낸다"는 이 페르소나의 역할개념이 그대로 과녁이다. 6대 요소 무수정.
+  — 이번 라운드 집중: §9 테스트 매트릭스 T1~T15를 코드에서 전수 대조(15/15 존재, T5·T11의 일부 절만 미커버), `AutonomyTaskConfig`의 serde 속성과 `src/autonomyApi.ts`·`src/state.ts` 필드를 나란히 놓고 이름·타입·요일 축(0=일…6=토) 대조(드리프트 0건), `hourlyMinute: 0`이 `skip_serializing_if`에 걸리지 않는지 양방향 확인, §2.3 역매핑(`days.length>=7`→매일)이 정규화 후 값에서 타당한지, 그리고 D1/D2 관점에서 `is_wall_clock()`의 와일드카드 없는 match가 "다음 모드 추가자에게 판단을 강제하는" 장치로 실제 성립하는지.

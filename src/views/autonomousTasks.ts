@@ -941,7 +941,9 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     cronInput,
     el('div', { className: 'settings-form-hint' }, [
       '분 시 일 월 요일, 표준 5칸입니다. 예: 0 9 * * 1-5 (평일 오전 9시). 요일은 0~6이며 일요일은 0입니다(7은 쓸 수 없습니다). ' +
-        '@daily 같은 축약형, JAN/MON 등 일부 영문 이름, L·?·1#2, 역방향 범위(FRI-MON)는 지원하지 않습니다. ' +
+        '요일 3글자 약어(MON~SUN, 대소문자 무관)와 MON-FRI 같은 범위는 사용할 수 있습니다. ' +
+        '월 이름(JAN 등)과 요일 풀네임(Sunday 등), @daily 같은 축약형, L·?·1#2, 역방향 범위(FRI-MON)는 지원하지 않습니다. ' +
+        'DST(서머타임) 전환으로 그 시각이 사라지는 날에는 그날 회차가 실행되지 않고 건너뛰어집니다. ' +
         '일(day)과 요일을 동시에 좁히면 둘 다 맞는 날에만 실행됩니다(AND).',
     ]),
     cronError,

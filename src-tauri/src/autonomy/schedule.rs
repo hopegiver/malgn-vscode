@@ -30,10 +30,14 @@
 //
 // `pick()` DST 3분기 규칙의 모드 간 비대칭(설계 §4.3): FixedTime·Hourly는
 // 봄 부재를 "naive + 1시간"으로 밀어서 실행하고, Cron은 그날 회차를
-// 건너뛴다. 판정 기준은 모드 이름이 아니라 "밀린 인스턴트가 그 표현이
-// 약속한 시각 집합 안에 있는가"다 — Hourly의 계약은 "매시 M분"이라 시(hour)
-// 라벨이 밀려도 그 표현이 약속한 시각 그대로지만, Cron은 시(hour) 자체를
+// 건너뛴다. Hourly의 판정 기준은 "밀린 인스턴트가 그 표현이 약속한 시각
+// 집합 안에 있는가"다 — Hourly의 계약은 "매시 M분"이라 시(hour) 라벨이
+// 밀려도 그 표현이 약속한 시각 그대로지만, Cron은 시(hour) 자체를
 // 고정할 수 있어 미는 것이 표현식이 지정하지 않은 시각을 만들어낸다.
+// ⚠️ FixedTime은 이 기준의 예외다 — FixedTime도 "그 시(hour) 그 분"을
+// 고정하는 계약이라 이 기준을 그대로 적용하면 Cron처럼 '건너뜀'이 나와야
+// 하지만, FixedTime은 레거시 호환으로 "밀어서 실행"을 유지한다. 다음 모드를
+// 추가할 때 이 기준으로 판정하려면 FixedTime이 아니라 Hourly를 참조할 것.
 
 use super::config::{
     AutonomyTaskConfig, ScheduleMode, MIN_INTERVAL_MINUTES, MISSED_RUN_GRACE_MINUTES,
@@ -336,10 +340,13 @@ pub(crate) fn normalize_cron_expr(expr: &str) -> Option<String> {
 /// `MIN_INTERVAL_MINUTES` 이상인지 — 샘플링이라 상한 증명은 아니다. 최종
 /// 브레이크는 `select_due`의 러닝 체크·concurrency 상한·task별 타임아웃).
 ///
-/// 4년 하드캡으로 인한 실패(`0 0 29 2 1`처럼 실제로는 유효하나 4년 내
-/// 매치가 없는 경우)는 "유효하지 않은 cron"과 다른 문구로 구분한다 — 최초
-/// 파싱이 성공한 뒤(=구조적으로 유효) 그 다음 회차를 찾는 과정에서만
-/// 실패할 수 있으므로 두 실패를 이 순서만으로 구분할 수 있다.
+/// 4년 하드캡 전용 문구(:361 부근)는 두 번째 이후 `parse` 호출이 실패할
+/// 때만 반환되고, 최초 `parse`(:356 부근)가 실패하면 GENERIC_ERR로 묶인다.
+/// 다만 이 순서가 "4년 캡으로 인한 실패는 항상 최초 파싱 성공 이후에만
+/// 일어난다"는 것을 보장하지는 않는다 — 실측: `validate_cron("0 0 29 2 1")`은
+/// 구조적으로 유효해 보이는 표현식이지만 최초 `parse`부터 실패해
+/// GENERIC_ERR("5칸으로 적어 주세요")을 반환한다. 즉 두 실패가 항상 호출
+/// 순서만으로 구분되는 것은 아니다(문구 분기 개선은 후속 과제).
 pub(crate) fn validate_cron(expr: &str) -> Result<(), String> {
     const GENERIC_ERR: &str = "cron 표현식이 올바르지 않습니다. 5칸(분 시 일 월 요일)으로 적어 주세요. 요일은 0(일)~6(토)만 지원합니다(7은 미지원). 예: 0 9 * * 1-5";
 
@@ -912,8 +919,12 @@ mod tests {
         type Offset = FixedOffset;
 
         fn from_offset(_offset: &FixedOffset) -> Self {
-            // 이 테스트 픽스처는 항상 구조체 리터럴로 직접 만든다 — 이
-            // 경로는 트레이트 완결성을 위해 존재할 뿐 실행되지 않는다.
+            // 이 경로는 실행된다 — `cron_parser::parse`는 내부에서
+            // `dt.timezone()`으로 tz를 재구성하며, 그 결과가 시뮬레이션
+            // 필드를 잃은 이 기본값이 된다(실측 확인). 즉 이 픽스처를
+            // `next_cron_in`에 넘기면 DST 시뮬레이션이 조용히 사라진다 —
+            // 이 픽스처로 Cron 경로의 DST를 검증할 수 없다는 뜻이다.
+            // `tz`를 참조로 직접 쓰는 `next_hourly_in` 경로에서만 유효하다.
             SimulatedDstTz { spring_gap_start: None, fall_ambiguous_start: None }
         }
 
