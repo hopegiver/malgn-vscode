@@ -32,6 +32,15 @@ pub(crate) struct TaskSnapshot {
 /// 이미 읽고 있는 `claude` 세션에게 조건부로 위임한다.
 const HUB_RECORD_FOOTER: &str = "\n\n작업을 마치면 이 프로젝트에 malgnai-hub MCP 연동(CLAUDE.md에 명시된 규율)이 설정되어 있는 경우 그 규율에 따라 work_record 등으로 결과를 기록하라. 연동이 없는 프로젝트라면 이 지시는 무시하라.";
 
+/// malgnai-hub MCP는 이 프로젝트에서 이미 항상 연동돼 있으므로(HUB_RECORD_FOOTER와
+/// 달리) 조건부 문구 없이 항상 붙인다 — 다만 "이메일을 보내야 하는 작업이면"이라는
+/// 조건절 자체는 이메일과 무관한 태스크에서 불필요하게 신경쓰이지 않도록 남긴다.
+/// 브라우저로 Gmail 등에 로그인해 보내려는 시도(실측: 재인증 요구로 막힘, 2026-09-18
+/// 로그)를 막기 위한 안내다. email_send가 HTML을 받지 않는 제약(2026-09-18 확인)에는
+/// 마크다운으로 절충했다 — plain text 필드 안에 마크다운 문법을 쓰면 서식 없는
+/// 밋밋한 텍스트보다는 구조가 보인다.
+const EMAIL_TOOL_FOOTER: &str = "\n\n이메일을 보내야 하는 작업이면 malgnai-hub MCP의 email_send 도구를 사용하라 — 브라우저로 Gmail 등에 로그인해서 보내려 하지 마라. email_send는 수신자가 @malgnsoft.com 주소만 가능하고 본문은 plain text만 받는다(HTML·첨부 불가) — 본문은 마크다운 문법(제목 #, 목록 -, 굵게 ** 등)으로 작성해라.";
+
 /// `dev_tools.rs`의 Claude 도구 정의(`DEV_TOOLS`)와 값은 같지만, 그 파일이
 /// 이미 정한 관례(상수를 공유하지 않고 각자 별도로 둔다, 회귀 위험 0)를 그대로
 /// 따라 이 모듈에도 독립적으로 둔다.
@@ -48,7 +57,7 @@ pub(crate) fn build_final_prompt(prompt: &str, subagent: &Option<String>) -> Str
         }
         _ => prompt.to_string(),
     };
-    format!("{base}{HUB_RECORD_FOOTER}")
+    format!("{base}{HUB_RECORD_FOOTER}{EMAIL_TOOL_FOOTER}")
 }
 
 /// UTF-8 문자 경계를 존중하며 뒤에서부터 최대 `max_chars`자만 남긴다(바이트
@@ -262,7 +271,7 @@ mod tests {
     #[test]
     fn build_final_prompt_wraps_with_subagent_delegation_phrase_and_hub_footer() {
         let expected = format!(
-            "다음 작업을 malgn-agent:qa-engineer 에이전트에게 위임해 처리하라: 테스트를 실행하라{HUB_RECORD_FOOTER}"
+            "다음 작업을 malgn-agent:qa-engineer 에이전트에게 위임해 처리하라: 테스트를 실행하라{HUB_RECORD_FOOTER}{EMAIL_TOOL_FOOTER}"
         );
         assert_eq!(
             build_final_prompt(
@@ -275,8 +284,23 @@ mod tests {
 
     #[test]
     fn build_final_prompt_uses_raw_prompt_with_hub_footer_when_no_subagent() {
-        let expected = format!("테스트를 실행하라{HUB_RECORD_FOOTER}");
+        let expected = format!("테스트를 실행하라{HUB_RECORD_FOOTER}{EMAIL_TOOL_FOOTER}");
         assert_eq!(build_final_prompt("테스트를 실행하라", &None), expected);
+    }
+
+    /// email footer는 malgnai-hub 연동 자체가 이 프로젝트에서 항상 전제이므로
+    /// (hub_record_footer와 달리) 조건부 문구 없이 무조건 붙는다 — 다만 "이메일을
+    /// 보내야 하는 작업이면"이라는 조건절과 email_send 도구명, 브라우저 로그인
+    /// 금지, @malgnsoft.com 제한, plain text 제약, 마크다운 작성 지시는 실제로
+    /// 포함돼야 한다(HTML 미지원에 대한 절충안, 2026-09-18).
+    #[test]
+    fn email_tool_footer_mentions_email_send_and_forbids_browser_login() {
+        assert!(EMAIL_TOOL_FOOTER.contains("이메일을 보내야 하는 작업이면"));
+        assert!(EMAIL_TOOL_FOOTER.contains("email_send"));
+        assert!(EMAIL_TOOL_FOOTER.contains("브라우저로"));
+        assert!(EMAIL_TOOL_FOOTER.contains("malgnsoft.com"));
+        assert!(EMAIL_TOOL_FOOTER.contains("plain text"));
+        assert!(EMAIL_TOOL_FOOTER.contains("마크다운"));
     }
 
     /// footer는 malgnai-hub 연동 여부와 무관하게 항상 조건부 안내문으로만
