@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "맑은에이전트",
+  "productName": "malgn-agent",
   "mainBinaryName": "malgn-agent",
   "version": "0.2.0",
   "identifier": "com.malgnsoft.agent",
