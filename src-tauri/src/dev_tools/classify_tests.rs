@@ -446,6 +446,70 @@ fn classifies_pnpm_standalone_and_global_package_on_windows() {
     ));
 }
 
+// PATH 비표준 위치 wrangler.cmd 탐지 회귀 테스트 — 버그 리포트("Windows에서
+// wrangler가 터미널엔 있는데 앱은 '설치 안 됨'으로 표시")의 사전조사는
+// mod.rs::DEV_TOOLS의 Wrangler Windows 후보가 `%LOCALAPPDATA%\pnpm\wrangler.cmd`/
+// `%APPDATA%\npm\wrangler.cmd` 딱 2개뿐이라 그 외 위치(Scoop/Volta/커스텀 npm
+// prefix 등)에 설치되면 놓칠 수 있다고 지목했다. 실제로 조사해보니
+// `resolve_tool_path`→`cli_launcher::resolve_binary`→
+// `platform::resolve_binary_with`는 이미 도구별 하드코딩이 아니라
+// `bare_name`(=def.key)만 받는 완전히 일반화된 PATH 스캔 폴백을 갖고 있고
+// (Windows 완전 지원 도입 시점부터), 이 폴백은 실제 프로세스 PATH 전체 +
+// 기본 디렉터리를 스캔한다(platform_tests.rs의 "gh" 대상 테스트가 이미
+// 검증). 이 테스트는 그 일반 메커니즘이 Wrangler 자신의 실제 DEV_TOOLS
+// 정의(하드코딩 후보 2개)로도 동일하게 작동하는지 — 즉 두 후보가 전부
+// 없어도 비표준 위치의 wrangler.cmd를 PATH 스캔만으로 찾아내는지 — 못박아
+// 향후 회귀를 막는다. 실기 Windows 미검증(§B.5): 실제 GUI 프로세스가 사용자
+// PATH 변경분을 상속하는지 자체는 OS 세션 문제라 이 테스트 범위 밖이다.
+#[test]
+fn wrangler_windows_path_scan_finds_nonstandard_install_location_not_in_hardcoded_candidates() {
+    use super::super::platform::{self, Platform};
+    use super::super::win_candidate_test_support::synthetic_windows_env_roots;
+    use super::super::{tool_definition, ToolId};
+
+    let def = tool_definition(ToolId::Wrangler);
+    let roots = synthetic_windows_env_roots();
+
+    // 비표준 설치 위치(예: Scoop shim 디렉터리) — mod.rs가 선언한 하드코딩
+    // Windows 후보 2개 중 어디에도 없어야, 이 테스트가 "후보 매치"가 아니라
+    // 실제 "PATH 스캔"으로 통과한다는 것을 보장한다.
+    let nonstandard = r"C:\Users\hopegiver\scoop\shims\wrangler.cmd";
+    let expanded_candidates: Vec<String> = def
+        .windows_path_candidates
+        .iter()
+        .filter_map(|c| platform::expand_path_tokens(Platform::Win, c, &roots))
+        .collect();
+    assert!(
+        !expanded_candidates.iter().any(|c| c == nonstandard),
+        "이 테스트의 전제가 깨졌습니다 — 비표준 경로가 실제로는 하드코딩 후보에 \
+         이미 있습니다. 후보 매치로 통과하면 의도한 PATH 스캔 회귀를 잡지 \
+         못합니다."
+    );
+
+    // 사용자 PATH에 Scoop shims 디렉터리가 있다고 가정한다(실기 Windows에서
+    // GUI 프로세스가 이 PATH를 실제로 상속하는지는 미검증 — §B.5).
+    let process_path = r"C:\Windows\system32;C:\Users\hopegiver\scoop\shims";
+    let path_var = platform::build_search_path_var(Platform::Win, process_path, &roots);
+    let refs: Vec<&str> = expanded_candidates.iter().map(|s| s.as_str()).collect();
+
+    let found = platform::resolve_binary_with(
+        Platform::Win,
+        &refs,
+        &path_var,
+        def.key,
+        &|p| p == nonstandard,
+    );
+
+    assert_eq!(
+        found,
+        Some(nonstandard.to_string()),
+        "하드코딩 후보 2개가 모두 없어도(§B.5) 실제 PATH에 있는 wrangler.cmd를 \
+         PATH 스캔 폴백으로 찾아내야 한다 — 이 계약이 깨지면 pnpm/npm 전역 \
+         설치 외 방식(Scoop/Volta/커스텀 prefix 등)으로 설치된 Wrangler가 \
+         '설치 안 됨'으로 오판된다."
+    );
+}
+
 #[test]
 fn classifies_npm_global_shim_and_node_modules_package_on_windows() {
     let roots = win_roots();

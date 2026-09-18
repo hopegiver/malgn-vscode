@@ -24,6 +24,29 @@ fn main() {
         println!("cargo:rustc-env=MALGN_OTEL_COLLECTOR_BASE={otel_base}");
     }
 
+    // GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET(mcp_manager/catalog.rs의 gmail/
+    // google-drive/google-calendar 카탈로그 3개 항목이 공유)도 같은 방식으로
+    // 주입한다. Google Cloud OAuth 클라이언트는 API별이 아니라 애플리케이션
+    // 단위라 이 세 MCP 엔드포인트가 클라이언트 하나를 그대로 재사용한다
+    // (해당 GCP 프로젝트에서 Gmail/Drive/Calendar API 활성화 및 동의화면
+    // 스코프 등록은 사용자가 GCP 콘솔에서 처리하는 부분 — 이 코드는 관여하지
+    // 않는다). 이름은 앱 자체 Google 로그인용 `GOOGLE_OAUTH_CLIENT_SECRET`과
+    // 헷갈리지 않도록 `GOOGLE_MCP_OAUTH_*`로 구분했다.
+    //
+    // 이 세 엔드포인트(gmailmcp/drivemcp/calendarmcp.googleapis.com)는 RFC
+    // 7591 동적 클라이언트 등록(DCR)을 지원하지 않아서, `claude mcp add`가
+    // --client-id/--client-secret 없이 자동 DCR을 시도하면 "Incompatible
+    // auth server: does not support dynamic client registration"으로
+    // 실패한다. 값이 없으면(기본 상태) 카탈로그 원클릭 설치는 기존과 동일하게
+    // 동작하되(회귀 없음), 이 세 항목 인증만 이 DCR 미지원 문제로 계속
+    // 실패한다 — catalog.rs/mod.rs가 None을 받아 안내 메시지를 붙인다.
+    if let Ok(client_id) = std::env::var("GOOGLE_MCP_OAUTH_CLIENT_ID") {
+        println!("cargo:rustc-env=GOOGLE_MCP_OAUTH_CLIENT_ID={client_id}");
+    }
+    if let Ok(client_secret) = std::env::var("GOOGLE_MCP_OAUTH_CLIENT_SECRET") {
+        println!("cargo:rustc-env=GOOGLE_MCP_OAUTH_CLIENT_SECRET={client_secret}");
+    }
+
     // DEV_AUTO_LOGIN_EMAIL(로컬 개발 전용 자동 로그인 우회, dev_auto_login.rs)도
     // 같은 방식으로 주입한다. 값이 없으면(대부분의 환경) 위와 동일하게 조용히
     // 넘어간다. `.env` 값이 바뀌면 이 스크립트가 재실행되도록

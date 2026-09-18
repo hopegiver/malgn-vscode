@@ -96,7 +96,7 @@ pub struct TerminalLaunchResult {
     pub message: String,
 }
 
-/// `open_terminal_command`/`open_terminal_program`/`open_terminal_program_sequence`
+/// `open_terminal_command`/`open_terminal_program`/`open_terminal_program_sequence_with_env`
 /// 세 공개 진입점이 최종적으로 위임하는 실제 OS 스폰 로직(사설) — macOS:
 /// Terminal.app 새 창, Windows: PowerShell 새 콘솔 창에서 `shell_command`를
 /// 실행한다. 두 플랫폼 모두 앱이 자식 프로세스로 조용히 spawn해 출력을
@@ -163,8 +163,8 @@ fn spawn_terminal_window(shell_command: &str) -> Result<(), String> {
 /// 작은따옴표 규칙을 따르지 않는다). 시그니처를 `&'static str`로 좁혀
 /// "리터럴만 이 경로로 간다"는 전제를 주석이 아니라 **타입**으로 강제한다 —
 /// 동적으로 조립해야 하는 호출부(예: mcp_install/mcp_login)는 컴파일이 깨져
-/// 구조적으로 `open_terminal_program`/`open_terminal_program_sequence`(인용
-/// 책임이 `platform::quote_token` 한 곳으로 모이는 구조화된 진입점)로
+/// 구조적으로 `open_terminal_program`/`open_terminal_program_sequence_with_env`
+/// (인용 책임이 `platform::quote_token` 한 곳으로 모이는 구조화된 진입점)로
 /// 이관된다.
 pub fn open_terminal_command(shell_command: &'static str) -> Result<(), String> {
     spawn_terminal_window(shell_command)
@@ -187,9 +187,23 @@ pub fn open_terminal_program(program: &str, args: &[&str]) -> Result<(), String>
 /// `(program, args)`)를 순서대로 실행하는 체인 명령을 한 터미널 세션에서
 /// 연다(예: `claude mcp add` → `claude mcp login`, B1). 각 커맨드의 인용도
 /// 동일하게 `platform::quote_token`이 전담한다.
-pub fn open_terminal_program_sequence(commands: &[(&str, &[&str])]) -> Result<(), String> {
+/// 커맨드별 환경변수를 함께 실행하는 다중 커맨드 체인(2026-09-18 도입). 이
+/// 함수를 거치는 유일한 호출부는 `mcp_manager::mcp_install`이다 — 카탈로그
+/// 원클릭 설치가 `claude mcp add --client-secret`에 OAuth 비밀값을 넘겨야
+/// 하는데, 이 CLI 플래그는 argv 값을 받지 않는 bare 플래그라(실측,
+/// `dev_tools::platform::build_terminal_command_line_with_env` 문서 참조)
+/// 자식 프로세스 환경변수(`MCP_CLIENT_SECRET`)로만 값을 넘길 수 있다. 이
+/// 경로는 Rust가 `claude`를 직접 spawn하지 않고 osascript/powershell.exe가 새
+/// 터미널 창 안에서 해석할 셸 문자열을 만들 뿐이라 `Command::env()`가 닿지
+/// 않는다 — 대신 셸 문자열 안에 인라인 env 접두사를 넣어야 하고, 그 조립은
+/// 전적으로 `platform::build_chained_terminal_command_line_with_env`(POSIX
+/// 인라인 대입 vs PowerShell `$env:` 대입+해제)가 전담한다. env가 필요 없는
+/// 커맨드는 빈 슬라이스(`&[]`)를 넘긴다.
+pub fn open_terminal_program_sequence_with_env(
+    commands: &[platform::TerminalCommandWithEnv],
+) -> Result<(), String> {
     let plat = platform::platform_now();
-    let line = platform::build_chained_terminal_command_line(plat, commands);
+    let line = platform::build_chained_terminal_command_line_with_env(plat, commands);
     spawn_terminal_window(&line)
 }
 

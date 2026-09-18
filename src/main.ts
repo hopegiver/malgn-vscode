@@ -14,8 +14,6 @@
 //   - "GitHub/Cloudflare 설정": 이 앱은 토큰을 취급하지 않는다. 상태는 `gh`/`wrangler`
 //     CLI를 읽기 전용으로 조회하고, 연결/해제는 사용자가 조작할 터미널 창을 여는
 //     것뿐이다 — integrationsApi.ts.
-//   - "Jira 설정": 사이트 URL·이메일·API 토큰을 실제로 검증(/rest/api/3/myself)한
-//     뒤 macOS 키체인에 저장한다 — integrationsApi.ts.
 //   - "자율업무"(views/autonomousTasks.ts): 프로젝트별 자율업무 설정(프롬프트·주기·
 //     서브에이전트 등) — autonomyApi.ts. 실제 스케줄 실행 엔진은 Rust 쪽에 있고,
 //     이 화면은 조회/추가/수정/삭제/on-off만 한다.
@@ -51,7 +49,6 @@ import {
   loadOtelEnv,
   loadGithubStatus,
   loadCloudflareStatus,
-  loadJiraStatus,
   loadMcp,
   loadMcpCatalog,
   ensureOtelAutoConfigured,
@@ -65,6 +62,7 @@ import {
   enterSessionChatView,
   enterSessionDraftView,
   leaveSessionChatView,
+  leaveSessionsListView,
 } from './views/sessions';
 import { onSessionsChanged } from './sessionsApi';
 import {
@@ -187,9 +185,6 @@ function handleNavigation(): void {
   if (route.kind === 'settings' && route.tab === 'cloudflare' && !state.cloudflare.loaded && !state.cloudflare.loading) {
     void loadCloudflareStatus();
   }
-  if (route.kind === 'settings' && route.tab === 'jira' && !state.jira.loaded && !state.jira.loading) {
-    void loadJiraStatus();
-  }
   if (route.kind === 'projects-detail' && state.projectTree.projectPath !== route.path && !state.projectTree.loading) {
     void loadProjectTree(route.path);
   }
@@ -219,6 +214,7 @@ function handleNavigation(): void {
   // 있던 경우엔 두 함수 모두 아무 일도 하지 않는다.
   if (route.kind !== 'tasks-list') leaveAutonomousTasksListView();
   if (route.kind !== 'projects-list') leaveProjectsListView();
+  if (route.kind !== 'sessions-list') leaveSessionsListView();
 }
 
 // 세션목록·사용량 통계 실시간 감시 — 앱이 켜져 있는 동안 딱 한 번만 구독한다.

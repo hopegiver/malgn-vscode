@@ -14,8 +14,10 @@ import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, upda
 import type { InstalledPlugin, CatalogEntryItem, CommandResult, GlobalEntry } from '../catalogApi';
 
 // malgn-agent는 이 회사의 필수 표준 플러그인이다 — 설치된 플러그인이 하나도
-// 없을 때 원클릭 설치 버튼의 기본 대상으로 쓴다.
-const DEFAULT_PLUGIN_ID = 'malgn-agent@malgnsoft-plugins';
+// 없을 때 원클릭 설치 버튼의 기본 대상으로 쓴다. MCP 관리 화면(settings.ts)의
+// malgnai-hub 필수 고정 행도 같은 상수를 재사용해 "malgn-agent 플러그인
+// 설치"라는 동일한 실행 흐름을 가리키게 한다.
+export const DEFAULT_PLUGIN_ID = 'malgn-agent@malgnsoft-plugins';
 
 // 성공 결과 노트는 확인 후 후속 조치가 없으므로 잠시 보여준 뒤 자동으로 치운다.
 // 실패 노트는 메시지를 계속 봐야 하니 그대로 남긴다.
@@ -320,9 +322,20 @@ function renderPluginCard(plugin: InstalledPlugin): HTMLElement {
     [updating ? '업데이트 중…' : '업데이트']
   );
 
+  // malgn-agent는 이 회사의 필수 표준 플러그인이다(malgnai-hub MCP를 포함한
+  // 조직 표준 번들) — 카탈로그에서 이 플러그인만 "필수" 배지로 구분해, 사용자가
+  // 다른 플러그인과 동등한 선택지로 착각해 제거하지 않도록 한다. 카탈로그에는
+  // 항목을 숨기거나 제외하는 UI 자체가 없다(설치된 플러그인 = 조회 목록).
+  const isRequired = plugin.id === DEFAULT_PLUGIN_ID;
+  const requiredBadge = el('span', { className: 'badge badge-active' }, ['필수']);
+  requiredBadge.style.marginLeft = '8px';
+
   const head = el('div', { className: 'plugin-card-head' }, [
     el('div', {}, [
-      el('div', { className: 'plugin-card-name' }, [plugin.displayName ?? plugin.name]),
+      el('div', { className: 'plugin-card-name' }, [
+        plugin.displayName ?? plugin.name,
+        ...(isRequired ? [requiredBadge] : []),
+      ]),
       el('div', { className: 'plugin-card-version' }, [`v${plugin.version}`]),
       ...(plugin.description ? [el('div', { className: 'plugin-card-desc' }, [plugin.description])] : []),
     ]),

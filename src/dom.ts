@@ -75,8 +75,8 @@ export function toggleSwitch(checked: boolean, onChange: () => void): HTMLElemen
 }
 
 // 공용 로딩/에러 블록 — 원래 views/settings.ts의 otel 패널이 쓰던 패턴
-// (loading/error/loaded 3상태)을 github/cloudflare/jira/mcp 패널도 동일하게
-// 따라 쓰면서 4곳에 중복되어 있던 것을 승격했다. 메시지와 재시도 콜백은 항상
+// (loading/error/loaded 3상태)을 github/cloudflare/mcp 패널도 동일하게
+// 따라 쓰면서 여러 곳에 중복되어 있던 것을 승격했다. 메시지와 재시도 콜백은 항상
 // 호출부가 그대로 넘긴다 — 여기서 공용 문구로 바꿔치기하지 않는다(원인 경로가
 // 담긴 원본 에러 메시지를 그대로 보여주는 것이 이 앱의 강점이다).
 export function loadingBlock(): HTMLElement {

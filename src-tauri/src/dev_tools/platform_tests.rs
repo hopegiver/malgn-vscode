@@ -164,10 +164,32 @@
                 r"C:\Windows\system32".to_string(),
                 r"C:\Windows".to_string(),
                 r"C:\Windows\System32\Wbem".to_string(),
+                r"C:\Program Files\nodejs".to_string(),
                 r"C:\Users\hopegiver\AppData\Roaming\npm".to_string(),
                 r"C:\Users\hopegiver\AppData\Local\pnpm".to_string(),
+                r"C:\Users\hopegiver\AppData\Local\Programs\nodejs".to_string(),
                 r"C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps".to_string(),
             ]
+        );
+    }
+
+    // 실사용자 재현 회귀 테스트(2026-09-18): npm 전역 설치 wrangler.cmd는
+    // `%APPDATA%\npm`(node.exe 없음)에 있고, 그 shim이 내부에서 bare `node`를
+    // 호출한다 — 이 함수가 만드는 기본 PATH에 Node 설치 디렉터리가 반드시
+    // 있어야 그 호출이 성공한다. `%ProgramFiles%`/`%LOCALAPPDATA%\Programs`
+    // 둘 다 없는 극단적 환경(테스트 편의상 win_roots 그대로 사용)에서도 최소
+    // 하나는 포함돼야 한다는 사실 자체를 이름으로 못박는다.
+    #[test]
+    fn default_path_dirs_win_includes_both_known_node_install_dirs_for_cmd_shim_execution() {
+        let roots = win_roots();
+        let dirs = default_path_dirs(Platform::Win, &roots);
+        assert!(
+            dirs.contains(&r"C:\Program Files\nodejs".to_string()),
+            "wrangler.cmd 등 npm shim의 내부 bare `node` 호출이 이 디렉터리 없이는 실패합니다"
+        );
+        assert!(
+            dirs.contains(&r"C:\Users\hopegiver\AppData\Local\Programs\nodejs".to_string()),
+            "사용자별 Node 설치(공식 인스톨러의 '현재 사용자만' 옵션)도 커버해야 합니다"
         );
     }
 
@@ -220,9 +242,44 @@
             Some(r"C:\Program Files\nodejs\npm.cmd"),
             &roots,
         );
+        // runner_path 자신의 bin 디렉터리(C:\Program Files\nodejs)가
+        // default_path_dirs에도 이미 있는 값이라 중복 배제 규칙에 걸려
+        // 한 번만 나온다(기존 계약 무변경) — 그래서 이 테스트는 우연히도
+        // node 디렉터리가 이미 있던 케이스라 아래 신규 테스트
+        // (`compose_path_env_win_finds_node_dir_for_npm_global_wrangler_shim`)가
+        // 실제 회귀(런너 자신이 node.exe와 다른 디렉터리에 있는 경우)를 잡는다.
         assert_eq!(
             path,
-            r"C:\Program Files\nodejs;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Users\hopegiver\AppData\Roaming\npm;C:\Users\hopegiver\AppData\Local\pnpm;C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps"
+            r"C:\Program Files\nodejs;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Users\hopegiver\AppData\Roaming\npm;C:\Users\hopegiver\AppData\Local\pnpm;C:\Users\hopegiver\AppData\Local\Programs\nodejs;C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps"
+        );
+    }
+
+    // 실사용자 재현 회귀 테스트(2026-09-18, 원문 재현):
+    // `where wrangler` → `C:\Users\user\AppData\Roaming\npm\wrangler.cmd`.
+    // 이 경로는 mod.rs DEV_TOOLS의 하드코딩 후보 `%APPDATA%\npm\wrangler.cmd`와
+    // 정확히 일치해 `resolve_tool_path`는 이 파일을 정확히 찾아낸다(§B.5
+    // 하드코딩 후보 자체는 문제가 없었다) — 그런데도 앱이 "설치 안 됨"으로
+    // 표시된 진짜 원인은 그 다음 단계, 즉 `check_tool_version`이 이 경로로
+    // `--version`을 실행할 때 주입하는 PATH(`build_child_path_env` →
+    // `compose_path_env`)에 Node 설치 디렉터리가 없어 wrangler.cmd 내부의
+    // bare `node` 호출이 실패하는 것이었다. 이 테스트는 그 정확한 시나리오를
+    // 재현한다: runner_path(=resolved wrangler.cmd)가 node.exe와 **다른**
+    // 디렉터리(AppData\Roaming\npm)에 있으므로, 수정 전 코드에서는 이
+    // `assert!`가 실패했을 것이다(default_path_dirs에 Node 디렉터리가 전혀
+    // 없었으므로).
+    #[test]
+    fn compose_path_env_win_includes_node_dir_when_npm_global_wrangler_shim_lives_elsewhere() {
+        let roots = win_roots();
+        let path = compose_path_env(
+            Platform::Win,
+            Some(r"C:\Users\hopegiver\AppData\Roaming\npm\wrangler.cmd"),
+            &roots,
+        );
+        assert!(
+            path.split(';').any(|p| p == r"C:\Program Files\nodejs"),
+            "wrangler.cmd shim의 내부 bare `node` 호출이 찾을 수 있는 PATH에 \
+             Node 설치 디렉터리가 없습니다 — 이 회귀가 재발하면 npm 전역 \
+             설치본이 다시 '설치 안 됨'으로 오판됩니다. 실제 PATH: {path}"
         );
     }
 
@@ -465,15 +522,27 @@
         }
     }
 
-    // ── build_chained_terminal_command_line ──
+    // ── build_chained_terminal_command_line_with_env(env=[] — 체인 구분자 자체의
+    // 회귀 고정. 2026-09-18: mcp_install이 이 with_env 버전으로 옮겨가면서
+    // env가 없는 무인자 변형(구 `build_chained_terminal_command_line`)은
+    // 삭제하고 이 두 테스트를 그대로 옮겼다 — 검증 대상(구분자 선택)은
+    // 무변경) ──
 
     #[test]
-    fn build_chained_terminal_command_line_mac_uses_and_and_separator() {
-        let line = build_chained_terminal_command_line(
+    fn build_chained_terminal_command_line_with_env_mac_uses_and_and_separator_when_no_env() {
+        let line = build_chained_terminal_command_line_with_env(
             Platform::Mac,
             &[
-                ("/opt/homebrew/bin/claude", &["mcp", "add", "foo"]),
-                ("/opt/homebrew/bin/claude", &["mcp", "login", "foo"]),
+                (
+                    "/opt/homebrew/bin/claude",
+                    &["mcp", "add", "foo"] as &[&str],
+                    &[] as &[(&str, &str)],
+                ),
+                (
+                    "/opt/homebrew/bin/claude",
+                    &["mcp", "login", "foo"] as &[&str],
+                    &[] as &[(&str, &str)],
+                ),
             ],
         );
         assert_eq!(
@@ -483,14 +552,22 @@
     }
 
     #[test]
-    fn build_chained_terminal_command_line_win_uses_semicolon_not_and_and() {
+    fn build_chained_terminal_command_line_with_env_win_uses_semicolon_not_and_and_when_no_env() {
         // Windows 내장 powershell.exe(5.1)는 `&&`/`||` 파이프라인 체인
         // 연산자를 지원하지 않는다(PowerShell 7+ 전용) — `;`로 이어야 한다.
-        let line = build_chained_terminal_command_line(
+        let line = build_chained_terminal_command_line_with_env(
             Platform::Win,
             &[
-                (r"C:\claude.exe", &["mcp", "add", "foo"]),
-                (r"C:\claude.exe", &["mcp", "login", "foo"]),
+                (
+                    r"C:\claude.exe",
+                    &["mcp", "add", "foo"] as &[&str],
+                    &[] as &[(&str, &str)],
+                ),
+                (
+                    r"C:\claude.exe",
+                    &["mcp", "login", "foo"] as &[&str],
+                    &[] as &[(&str, &str)],
+                ),
             ],
         );
         assert_eq!(
@@ -547,6 +624,104 @@
                 "& 'C:\\claude.exe' 'mcp' 'login' '{}'",
                 malicious.replace('\'', "''")
             )
+        );
+    }
+
+    // ── build_terminal_command_line_with_env / build_chained_terminal_command_line_with_env
+    // (2026-09-18, `claude mcp add --client-secret` 실측 이후 도입) ──
+
+    #[test]
+    fn build_terminal_command_line_with_env_mac_prefixes_inline_assignment() {
+        let line = build_terminal_command_line_with_env(
+            Platform::Mac,
+            "/opt/homebrew/bin/claude",
+            &["mcp", "add", "gmail"],
+            &[("MCP_CLIENT_SECRET", "GOCSPX-abc")],
+        );
+        assert_eq!(
+            line,
+            "MCP_CLIENT_SECRET=GOCSPX-abc /opt/homebrew/bin/claude mcp add gmail"
+        );
+    }
+
+    #[test]
+    fn build_terminal_command_line_with_env_mac_quotes_special_char_values() {
+        let line = build_terminal_command_line_with_env(
+            Platform::Mac,
+            "/opt/homebrew/bin/claude",
+            &["mcp", "add", "gmail"],
+            &[("MCP_CLIENT_SECRET", "it's a secret")],
+        );
+        assert_eq!(
+            line,
+            r#"MCP_CLIENT_SECRET='it'\''s a secret' /opt/homebrew/bin/claude mcp add gmail"#
+        );
+    }
+
+    #[test]
+    fn build_terminal_command_line_with_env_empty_env_matches_plain_variant_byte_for_byte() {
+        let plain = build_terminal_command_line(Platform::Mac, "/bin/echo", &["hi"]);
+        let with_env = build_terminal_command_line_with_env(Platform::Mac, "/bin/echo", &["hi"], &[]);
+        assert_eq!(plain, with_env);
+    }
+
+    #[test]
+    fn build_terminal_command_line_with_env_win_sets_and_clears_env_var() {
+        let line = build_terminal_command_line_with_env(
+            Platform::Win,
+            r"C:\claude.exe",
+            &["mcp", "add", "gmail"],
+            &[("MCP_CLIENT_SECRET", "GOCSPX-abc")],
+        );
+        assert_eq!(
+            line,
+            r"$env:MCP_CLIENT_SECRET = 'GOCSPX-abc'; & 'C:\claude.exe' 'mcp' 'add' 'gmail'; Remove-Item Env:MCP_CLIENT_SECRET -ErrorAction SilentlyContinue"
+        );
+    }
+
+    // POSIX `KEY=value cmd` 인라인 접두사가 실제로 자식 프로세스 환경에
+    // 도달하는지 `sh -c` 실측으로 확인한다(추측이 아니라 셸 자체로 검증 —
+    // 이 파일의 기존 관례와 동일).
+    #[test]
+    fn build_terminal_command_line_with_env_mac_actually_injects_env_var_via_real_shell() {
+        let line = build_terminal_command_line_with_env(
+            Platform::Mac,
+            "/bin/sh",
+            &["-c", "printf %s \"$MCP_CLIENT_SECRET\""],
+            &[("MCP_CLIENT_SECRET", "GOCSPX-real-secret")],
+        );
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&line)
+            .output()
+            .expect("sh must be available");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "GOCSPX-real-secret",
+            "인라인 env 접두사가 자식 프로세스에 실제로 전달되지 않았습니다: {line}"
+        );
+    }
+
+    #[test]
+    fn build_chained_terminal_command_line_with_env_mac_applies_env_only_to_first_command() {
+        let line = build_chained_terminal_command_line_with_env(
+            Platform::Mac,
+            &[
+                (
+                    "/opt/homebrew/bin/claude",
+                    &["mcp", "add", "gmail"] as &[&str],
+                    &[("MCP_CLIENT_SECRET", "GOCSPX-abc")] as &[(&str, &str)],
+                ),
+                (
+                    "/opt/homebrew/bin/claude",
+                    &["mcp", "login", "gmail"] as &[&str],
+                    &[] as &[(&str, &str)],
+                ),
+            ],
+        );
+        assert_eq!(
+            line,
+            "MCP_CLIENT_SECRET=GOCSPX-abc /opt/homebrew/bin/claude mcp add gmail && /opt/homebrew/bin/claude mcp login gmail"
         );
     }
 

@@ -7,7 +7,7 @@ import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devTo
 import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } from './catalogApi';
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
-import type { GithubStatus, CloudflareStatus, JiraStatus } from './integrationsApi';
+import type { GithubStatus, CloudflareStatus } from './integrationsApi';
 import type { AutonomyRunStatus, AutonomyScheduleMode } from './autonomyApi';
 import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
 import type { OtelSettings } from './otelApi';
@@ -17,7 +17,7 @@ import type { AppLinksStatus } from './appLinksApi';
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
-export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp' | 'applinks' | 'devtools';
+export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'marketplace' | 'mcp' | 'applinks' | 'devtools';
 export type CatalogTab = 'plugins' | 'global';
 
 // "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 두 조회를 (projectPath, id)
@@ -160,17 +160,6 @@ export interface AppState {
   // 이 개발 머신의 정상 상태이지 에러가 아니다.
   cloudflare: {
     status: CloudflareStatus | null;
-    loading: boolean;
-    error: string | null;
-    loaded: boolean;
-    connecting: boolean;
-    disconnecting: boolean;
-  };
-  // Jira 연동 — 위임할 CLI가 없어 사이트 URL·이메일·API 토큰을 직접 받아 검증 후
-  // macOS 키체인에 저장한다. 토큰 원문은 절대 이 state에 보관하지 않는다 — 제출
-  // 시점에만 함수 인자로 넘어가고 그 뒤로는 참조가 남지 않는다.
-  jira: {
-    status: JiraStatus | null;
     loading: boolean;
     error: string | null;
     loaded: boolean;
@@ -336,7 +325,6 @@ export const state: AppState = {
   autonomousTasks: { items: [], loading: false, error: null, loaded: false },
   github: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   cloudflare: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
-  jira: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   devTools: {
     items: [],
     loading: false,

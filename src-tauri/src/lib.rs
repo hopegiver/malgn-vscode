@@ -8,7 +8,6 @@ mod dev_tools;
 mod fs_atomic;
 mod github_integration;
 mod google_oauth;
-mod jira_integration;
 mod mcp_manager;
 mod otel_settings;
 mod plugins;
@@ -83,9 +82,6 @@ pub fn run() {
             cloudflare_integration::cloudflare_status,
             cloudflare_integration::cloudflare_connect,
             cloudflare_integration::cloudflare_disconnect,
-            jira_integration::jira_status,
-            jira_integration::jira_connect,
-            jira_integration::jira_disconnect,
             autonomy::autonomy_list,
             autonomy::autonomy_save_task,
             autonomy::autonomy_delete_task,

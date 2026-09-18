@@ -42,7 +42,6 @@ base64 = "0.22"
 url = "2"
 tokio = { version = "1", features = ["sync", "rt"] }
 sha2 = "0.10"
-keyring = "4"
 rayon = "1"
 libc = "0.2"
 dunce = "1"

@@ -19,6 +19,7 @@ import {
 import type { ClaudeSessionRecord, ChatMessageKind, SessionTranscript } from '../sessionsApi';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { navigate } from '../route';
+import { loadProjects, sortedProjectsByRecency } from './projects';
 
 export function asString(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -78,6 +79,13 @@ export function sortedSessions(): ClaudeSessionRecord[] {
   return [...state.sessions.items].sort((a, b) => sortKey(b) - sortKey(a));
 }
 
+// 세션목록 화면(목록 뷰)을 완전히 떠날 때 main.ts에서 호출한다 — "새 세션" 모달이
+// 열려 있었다면 window에 남은 ESC 리스너를 정리한다(leaveProjectsListView와 동일한 원칙).
+export function leaveSessionsListView(): void {
+  newSessionModalOpen = false;
+  detachNewSessionModalEscHandler();
+}
+
 export function renderSessionsListView(): HTMLElement {
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
@@ -87,8 +95,11 @@ export function renderSessionsListView(): HTMLElement {
         ...(state.sessions.live ? [liveIndicator()] : []),
       ]),
     ]),
-    el('button', { className: 'btn', onClick: () => void loadSessions(), disabled: state.sessions.loading }, [
-      state.sessions.loading ? '불러오는 중…' : '↻ 새로고침',
+    el('div', { className: 'devtool-header-actions' }, [
+      el('button', { className: 'btn btn-primary', onClick: openNewSessionModal }, ['+ 새 세션']),
+      el('button', { className: 'btn', onClick: () => void loadSessions(), disabled: state.sessions.loading }, [
+        state.sessions.loading ? '불러오는 중…' : '↻ 새로고침',
+      ]),
     ]),
   ]);
 
@@ -114,7 +125,20 @@ export function renderSessionsListView(): HTMLElement {
     body.push(el('div', { className: 'session-list' }, sortedSessions().map(renderSessionRow)));
   }
 
-  return el('div', {}, [header, ...body]);
+  const rootChildren: HTMLElement[] = [header, ...body];
+  if (newSessionModalOpen) {
+    if (!newSessionModalEscHandler) {
+      newSessionModalEscHandler = (e) => {
+        if (e.key === 'Escape') closeNewSessionModal();
+      };
+      window.addEventListener('keydown', newSessionModalEscHandler);
+    }
+    rootChildren.push(renderNewSessionModal());
+  } else {
+    detachNewSessionModalEscHandler();
+  }
+
+  return el('div', {}, rootChildren);
 }
 
 function renderSessionRow(session: ClaudeSessionRecord): HTMLElement {
@@ -224,6 +248,98 @@ function detachMetaModalEscHandler(): void {
     window.removeEventListener('keydown', metaModalEscHandler);
     metaModalEscHandler = null;
   }
+}
+
+// "새 세션" 프로젝트 선택 모달 — 세션목록 화면 우측 상단 버튼으로 연다. 프로젝트
+// 화면의 카드 "새 세션" 버튼과 최종 목적지(라우트)는 같지만, 이 화면에서는
+// 먼저 어느 프로젝트인지 골라야 하므로 프로젝트 목록을 모달로 띄운다(metaModal과
+// 동일하게 배경클릭/ESC/닫기 버튼 3경로로 닫는 로컬 UI 상태).
+let newSessionModalOpen = false;
+let newSessionModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function detachNewSessionModalEscHandler(): void {
+  if (newSessionModalEscHandler) {
+    window.removeEventListener('keydown', newSessionModalEscHandler);
+    newSessionModalEscHandler = null;
+  }
+}
+
+function openNewSessionModal(): void {
+  newSessionModalOpen = true;
+  notifyChange();
+  // 세션목록 화면만 먼저 열었을 수도 있어 프로젝트 목록이 비어 있을 수 있다 —
+  // 아직 조회한 적이 없으면(로딩 중도 아니면) 여기서 처음으로 불러온다.
+  if (!state.dashboard.loaded && !state.dashboard.loading) void loadProjects();
+}
+
+function closeNewSessionModal(): void {
+  newSessionModalOpen = false;
+  detachNewSessionModalEscHandler();
+  notifyChange();
+}
+
+function chooseProjectForNewSession(path: string): void {
+  closeNewSessionModal();
+  navigate(`#/sessions/new/${encodeURIComponent(path)}`);
+}
+
+function renderNewSessionModal(): HTMLElement {
+  const bodyChildren: HTMLElement[] = [
+    el('div', { className: 'settings-form-hint' }, ['새 세션을 시작할 프로젝트를 선택하세요.']),
+  ];
+
+  if (state.dashboard.loading && !state.dashboard.loaded) {
+    bodyChildren.push(el('div', { className: 'state-block-desc' }, ['불러오는 중…']));
+  } else if (state.dashboard.error) {
+    bodyChildren.push(
+      el('div', { className: 'alert' }, [
+        el('span', {}, [`⚠ ${state.dashboard.error}`]),
+        el('button', { className: 'btn', onClick: () => void loadProjects() }, ['다시 시도']),
+      ])
+    );
+  } else if (state.dashboard.projects.length === 0) {
+    bodyChildren.push(
+      el('div', { className: 'state-block' }, [
+        el('div', { className: 'state-block-title' }, ['먼저 프로젝트를 추가하세요']),
+        el('div', { className: 'state-block-desc' }, ['~/workspace 아래 CLAUDE.md가 있는 폴더가 malgn-agent 프로젝트로 표시됩니다.']),
+      ])
+    );
+  } else {
+    const list = el('div', { className: 'session-list' });
+    for (const p of sortedProjectsByRecency()) {
+      list.appendChild(
+        el(
+          'div',
+          {
+            className: 'session-row',
+            onClick: () => chooseProjectForNewSession(p.path),
+            onKeydown: (e) => {
+              if (e.key === 'Enter' || e.key === ' ') chooseProjectForNewSession(p.path);
+            },
+          },
+          [
+            el('div', { className: 'session-row-main' }, [
+              el('div', { className: 'session-row-name' }, [p.name]),
+              el('div', { className: 'session-row-cwd' }, [p.path]),
+            ]),
+          ]
+        )
+      );
+      const row = list.lastElementChild as HTMLElement;
+      row.setAttribute('role', 'button');
+      row.setAttribute('tabindex', '0');
+    }
+    bodyChildren.push(list);
+  }
+
+  const modalBox = el('div', { className: 'modal-box' }, [
+    el('div', { className: 'modal-header' }, [
+      el('h2', { className: 'modal-title' }, ['새 세션 — 프로젝트 선택']),
+      el('button', { className: 'modal-close-btn', onClick: closeNewSessionModal }, ['✕']),
+    ]),
+    el('div', { className: 'modal-body' }, bodyChildren),
+  ]);
+  return createModalOverlay(modalBox, closeNewSessionModal);
 }
 
 function openMetaModal(): void {

@@ -4,14 +4,14 @@
 // 않고 브라우저 인증이 끼는 `claude mcp login <name>`까지 이어서 실행해야
 // 한다. 이건 GitHub/Cloudflare 연동(`github_integration::github_connect`)과
 // 같은 이유로 앱이 조용히 백그라운드 spawn하지 않고 `cli_launcher::
-// open_terminal_program_sequence`로 사용자가 직접 보는 터미널 창을 연다(B1,
+// open_terminal_program_sequence_with_env`로 사용자가 직접 보는 터미널 창을 연다(B1,
 // 2라운드 — 예전에는 이 표의 값들로 셸 문자열을 직접 포맷팅해 `open_terminal_
 // command`에 넘겼지만, 그 함수는 이제 `&'static str` 리터럴만 받는다).
 //
 // 프론트는 `catalog_id: String` 하나만 보낼 수 있고, transport/URL 조합은
 // 이 표 밖으로 절대 나가지 않는다 — `mcp_install`(mod.rs)이 이 표의 label/
 // transport/target을 argv 배열의 원소로만 조립하고, 인용은
-// `open_terminal_program_sequence`(`platform::quote_token`)가 전담한다.
+// `open_terminal_program_sequence_with_env`(`platform::quote_token`)가 전담한다.
 // 프론트가 침해돼도 임의 셸 커맨드를 터미널에 주입할 경로가 없다.
 
 use serde::Serialize;
@@ -32,6 +32,27 @@ pub(super) struct McpCatalogEntry {
     pub(super) transport: &'static str,
     /// `mcp_install`이 `claude mcp add <target>` argv 조립에 직접 읽는다.
     pub(super) target: &'static str,
+    /// 사내 발급 Google OAuth 클라이언트 ID/Secret — `build.rs`가 `.env`/CI
+    /// secret(`GOOGLE_MCP_OAUTH_CLIENT_ID`/`_SECRET`)에서 `option_env!()`로
+    /// 컴파일타임에 읽어들인 값이다. gmail/google-drive/google-calendar
+    /// 3개 항목이 이 값을 공유한다 — Google Cloud OAuth 클라이언트는 API별이
+    /// 아니라 애플리케이션 단위라서(사용자 확인 사실) 해당 GCP 프로젝트에서
+    /// Gmail/Drive/Calendar API가 활성화돼 있고 필요 스코프가 동의화면에
+    /// 등록돼 있으면 클라이언트 하나로 세 엔드포인트 모두를 인증할 수 있다.
+    /// 이 세 엔드포인트(gmailmcp/drivemcp/calendarmcp.googleapis.com)는 RFC
+    /// 7591 동적 클라이언트 등록(DCR)을 지원하지 않아서, 값이 없으면 `claude
+    /// mcp add`가 자동 DCR을 시도하다 "Incompatible auth server: does not
+    /// support dynamic client registration"으로 실패한다(atlassian/figma는
+    /// DCR을 지원해 항상 None — 건드리지 않는다).
+    /// `mcp_install`(mod.rs)이 `Some`이면 `--client-id`/`--client-secret`을
+    /// argv에 값째로 포함시킨다 — `mcp_add_blocking`(mod.rs 상단 문서 참조)의
+    /// bare-flag + env 주입 방식과 달리, 이 경로는 사용자가 직접 보는
+    /// 터미널 창에 `claude` 커맨드를 그대로 실행해 그 프로세스에만 조용히
+    /// 환경변수를 심을 채널이 없기 때문이다(값이 argv에 그대로 보인다 —
+    /// `ps`로 다른 로컬 사용자에게 노출될 수 있다는 트레이드오프를 감수한다.
+    /// 재검토 결론은 mod.rs의 `build_install_add_args` 문서 참조).
+    pub(super) oauth_client_id: Option<&'static str>,
+    pub(super) oauth_client_secret: Option<&'static str>,
 }
 
 const MCP_CATALOG: [McpCatalogEntry; 5] = [
@@ -40,30 +61,40 @@ const MCP_CATALOG: [McpCatalogEntry; 5] = [
         label: "Gmail",
         transport: "http",
         target: "https://gmailmcp.googleapis.com/mcp/v1",
+        oauth_client_id: option_env!("GOOGLE_MCP_OAUTH_CLIENT_ID"),
+        oauth_client_secret: option_env!("GOOGLE_MCP_OAUTH_CLIENT_SECRET"),
     },
     McpCatalogEntry {
         id: "google-drive",
         label: "Google Drive",
         transport: "http",
         target: "https://drivemcp.googleapis.com/mcp/v1",
+        oauth_client_id: option_env!("GOOGLE_MCP_OAUTH_CLIENT_ID"),
+        oauth_client_secret: option_env!("GOOGLE_MCP_OAUTH_CLIENT_SECRET"),
     },
     McpCatalogEntry {
         id: "google-calendar",
         label: "Google Calendar",
         transport: "http",
         target: "https://calendarmcp.googleapis.com/mcp/v1",
+        oauth_client_id: option_env!("GOOGLE_MCP_OAUTH_CLIENT_ID"),
+        oauth_client_secret: option_env!("GOOGLE_MCP_OAUTH_CLIENT_SECRET"),
     },
     McpCatalogEntry {
         id: "atlassian",
         label: "Atlassian (Jira/Confluence)",
         transport: "sse",
         target: "https://mcp.atlassian.com/v1/sse",
+        oauth_client_id: None,
+        oauth_client_secret: None,
     },
     McpCatalogEntry {
         id: "figma",
         label: "Figma",
         transport: "http",
         target: "https://mcp.figma.com/mcp",
+        oauth_client_id: None,
+        oauth_client_secret: None,
     },
 ];
 
@@ -132,6 +163,28 @@ mod tests {
         assert_eq!(figma.label, "Figma");
         assert_eq!(figma.transport, "http");
         assert_eq!(figma.target, "https://mcp.figma.com/mcp");
+    }
+
+    #[test]
+    fn gmail_drive_calendar_share_the_same_google_oauth_fields_atlassian_figma_never_do() {
+        // 컴파일 환경에 GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET이 설정돼 있든
+        // 없든(Some/None 어느 쪽이든), 세 Google 항목은 항상 같은 값을
+        // 공유해야 하고 atlassian/figma는 항상 None이어야 한다 — 값 자체가
+        // 아니라 "누가 공유하고 누가 관여하지 않는가"라는 구조를 고정한다.
+        let gmail = find_catalog_entry("gmail").unwrap();
+        let drive = find_catalog_entry("google-drive").unwrap();
+        let calendar = find_catalog_entry("google-calendar").unwrap();
+        assert_eq!(gmail.oauth_client_id, drive.oauth_client_id);
+        assert_eq!(gmail.oauth_client_id, calendar.oauth_client_id);
+        assert_eq!(gmail.oauth_client_secret, drive.oauth_client_secret);
+        assert_eq!(gmail.oauth_client_secret, calendar.oauth_client_secret);
+
+        let atlassian = find_catalog_entry("atlassian").unwrap();
+        let figma = find_catalog_entry("figma").unwrap();
+        assert_eq!(atlassian.oauth_client_id, None);
+        assert_eq!(atlassian.oauth_client_secret, None);
+        assert_eq!(figma.oauth_client_id, None);
+        assert_eq!(figma.oauth_client_secret, None);
     }
 
     #[test]

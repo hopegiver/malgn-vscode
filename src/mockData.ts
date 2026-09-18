@@ -1,6 +1,6 @@
 // 하드코딩된 샘플 데이터. "프로젝트"(workspaceApi.ts), "세션목록"(sessionsApi.ts),
-// "카탈로그"(catalogApi.ts), "개발 환경"(devToolsApi.ts), OTel/GitHub/Cloudflare/
-// Jira 설정(otelApi.ts/integrationsApi.ts), "사용량 통계"(usageApi.ts), "자율업무"
+// "카탈로그"(catalogApi.ts), "개발 환경"(devToolsApi.ts), OTel/GitHub/Cloudflare
+// 설정(otelApi.ts/integrationsApi.ts), "사용량 통계"(usageApi.ts), "자율업무"
 // (autonomyApi.ts)는 실제 로컬 데이터를 쓰므로 이 파일에 없다 — 아래
 // MOCK_USAGE.byProject는 프로젝트별 토큰 집계 UI가 아직 없어 어디서도 렌더링하지
 // 않는 죽은 데이터다(건드리지 않고 그대로 유지).

@@ -27,11 +27,20 @@
 #   - 액션은 sha로 고정한다(가변 태그 `@v4` 금지).
 #   - `permissions`는 최소(`contents: read`)로 둔다.
 #   - 코드서명 시크릿은 쓰지 않는다(서명 없음 = 서명 시크릿도 없음). 예외는
-#     GOOGLE_OAUTH_CLIENT_SECRET·MALGN_OTEL_COLLECTOR_BASE — 앱 소스에 리터럴로
-#     두지 않으려고(이 저장소는 public) repo secret으로 등록해 빌드 시점에만
-#     env로 주입한다. 로그에 값이 찍히지 않도록 `echo`/`run` 블록에서 직접
-#     참조하지 않고, job 레벨 env로만 노출한다(GitHub Actions가 시크릿 값을
-#     로그에서 자동 마스킹하기도 한다).
+#     GOOGLE_OAUTH_CLIENT_SECRET·MALGN_OTEL_COLLECTOR_BASE·
+#     GOOGLE_MCP_OAUTH_CLIENT_ID·GOOGLE_MCP_OAUTH_CLIENT_SECRET — 앱 소스에
+#     리터럴로 두지 않으려고(이 저장소는 public) repo secret으로 등록해 빌드
+#     시점에만 env로 주입한다. 로그에 값이 찍히지 않도록 `echo`/`run` 블록에서
+#     직접 참조하지 않고, job 레벨 env로만 노출한다(GitHub Actions가 시크릿
+#     값을 로그에서 자동 마스킹하기도 한다). GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET은
+#     gmail/google-drive/google-calendar MCP 카탈로그 3개 항목이 공유하는
+#     Google Cloud OAuth 클라이언트다(앱 자체 로그인용
+#     GOOGLE_OAUTH_CLIENT_SECRET과는 별개 — 이름으로 구분).
+#     이 두 secret은 등록/이름 변경이 이 세션 범위 밖이다(Settings → Secrets
+#     and variables → Actions에서 GOOGLE_OAUTH_CLIENT_SECRET 옆에 등록). 아직
+#     등록/이름 변경 전이면 빈 문자열로 주입되고 build.rs의 option_env!()가
+#     이를 빈 값(None)으로 받아 이 3개 카탈로그 항목 설치는 기존처럼(DCR
+#     미지원으로 인증 실패) 동작한다 — 이 CI 잡 자체는 깨지지 않는다.
 name: tauri-portable-build
 
 on:
@@ -63,6 +72,13 @@ jobs:
     env:
       GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
       MALGN_OTEL_COLLECTOR_BASE: ${{ secrets.MALGN_OTEL_COLLECTOR_BASE }}
+      # gmail/google-drive/google-calendar MCP 카탈로그가 공유하는 Google
+      # OAuth 클라이언트(§0 참고). 아직 repo secret으로 등록/이름변경되지
+      # 않았다면 빈 문자열로 주입되고, build.rs의 option_env!()가 이를 빈
+      # 값으로 받아 해당 카탈로그 설치는 기존처럼(DCR 미지원으로 인증 실패)
+      # 동작한다 — 등록 전까지 이 CI 잡을 깨뜨리지 않는다.
+      GOOGLE_MCP_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_ID }}
+      GOOGLE_MCP_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

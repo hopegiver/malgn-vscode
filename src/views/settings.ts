@@ -3,9 +3,9 @@ import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
 import type { OtelSettings } from '../otelApi';
-import { loadCatalog, loadMarketplaces } from './catalog';
+import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID } from './catalog';
 import { renderAppLinksPanel } from './appLinks';
-import { refreshMarketplaces } from '../catalogApi';
+import { refreshMarketplaces, installPlugin } from '../catalogApi';
 import {
   fetchGithubStatus,
   connectGithub,
@@ -13,9 +13,6 @@ import {
   fetchCloudflareStatus,
   connectCloudflare,
   disconnectCloudflare,
-  fetchJiraStatus,
-  connectJira,
-  disconnectJira,
 } from '../integrationsApi';
 import { fetchMcpServers, addMcpServer, removeMcpServer, loginMcpServer, logoutMcpServer, fetchMcpCatalog, installMcpCatalogEntry } from '../mcpApi';
 import type { McpTransport, McpServerSummary, McpCatalogEntry } from '../mcpApi';
@@ -26,7 +23,6 @@ const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[]
   { key: 'otel', label: 'OTel 설정' },
   { key: 'github', label: 'GitHub 설정' },
   { key: 'cloudflare', label: 'Cloudflare 설정' },
-  { key: 'jira', label: 'Jira 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
   { key: 'applinks', label: '앱링크설정' },
@@ -45,7 +41,6 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
   if (tab === 'otel') body = renderOtelPanel();
   else if (tab === 'github') body = renderGithubPanel();
   else if (tab === 'cloudflare') body = renderCloudflarePanel();
-  else if (tab === 'jira') body = renderJiraPanel();
   else if (tab === 'marketplace') body = renderMarketplacePanel();
   else if (tab === 'applinks') body = renderAppLinksPanel();
   else if (tab === 'devtools') body = renderDevToolsView();
@@ -475,141 +470,6 @@ function renderCloudflarePanel(): HTMLElement {
   ]);
 }
 
-// ---------------- Jira 설정 (개인별 자격증명, 실제 저장) ----------------
-// 위임할 CLI가 없어 사이트 URL·이메일·API 토큰을 직접 받는다. "저장"은 실제로
-// jira_connect를 호출해 /rest/api/3/myself로 검증한 뒤 macOS 키체인에 담는다.
-// 토큰 입력란에는 절대 value를 주지 않는다(이미 저장된 상태에서도 placeholder로만
-// 표시) — 빈 값으로 제출하면 "변경 없음"으로 해석해 API를 호출하지 않는다.
-// 토큰은 제출 시점에만 읽어 connectJira()에 넘기고 그 뒤로 어떤 변수에도 남기지
-// 않는다("눈 아이콘"으로 보이게 하지 않는다 — 화면 공유가 잦은 사내 환경 위험).
-
-export async function loadJiraStatus(): Promise<void> {
-  state.jira.loading = true;
-  state.jira.error = null;
-  notifyChange();
-  try {
-    state.jira.status = await fetchJiraStatus();
-    state.jira.loaded = true;
-  } catch (err) {
-    state.jira.error = err instanceof Error ? err.message : 'Jira 연동 상태를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
-  } finally {
-    state.jira.loading = false;
-    notifyChange();
-  }
-}
-
-async function handleJiraDisconnect(): Promise<void> {
-  state.jira.disconnecting = true;
-  notifyChange();
-  try {
-    await disconnectJira();
-    state.jira.status = { connected: false };
-    showToast('Jira 연결이 해제되었습니다.');
-  } catch (err) {
-    showToast(`Jira 연결 해제에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    state.jira.disconnecting = false;
-    notifyChange();
-  }
-}
-
-function renderJiraPanel(): HTMLElement {
-  if (state.jira.loading && !state.jira.loaded) return loadingBlock();
-  if (state.jira.error) return errorBlock(state.jira.error, () => void loadJiraStatus());
-
-  const status = state.jira.status;
-  const connected = status?.connected ?? false;
-
-  const siteInput = document.createElement('input');
-  siteInput.id = 'jira-site';
-  siteInput.name = 'jira-site';
-  siteInput.type = 'text';
-  siteInput.placeholder = 'https://malgnsoft.atlassian.net';
-  siteInput.value = status?.site ?? '';
-  siteInput.className = 'settings-input';
-  siteInput.autocomplete = 'off';
-
-  const emailInput = document.createElement('input');
-  emailInput.id = 'jira-email';
-  emailInput.name = 'jira-email';
-  emailInput.type = 'text';
-  emailInput.placeholder = 'dev@malgnsoft.com';
-  emailInput.value = status?.email ?? '';
-  emailInput.className = 'settings-input';
-  emailInput.autocomplete = 'off';
-
-  // 토큰 입력란 — value를 절대 주지 않는다. 이미 연결된 상태면 placeholder로만
-  // "저장되어 있다"는 사실을 알린다.
-  const tokenInput = document.createElement('input');
-  tokenInput.id = 'jira-token';
-  tokenInput.name = 'jira-token';
-  tokenInput.type = 'password';
-  tokenInput.placeholder = connected ? '변경하려면 새 토큰을 입력하세요' : '****';
-  tokenInput.className = 'settings-input';
-  tokenInput.autocomplete = 'off';
-
-  const form = el('form', { className: 'settings-form' }, [
-    el('div', { className: 'settings-form-hint' }, [
-      connected
-        ? `${status?.displayName ?? status?.email ?? ''} 계정으로 연결되어 있습니다. 토큰을 바꾸려면 새 토큰을 입력한 뒤 저장하세요.`
-        : '자율업무·이슈 연동에 사용할 Jira 계정을 연결합니다. API 토큰은 https://id.atlassian.com/manage-profile/security/api-tokens 에서 발급받을 수 있습니다.',
-    ]),
-    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['Jira 사이트 URL']), siteInput]),
-    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['계정 이메일']), emailInput]),
-    el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['API 토큰']), tokenInput]),
-  ]);
-
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const site = siteInput.value.trim();
-    const email = emailInput.value.trim();
-    const token = tokenInput.value;
-
-    if (!token) {
-      if (connected) {
-        showToast('토큰을 입력하지 않아 변경 사항이 없습니다.');
-      } else {
-        showToast('API 토큰을 입력해주세요.');
-      }
-      return;
-    }
-    if (!site || !email) {
-      showToast('Jira 사이트 URL과 계정 이메일을 입력해주세요.');
-      return;
-    }
-
-    void (async () => {
-      state.jira.connecting = true;
-      notifyChange();
-      try {
-        state.jira.status = await connectJira(site, email, token);
-        showToast('Jira 계정이 연결되었습니다.');
-      } catch (err) {
-        showToast(`Jira 연결에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
-      } finally {
-        state.jira.connecting = false;
-        notifyChange();
-      }
-    })();
-  });
-
-  const saveBtn = el('button', { className: 'btn btn-primary', disabled: state.jira.connecting }, [state.jira.connecting ? '저장 중…' : '저장']);
-  saveBtn.type = 'submit';
-  const actions: HTMLElement[] = [saveBtn];
-  if (connected) {
-    const disconnectBtn = el('button', { className: 'btn', disabled: state.jira.disconnecting, onClick: () => void handleJiraDisconnect() }, [
-      state.jira.disconnecting ? '해제 중…' : '연결 해제',
-    ]);
-    // <form> 안의 <button>은 type을 명시하지 않으면 기본값이 "submit"이라 이
-    // 버튼을 눌러도 저장 폼이 함께 제출된다 — 명시적으로 "button"으로 막는다.
-    disconnectBtn.type = 'button';
-    actions.push(disconnectBtn);
-  }
-  form.appendChild(el('div', { className: 'settings-form-actions' }, actions));
-
-  return el('div', { className: 'settings-card' }, [form]);
-}
-
 // ---------------- 마켓플레이스 설정 (실제 로컬 데이터 + 실제 새로고침 실행) ----------------
 // 저장소 목록은 known_marketplaces.json 실물, 설치된 플러그인 목록은 카탈로그
 // 화면과 같은 state.catalog.plugins를 공유한다. "마켓플레이스 새로고침" 버튼은
@@ -901,7 +761,12 @@ async function handleLogoutMcp(server: McpServerSummary): Promise<void> {
   }
 }
 
-function renderMcpRow(server: McpServerSummary): HTMLElement {
+// malgn-agent 플러그인 설치 시 자동 등록되는 필수 MCP 서버 — malgn-agent.md
+// "역할 경계" 지시에 따라 고정 표시(삭제 불가)한다.
+const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
+
+function renderMcpRow(server: McpServerSummary, opts?: { readonly locked?: boolean }): HTMLElement {
+  const locked = opts?.locked ?? false;
   const deleteBtn = el('button', { className: 'btn', onClick: () => void handleRemoveMcp(server) }, ['삭제']);
   deleteBtn.style.color = 'var(--color-danger)';
 
@@ -934,7 +799,9 @@ function renderMcpRow(server: McpServerSummary): HTMLElement {
       actions.push(logoutBtn);
     }
   }
-  actions.push(deleteBtn);
+  // 필수 고정 서버(malgnai-hub)는 삭제 버튼 자체를 숨긴다 — 조직 표준 MCP라
+  // 이 화면에서 등록을 해제할 수 없다(플러그인 삭제로만 함께 사라진다).
+  if (!locked) actions.push(deleteBtn);
 
   return el('div', { className: 'mcp-row' }, [
     el('div', { className: 'mcp-row-main' }, [
@@ -942,12 +809,67 @@ function renderMcpRow(server: McpServerSummary): HTMLElement {
         el('span', { className: 'mcp-row-name' }, [server.name]),
         el('span', { className: 'badge badge-unknown' }, [server.transport]),
         el('span', { className: `badge ${server.connected ? 'badge-active' : 'badge-archived'}` }, [server.connected ? '연결됨' : '미연결']),
+        ...(locked ? [el('span', { className: 'badge badge-active' }, ['필수'])] : []),
       ]),
       el('div', { className: 'mcp-row-target' }, [server.target]),
       el('div', { className: 'mcp-row-status-label' }, [server.statusLabel]),
     ]),
     el('div', { className: 'mcp-row-actions' }, actions),
   ]);
+}
+
+// malgn-agent 플러그인이 아직 설치되지 않아 malgnai-hub 서버가 mcp 목록에
+// 없을 때, 등록된 서버 목록 최상단(실제 행이 있었을 자리)에 대신 보여주는
+// 안내 행 — "플러그인 설치"를 누르면 catalog.ts와 동일한 설치 흐름
+// (installPlugin(DEFAULT_PLUGIN_ID))을 재사용해 실행한다.
+function renderMalgnaiHubMissingRow(): HTMLElement {
+  const installing = state.catalog.installingDefault;
+  const installBtn = el(
+    'button',
+    { className: 'btn btn-primary', disabled: installing, onClick: () => void handleInstallMalgnAgentPluginForMcp() },
+    [installing ? '설치 중…' : '플러그인 설치']
+  );
+
+  return el('div', { className: 'mcp-row' }, [
+    el('div', { className: 'mcp-row-main' }, [
+      el('div', { className: 'mcp-row-top' }, [
+        el('span', { className: 'mcp-row-name' }, ['malgnai-hub']),
+        el('span', { className: 'badge badge-active' }, ['필수']),
+      ]),
+      el('div', { className: 'mcp-row-target' }, ['malgn-agent 플러그인을 설치하면 자동으로 등록되고 인증할 수 있습니다.']),
+    ]),
+    el('div', { className: 'mcp-row-actions' }, [installBtn]),
+  ]);
+}
+
+// catalog.ts의 handleInstallDefaultPlugin과 동일한 상태(state.catalog.installingDefault/
+// installDefaultResult)를 공유해 같은 설치 실행 흐름을 재사용한다 — 새 백엔드
+// 커맨드나 새 로딩 상태를 만들지 않는다. 성공 시 카탈로그와 MCP 목록을 함께
+// 새로고침해야 이 화면에서 malgnai-hub 행이 곧바로 실제 서버 행으로 바뀐다.
+async function handleInstallMalgnAgentPluginForMcp(): Promise<void> {
+  state.catalog.installingDefault = true;
+  state.catalog.installDefaultResult = null;
+  notifyChange();
+  try {
+    const result = await installPlugin(DEFAULT_PLUGIN_ID);
+    state.catalog.installDefaultResult = result;
+    showToast(
+      result.success
+        ? 'malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요'
+        : `malgn-agent 설치 실패: ${result.message}`
+    );
+    if (result.success) {
+      await loadCatalog();
+      await loadMcp();
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    state.catalog.installDefaultResult = { success: false, message };
+    showToast(`malgn-agent 설치 실패: ${message}`);
+  } finally {
+    state.catalog.installingDefault = false;
+    notifyChange();
+  }
 }
 
 // ---------------- 목록 (등록된 서버 / 설치 가능한 서버 두 섹션) ----------------
@@ -976,9 +898,15 @@ function normalizeMcpTarget(url: string): string {
   return url.replace(/\/+$/, '').toLowerCase();
 }
 
+// malgnai-hub는 sortMalgnAgentFirst의 일반 규칙(이름에 "malgn-agent" 포함 시
+// 맨 위)에 맡기지 않고 항상 명시적으로 최상단에 고정한다 — 설치돼 있으면
+// 잠긴(삭제 불가) 실제 행을, 없으면 같은 위치에 설치 안내 행을 보여준다.
 function buildRegisteredMcpRows(): HTMLElement[] {
-  const rows = state.mcp.items.map((server) => ({ name: server.name, el: renderMcpRow(server) }));
-  return sortMalgnAgentFirst(rows).map((r) => r.el);
+  const hubServer = state.mcp.items.find((s) => s.name === MALGNAI_HUB_MCP_NAME);
+  const otherServers = state.mcp.items.filter((s) => s.name !== MALGNAI_HUB_MCP_NAME);
+  const otherRows = sortMalgnAgentFirst(otherServers.map((server) => ({ name: server.name, el: renderMcpRow(server) }))).map((r) => r.el);
+  const pinnedRow = hubServer ? renderMcpRow(hubServer, { locked: true }) : renderMalgnaiHubMissingRow();
+  return [pinnedRow, ...otherRows];
 }
 
 function buildInstallableMcpRows(): HTMLElement[] {
@@ -1220,21 +1148,16 @@ function renderMcpPanel(): HTMLElement {
 
   // U-16: 등록된 서버와 설치 가능한 카탈로그를 섹션 헤더 2개로 분리한다
   // (catalog.ts의 "설치된 플러그인" / "전역 에이전트·스킬" 2섹션 패턴과 동일).
+  // malgnai-hub는 실제 등록 여부와 무관하게 항상 최상단에 한 행을 차지하므로
+  // (설치돼 있으면 잠긴 실제 행, 없으면 설치 안내 행), 섹션 라벨의 개수는
+  // registeredRows.length가 아니라 실제 등록된 서버 수(state.mcp.items.length)를
+  // 그대로 보여준다.
   const registeredRows = buildRegisteredMcpRows();
   const installableRows = buildInstallableMcpRows();
   const catalogStillLoading = state.mcpCatalog.loading && !state.mcpCatalog.loaded;
 
-  body.push(el('div', { className: 'plugin-section-label' }, [`등록된 서버 ${registeredRows.length}개`]));
-  if (registeredRows.length > 0) {
-    body.push(el('div', { className: 'mcp-list' }, registeredRows));
-  } else {
-    body.push(
-      el('div', { className: 'state-block' }, [
-        el('div', { className: 'state-block-title' }, ['등록된 MCP 서버가 없습니다']),
-        el('div', { className: 'state-block-desc' }, ['"+ 새 MCP 서버"로 등록하세요.']),
-      ])
-    );
-  }
+  body.push(el('div', { className: 'plugin-section-label' }, [`등록된 서버 ${state.mcp.items.length}개`]));
+  body.push(el('div', { className: 'mcp-list' }, registeredRows));
 
   if (installableRows.length > 0 || catalogStillLoading) {
     body.push(el('div', { className: 'plugin-section-label' }, ['설치 가능한 서버']));

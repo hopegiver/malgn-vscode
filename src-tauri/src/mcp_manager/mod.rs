@@ -16,7 +16,9 @@ mod catalog;
 mod parsing;
 mod process;
 
-use crate::cli_launcher::{open_terminal_program, open_terminal_program_sequence, TerminalLaunchResult};
+use crate::cli_launcher::{
+    open_terminal_program, open_terminal_program_sequence_with_env, TerminalLaunchResult,
+};
 use add_args::{build_add_args, EnvVarPair};
 use catalog::{build_catalog_list, find_catalog_entry, McpCatalogEntry, McpCatalogItem};
 use parsing::{is_claude_ai_account_connector, parse_mcp_get, parse_mcp_list, McpServerDetail, McpServerSummary};
@@ -219,11 +221,47 @@ pub async fn mcp_catalog_list() -> Vec<McpCatalogItem> {
 /// `claude mcp add ...`의 argv를 조립한다(부작용 없음 — claude 바이너리를
 /// 건드리지 않고 터미널도 열지 않는다). B1(2라운드 차단): 토큰 배열로만
 /// 반환하고 셸 문자열을 조립하지 않는다 — 인용은 전적으로
-/// `open_terminal_program_sequence`(`platform::quote_token`) 몫이다. `entry`가
+/// `open_terminal_program_sequence_with_env`(`platform::quote_token`) 몫이다. `entry`가
 /// `MCP_CATALOG`의 고정 항목뿐이라 지금은 모든 슬롯이 신뢰 가능한 값이지만,
 /// argv 배열 구조 자체가 향후 이 표에 외부 데이터가 섞여도 안전하다.
-fn build_install_add_args(entry: &McpCatalogEntry) -> [&'static str; 8] {
-    [
+///
+/// `entry.oauth_client_id`/`oauth_client_secret`이 `Some`이면(현재는
+/// gmail/google-drive/google-calendar 3개가 공유하는 값, `catalog.rs` 문서
+/// 참조) `--client-id`를 값째로, `--client-secret`은 **bare 플래그만**
+/// 덧붙인다 — 길이가 고정 8이 아니게 되어 반환 타입을 `Vec`로 바꿨다.
+///
+/// 정정(2026-09-18, 실측): 이전 라운드는 이 자리에 `--client-secret
+/// <값>`처럼 비밀값을 argv로 그대로 붙였는데, 실제로 `claude mcp add
+/// --help`(버전 2.1.272)를 실행해 확인한 결과 `--client-secret`은 **값을
+/// 받지 않는 bare 플래그**다("Prompt for OAuth client secret (or set
+/// MCP_CLIENT_SECRET env var)") — 뒤에 붙인 리터럴 값은 그냥 버려지고
+/// 터미널이 실제로 인터랙티브 프롬프트를 띄운다(`MCP_CLIENT_SECRET` 환경변수
+/// 없이 비-TTY로 실행하면 "No TTY available to prompt for client secret. Set
+/// MCP_CLIENT_SECRET env var instead."로 즉시 실패하는 것도 실측 확인 —
+/// 즉 이전 구현은 "보안 노출 트레이드오프"가 아니라 **애초에 동작하지
+/// 않는** 코드였다). 반대로 `MCP_CLIENT_SECRET` 환경변수를 심고 bare
+/// `--client-secret`만 주면 프롬프트 없이 값이 저장되고(`claude mcp get`의
+/// "client_secret configured" 출력으로 확인), 뒤이은 `claude mcp login`도
+/// 그 저장된 값을 재사용해 시크릿을 다시 묻지 않는다(둘 다 실제
+/// `claude mcp add`/`get`/`login` 실행으로 확인 — dummy HTTP 엔드포인트 사용,
+/// 완료 후 `claude mcp remove`로 정리했다).
+///
+/// 이전 라운드가 보류했던 이유("인라인 env 접두사가 화면 노출을 줄이지
+/// 못한다")는 여전히 유효하지만, 이제는 기능적으로 반드시 필요해졌다 —
+/// `mcp_add_blocking`(직접 Rust 프로세스 spawn 경로)과 동일하게 bare
+/// flag + 환경변수 주입 방식을 쓰되, 이 경로(`mcp_install` →
+/// `open_terminal_program_sequence_with_env` → osascript/powershell.exe가 새
+/// 터미널 창 안에서 해석할 셸 문자열)는 `Command::env()`가 그 터미널 세션
+/// 안의 `claude` 프로세스까지 닿지 않으므로, 셸 문자열 자체에 인라인 env
+/// 접두사(`MCP_CLIENT_SECRET=... claude ...`)를 넣는다. 플랫폼별 문법 차이
+/// (POSIX `VAR=val cmd` vs PowerShell `$env:VAR='val'; cmd`)는
+/// `platform::build_terminal_command_line_with_env`/
+/// `build_chained_terminal_command_line_with_env`가 전담한다(B1과 동일하게
+/// 인용 책임을 한 곳으로 모은다) — 비밀값은 `build_install_add_env`가 반환한
+/// env 쌍으로만 전달되고 이 함수(`build_install_add_args`)의 반환값에는
+/// 절대 등장하지 않는다.
+fn build_install_add_args(entry: &McpCatalogEntry) -> Vec<&'static str> {
+    let mut args = vec![
         "mcp",
         "add",
         "--scope",
@@ -232,7 +270,31 @@ fn build_install_add_args(entry: &McpCatalogEntry) -> [&'static str; 8] {
         entry.transport,
         entry.id,
         entry.target,
-    ]
+    ];
+    if let Some(client_id) = entry.oauth_client_id {
+        args.push("--client-id");
+        args.push(client_id);
+    }
+    if entry.oauth_client_secret.is_some() {
+        // 값은 절대 argv에 넣지 않는다 — `claude mcp add --client-secret`은
+        // bare 플래그라 값을 argv로 받지 않고(실측, 위 문서 참조), 실제
+        // 비밀값은 `build_install_add_env`가 만드는 `MCP_CLIENT_SECRET`
+        // 환경변수로만 전달한다.
+        args.push("--client-secret");
+    }
+    args
+}
+
+/// `build_install_add_args`와 짝을 이뤄, 그 커맨드의 자식 프로세스에만 심을
+/// 환경변수를 만든다. `oauth_client_secret`이 `Some`일 때만 `MCP_CLIENT_SECRET`
+/// 하나를 반환한다 — `claude mcp add`의 `--client-secret`이 bare 플래그라 값을
+/// 이 환경변수로만 받는다(2026-09-18 실측, `build_install_add_args` 문서
+/// 참조).
+fn build_install_add_env(entry: &McpCatalogEntry) -> Vec<(&'static str, &'static str)> {
+    match entry.oauth_client_secret {
+        Some(secret) => vec![("MCP_CLIENT_SECRET", secret)],
+        None => Vec::new(),
+    }
 }
 
 /// `claude mcp login <id>`의 argv — `build_install_add_args`와 짝을 이뤄
@@ -264,14 +326,29 @@ pub fn mcp_install(catalog_id: String) -> Result<TerminalLaunchResult, String> {
     };
 
     let add_args = build_install_add_args(entry);
+    let add_env = build_install_add_env(entry);
     let login_args = build_install_login_args(entry);
-    open_terminal_program_sequence(&[
-        (claude_bin.as_str(), &add_args[..]),
-        (claude_bin.as_str(), &login_args[..]),
+    open_terminal_program_sequence_with_env(&[
+        (claude_bin.as_str(), &add_args[..], &add_env[..]),
+        (claude_bin.as_str(), &login_args[..], &[]),
     ])?;
+
+    let mut message = format!("터미널 창에서 {} 설치 및 로그인 절차를 진행해주세요.", entry.label);
+    // gmail/google-drive/google-calendar 3개는 DCR(동적 클라이언트 등록)
+    // 미지원 엔드포인트라 사내 OAuth 클라이언트가 없으면 인증이 항상
+    // 실패한다(catalog.rs 문서 참조) — 실패를 겪기 전에 원인을 미리
+    // 안내한다. atlassian/figma는 이 필드가 항상 None이라 영향받지 않는다
+    // (id로 명시 분기해 실수로 걸리지 않게 한다).
+    let is_google_dcr_endpoint =
+        matches!(entry.id, "gmail" | "google-drive" | "google-calendar");
+    if is_google_dcr_endpoint && entry.oauth_client_id.is_none() && entry.oauth_client_secret.is_none() {
+        message.push_str(
+            " (참고: 이 항목용 Google OAuth 클라이언트가 설정되지 않았습니다 — 이 Google MCP 엔드포인트는 동적 클라이언트 등록을 지원하지 않아 이 상태로는 인증이 실패합니다. src-tauri/.env에 GOOGLE_MCP_OAUTH_CLIENT_ID/GOOGLE_MCP_OAUTH_CLIENT_SECRET을 설정한 뒤 다시 빌드해주세요.)",
+        );
+    }
     Ok(TerminalLaunchResult {
         opened: true,
-        message: format!("터미널 창에서 {} 설치 및 로그인 절차를 진행해주세요.", entry.label),
+        message,
     })
 }
 
@@ -331,18 +408,24 @@ mod tests {
 
     #[test]
     fn build_install_add_args_fixes_scope_user_and_reads_transport_id_target_from_entry() {
-        let entry = find_catalog_entry("gmail").unwrap();
+        // atlassian은 oauth_client_id/secret이 항상 None(구조상 Google과
+        // 무관 — DCR 지원 엔드포인트)이라 이 회귀 테스트가 build 환경(.env
+        // 유무)과 무관하게 안정적으로 8개 고정 길이를 유지한다. gmail/
+        // google-drive/google-calendar 3개는 로컬 .env의
+        // GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET 설정 여부에 따라 길이가
+        // 달라지므로 이 테스트 대상에서 제외했다(아래 전용 테스트 참조).
+        let entry = find_catalog_entry("atlassian").unwrap();
         assert_eq!(
             build_install_add_args(entry),
-            [
+            vec![
                 "mcp",
                 "add",
                 "--scope",
                 "user",
                 "--transport",
-                "http",
-                "gmail",
-                "https://gmailmcp.googleapis.com/mcp/v1",
+                "sse",
+                "atlassian",
+                "https://mcp.atlassian.com/v1/sse",
             ]
         );
     }
@@ -355,7 +438,94 @@ mod tests {
         let entry = find_catalog_entry("atlassian").unwrap();
         let args = build_install_add_args(entry);
         assert_eq!(args[6], "atlassian");
-        assert_eq!(args.len(), 8, "argv 원소 하나 = id 전체");
+        assert_eq!(args.len(), 8, "atlassian은 oauth 필드가 항상 None이라 원소 8개 고정");
+    }
+
+    #[test]
+    fn build_install_add_args_appends_client_id_valued_and_client_secret_bare_when_entry_has_them() {
+        // 실제 컴파일 환경의 GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET 유무에 기대지
+        // 않기 위해, gmail 카탈로그 엔트리를 그대로 쓰지 않고 동일 구조의
+        // 임시 엔트리를 만들어 oauth 필드가 채워졌을 때의 조립 로직만
+        // 검증한다(google-drive/google-calendar도 같은 필드를 공유하므로
+        // 로직 자체는 이 하나의 테스트로 충분히 대표된다).
+        //
+        // 2026-09-18 실측 정정: `--client-secret`은 `claude mcp add --help`가
+        // 명시한 대로 bare 플래그라 값을 argv로 받지 않는다 — 비밀값
+        // "test-client-secret"은 여기 등장하지 않고 `build_install_add_env`가
+        // 만드는 환경변수로만 전달된다.
+        let entry = McpCatalogEntry {
+            id: "gmail",
+            label: "Gmail",
+            transport: "http",
+            target: "https://gmailmcp.googleapis.com/mcp/v1",
+            oauth_client_id: Some("test-client-id"),
+            oauth_client_secret: Some("test-client-secret"),
+        };
+        let args = build_install_add_args(&entry);
+        assert_eq!(
+            args,
+            vec![
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "--transport",
+                "http",
+                "gmail",
+                "https://gmailmcp.googleapis.com/mcp/v1",
+                "--client-id",
+                "test-client-id",
+                "--client-secret",
+            ]
+        );
+        assert!(
+            !args.iter().any(|a| *a == "test-client-secret"),
+            "비밀값이 argv에 그대로 노출되면 안 됩니다: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_install_add_env_returns_mcp_client_secret_pair_when_entry_has_secret() {
+        let entry = McpCatalogEntry {
+            id: "gmail",
+            label: "Gmail",
+            transport: "http",
+            target: "https://gmailmcp.googleapis.com/mcp/v1",
+            oauth_client_id: Some("test-client-id"),
+            oauth_client_secret: Some("test-client-secret"),
+        };
+        assert_eq!(
+            build_install_add_env(&entry),
+            vec![("MCP_CLIENT_SECRET", "test-client-secret")]
+        );
+    }
+
+    #[test]
+    fn build_install_add_env_returns_empty_when_entry_has_no_secret() {
+        let entry = McpCatalogEntry {
+            id: "atlassian",
+            label: "Atlassian",
+            transport: "sse",
+            target: "https://mcp.atlassian.com/v1/sse",
+            oauth_client_id: None,
+            oauth_client_secret: None,
+        };
+        assert!(build_install_add_env(&entry).is_empty());
+    }
+
+    #[test]
+    fn build_install_add_args_omits_client_flags_when_entry_has_none() {
+        let entry = McpCatalogEntry {
+            id: "gmail",
+            label: "Gmail",
+            transport: "http",
+            target: "https://gmailmcp.googleapis.com/mcp/v1",
+            oauth_client_id: None,
+            oauth_client_secret: None,
+        };
+        let args = build_install_add_args(&entry);
+        assert!(!args.iter().any(|a| a.starts_with("--client")));
+        assert_eq!(args.len(), 8);
     }
 
     #[test]

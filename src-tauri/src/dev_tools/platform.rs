@@ -158,7 +158,24 @@ fn win_join(base: &str, suffix: &str) -> String {
 
 /// Mac은 현행 6개 리터럴 그대로(`process::build_child_path_env`가 이 값을
 /// 그대로 물려받는다 — 무변경 보장의 핵심). Win은 시스템 기본 3개 +
-/// npm/pnpm/WindowsApps(winget 앱 실행 별칭) 3개.
+/// node/npm/pnpm/WindowsApps(winget 앱 실행 별칭) 관련 디렉터리.
+///
+/// 실사용자 재현 버그(2026-09-18): `wrangler.cmd`가 정확히 하드코딩 후보
+/// (`%APPDATA%\npm\wrangler.cmd`)와 100% 일치하는 위치에 있는데도 앱이
+/// "설치 안 됨"으로 표시했다. 원인은 후보 탐색이 아니라 **탐지 이후 실행**
+/// 단계였다: npm이 생성하는 `.cmd` shim(wrangler.cmd 등)은 자기 옆에
+/// `node.exe`가 없으면(실측: `%APPDATA%\npm`에는 없다 — node.exe는 별도
+/// 설치 위치에 있다) 내부적으로 `SET "_prog=node"`로 바꿔 bare `node`를
+/// 호출하고, 이 호출은 `.cmd`를 해석하는 `cmd.exe` 자신이 **자신의 PATH
+/// 환경변수**로 찾는다 — 그 PATH가 바로 이 함수가 만드는 값(자식 프로세스에
+/// 주입되는 PATH)이다. 이전에는 이 목록에 Node 설치 디렉터리가 전혀 없어
+/// wrangler.cmd 파일 자체는 정확히 찾고도 그 안의 `node` 호출이 실패해
+/// `--version`이 통째로 실패했다(→ check_tool_version이 None → installed:
+/// false). 아래 두 경로는 mod.rs DEV_TOOLS의 Node windows_path_candidates
+/// (`C:\Program Files\nodejs\node.exe`, `%LOCALAPPDATA%\Programs\nodejs\
+/// node.exe`)와 디렉터리 부분이 동일하다 — 새 값을 지어낸 게 아니라 이미
+/// 이 코드베이스가 "Node가 있을 만한 자리"로 신뢰하는 두 곳을 그대로
+/// 재사용한 것이다.
 pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String> {
     match plat {
         Platform::Mac => [
@@ -179,12 +196,16 @@ pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String>
                 sys_root.clone(),
                 win_join(&win_join(&sys_root, "System32"), "Wbem"),
             ];
+            if let Some(program_files) = &roots.program_files {
+                dirs.push(win_join(&program_files.to_string_lossy(), "nodejs"));
+            }
             if let Some(appdata) = &roots.appdata {
                 dirs.push(win_join(&appdata.to_string_lossy(), "npm"));
             }
             if let Some(local_appdata) = &roots.local_appdata {
                 let local = local_appdata.to_string_lossy();
                 dirs.push(win_join(&local, "pnpm"));
+                dirs.push(win_join(&win_join(&local, "Programs"), "nodejs"));
                 dirs.push(win_join(&win_join(&local, "Microsoft"), "WindowsApps"));
             }
             dirs
@@ -370,25 +391,85 @@ pub(crate) fn build_terminal_command_line(plat: Platform, program: &str, args: &
     }
 }
 
-/// `commands`(각 원소는 `(program, args)`)를 순서대로 실행하는 체인 명령행을
-/// 만든다 — mcp_install(§B1 2라운드 차단)처럼 `claude mcp add`에 이어
-/// `claude mcp login`까지 한 터미널 세션에서 실행해야 하는 경우에 쓴다. 구분자는
-/// 플랫폼마다 다르다: Mac은 로그인 셸(bash/zsh)이 실행하므로 `&&`(앞 명령
+/// 체인 명령행 구분자 — Mac은 로그인 셸(bash/zsh)이 실행하므로 `&&`(앞 명령
 /// 실패 시 뒤 명령을 건너뜀)를 쓴다. Windows 내장 `powershell.exe`(5.1)는
 /// `&&`/`||` 파이프라인 체인 연산자를 지원하지 않는다(PowerShell 7+에서야
 /// 추가됨) — 대신 `;`(문장 구분자)로 잇는다. 이 경우 앞 명령이 실패해도 뒤
 /// 명령이 실행된다는 의미 차이가 있지만, 사용자가 직접 보는 대화형 터미널
 /// 창이라 실패 시 출력이 그대로 남아 눈에 띈다(치명적이지 않다).
-pub(crate) fn build_chained_terminal_command_line(plat: Platform, commands: &[(&str, &[&str])]) -> String {
-    let sep = match plat {
+fn chain_separator(plat: Platform) -> &'static str {
+    match plat {
         Platform::Mac => " && ",
         Platform::Win => "; ",
-    };
+    }
+}
+
+/// `build_terminal_command_line`에 "이 커맨드에만 적용할 환경변수"를 덧붙인
+/// 버전이다(2026-09-18, `claude mcp add --client-secret` 실측 이후 도입 —
+/// mcp_manager 설계 §참고). `env`가 비어있으면 `build_terminal_command_line`과
+/// 바이트 단위로 동일하다(기존 호출부 무변경).
+///
+/// 실측(2026-09-18, `claude --version` 2.1.272): `claude mcp add ...
+/// --client-secret <값>`처럼 값을 argv로 그냥 붙이면 그 값은 버려지고
+/// `--client-secret`은 **항상** bare 플래그로만 동작한다(대화형 프롬프트 또는
+/// `MCP_CLIENT_SECRET` 환경변수 중 하나로만 값을 받는다 — `claude mcp add
+/// --help`가 명시). 따라서 비밀값을 argv에 절대 넣지 않고, 이 커맨드의 자식
+/// 프로세스 환경에만 `MCP_CLIENT_SECRET`을 심어야 한다.
+///
+/// Mac(POSIX sh/bash/zsh)은 `KEY='value' program args...` 인라인 접두사
+/// 문법을 쓴다 — 이 대입은 그 뒤에 오는 단일 simple command의 환경에만
+/// 적용되고 셸 세션 전체에는 남지 않는다(POSIX 표준 동작, 별도 정리가
+/// 필요 없다). Windows(powershell.exe 5.1)는 이 문법이 없어 `$env:KEY =
+/// 'value'; <call>; Remove-Item Env:KEY` 형태의 복합 문장으로 흉내낸다 —
+/// `$env:` 대입은 프로세스 전체 세션에 영향을 주므로 뒤이어 체이닝되는 다음
+/// 커맨드(예: `mcp login`)에 새지 않도록 실행 직후 `Remove-Item`으로 지운다.
+pub(crate) fn build_terminal_command_line_with_env(
+    plat: Platform,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> String {
+    let base = build_terminal_command_line(plat, program, args);
+    if env.is_empty() {
+        return base;
+    }
+    match plat {
+        Platform::Mac => {
+            let prefix: String = env
+                .iter()
+                .map(|(key, value)| format!("{key}={} ", quote_token(plat, value)))
+                .collect();
+            format!("{prefix}{base}")
+        }
+        Platform::Win => {
+            let set_stmts: String = env
+                .iter()
+                .map(|(key, value)| format!("$env:{key} = {}; ", quote_token(plat, value)))
+                .collect();
+            let clear_stmts: String = env
+                .iter()
+                .map(|(key, _)| format!("; Remove-Item Env:{key} -ErrorAction SilentlyContinue"))
+                .collect();
+            format!("{set_stmts}{base}{clear_stmts}")
+        }
+    }
+}
+
+/// `build_terminal_command_line_with_env`를 커맨드 여러 개로 체이닝한 버전 —
+/// `mcp_install`(claude mcp add → claude mcp login 체인)의 첫 번째 커맨드에만
+/// `MCP_CLIENT_SECRET`을 주입할 때 쓴다. 각 원소는 `(program, args, env)`
+/// (`TerminalCommandWithEnv` — clippy `type_complexity` 회피용 별칭).
+pub(crate) type TerminalCommandWithEnv<'a> = (&'a str, &'a [&'a str], &'a [(&'a str, &'a str)]);
+
+pub(crate) fn build_chained_terminal_command_line_with_env(
+    plat: Platform,
+    commands: &[TerminalCommandWithEnv],
+) -> String {
     commands
         .iter()
-        .map(|(program, args)| build_terminal_command_line(plat, program, args))
+        .map(|(program, args, env)| build_terminal_command_line_with_env(plat, program, args, env))
         .collect::<Vec<_>>()
-        .join(sep)
+        .join(chain_separator(plat))
 }
 
 /// `%SystemRoot%`(없으면 `C:\Windows`) 기준 절대경로를 조립한다(B2 — 2라운드

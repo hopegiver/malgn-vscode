@@ -13,7 +13,6 @@ const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: strin
   { key: 'otel', label: 'OTel 설정' },
   { key: 'github', label: 'GitHub 설정' },
   { key: 'cloudflare', label: 'Cloudflare 설정' },
-  { key: 'jira', label: 'Jira 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
   { key: 'applinks', label: '앱링크설정' },
