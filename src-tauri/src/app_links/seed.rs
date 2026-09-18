@@ -32,7 +32,7 @@ pub fn default_links() -> Vec<AppLink> {
         seed_link(
             "seed-malgnai-hub",
             "맑은AI-Hub",
-            "https://malgnai-hub.apiserver.kr/sso",
+            "https://malgnai-hub.apiserver.kr/",
         ),
         seed_link("seed-jira", "지라(Jira)", "https://malgn.atlassian.net/"),
         seed_link(
