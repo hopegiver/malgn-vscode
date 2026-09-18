@@ -104,10 +104,23 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
 }
 
 /// `plugin_id`는 `installed_plugins.json`의 키(예: "malgn-agent@malgnsoft-plugins")
-/// 형식 그대로 `claude plugin update`에 넘긴다. 성공해도 재시작해야 적용된다 —
-/// 프론트엔드가 안내 문구를 붙인다.
+/// 형식 그대로 받는다. `claude plugin update`는 로컬에 캐시된 마켓플레이스
+/// 메타데이터만 보고 "최신 버전"을 판단하므로, 먼저 `plugin_id`에서 "@" 뒤의
+/// 마켓플레이스 이름만 뽑아 `claude plugin marketplace update <marketplace>`로
+/// 캐시를 갱신한 뒤에 실제 `claude plugin update`를 실행한다 — 안 그러면 마켓플레이스에
+/// 새 버전이 올라와도 캐시가 이를 모른 채 "이미 최신"으로 판단해 아무 변경 없이
+/// 성공을 반환한다. 마켓플레이스 갱신이 실패하면 그 결과를 그대로 반환하고
+/// `plugin update`는 실행하지 않는다(캐시가 stale한 채로 업데이트해봐야 신뢰 불가).
+/// 성공해도 재시작해야 적용된다 — 프론트엔드가 안내 문구를 붙인다.
 #[tauri::command]
 pub fn update_plugin(plugin_id: String) -> CommandResult {
+    if let Some((_, marketplace)) = plugin_id.split_once('@') {
+        let refresh_result =
+            run_claude_command(&["plugin", "marketplace", "update", marketplace]);
+        if !refresh_result.success {
+            return refresh_result;
+        }
+    }
     run_claude_command(&["plugin", "update", &plugin_id])
 }
 
