@@ -256,7 +256,7 @@ function sessionsWidget(): HTMLElement {
 function devToolsWidget(): HTMLElement {
   const phase = pickState(state.devTools);
   if (phase === 'loading') {
-    return widgetShell('개발 환경', () => navigate('#/dev-tools'), [
+    return widgetShell('개발 환경', () => navigate('#/settings/devtools'), [
       el('div', { className: 'home-widget-desc' }, ['확인 중…']),
       el('div', { className: 'home-widget-link' }, ['개발 환경 보기 →']),
     ]);
@@ -266,13 +266,13 @@ function devToolsWidget(): HTMLElement {
   }
 
   // R-01′: 몇 개가 설치됐는지가 아니라 "무엇이 미설치인가"가 조치 신호다 —
-  // dev-tools 화면에서만 보이던 이름을 홈으로 끌어올린다. 전부 설치돼 있으면
+  // 설정 > 개발 환경 화면에서만 보이던 이름을 홈으로 끌어올린다. 전부 설치돼 있으면
   // (0건) 기존 문구·breakdown 없음 그대로 둔다.
   const installed = state.devTools.items.filter((t) => t.installed);
   const uninstalled = state.devTools.items.filter((t) => !t.installed);
   const total = state.devTools.items.length;
 
-  return widgetShell('개발 환경', () => navigate('#/dev-tools'), [
+  return widgetShell('개발 환경', () => navigate('#/settings/devtools'), [
     el('div', { className: 'home-widget-big-number' }, [`${installed.length}/${total} 설치됨`]),
     el('div', { className: 'home-widget-desc' }, ['설치된 CLI 도구']),
     ...(uninstalled.length > 0

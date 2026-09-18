@@ -19,19 +19,37 @@ mod process;
 use crate::cli_launcher::{open_terminal_program, open_terminal_program_sequence, TerminalLaunchResult};
 use add_args::{build_add_args, EnvVarPair};
 use catalog::{build_catalog_list, find_catalog_entry, McpCatalogEntry, McpCatalogItem};
-use parsing::{parse_mcp_get, parse_mcp_list, McpServerDetail, McpServerSummary};
+use parsing::{is_claude_ai_account_connector, parse_mcp_get, parse_mcp_list, McpServerDetail, McpServerSummary};
 use process::{run_mcp_command, run_mcp_command_with_env, CLAUDE_PATH_CANDIDATES};
 
 // ---------------- Tauri 커맨드 ----------------
 
 /// 실패해도(claude 미설치 등) 빈 목록을 돌려준다 — 커맨드 시그니처가
 /// `Result`가 아닌 `Vec`으로 고정돼 있다(프론트가 "0개 등록됨"과 "조회
-/// 실패"를 구분할 필요가 없는 화면이라는 설계 결정).
+/// 실패"를 구분할 필요가 없는 화면이라는 설계 결정). claude.ai 계정 커넥터를
+/// 포함한 원본 그대로 — 걸러낸 목록은 `mcp_list_for_display_blocking`이
+/// 따로 감싼다.
 fn mcp_list_blocking() -> Vec<McpServerSummary> {
     match run_mcp_command(&["mcp", "list"]) {
         Ok((text, _success)) => parse_mcp_list(&text),
         Err(_) => Vec::new(),
     }
+}
+
+/// `mcp_list_blocking`의 원본에서 claude.ai 계정 커넥터만 뺀다. 이 서버들은
+/// 로컬 CLI로 로그인/로그아웃/삭제가 안 통해서(parsing.rs의
+/// `is_claude_ai_account_connector` 문서 참조) 눌러볼 액션이 전부 오류로
+/// 끝난다 — "등록된 서버" 화면 목록과 카탈로그의 "이미 설치됨" 판정 둘 다
+/// 이 필터링된 목록을 쓴다. 카탈로그 쪽 이유: claude.ai 계정 커넥터(예: Gmail)와
+/// 카탈로그의 "일반 MCP" 항목(`claude mcp add`로 직접 등록, 로그인/로그아웃/삭제
+/// 가능)은 target URL이 우연히 같아도 서로 다른 등록이다 — 계정 커넥터가
+/// 연결돼 있다는 이유로 "일반 MCP로 설치"를 막으면 안 된다(사용자가 둘을
+/// 구분해서 쓰고 싶어할 수 있다).
+fn mcp_list_for_display_blocking() -> Vec<McpServerSummary> {
+    mcp_list_blocking()
+        .into_iter()
+        .filter(|s| !is_claude_ai_account_connector(&s.name))
+        .collect()
 }
 
 /// 예전엔 sync였다(P0 버그와 동일 계열 — non-async 커맨드는 메인 스레드에서
@@ -40,7 +58,7 @@ fn mcp_list_blocking() -> Vec<McpServerSummary> {
 /// Promise라 시그니처가 바뀌지 않는다.
 #[tauri::command]
 pub async fn mcp_list() -> Vec<McpServerSummary> {
-    tauri::async_runtime::spawn_blocking(mcp_list_blocking)
+    tauri::async_runtime::spawn_blocking(mcp_list_for_display_blocking)
         .await
         .unwrap_or_default()
 }
@@ -156,13 +174,38 @@ pub async fn mcp_remove(name: String) -> Result<(), String> {
         .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }
 
+/// `claude mcp logout <name>` — 저장된 OAuth 자격증명만 지운다(서버 등록
+/// 자체는 유지, `mcp_remove`와 다르다). 브라우저 인증이 없는 로컬 삭제라
+/// `mcp_login`처럼 터미널을 열 필요가 없다 — `mcp_remove`와 동일한 방식으로
+/// 직접 blocking 실행한다. claude.ai 커넥터(계정 단위 연결)처럼 "평소엔
+/// 해제해두고 필요할 때만 연결"하려는 사용자를 위한 버튼의 백엔드다.
+fn mcp_logout_blocking(name: String) -> Result<(), String> {
+    let (text, success) = run_mcp_command(&["mcp", "logout", &name])?;
+    if success {
+        Ok(())
+    } else if text.trim().is_empty() {
+        Err(format!("'{name}' 연결 해제에 실패했습니다."))
+    } else {
+        Err(text.trim().to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn mcp_logout(name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || mcp_logout_blocking(name))
+        .await
+        .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
+}
+
 /// 고정 카탈로그(`MCP_CATALOG`) 5개를 반환하되, `claude mcp list` 결과와
 /// target URL로 대조해 이미 등록된 항목은 `installed: true`로 표시한다.
 /// `mcp_list`와 동일하게 조회 실패는 "0개 설치됨"으로 느슨하게 처리한다
 /// (claude 미설치 상태에서도 카탈로그 자체는 항상 보여줘야 하는 화면이다).
 fn mcp_catalog_list_blocking() -> Vec<McpCatalogItem> {
-    let installed_targets: Vec<String> =
-        mcp_list_blocking().into_iter().map(|s| s.target).collect();
+    let installed_targets: Vec<String> = mcp_list_for_display_blocking()
+        .into_iter()
+        .map(|s| s.target)
+        .collect();
     build_catalog_list(&installed_targets)
 }
 
@@ -321,3 +364,4 @@ mod tests {
         assert_eq!(build_install_login_args(entry), ["mcp", "login", "figma"]);
     }
 }
+

@@ -17,7 +17,7 @@ import type { AppLinksStatus } from './appLinksApi';
 export type ArchiveStatus = 'active' | 'archived' | 'unknown';
 export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
-export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp' | 'applinks';
+export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'jira' | 'marketplace' | 'mcp' | 'applinks' | 'devtools';
 export type CatalogTab = 'plugins' | 'global';
 
 // "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 두 조회를 (projectPath, id)
@@ -259,15 +259,18 @@ export interface AppState {
   // 읽는다(mcpApi.ts). 모델을 호출하지 않는 순수 헬스체크라 빠르고 무료다.
   // 로그인 직후 한 번 미리 불러온다 — 홈 대시보드의 malgnai-hub 상태 위젯이
   // 바로 값을 보여줘야 한다.
-  // loggingInName은 등록된 서버 행의 "로그인" 버튼(mcp_login)을 누른 동안만
-  // 해당 행 버튼을 잠그는 용도다 — GitHub/카탈로그 설치와 동일하게, 이 버튼도
-  // 터미널 창을 여는 데까지만 관여하고 로그인 완료 여부는 알 수 없다.
+  // loggingInName은 등록된 서버 행의 "인증/재인증" 버튼(mcp_login)을 누른
+  // 동안만 해당 행 버튼을 잠그는 용도다 — GitHub/카탈로그 설치와 동일하게, 이
+  // 버튼도 터미널 창을 여는 데까지만 관여하고 로그인 완료 여부는 알 수 없다.
+  // loggingOutName은 "해제" 버튼(mcp_logout)용 — 터미널 없이 즉시 끝나지만
+  // 동일한 이중클릭 방지 패턴을 쓴다.
   mcp: {
     items: McpServerSummary[];
     loading: boolean;
     error: string | null;
     loaded: boolean;
     loggingInName: string | null;
+    loggingOutName: string | null;
   };
   // MCP 카탈로그 — 잘 알려진 공개 MCP 서버(Gmail 등)를 원클릭 등록하는 목록
   // (mcp_catalog_list). "설치"는 백엔드가 터미널 창을 열어 로그인까지 안내할
@@ -315,7 +318,7 @@ export const state: AppState = {
     previewLoading: false,
     previewError: null,
   },
-  sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false, catalogExpanded: false, appLinksExpanded: true },
+  sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false, catalogExpanded: false, appLinksExpanded: false },
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
   sessionChat: {
     sessionId: null,
@@ -363,7 +366,7 @@ export const state: AppState = {
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
   malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editingAutonomy: false, editingWorkspaces: false, saving: false },
-  mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null },
+  mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },
   mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
   appLinks: { status: null, loading: false, error: null, loaded: false, saving: false },
 };

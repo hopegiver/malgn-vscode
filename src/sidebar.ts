@@ -17,6 +17,7 @@ const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: strin
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
   { key: 'applinks', label: '앱링크설정' },
+  { key: 'devtools', label: '개발 환경' },
 ];
 
 const CATALOG_TABS: readonly { readonly key: CatalogTab; readonly label: string }[] = [
@@ -26,7 +27,8 @@ const CATALOG_TABS: readonly { readonly key: CatalogTab; readonly label: string 
 
 const SIDEBAR_SUBLIST_LIMIT = 6;
 
-// 사용 빈도순 배치. "설정"은 "개발 환경" 바로 아래(로그아웃만 하단에 고정).
+// 사용 빈도순 배치(로그아웃만 하단에 고정). "개발 환경"은 독립 메뉴가 아니라
+// "설정" 하위 탭이다(설정 > 개발 환경).
 // "프로젝트"·"세션목록"은 펼치면 실제 로컬 데이터(이미 main.ts가 로그인 직후
 // 미리 불러온 state.dashboard.projects/state.sessions.items)를 서브 목록으로
 // 바로 보여준다 — 화면 전환은 항목 본문 클릭, 펼침/접힘은 화살표 클릭으로 분리한다.
@@ -74,7 +76,6 @@ export function renderSidebar(route: Route): HTMLElement {
       if (!state.dailyUsage.loading) void loadDailyUsage();
     }),
     catalogGroup,
-    navItem('개발 환경', route.kind === 'dev-tools', () => navigate('#/dev-tools')),
     renderAppLinksGroup(),
     settingsGroup,
   ];

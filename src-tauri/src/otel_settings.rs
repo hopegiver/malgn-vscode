@@ -188,8 +188,10 @@ pub(crate) fn percent_encode_value(input: &str) -> String {
 }
 
 /// 기존 값 보존 병합 — 파일의 `OTEL_RESOURCE_ATTRIBUTES`를 `,`로 분해해 순서
-/// 있는 `(k, v)` 목록으로 만들고 `employee.id/name/email` 3개만 upsert한 뒤
+/// 있는 `(k, v)` 목록으로 만들고 `employee.id/name` 2개만 upsert한 뒤
 /// 나머지(예: `team=…`)는 원래 순서대로 남긴다(설계 §8, 통째로 덮어쓰지 않음).
+/// `identity.email`은 `employee.id`를 뽑아내는 데만 쓰고 그 자체를 속성으로
+/// 쓰지는 않는다.
 pub(crate) fn merge_resource_attributes(
     existing: &str,
     identity: &OtelIdentity,
@@ -222,7 +224,6 @@ pub(crate) fn merge_resource_attributes(
     };
 
     upsert("employee.id", percent_encode_value(id));
-    upsert("employee.email", percent_encode_value(email));
     let name_trimmed = identity.name.as_deref().unwrap_or("").trim();
     if !name_trimmed.is_empty() {
         upsert("employee.name", percent_encode_value(name_trimmed));
@@ -286,7 +287,9 @@ use crate::fs_atomic::{backup_path_for, write_atomically};
 
 /// 저장 알고리즘(순서 고정, 설계 §7):
 /// 1. 파싱 실패 시 즉시 `Err` — 파싱 못 한 파일을 절대 덮어쓰지 않는다.
-/// 2. allowlist 밖 키·readOnly 키는 `Err`(조용히 무시하지 않는다).
+/// 2. allowlist 밖 키는 `Err`(조용히 무시하지 않는다). readOnly 키(프라이버시
+///    4개)는 `"0"`(끔) 또는 빈 문자열(삭제)만 허용하고 그 외 값은 `Err` — 이
+///    앱을 통해서는 절대 `"1"`로 켤 수 없다는 불변식을 여기 한 곳에서 지킨다.
 /// 3. 키별 형식 검증.
 /// 4. `identity`가 있으면 `OTEL_RESOURCE_ATTRIBUTES`를 조립해 주입한다
 ///    (프론트가 이 키를 직접 보내면 `Err`).
@@ -306,15 +309,17 @@ fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), St
         return Err("설정 파일의 최상위 값이 객체가 아닙니다.".to_string());
     }
 
-    for key in payload.values.keys() {
+    for (key, value) in &payload.values {
         if key == "OTEL_RESOURCE_ATTRIBUTES" {
             return Err("OTEL_RESOURCE_ATTRIBUTES는 identity를 통해서만 설정할 수 있습니다.".to_string());
         }
         if !MANAGED_OTEL_KEYS.contains(&key.as_str()) {
             return Err(format!("'{key}'는 관리 대상 키가 아닙니다."));
         }
-        if READ_ONLY_KEYS.contains(&key.as_str()) {
-            return Err(format!("'{key}'는 읽기 전용 키라 저장할 수 없습니다."));
+        if READ_ONLY_KEYS.contains(&key.as_str()) && !(value.is_empty() || value == "0") {
+            return Err(format!(
+                "'{key}'는 프라이버시 보호를 위해 이 앱에서 0(끔)으로만 저장할 수 있습니다."
+            ));
         }
     }
     for (key, value) in &payload.values {
@@ -425,6 +430,28 @@ mod tests {
         let path = temp_settings_path("read-only");
         let result = save_to_settings_file(&path, sample_payload(&[("OTEL_LOG_USER_PROMPTS", "1")]));
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // 신규 — readOnly 키라도 "0"(끔)은 저장을 허용한다(자동 기본값 채우기 용도).
+    #[test]
+    fn save_allows_read_only_key_when_zero() {
+        let path = temp_settings_path("read-only-zero");
+        let result = save_to_settings_file(&path, sample_payload(&[("OTEL_LOG_USER_PROMPTS", "0")]));
+        assert!(result.is_ok());
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["env"]["OTEL_LOG_USER_PROMPTS"], "0");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // 신규 — readOnly 키는 "0" 외의 값(예: "1")은 여전히 거부한다. 위 테스트와
+    // 짝을 이뤄 "0만 예외"라는 불변식의 양쪽 경계를 함께 고정한다.
+    #[test]
+    fn save_rejects_read_only_key_when_one() {
+        let path = temp_settings_path("read-only-one");
+        let result = save_to_settings_file(&path, sample_payload(&[("OTEL_LOG_USER_PROMPTS", "1")]));
+        assert!(result.is_err());
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -539,6 +566,10 @@ mod tests {
         assert!(merged.contains("team=platform"));
         assert!(merged.contains("region=kr"));
         assert!(merged.contains("employee.id=dev"));
+        assert!(
+            !merged.contains("employee.email"),
+            "employee.email은 별도 속성으로 추가하지 않는다"
+        );
         assert!(merged.starts_with("team=platform"), "기존 순서를 유지해야 한다");
     }
 
@@ -569,3 +600,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
+

@@ -17,9 +17,10 @@ import {
   connectJira,
   disconnectJira,
 } from '../integrationsApi';
-import { fetchMcpServers, addMcpServer, removeMcpServer, loginMcpServer, fetchMcpCatalog, installMcpCatalogEntry } from '../mcpApi';
+import { fetchMcpServers, addMcpServer, removeMcpServer, loginMcpServer, logoutMcpServer, fetchMcpCatalog, installMcpCatalogEntry } from '../mcpApi';
 import type { McpTransport, McpServerSummary, McpCatalogEntry } from '../mcpApi';
 import { navigate } from '../route';
+import { renderDevToolsView } from './devTools';
 
 const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
@@ -29,9 +30,10 @@ const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[]
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
   { key: 'applinks', label: '앱링크설정' },
+  { key: 'devtools', label: '개발 환경' },
 ];
 
-// 탭 전환 자체는 사이드바 하위메뉴가 담당한다(U-15) — 여기서는 동일한 7항목을
+// 탭 전환 자체는 사이드바 하위메뉴가 담당한다(U-15) — 여기서는 동일한 8항목을
 // 상단에 칩 탭으로 다시 그리지 않는다(두 벌 내비게이션 + 이중 하이라이트 제거).
 // TAB_META는 현재 탭 이름을 페이지 부제로 보여주는 용도로만 남는다.
 export function renderSettingsView(tab: SettingsTab): HTMLElement {
@@ -46,6 +48,7 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
   else if (tab === 'jira') body = renderJiraPanel();
   else if (tab === 'marketplace') body = renderMarketplacePanel();
   else if (tab === 'applinks') body = renderAppLinksPanel();
+  else if (tab === 'devtools') body = renderDevToolsView();
   else body = renderMcpPanel();
 
   return el('div', {}, [header, body]);
@@ -61,9 +64,11 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
 // "기본값(저장 안 됨)" 힌트를 붙인다) — 그래야 사용자가 "저장을 눌러야 이 값이
 // 실제로 기록된다"는 사실을 오해하지 않는다.
 //
-// readOnlyKeys(프라이버시 4키)는 입력을 비활성화하고 저장 payload에도 포함하지
-// 않는다(백엔드가 Err를 던진다). OTEL_RESOURCE_ATTRIBUTES는 employee.* 조립이
-// 전적으로 Rust 책임이라(§8) 편집 불가한 읽기 전용 안내로만 보여준다.
+// readOnlyKeys(프라이버시 4키)는 이 수동 저장 폼에서는 입력을 비활성화하고
+// payload에도 포함하지 않는다(백엔드는 "0"/빈 값 외에는 Err를 던진다 —
+// ensureOtelAutoConfigured()가 미설정 시 "0" 기본값을 채우는 것은 예외).
+// OTEL_RESOURCE_ATTRIBUTES는 employee.* 조립이 전적으로 Rust 책임이라(§8)
+// 편집 불가한 읽기 전용 안내로만 보여준다.
 
 export async function loadOtelEnv(): Promise<void> {
   state.otel.loading = true;
@@ -124,8 +129,18 @@ export async function ensureOtelAutoConfigured(): Promise<void> {
 
   const values: Record<string, string> = {};
   for (const key of settings.managedKeys) {
-    if (settings.readOnlyKeys.includes(key)) continue;
     if (key === 'OTEL_RESOURCE_ATTRIBUTES') continue;
+    if (settings.readOnlyKeys.includes(key)) {
+      // 프라이버시 4키는 아직 한 번도 설정되지 않았을 때만(=파일에 키 자체가
+      // 없을 때만) 기본값(0)을 채운다. 이미 값이 있으면(예: 수동 편집으로 1)
+      // 다시 보내지 않는다 — 백엔드는 readOnly 키를 0/빈 값으로만 받아주므로,
+      // 기존 값을 그대로 재전송하면 1인 경우 전체 저장이 거부된다.
+      if (key in settings.values) continue;
+      const value = settings.defaults[key];
+      if (value === undefined) continue;
+      values[key] = value;
+      continue;
+    }
     const value = key in settings.values ? settings.values[key] : settings.defaults[key];
     if (value === undefined) continue;
     values[key] = value;
@@ -317,7 +332,7 @@ function renderGithubPanel(): HTMLElement {
         'GitHub CLI(gh)가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
       ]),
       el('div', { className: 'settings-form-actions' }, [
-        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/dev-tools') }, ['개발 환경 화면으로 이동']),
+        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
         refreshBtn,
       ]),
     ]);
@@ -419,7 +434,7 @@ function renderCloudflarePanel(): HTMLElement {
         'Wrangler CLI가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
       ]),
       el('div', { className: 'settings-form-actions' }, [
-        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/dev-tools') }, ['개발 환경 화면으로 이동']),
+        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
         refreshBtn,
       ]),
     ]);
@@ -866,6 +881,26 @@ async function handleLoginMcp(server: McpServerSummary): Promise<void> {
   }
 }
 
+// claude.ai 커넥터(Gmail/Drive/Calendar/Atlassian Rovo 등)처럼 계정 단위로
+// 연결돼 로컬 PC와 무관한 서버를 평소엔 해제해두고 필요할 때만 연결하려는
+// 사용자를 위한 버튼 — 서버 등록은 그대로 두고 저장된 OAuth 자격증명만
+// 지운다(mcp_logout). 터미널을 열지 않는 즉시 완료 동작이라 성공/실패를
+// 바로 토스트로 알리고 목록을 새로고침한다.
+async function handleLogoutMcp(server: McpServerSummary): Promise<void> {
+  state.mcp.loggingOutName = server.name;
+  notifyChange();
+  try {
+    await logoutMcpServer(server.name);
+    showToast(`"${server.name}" 연결을 해제했습니다.`);
+    await loadMcp();
+  } catch (err) {
+    showToast(`"${server.name}" 연결 해제에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.mcp.loggingOutName = null;
+    notifyChange();
+  }
+}
+
 function renderMcpRow(server: McpServerSummary): HTMLElement {
   const deleteBtn = el('button', { className: 'btn', onClick: () => void handleRemoveMcp(server) }, ['삭제']);
   deleteBtn.style.color = 'var(--color-danger)';
@@ -875,12 +910,29 @@ function renderMcpRow(server: McpServerSummary): HTMLElement {
   // 서버든 아니든(재로그인 필요할 수 있다) 항상 보여준다.
   if (server.transport !== 'stdio') {
     const loggingIn = state.mcp.loggingInName === server.name;
+    // 라벨만 연결 여부에 따라 "인증"/"재인증"으로 구분한다 — 동작(claude mcp
+    // login 재실행)은 동일하다. "연결됨"은 CLI 헬스체크일 뿐 토큰 유효성을
+    // 보장하지 않으므로, 연결된 행에서도 버튼 자체는 항상 노출한다.
+    const loginLabel = server.connected ? '재인증' : '인증';
     const loginBtn = el(
       'button',
       { className: 'btn', disabled: loggingIn, onClick: () => void handleLoginMcp(server) },
-      [loggingIn ? '터미널 여는 중…' : '인증']
+      [loggingIn ? '터미널 여는 중…' : loginLabel]
     );
     actions.push(loginBtn);
+
+    // claude.ai 커넥터처럼 계정 단위로 연결돼 이 PC와 무관한 서버는 평소엔
+    // 해제해두고 필요할 때만 연결하는 게 자연스럽다 — 연결된 행에만 "해제"를
+    // 추가로 노출한다(서버 등록은 유지, 자격증명만 지운다).
+    if (server.connected) {
+      const loggingOut = state.mcp.loggingOutName === server.name;
+      const logoutBtn = el(
+        'button',
+        { className: 'btn', disabled: loggingOut, onClick: () => void handleLogoutMcp(server) },
+        [loggingOut ? '해제 중…' : '해제']
+      );
+      actions.push(logoutBtn);
+    }
   }
   actions.push(deleteBtn);
 

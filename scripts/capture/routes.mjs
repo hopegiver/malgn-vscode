@@ -98,7 +98,7 @@ export const AUTH_ROUTES = [
   },
   {
     id: 'dev-tools',
-    hash: '#/dev-tools',
+    hash: '#/settings/devtools',
     label: '개발 환경',
     verify: async (page, scenario) => {
       if (scenario === 'loading') return verdict(await hasLoadingText(page), '로딩 마커(확인 중) 미검출');

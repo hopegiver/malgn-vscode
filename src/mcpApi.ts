@@ -80,6 +80,14 @@ export async function loginMcpServer(name: string): Promise<TerminalLaunchResult
   return invoke<TerminalLaunchResult>('mcp_login', { name });
 }
 
+// 서버 등록은 유지한 채 저장된 OAuth 자격증명만 지운다(삭제와 다르다). 브라우저
+// 인증이 없는 로컬 동작이라 터미널을 열지 않고 즉시 완료된다. claude.ai
+// 커넥터(Gmail/Drive/Calendar/Atlassian Rovo 등)처럼 계정 단위로 연결돼
+// 로컬 PC와 무관한 서버를 평소엔 해제해두고 필요할 때만 연결하려는 용도다.
+export async function logoutMcpServer(name: string): Promise<void> {
+  return invoke<void>('mcp_logout', { name });
+}
+
 export interface McpCatalogEntry {
   readonly id: string; // "gmail" | "google-drive" | "google-calendar" | "atlassian"
   readonly label: string; // 표시 이름, 예: "Gmail", "Atlassian (Jira/Confluence)"

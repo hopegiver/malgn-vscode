@@ -5,8 +5,7 @@
 //   '#/projects'         -> projects-list (로컬 프로젝트 목록, 옛 "대시보드")
 //   '#/project/<path>'   -> projects-detail
 //   '#/catalog[/<tab>]'  -> catalog (탭: plugins 기본값 | global)
-//   '#/dev-tools'        -> dev-tools (로컬 CLI 도구 버전 — 실제 조회)
-//   '#/settings[/<tab>]' -> settings
+//   '#/settings[/<tab>]' -> settings (탭 devtools = 로컬 CLI 도구 버전 — 실제 조회)
 //   '#/usage'            -> usage
 //   '#/sessions'         -> sessions-list (실제 ~/.claude/sessions/*.json)
 //   '#/sessions/new/<projectPath>' -> sessions-draft (프로젝트 카드 "새 세션" — session_id 배정 전)
@@ -21,7 +20,6 @@ export type Route =
   | { readonly kind: 'projects-list' }
   | { readonly kind: 'projects-detail'; readonly path: string }
   | { readonly kind: 'catalog'; readonly tab: CatalogTab }
-  | { readonly kind: 'dev-tools' }
   | { readonly kind: 'settings'; readonly tab: SettingsTab }
   | { readonly kind: 'usage' }
   | { readonly kind: 'sessions-list' }
@@ -31,7 +29,7 @@ export type Route =
   | { readonly kind: 'tasks-board' }
   | { readonly kind: 'tasks-detail'; readonly taskId: string };
 
-const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'jira', 'marketplace', 'mcp', 'applinks'];
+const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'jira', 'marketplace', 'mcp', 'applinks', 'devtools'];
 const CATALOG_TABS: readonly CatalogTab[] = ['plugins', 'global'];
 
 export function parseRoute(): Route {
@@ -52,10 +50,6 @@ export function parseRoute(): Route {
     const seg = hash.split('/')[2] as CatalogTab | undefined;
     const tab = seg && CATALOG_TABS.includes(seg) ? seg : 'plugins';
     return { kind: 'catalog', tab };
-  }
-
-  if (hash.startsWith('#/dev-tools')) {
-    return { kind: 'dev-tools' };
   }
 
   if (hash.startsWith('#/settings')) {

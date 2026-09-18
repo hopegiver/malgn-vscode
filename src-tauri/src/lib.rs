@@ -102,6 +102,7 @@ pub fn run() {
             mcp_manager::mcp_catalog_list,
             mcp_manager::mcp_install,
             mcp_manager::mcp_login,
+            mcp_manager::mcp_logout,
             session_chat::read_session_transcript,
             session_chat::send_session_message,
             session_chat::start_new_session_message,

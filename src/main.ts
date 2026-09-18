@@ -45,7 +45,7 @@ import { renderLoginView } from './views/login';
 import { renderHomeView } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree, leaveProjectsListView } from './views/projects';
 import { renderCatalogView, loadCatalog, loadGlobalCatalog, loadMarketplaces } from './views/catalog';
-import { renderDevToolsView, loadDevTools } from './views/devTools';
+import { loadDevTools } from './views/devTools';
 import {
   renderSettingsView,
   loadOtelEnv,
@@ -104,9 +104,6 @@ function renderApp(): void {
       break;
     case 'catalog':
       content = renderCatalogView(route.tab);
-      break;
-    case 'dev-tools':
-      content = renderDevToolsView();
       break;
     case 'settings':
       content = renderSettingsView(route.tab);

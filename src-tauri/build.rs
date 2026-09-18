@@ -17,6 +17,13 @@ fn main() {
         println!("cargo:rustc-env=GOOGLE_OAUTH_CLIENT_SECRET={secret}");
     }
 
+    // MALGN_OTEL_COLLECTOR_BASE(otel_settings.rs의 사내 collector 기본 주소)도
+    // 같은 방식으로 주입한다. 값이 없으면(포크·secret 없는 CI) None으로 남아
+    // endpoint_defaults_injected: false가 되고, UI가 빈 값 + placeholder로 렌더한다.
+    if let Ok(otel_base) = std::env::var("MALGN_OTEL_COLLECTOR_BASE") {
+        println!("cargo:rustc-env=MALGN_OTEL_COLLECTOR_BASE={otel_base}");
+    }
+
     // DEV_AUTO_LOGIN_EMAIL(로컬 개발 전용 자동 로그인 우회, dev_auto_login.rs)도
     // 같은 방식으로 주입한다. 값이 없으면(대부분의 환경) 위와 동일하게 조용히
     // 넘어간다. `.env` 값이 바뀌면 이 스크립트가 재실행되도록

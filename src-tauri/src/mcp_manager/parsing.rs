@@ -61,6 +61,14 @@ fn parse_mcp_list_line(line: &str) -> Option<McpServerSummary> {
             }
             None => (target_and_type.to_string(), "stdio".to_string()),
         }
+    } else if target_and_type.starts_with("http://") || target_and_type.starts_with("https://") {
+        // `claude.ai <이름>` 커넥터(Gmail/Drive/Calendar/Atlassian Rovo 등)는
+        // `(TYPE)` 표기 없이 URL만 찍힌다 — 로컬 커맨드가 아니라 계정에 연결된
+        // 원격 서버이므로, 括호가 없어도 대상이 URL이면 "stdio"로 잘못
+        // 분류하지 않는다(그러면 로그인/로그아웃 버튼이 아예 안 뜬다). 정확한
+        // http/sse 구분을 CLI가 안 알려주므로 "http"로 느슨하게 잡는다 —
+        // 이 값은 프론트에서 "stdio가 아니다"라는 판정에만 쓰인다.
+        (target_and_type.to_string(), "http".to_string())
     } else {
         (target_and_type.to_string(), "stdio".to_string())
     };
@@ -74,6 +82,22 @@ fn parse_mcp_list_line(line: &str) -> Option<McpServerSummary> {
         connected,
         status_label,
     })
+}
+
+/// `claude.ai <이름>`(Gmail/Google Drive/Google Calendar/Atlassian Rovo/Claude
+/// Docs 등)은 로컬 CLI가 관리하는 서버가 아니라 사용자의 claude.ai 계정에
+/// 연결된 커넥터다(`claude mcp get`의 `Scope: claude.ai config`로 실측
+/// 확인) — 그래서 이 앱이 노출하는 `claude mcp login/logout/remove`가 전부
+/// 이 스코프에는 통하지 않고 실행 시 오류만 낸다(로컬 PC 단위가 아니라
+/// 계정 단위 연결이라 관리 자체가 claude.ai 쪽 몫). 관리 불가능한 행에
+/// 인증/재인증/해제/삭제 버튼을 보여줘서 사용자가 눌러보고 오류를 겪게
+/// 하는 대신 "등록된 서버" 화면 목록에서는 아예 제외한다(`mod.rs`의
+/// `mcp_list_blocking`이 이 필터를 적용). 이 함수 자체(`parse_mcp_list`)는
+/// 원본 그대로 파싱만 한다 — 카탈로그의 "이미 설치됨" 판정(`mcp_catalog_list_
+/// blocking`)이 claude.ai Gmail 등의 target URL도 여전히 봐야 "설치 가능"
+/// 목록에 중복으로 다시 뜨지 않기 때문에, 필터링 안 된 원본이 필요하다.
+pub(super) fn is_claude_ai_account_connector(name: &str) -> bool {
+    name.starts_with("claude.ai ")
 }
 
 pub(super) fn parse_mcp_list(output: &str) -> Vec<McpServerSummary> {
@@ -152,12 +176,19 @@ mod tests {
 
     #[test]
     fn parses_full_list_sample_into_three_servers() {
+        // parse_mcp_list 자체는 필터링하지 않는다(카탈로그의 "이미 설치됨"
+        // 판정이 claude.ai Gmail 등의 target URL도 봐야 한다 — 위 doc 주석
+        // 참조). "등록된 서버" 화면에서 이 항목을 빼는 필터는 `mod.rs`의
+        // `mcp_list_blocking`이 `is_claude_ai_account_connector`로 따로 건다.
         let servers = parse_mcp_list(SAMPLE_LIST_OUTPUT);
         assert_eq!(servers.len(), 3);
 
         assert_eq!(servers[0].name, "claude.ai Gmail");
         assert_eq!(servers[0].target, "https://gmailmcp.googleapis.com/mcp/v1");
-        assert_eq!(servers[0].transport, "stdio");
+        assert_eq!(
+            servers[0].transport, "http",
+            "괄호 TYPE 표기가 없어도 URL 타겟은 stdio로 잘못 분류하면 안 된다"
+        );
         assert!(servers[0].connected);
         assert_eq!(servers[0].status_label, "✔ Connected");
 
@@ -176,11 +207,32 @@ mod tests {
     }
 
     #[test]
+    fn is_claude_ai_account_connector_matches_prefix_only() {
+        assert!(is_claude_ai_account_connector("claude.ai Gmail"));
+        assert!(is_claude_ai_account_connector("claude.ai Atlassian Rovo"));
+        assert!(!is_claude_ai_account_connector("atlassian"));
+        assert!(!is_claude_ai_account_connector("plugin:malgn-agent:malgnai-hub"));
+    }
+
+    #[test]
     fn list_line_without_parenthesized_type_is_stdio() {
         let parsed =
             parse_mcp_list_line("malgnai-mcp: /opt/homebrew/bin/node index.js - ✔ Connected")
                 .unwrap();
         assert_eq!(parsed.transport, "stdio");
+    }
+
+    // 신규 — claude.ai 커넥터(Atlassian Rovo 등)는 括호 TYPE 표기가 없는 URL
+    // 타겟이다. "미연결" 상태라 로그인 버튼이 아예 안 뜨던 실사용 버그의 회귀
+    // 고정: 이 경우 절대 "stdio"가 되면 안 된다(그러면 인증 버튼이 사라진다).
+    #[test]
+    fn list_line_with_bare_url_and_no_type_is_not_stdio() {
+        let parsed = parse_mcp_list_line(
+            "claude.ai Atlassian Rovo: https://mcp.atlassian.com/v1/mcp/authv2 - ! Needs authentication",
+        )
+        .unwrap();
+        assert_ne!(parsed.transport, "stdio");
+        assert!(!parsed.connected);
     }
 
     #[test]
