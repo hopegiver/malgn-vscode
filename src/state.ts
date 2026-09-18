@@ -285,6 +285,17 @@ export interface AppState {
     loaded: boolean;
     saving: boolean;
   };
+  // 자동 업데이트 — updateApi.ts가 관리한다. 평소엔 available:false로 화면에
+  // 아무 변화가 없고, 백그라운드 체크+다운로드가 성공했을 때만 사이드바 하단에
+  // 버튼이 나타난다(sidebar.ts). version은 표시용, installing은 버튼 클릭 후
+  // install()+relaunch() 진행 중(또는 "다음 실행 자동 적용" 시도 중) 중복 클릭을
+  // 막는 용도다. 실제 다운로드된 Update 객체 자체는 상태로 직렬화하지 않고
+  // updateApi.ts 모듈 내부 변수로만 들고 있는다(직렬화 불가능한 리소스 핸들이라).
+  update: {
+    available: boolean;
+    version: string | null;
+    installing: boolean;
+  };
 }
 
 export const state: AppState = {
@@ -357,6 +368,7 @@ export const state: AppState = {
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },
   mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
   appLinks: { status: null, loading: false, error: null, loaded: false, saving: false },
+  update: { available: false, version: null, installing: false },
 };
 
 type Listener = () => void;

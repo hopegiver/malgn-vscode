@@ -8,6 +8,7 @@ import { sortedProjectsByRecency } from './views/projects';
 import { loadDailyUsage } from './views/usage';
 import { enabledAppLinks, openLink } from './views/appLinks';
 import { brandMark } from './brand';
+import { applyUpdateFromButton } from './updateApi';
 
 const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
@@ -95,6 +96,7 @@ export function renderSidebar(route: Route): HTMLElement {
     el('div', { className: 'sidebar-brand' }, [brandMark(), '맑은에이전트']),
     el('nav', { className: 'sidebar-nav' }, mainItems),
     el('div', { className: 'sidebar-footer' }, [
+      ...renderUpdateItem(),
       ...(state.auth.userEmail ? [el('div', { className: 'sidebar-user-email' }, [state.auth.userEmail])] : []),
       logoutItem,
     ]),
@@ -192,6 +194,28 @@ function renderAppLinksGroup(): HTMLElement {
   }
 
   return el('div', { className: 'sidebar-nav-group' }, children);
+}
+
+// 자동 업데이트 배지/버튼 — 평소엔 아무것도 렌더하지 않는다(state.update.available
+// === false, updateApi.ts가 실제로 감지·다운로드를 마쳤을 때만 true). 사이드바
+// 최하단(로그아웃 위)에 두는 이유: 화면 전환을 일으키지 않는 항목이라 메인
+// 내비게이션(mainItems) 목록과 섞이면 "화면"으로 오인될 수 있고, VSCode가 좌측
+// 하단 게이지/알림 영역에 조용히 상태를 띄우는 것과 같은 자리라 기존 사용자
+// 습관과도 맞는다. 클릭 시 그 자리에서 설치+재시작(installing 동안 중복 클릭
+// 방지 — updateApi.applyUpdateFromButton 내부 가드와 이중으로 막는다).
+function renderUpdateItem(): HTMLElement[] {
+  if (!state.update.available) return [];
+  const installing = state.update.installing;
+  const label = installing ? '업데이트 적용 중…' : `업데이트 적용${state.update.version ? ` (v${state.update.version})` : ''}`;
+  const row = el('div', { className: `sidebar-nav-item sidebar-update-item${installing ? ' disabled' : ''}` }, [
+    el('span', { className: 'sidebar-update-dot' }, []),
+    label,
+  ]);
+  return [
+    clickable(row, () => {
+      if (!installing) void applyUpdateFromButton();
+    }),
+  ];
 }
 
 function navItem(label: string, active: boolean, onClick: () => void): HTMLElement {

@@ -57,6 +57,8 @@ dunce = "1"
 # 죽는다. 0.11.2는 다운로드 수가 적어 상대적으로 덜 굴러본 버전이므로 자동
 # 마이너 업데이트를 받지 않는다(보안 검토 조건 4).
 cron-parser = "=0.11.2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

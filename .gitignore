@@ -8,3 +8,7 @@ dist/
 site/
 src-tauri/.env
 scripts/capture/output/
+.claude/worktrees/
+*.pfx
+*.p12
+*.key

@@ -74,6 +74,7 @@ import {
 } from './views/autonomousTasks';
 import { loadAppLinks } from './views/appLinks';
 import { tryDevAutoLogin } from './authApi';
+import { initUpdateCheck } from './updateApi';
 
 // 순수 렌더 — 상태를 바꾸지 않는다. onStateChange(renderApp)로 구독되어 있어
 // notifyChange() 한 번으로 항상 최신 상태가 반영된다.
@@ -149,10 +150,25 @@ function renderApp(): void {
 // 호출한다(runtimeWatcherInitialized/liveWatchersInitialized와 같은 1회성 플래그
 // 패턴).
 let otelAutoSetupChecked = false;
+// 자동 업데이트 체크 — 인증된 세션에서만 시작해야 한다(비로그인 상태에서 캐리오버
+// 자동설치 경로가 로그인 화면에서 발동해 사용자가 영문도 모른 채 앱이 재시작되는
+// 사고를 막기 위함). handleNavigation()은 맨 위에서 `!state.authenticated`면 이미
+// return하므로, 아래 이 플래그 분기에 도달하는 시점은 항상 로그인 성공 후다.
+// Google OAuth(views/login.ts) 성공 시의 해시 변경과 dev 자동 로그인(bootstrap())
+// 직후 호출 양쪽 다 결국 이 handleNavigation()을 거치므로 두 로그인 경로 모두
+// 커버되고, 세션당 정확히 한 번만 실행되도록 플래그로 막는다.
+let updateCheckStarted = false;
 
 function handleNavigation(): void {
   renderApp();
   if (!state.authenticated) return;
+
+  if (!updateCheckStarted) {
+    updateCheckStarted = true;
+    // fire-and-forget — 메인 렌더/네비게이션을 절대 기다리게 하지 않아야
+    // 오프라인·느린 네트워크에서도 부팅이 멈춘 것처럼 보이지 않는다.
+    initUpdateCheck();
+  }
 
   if (!state.dashboard.loaded && !state.dashboard.loading) void loadProjects();
   if (!state.sessions.loaded && !state.sessions.loading) void loadSessions();
@@ -259,6 +275,10 @@ async function bootstrap(): Promise<void> {
   }
   handleNavigation();
   initLiveWatchers();
+  // 자동 업데이트 체크는 여기서 직접 부르지 않는다 — handleNavigation() 안의
+  // 인증 게이트를 거쳐야 하기 때문이다(위 updateCheckStarted 플래그 분기 참고).
+  // dev 자동 로그인이 성공한 경우 바로 위 handleNavigation() 호출 시점에 이미
+  // 트리거된다.
 }
 
 onStateChange(renderApp);

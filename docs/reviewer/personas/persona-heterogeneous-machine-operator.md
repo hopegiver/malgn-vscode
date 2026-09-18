@@ -61,3 +61,6 @@ Intel 맥 6대와 nvm·volta·corepack이 뒤섞인 머신이 아직 살아 있�
 - 2026-09-15 / target_id `devtools-windows-parity` / 4차(증분, 풀패널 강제승격) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r4.md`
   — 이번 라운드 집중: `PING.EXE -n 31 127.0.0.1` 타임아웃 테스트가 사내 PC로 일반화되는지(부하 요소 3개 머신 무관 확인, EDR 환경은 미검증으로 남김),
     winget 캐시 승격이 화면 1회 로드의 스폰 수를 바꾸는지(O5 — macOS에서 실패 spawn +1). O1~O3 충족.
+- 2026-09-18 / target_id `malgn-vscode-installer-release-autoupdate` / 1차(최초, 풀패널 — Sensitive 등급) / `docs/reviewer/review-installer-release-autoupdate-2026-09-18.md`
+  — 재사용 사유: 역할개념("우리 조직 이기종 머신에서 실제로 뜨는가, 안 될 때 막다른 골목인가")이 그대로 유효하다. 이번 대상은 devtools가 아니라 설치형 배포지만, 묻는 질문은 동일하다 — 사내 단말이 MSI로 깔렸는지 NSIS로 깔렸는지, WebView2가 있는지, 무서명 dmg가 첫 실행에서 뜨는지에 따라 같은 릴리스가 다르게 도착한다. O2·O3(막다른 골목·같은 실패 반복 루프)가 특히 과녁. 6대 요소 무수정 — §5 참고파일의 devtools 목록은 최초 라운드 인스턴스 정보이므로 이번엔 워크플로·플랫폼 번들 설정·`tauri-utils` 기본값을 대신 참조했다.
+  — 이번 라운드 집중: NSIS(currentUser/%LOCALAPPDATA%) 대 MSI(per-machine/Program Files) 동시 타깃이 "IT 대량배포 = MSI, 자동업데이트 = NSIS"로 갈릴 때 생기는 이중 설치·업데이트 재감지 루프(→ M3), `webviewInstallMode` 기본값 실측(DownloadBootstrapper{silent:true} — 오탐 지적 강등), 잘못된 릴리스가 나간 단말에 남는 막다른 골목(다운그레이드 수단 부재 → M5), 무서명 dmg 최초 실행이 IT MDM에만 의존하는 사실이 어디에 적혀 있는지(→ m7).

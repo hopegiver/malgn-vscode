@@ -1,0 +1,366 @@
+# 설치형 릴리스 빌드 — macOS(.app/.dmg)와 Windows(NSIS) 설치 아티팩트를 하나의
+# 릴리스 실행으로 빌드하고, GitHub Release(초안)에 게시하며 updater 매니페스트
+# (latest.json)를 만든다. `tauri-portable-build.yml`(포터블 zip/exe, main push
+# 트리거)과는 목적이 달라 별도 파일로 분리했다 — 이 워크플로는 태그 push로만
+# 도는 "진짜 배포용" 빌드다. Windows 업데이트 채널은 NSIS 하나로 고정한다(MSI
+# 타깃 미사용, src-tauri/tauri.windows.conf.json의 targets 참고).
+#
+# ── 자동업데이트는 롤포워드 전용이다 ─────────────────────────────────────────
+# 이 워크플로가 만드는 updater(latest.json/.sig)에는 롤백 수단이 없다. 잘못된
+# 릴리스를 배포하면 이미 그 버전으로 자동 업데이트된 단말을 이전 버전으로
+# 되돌릴 방법이 없고, 버전을 올린 수정판을 다시 배포해 덮어쓰는 것만 가능하다.
+# Publish release 전 검증을 더 신중히 해야 하는 이유다.
+#
+# ── 왜 tauri-apps/tauri-action인가 ───────────────────────────────────────────
+# GitHub Release 생성/자산 업로드, 여러 OS의 updater 매니페스트(latest.json) 병합을
+# 직접 구현하는 대신 공식 액션에 맡긴다. 단, 이 액션의 실제 동작을 소스(action.yml,
+# src/*.ts, v1.0.0 = commit 1deb371)까지 내려받아 확인했다 — 아래 3가지는 세간의
+# 통념과 달리 액션이 "대신 해주지 않는다":
+#   1. Windows PFX 인증서 임포트/지문(thumbprint) 계산은 액션이 하지 않는다
+#      (dist/index.js·src/*.ts에 WINDOWS_CERTIFICATE 참조 자체가 없음 — 실측 확인).
+#      대신 Tauri 공식 문서(v2.tauri.app/distribute/sign/windows)가 안내하는 대로
+#      워크플로에서 직접 PFX를 임포트해 지문을 얻고, tauri.windows.conf.json에
+#      커밋되지 않은 certificateThumbprint를 `tauri build --config <파일경로>`로
+#      병합 주입한다(이 파일에 그 값을 일부러 비워둔 backend-dev의 설계와 정확히
+#      맞물린다 — `--config`는 인라인 JSON 문자열뿐 아니라 JSON 파일 경로도
+#      받으므로, YAML 안에서 중첩 따옴표를 다루는 대신 임시 JSON 파일을 쓴다).
+#   2. updater(.sig/latest.json) 서명은 액션이 아니라 Tauri CLI 코어가
+#      TAURI_SIGNING_PRIVATE_KEY(+_PASSWORD) 환경변수를 읽어 수행한다
+#      (createUpdaterArtifacts:true가 이미 tauri.conf.json에 있음) — 이 값이
+#      없으면 Tauri CLI가 빌드 자체를 실패시킨다(공식 문서 근거, 이 샌드박스에서
+#      실제 실행으로 재현하지는 못했다 — claimed).
+#   3. macOS 서명/공증 관련 값(APPLE_*)은 이 워크플로에 전혀 넣지 않는다 —
+#      요구사항대로 ad-hoc/무서명 .app·dmg만 만든다.
+# 액션이 실제로 대신 해주는 것: GitHub Release(초안) 생성/재사용, 빌드 산출물
+# 업로드, 여러 OS 잡의 latest.json을 "플랫폼별 항목"으로 병합.
+#
+# ── macOS/Windows를 순차 실행하는 이유(matrix max-parallel: 1) ───────────────
+# tauri-action이 같은 릴리스의 latest.json을 "읽고 병합해서 다시 올리는" 방식으로
+# 동작하는데(src/upload-version-json.ts 실측), 두 OS 잡이 병렬로 돌면 이 읽기-병합-
+# 쓰기가 원자적이지 않아 서로의 platforms 항목을 덮어쓰는 레이스가 발생할 수 있다.
+# 이는 가정이 아니라 tauri-action 저장소에 실제로 보고된 문제다
+# (tauri-apps/tauri-action#1270, "latest.json upload still fails ... in parallel
+# builds" — v0.6.1 기준으로도 재현됨, retryAttempts로 완화는 되지만 근본 해결은
+# 아님). 플랫폼이 2개뿐이라 순차 실행의 시간 비용이 크지 않으므로, 지터 재시도에
+# 기대는 대신 애초에 동시 쓰기 자체를 없앤다. `retryAttempts: 3`은 그래도 방어적으로
+# 남겨둔다(일시적 GitHub API 오류 대비, 레이스 자체는 순차 실행이 막는다).
+#
+# ── GitHub Release를 초안(draft)으로 만드는 이유 ─────────────────────────────
+# 실제 배포(사람 승인 필요, malgn-agent devops 역할 경계)와 "빌드가 됐다"를
+# 이 draft 플래그로 분리한다. 이 워크플로가 끝나도 사람이 GitHub UI에서 자산
+# (설치 파일·latest.json·서명 여부)을 확인하고 "Publish release"를 눌러야
+# updater 엔드포인트(현재 tauri.conf.json에 커밋된
+# https://github.com/hopegiver/malgn-vscode/releases/latest/download/latest.json)
+# 가 이 릴리스를 가리키게 된다 — draft는 "latest"로 잡히지 않기 때문이다.
+#
+# ── 트리거 ───────────────────────────────────────────────────────────────
+#   - `v*.*.*` 형태의 태그 push(예: v0.2.0) — 정상 릴리스 경로.
+#   - workflow_dispatch + 기존 태그 입력 — 시크릿을 뒤늦게 등록했거나 일시적
+#     실패 후 같은 태그로 재시도할 때. 새 태그를 만들지 않는다(태그는 버전의
+#     유일한 근거로 유지).
+#
+# ── 시크릿이 없을 때의 동작(요구사항 명시) ───────────────────────────────────
+#   - Windows 코드서명(WINDOWS_CERTIFICATE/_PASSWORD): 정책은 "둘 다 없으면 명시적
+#     경고 후 서명 없이 계속"이다. 인증서 발급 전에도 macOS 빌드·GitHub Release
+#     초안 생성·updater 서명 등 파이프라인의 나머지 전부를 미리 검증할 수 있어야
+#     한다고 판단했기 때문이다(완전 실패시키면 인증서가 나올 때까지 파이프라인
+#     자체를 한 번도 못 돌려본다). 반대로 "하나만 등록됨"은 설정 실수로 간주해
+#     즉시 실패시킨다 — 침묵 속에 잘못 서명 시도하다 알 수 없는 signtool 오류로
+#     새는 것을 막기 위함.
+#   - updater 서명(TAURI_SIGNING_PRIVATE_KEY): 별도 사전 점검을 넣지 않는다 —
+#     이미 tauri.conf.json에 createUpdaterArtifacts:true가 커밋되어 있어 이 값이
+#     없으면 Tauri CLI가 빌드 자체를 실패시키는 것으로 알려져 있다(공식 문서
+#     근거). 이는 이미 "조용한 오작동"이 아니라 "명확한 실패"이므로 이 워크플로가
+#     추가로 막을 필요가 없다.
+#
+# ── verify-version job ──────────────────────────────────────────────────
+# 태그 버전과 src-tauri/tauri.conf.json의 version 필드가 다르면 빌드 자체를
+# 막는다 — 둘이 어긋난 채로 릴리스되면 설치 파일 파일명/내부 버전 표기가
+# 태그와 달라 나중에 "이 릴리스가 정확히 뭘 담고 있었는지" 추적이 어려워진다.
+#
+# ── 보안 원칙(기존 워크플로에서 계승) ────────────────────────────────────────
+# 액션은 sha로 고정(가변 태그 금지, 주석으로 버전 병기). permissions는 최소
+# (기본 read, 릴리스 게시가 필요한 잡에서만 write). 시크릿은 secrets.*로만
+# 참조하고, run 블록에서 echo/명령행 인자로 직접 노출하지 않는다(길이만 확인).
+name: tauri-release-build
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '재실행할 기존 태그(예: v0.2.0). 새 태그를 만들지 않는다 — 반드시 이미 push된 태그여야 한다.'
+        required: true
+
+# cancel-in-progress: false (재검토, 2026-09-18) — 이 그룹은 "같은 태그"에 대해서만
+# 겹친다(동일 태그 재push나 workflow_dispatch 중복 실행 등 드문 경우). cancel-in-progress
+# 를 true로 두면 진행 중이던 빌드를 중간에 끊어 자산이 일부만 올라간 draft가 남을 수
+# 있고, 그 상태는 아래 verify-release-assets 잡이 취소로 인해 아예 돌지 않아 감지되지
+# 않는다(검증 장치를 무력화). false로 두면 두 번째 실행은 취소 대신 대기열에서 기다려
+# 첫 실행이 끝난 뒤 시작되므로, 항상 verify-release-assets가 최종 상태를 검증한다.
+concurrency:
+  group: tauri-release-build-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve target tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (at target tag)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      - name: tauri.conf.json 버전과 태그 일치 확인
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${TAG#v}"
+          CONF_VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          echo "tag=$TAG (version=$TAG_VERSION), tauri.conf.json version=$CONF_VERSION"
+          if [ "$TAG_VERSION" != "$CONF_VERSION" ]; then
+            echo "::error::태그 버전($TAG_VERSION)과 src-tauri/tauri.conf.json의 version($CONF_VERSION)이 다릅니다. tauri.conf.json의 version을 먼저 올려 커밋한 뒤 그 커밋에 태그를 다시 push하세요."
+            exit 1
+          fi
+
+      # (지적 3) updater pubkey가 빈 채로 릴리스되면 verify_signature()가 fail-closed로
+      # 에러를 내 서명 우회는 안 되지만(안전), 그 대가로 그 빌드로 설치된 앱은 이후
+      # 어떤 자동 업데이트도 받지 못하는 영구 고착 상태가 된다(download()가 항상 실패).
+      # 실제 키가 없는 지금 이 값을 여기서 채우지 않고, 비어 있으면 릴리스 자체를 막는다.
+      - name: Updater pubkey 설정 확인
+        run: |
+          set -euo pipefail
+          PUBKEY=$(jq -r '.plugins.updater.pubkey // ""' src-tauri/tauri.conf.json)
+          if [ -z "$PUBKEY" ]; then
+            echo "::error::src-tauri/tauri.conf.json의 plugins.updater.pubkey가 비어 있습니다. 서명 검증 자체는 fail-closed라 우회되지는 않지만, 이 상태로 릴리스하면 이 빌드로 설치된 앱은 이후 어떤 자동 업데이트도 받을 수 없게 됩니다(영구 고착, 이후 사용자가 수동 재설치해야 함). 해결 절차: 1) 로컬에서 'pnpm tauri signer generate -w ~/.tauri/malgn-agent.key' 로 키쌍을 생성 2) 출력된 공개키 문자열을 src-tauri/tauri.conf.json의 plugins.updater.pubkey에 반영해 커밋 3) 생성된 개인키(및 설정했다면 그 비밀번호)를 GitHub repo secret TAURI_SIGNING_PRIVATE_KEY(및 TAURI_SIGNING_PRIVATE_KEY_PASSWORD)로 등록 4) 이 커밋에 태그를 다시 push하거나 workflow_dispatch로 재실행하세요."
+            exit 1
+          fi
+          echo "pubkey 설정 확인됨 (길이: ${#PUBKEY}자)"
+
+  release:
+    needs: verify-version
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 1 # macOS/Windows 순차 실행 — 사유는 파일 상단 주석 참고 (tauri-action#1270)
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout (at target tag)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify-version.outputs.tag }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09 pin)
+        with:
+          toolchain: stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # Windows 전용 전처리: 코드서명 시크릿 상태를 세 가지로 명시적으로 분기한다
+      # (둘 다 있음 → 임포트 후 서명 진행 / 둘 다 없음 → 명시적 경고 후 무서명 진행 /
+      # 하나만 있음 → 설정 오류로 간주해 즉시 실패). PFX 임포트·지문 계산 방식은
+      # Tauri 공식 문서(v2.tauri.app/distribute/sign/windows)의 안내를 그대로
+      # 따른다. 지문(thumbprint)은 인증서 자체에서 파생되는 공개 정보라 시크릿은
+      # 아니지만, 로그를 불필요하게 어지럽히지 않으려 별도로 echo하지 않는다.
+      - name: Preflight - Windows 코드서명 시크릿 확인 및 인증서 임포트
+        if: runner.os == 'Windows'
+        id: winsign
+        shell: pwsh
+        env:
+          WINCERT: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINCERT_PW: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $hasCert = -not [string]::IsNullOrEmpty($env:WINCERT)
+          $hasPw = -not [string]::IsNullOrEmpty($env:WINCERT_PW)
+
+          if ($hasCert -and $hasPw) {
+            New-Item -ItemType Directory -Path certificate | Out-Null
+            Set-Content -Path certificate/tempCert.txt -Value $env:WINCERT
+            certutil -decode certificate/tempCert.txt certificate/certificate.pfx | Out-Null
+            Remove-Item -Path certificate/tempCert.txt
+
+            $securePw = ConvertTo-SecureString -String $env:WINCERT_PW -Force -AsPlainText
+            $cert = Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password $securePw
+
+            Remove-Item -Path certificate -Recurse -Force -ErrorAction SilentlyContinue
+
+            $configPath = Join-Path $env:RUNNER_TEMP "tauri-windows-sign.config.json"
+            $configObj = @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint } } }
+            $configObj | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding utf8
+
+            Write-Host "Windows 코드서명 인증서 임포트 완료 - signtool 서명 진행"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Windows 설치 파일: **서명됨** (WINDOWS_CERTIFICATE 사용)"
+            "sign=true" >> $env:GITHUB_OUTPUT
+            "config_path=$configPath" >> $env:GITHUB_OUTPUT
+          } elseif (-not $hasCert -and -not $hasPw) {
+            Write-Host "::warning::WINDOWS_CERTIFICATE/WINDOWS_CERTIFICATE_PASSWORD 시크릿이 등록되지 않았습니다. 이번 Windows 설치 파일은 서명 없이(UNSIGNED) 빌드됩니다. 사내 배포 전 두 시크릿을 등록하고 이 태그로 workflow_dispatch 재실행하세요."
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Windows 설치 파일: **서명 생략(UNSIGNED)** - WINDOWS_CERTIFICATE/_PASSWORD 시크릿 미등록"
+            "sign=false" >> $env:GITHUB_OUTPUT
+            "config_path=" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "::error::WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD 중 하나만 등록되어 있습니다(설정 오류로 간주). 두 시크릿을 모두 등록하거나 모두 비워두고 다시 실행하세요."
+            exit 1
+          }
+
+      # 위 preflight 결과를 실제 `tauri build` 인자로 변환한다. macOS는 항상
+      # 빈 인자(ad-hoc/무서명 기본 빌드), Windows는 서명 시에만 --config로
+      # certificateThumbprint를 병합 주입한다.
+      #
+      # (지적 4 판정: 안전, 변경 없음) config_path는 $env:RUNNER_TEMP 기반의
+      # 백슬래시 경로(예: D:\a\_temp\tauri-windows-sign.config.json)이고, 이 문자열은
+      # 아래 args 출력을 거쳐 tauri-action의 `args` 입력으로 들어간다. 그 파싱 경로를
+      # 실제 소스(tauri-apps/tauri-action@1deb371, package.json에 고정된
+      # string-argv@0.3.2)까지 내려받아 확인했다:
+      #   - src/inputs.ts:26 `export const rawArgs = stringArgv(core.getInput('args'));`
+      #     — string-argv@0.3.2는 정규식 `/([^\s'"]([^\s'"]*(['"])([^\3]*?)\3)+[^\s'"]*)|
+      #     [^\s'"]+|(['"])([^\5]*?)\5/gi` 로만 토큰을 나누며 백슬래시 이스케이프 처리
+      #     로직이 전혀 없다 — 즉 백슬래시는 소실되지 않고 리터럴 그대로 보존된다.
+      #   - GitHub 호스팅 Windows 러너의 RUNNER_TEMP는 공백이 없는 고정 경로
+      #     (예: D:\a\_temp)이므로, 위 정규식의 공백/따옴표 기준 토큰 분리 경계에
+      #     걸릴 여지도 없다.
+      #   - src/utils.ts:484 `execa(command, args, { cwd, env, ... })` — `shell: true`
+      #     옵션이 없어 execa가 cmd.exe 등 셸을 거치지 않고 인자 배열을 프로세스에
+      #     직접 전달한다. 즉 문자열이 두 번째로 재파싱되며 백슬래시가 또 소실될
+      #     여지도 없다.
+      # 따라서 이 경로에서 백슬래시 이스케이프 소실로 인한 서명 누락/빌드 실패
+      # 위험은 실재하지 않는다고 판정했다 — 코드 변경 없음.
+      - name: Compute tauri build args
+        id: build_args
+        shell: bash
+        env:
+          RUNNER_OS_NAME: ${{ runner.os }}
+          WINSIGN_ENABLED: ${{ steps.winsign.outputs.sign }}
+          WINSIGN_CONFIG_PATH: ${{ steps.winsign.outputs.config_path }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS_NAME" = "Windows" ] && [ "$WINSIGN_ENABLED" = "true" ]; then
+            echo "args=--config $WINSIGN_CONFIG_PATH" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # (지적 1) build.rs가 컴파일 시점에 읽는 4개 값(GOOGLE_OAUTH_CLIENT_SECRET,
+      # GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET, MALGN_OTEL_COLLECTOR_BASE)과 Tauri CLI
+      # 코어가 updater 서명 시 읽는 2개 값(TAURI_SIGNING_PRIVATE_KEY(_PASSWORD))은
+      # 전부 이 스텝이 내부적으로 실행하는 `tauri build`(=cargo build) 동안에만
+      # 필요하다. 이전에는 job-level env:로 올려져 있어 체크아웃·pnpm install·
+      # Rust/캐시 셋업 등 시크릿이 필요 없는 모든 스텝(서드파티 액션 포함)에까지
+      # 노출됐다 — 실제로 필요한 이 스텝의 step-level env:로 내렸다.
+      - name: Build & publish (tauri-action)
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          MALGN_OTEL_COLLECTOR_BASE: ${{ secrets.MALGN_OTEL_COLLECTOR_BASE }}
+          GOOGLE_MCP_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_ID }}
+          GOOGLE_MCP_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_SECRET }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.verify-version.outputs.tag }}
+          releaseName: '맑은에이전트 ${{ needs.verify-version.outputs.tag }}'
+          releaseBody: |
+            자동 빌드된 릴리스 초안입니다. 아래를 확인한 뒤 "Publish release"를 눌러야 배포됩니다.
+            - Windows 설치 파일 서명 여부는 이 빌드의 Actions 로그(Job Summary)를 확인하세요.
+            - macOS 산출물은 ad-hoc/무서명 상태입니다(Apple 공증 없음, 사전 합의됨).
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          retryAttempts: 3
+          args: ${{ steps.build_args.outputs.args }}
+
+  # (지적 2) tauri-action이 latest.json 업로드에 성공했다고 "가정"하고 끝내는 대신,
+  # macOS/Windows 두 잡이 모두 끝난 뒤 실제 draft release 자산을 조회해 검증한다.
+  # `needs: release`는 matrix job의 모든 조합이 끝나야 시작되므로(max-parallel: 1과
+  # 맞물려) 항상 마지막 잡 이후에 돈다. release 잡 중 하나라도 실패하면 이 잡은
+  # 기본 동작으로 건너뛴다(실패는 이미 워크플로 레벨에서 드러난다).
+  #
+  # draft release는 push 권한(대략 contents: write 수준)이 있어야 목록/자산 조회에
+  # 노출된다(GitHub REST "List releases" 문서 — draft는 push access가 있는 호출자에게만
+  # 보인다). 이 잡은 쓰기 동작을 하지 않지만, draft 가시성 확보를 위해 permissions을
+  # contents: write로 둔다.
+  verify-release-assets:
+    needs: [verify-version, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: latest.json 및 플랫폼별 서명 존재 검증
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify-version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "대상 태그: $TAG (repo: $REPO)"
+
+          RELEASE_JSON=$(gh api "repos/$REPO/releases" --paginate \
+            | jq --arg TAG "$TAG" '[.[] | select(.tag_name == $TAG)] | first')
+
+          if [ -z "$RELEASE_JSON" ] || [ "$RELEASE_JSON" = "null" ]; then
+            echo "::error::태그 '$TAG'에 해당하는 GitHub Release(초안 포함)를 찾을 수 없습니다. release 잡이 실제로 draft release를 만들었는지 Actions 로그를 확인하고, 이 워크플로에 사용된 GITHUB_TOKEN이 draft를 조회할 권한(contents: write, 즉 push access 동등 권한)을 갖고 있는지 확인하세요."
+            exit 1
+          fi
+
+          LATEST_ASSET_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[]? | select(.name == "latest.json") | .url')
+          if [ -z "$LATEST_ASSET_URL" ]; then
+            echo "::error::릴리스 '$TAG'의 자산 목록에 latest.json이 없습니다. tauri-action의 uploadUpdaterJson 업로드가 누락되었을 가능성이 큽니다. GitHub Release(초안) 페이지에서 자산 목록을 직접 확인하고, 필요하면 같은 태그로 workflow_dispatch를 재실행하세요(retryAttempts로도 못 살린 업로드 실패)."
+            exit 1
+          fi
+
+          LATEST_JSON=$(gh api -H "Accept: application/octet-stream" "$LATEST_ASSET_URL")
+
+          echo "$LATEST_JSON" | jq -e '
+            (.platforms // {}) as $p
+            | ($p | keys | map(select(startswith("darwin"))) | length > 0)
+              and ($p | keys | map(select(startswith("windows"))) | length > 0)
+              and ($p | to_entries | all(.value.signature != null and .value.signature != ""))
+          ' > /dev/null || {
+            echo "::error::latest.json 검증 실패 — macOS/Windows 두 플랫폼 항목이 모두 있고 각 서명(signature)이 비어있지 않아야 합니다. 아래는 실제로 받은 latest.json의 platforms 키/서명 존재 여부입니다. tauri-action#1270(병렬 업로드 레이스)로 한쪽 플랫폼 항목이 덮어써졌을 수 있습니다 — 이 워크플로의 max-parallel:1이 지켜졌는지 확인하고, 같은 태그로 workflow_dispatch를 재실행해 latest.json을 다시 병합·업로드하세요."
+            echo "$LATEST_JSON" | jq '.platforms | to_entries | map({platform: .key, hasSignature: (.value.signature != null and .value.signature != "")})'
+            exit 1
+          }
+
+          echo "$LATEST_JSON" | jq '.platforms | to_entries | map({platform: .key, hasSignature: (.value.signature != null and .value.signature != "")})'
+          echo "latest.json 검증 통과: macOS/Windows 플랫폼 항목과 서명이 모두 확인되었습니다."

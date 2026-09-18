@@ -688,5 +688,15 @@ textarea.settings-input { resize: vertical; }
 }
 .toast.show { opacity: 1; transform: translateY(0); }
 
+/* ---------------- 캐리오버 자동설치 카운트다운 배너(비모달) ---------------- */
+.update-countdown-banner {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 14px; z-index: 1000;
+  background: #14161c; color: #fff; font-size: 13px; padding: 10px 14px 10px 18px;
+  border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+.update-countdown-later-btn { background: rgba(255, 255, 255, 0.12); color: #fff; border-color: rgba(255, 255, 255, 0.24); }
+.update-countdown-later-btn:hover { background: rgba(255, 255, 255, 0.2); }
+
 /* ---------------- 세션 상세 — 도구 호출 한 줄(§8, docs/design/session-chat.md) ---------------- */
 .chat-tool-line { padding: 4px 6px 4px 18px; font-size: 12px; color: var(--color-ink-faint); }

@@ -33,6 +33,23 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // GitHub Releases(`latest.json`) 기반 자동업데이트. 서명 공개키는
+        // tauri.conf.json의 `plugins.updater.pubkey`에 실제 값으로 설정돼 있다
+        // (정본은 그 파일 하나 — 여기엔 값을 옮기지 않는다). 이 pubkey는
+        // `check()`에서는 전혀 참조되지 않고, 오직 `download()` 내부의
+        // 서명 검증(`verify_signature()`)에서만 쓰인다. 따라서 pubkey가
+        // 비어 있으면 `check()`는 통과하지만 `download()`가 Err를 반환해
+        // (fail-closed, no-op 아님) 업데이트가 영구히 적용되지 않는 상태가
+        // 되므로 반드시 유효한 값이 채워져 있어야 한다. 서명용 개인키(비밀번호
+        // 포함)는 저장소에 두지 않고 GitHub Actions repo secret
+        // `TAURI_SIGNING_PRIVATE_KEY`(+선택 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`)로만
+        // 주입한다 — tauri-cli가 `tauri build` 시 이 두 env를 자동으로 읽어
+        // 업데이트 아티팩트에 서명하고 `.sig`를 만든다(코드 변경 불필요).
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 업데이트 설치 후 재시작(`relaunch()`)에 필요. capabilities/default.json엔
+        // 필요한 최소 권한만(`process:allow-restart`) 부여했다 — `allow-exit`은
+        // 이 기능에 불필요해 제외.
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let sessions_handle = app.handle().clone();
             std::thread::spawn(move || {
