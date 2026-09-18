@@ -114,6 +114,9 @@ html, body {
 }
 .btn:hover { background: #f3f4f6; }
 .btn:disabled { opacity: 0.6; cursor: default; }
+/* 목록 재조회 중임을 알리는 최소 표시 — 새 애니메이션 없이 opacity만 낮춘다
+   (MCP 관리 새로고침처럼 재조회에 수 초~수십 초가 걸릴 수 있는 목록에 사용). */
+.is-refreshing { opacity: 0.55; pointer-events: none; transition: opacity 0.15s ease; }
 .btn-primary { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
 .btn-primary:hover { background: #4338ca; }
 
@@ -272,6 +275,17 @@ html, body {
 }
 .sidebar-logout { color: #f87171; }
 .sidebar-logout:hover { background: rgba(248, 113, 113, 0.12); }
+/* 자동 업데이트 버튼 — 평소엔 렌더조차 되지 않다가(sidebar.ts renderUpdateItem)
+   감지됐을 때만 나타나는 조용한 항목이라, 다른 사이드바 메뉴와 톤은 맞추되
+   인디고 계열로 살짝 강조해 "새 상태"임을 표시한다. live-pulse 애니메이션은
+   기존 실시간 감시 표시(.live-dot)와 동일한 것을 재사용한다. */
+.sidebar-update-item { color: #a5b4fc; }
+.sidebar-update-item:hover { background: rgba(129, 140, 248, 0.14); }
+.sidebar-update-item.disabled { cursor: default; opacity: 0.75; }
+.sidebar-update-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #818cf8; flex-shrink: 0;
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
 .sidebar-user-email {
   padding: 6px 10px 10px 10px; font-size: 11px; color: #9ca3af;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -324,7 +338,6 @@ html, body {
 
 /* ---------------- MCP 관리 ---------------- */
 .mcp-toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
-.mcp-add-card { max-width: 480px; margin-bottom: 16px; }
 .mcp-list { display: flex; flex-direction: column; gap: 8px; max-width: 1040px; }
 .mcp-row {
   display: flex; align-items: center; justify-content: space-between; gap: 14px;

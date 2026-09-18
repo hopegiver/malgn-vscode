@@ -1,4 +1,4 @@
-import { el, showToast, loadingBlock, errorBlock, confirmDialog } from '../dom';
+import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay } from '../dom';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
@@ -319,7 +319,15 @@ function renderGithubPanel(): HTMLElement {
   if (state.github.error) return errorBlock(state.github.error, () => void loadGithubStatus());
 
   const status = state.github.status;
-  const refreshBtn = el('button', { className: 'btn', onClick: () => void loadGithubStatus() }, ['상태 새로고침']);
+  // loading은 최초 로드뿐 아니라 이 "상태 새로고침" 버튼을 눌렀을 때도 true가
+  // 된다(loadGithubStatus) — loaded=true 이후에는 전체 패널을 loadingBlock()으로
+  // 갈아치우지 않으므로, 버튼 자체에 진행 중 피드백을 준다(마켓플레이스 새로고침과
+  // 동일 패턴).
+  const refreshBtn = el(
+    'button',
+    { className: 'btn', disabled: state.github.loading, onClick: () => void loadGithubStatus() },
+    [state.github.loading ? '새로고침 중…' : '상태 새로고침']
+  );
 
   if (!status || !status.installed) {
     return el('div', { className: 'settings-card integration-panel' }, [
@@ -421,7 +429,12 @@ function renderCloudflarePanel(): HTMLElement {
   if (state.cloudflare.error) return errorBlock(state.cloudflare.error, () => void loadCloudflareStatus());
 
   const status = state.cloudflare.status;
-  const refreshBtn = el('button', { className: 'btn', onClick: () => void loadCloudflareStatus() }, ['상태 새로고침']);
+  // GitHub 패널과 동일한 이유로 loading 중에는 버튼 자체가 진행 중임을 알린다.
+  const refreshBtn = el(
+    'button',
+    { className: 'btn', disabled: state.cloudflare.loading, onClick: () => void loadCloudflareStatus() },
+    [state.cloudflare.loading ? '새로고침 중…' : '상태 새로고침']
+  );
 
   if (!status || !status.installed) {
     return el('div', { className: 'settings-card integration-panel' }, [
@@ -650,11 +663,7 @@ function renderGithubMcpQuickstartRow(): HTMLElement {
     'button',
     {
       className: 'btn btn-primary',
-      onClick: () => {
-        mcpAddPrefill = { name: 'GitHub', transport: 'http', target: GITHUB_MCP_TARGET };
-        mcpAddFormOpen = true;
-        notifyChange();
-      },
+      onClick: () => openMcpAddModal({ name: 'GitHub', transport: 'http', target: GITHUB_MCP_TARGET }),
     },
     ['설치']
   );
@@ -686,17 +695,14 @@ function renderTelegramMcpQuickstartRow(): HTMLElement {
     'button',
     {
       className: 'btn btn-primary',
-      onClick: () => {
-        mcpAddPrefill = {
+      onClick: () =>
+        openMcpAddModal({
           name: 'Telegram',
           transport: 'stdio',
           target: 'npx',
           args: '-y mcp-telegram-agent',
           env: 'BOT_TELEGRAM_TOKEN=\nBOT_TELEGRAM_CHAT_ID=',
-        };
-        mcpAddFormOpen = true;
-        notifyChange();
-      },
+        }),
     },
     ['설치']
   );
@@ -713,8 +719,63 @@ function renderTelegramMcpQuickstartRow(): HTMLElement {
   ]);
 }
 
-let mcpAddFormOpen = false;
+// ---------------- 등록 폼 모달 ----------------
+// sessions.ts의 renderMetaModal / appLinks.ts의 renderLinkFormModal과 동일한
+// "모듈 로컬 열림상태 + ESC 리스너 attach/detach" 패턴. 등록 폼은 이 화면에
+// 유일한 인라인 편집 폼이었고(수정 폼은 없음), 이번에 모달로 전환한다 —
+// GitHub 공식 MCP 빠른시작(renderGithubMcpQuickstartRow)·Telegram 빠른시작
+// (renderTelegramMcpQuickstartRow)이 prefill을 채워 여는 진입점도 함께 옮긴다.
+let mcpAddModalOpen = false;
 let mcpAddPrefill: McpAddPrefill | null = null;
+let mcpAddModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function detachMcpAddModalEscHandler(): void {
+  if (mcpAddModalEscHandler) {
+    window.removeEventListener('keydown', mcpAddModalEscHandler);
+    mcpAddModalEscHandler = null;
+  }
+}
+
+function openMcpAddModal(prefill: McpAddPrefill | null): void {
+  mcpAddPrefill = prefill;
+  mcpAddModalOpen = true;
+  notifyChange();
+}
+
+function closeMcpAddModal(): void {
+  mcpAddModalOpen = false;
+  mcpAddPrefill = null;
+  detachMcpAddModalEscHandler();
+  notifyChange();
+}
+
+function renderMcpAddModalIfOpen(): HTMLElement | null {
+  if (!mcpAddModalOpen) {
+    detachMcpAddModalEscHandler();
+    return null;
+  }
+  if (!mcpAddModalEscHandler) {
+    mcpAddModalEscHandler = (e) => {
+      if (e.key === 'Escape') closeMcpAddModal();
+    };
+    window.addEventListener('keydown', mcpAddModalEscHandler);
+  }
+  return renderMcpAddModal(mcpAddPrefill ?? undefined);
+}
+
+// createModalOverlay로 배경 클릭·ESC·닫기 버튼 3가지 경로로 닫힌다(다른
+// 화면들과 동일한 modal-overlay/modal-box/modal-header+modal-close-btn/
+// modal-body 구조).
+function renderMcpAddModal(prefill?: McpAddPrefill): HTMLElement {
+  const modalBox = el('div', { className: 'modal-box' }, [
+    el('div', { className: 'modal-header' }, [
+      el('h2', { className: 'modal-title' }, ['새 MCP 서버 등록']),
+      el('button', { className: 'modal-close-btn', onClick: closeMcpAddModal }, ['✕']),
+    ]),
+    el('div', { className: 'modal-body' }, [renderMcpAddForm(prefill)]),
+  ]);
+  return createModalOverlay(modalBox, closeMcpAddModal);
+}
 
 async function handleRemoveMcp(server: McpServerSummary): Promise<void> {
   if (!(await confirmDialog(`"${server.name}" MCP 서버를 삭제할까요? 이 작업은 되돌릴 수 없습니다.`, { danger: true }))) return;
@@ -1095,8 +1156,7 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
       try {
         await addMcpServer({ name, transport, target, args, header, env, oauthClientId, oauthClientSecret, oauthCallbackPort });
         showToast(`"${name}" MCP 서버가 추가되었습니다`);
-        mcpAddFormOpen = false;
-        mcpAddPrefill = null;
+        closeMcpAddModal();
         await loadMcp();
       } catch (err) {
         showToast(`추가에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
@@ -1106,32 +1166,25 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
     })();
   });
 
-  return el('div', { className: 'settings-card mcp-add-card' }, [form]);
+  return form;
 }
 
 function renderMcpPanel(): HTMLElement {
   if (state.mcp.loading && !state.mcp.loaded) return loadingBlock();
   if (state.mcp.error) return errorBlock(state.mcp.error, () => void loadMcp());
 
+  // claude mcp list는 등록된 서버마다 순차 헬스체크를 하므로 서버가 여러 개면
+  // 새로고침 한 번에 수 초~수십 초가 걸릴 수 있다 — 최초 로드 이후(loaded=true)에는
+  // 전체 패널이 loadingBlock()으로 바뀌지 않으므로, 이 버튼이 disabled+라벨
+  // 변경으로 "지금 실제로 재조회 중"임을 알려야 한다(안 그러면 멈춘 것처럼 보임).
+  // 카탈로그도 같은 버튼이 함께 누르므로 두 로딩 상태를 함께 본다.
+  const mcpRefreshing = state.mcp.loading || state.mcpCatalog.loading;
   const refreshBtn = el(
     'button',
-    { className: 'btn', onClick: () => { void loadMcp(); void loadMcpCatalog(); } },
-    ['↻ 새로고침']
+    { className: 'btn', disabled: mcpRefreshing, onClick: () => { void loadMcp(); void loadMcpCatalog(); } },
+    [mcpRefreshing ? '새로고침 중…' : '↻ 새로고침']
   );
-  // V-06: 폼이 열리면 라벨만 "취소"로 바뀌고 className은 primary 그대로라 화면에서
-  // 가장 강조된 버튼이 "취소"가 됐다. 열린 상태에서는 보조 버튼으로 낮춘다.
-  const addToggleBtn = el(
-    'button',
-    {
-      className: mcpAddFormOpen ? 'btn' : 'btn btn-primary',
-      onClick: () => {
-        mcpAddFormOpen = !mcpAddFormOpen;
-        if (!mcpAddFormOpen) mcpAddPrefill = null;
-        notifyChange();
-      },
-    },
-    [mcpAddFormOpen ? '취소' : '+ 새 MCP 서버']
-  );
+  const addToggleBtn = el('button', { className: 'btn btn-primary', onClick: () => openMcpAddModal(null) }, ['+ 새 MCP 서버']);
 
   const body: HTMLElement[] = [
     el('div', { className: 'settings-form-hint' }, [
@@ -1139,8 +1192,6 @@ function renderMcpPanel(): HTMLElement {
     ]),
     el('div', { className: 'mcp-toolbar' }, [refreshBtn, addToggleBtn]),
   ];
-
-  if (mcpAddFormOpen) body.push(renderMcpAddForm(mcpAddPrefill ?? undefined));
 
   if (state.mcpCatalog.error) {
     body.push(errorBlock(`MCP 카탈로그를 불러오지 못했습니다: ${state.mcpCatalog.error}`, () => void loadMcpCatalog()));
@@ -1156,18 +1207,24 @@ function renderMcpPanel(): HTMLElement {
   const installableRows = buildInstallableMcpRows();
   const catalogStillLoading = state.mcpCatalog.loading && !state.mcpCatalog.loaded;
 
+  // 새로고침 중에는 목록을 살짝 흐리게 해 "재조회가 실제로 진행 중"임을
+  // 버튼 라벨 외에도 목록 자체에서 확인할 수 있게 한다(새 애니메이션 없이
+  // opacity만, styles.css .is-refreshing).
+  const listClassName = `mcp-list${mcpRefreshing ? ' is-refreshing' : ''}`;
+
   body.push(el('div', { className: 'plugin-section-label' }, [`등록된 서버 ${state.mcp.items.length}개`]));
-  body.push(el('div', { className: 'mcp-list' }, registeredRows));
+  body.push(el('div', { className: listClassName }, registeredRows));
 
   if (installableRows.length > 0 || catalogStillLoading) {
     body.push(el('div', { className: 'plugin-section-label' }, ['설치 가능한 서버']));
   }
   if (installableRows.length > 0) {
-    body.push(el('div', { className: 'mcp-list' }, installableRows));
+    body.push(el('div', { className: listClassName }, installableRows));
   }
   // 카탈로그는 등록된 서버와 별도로 로딩된다 — 등록된 서버 섹션이 먼저 보이고,
   // 카탈로그 항목은 로딩이 끝나면 설치 가능한 서버 섹션에 합류한다.
   if (catalogStillLoading) body.push(loadingBlock());
 
-  return el('div', {}, body);
+  const modalEl = renderMcpAddModalIfOpen();
+  return el('div', {}, modalEl ? [...body, modalEl] : body);
 }
