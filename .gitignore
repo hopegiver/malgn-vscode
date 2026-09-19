@@ -9,6 +9,7 @@ site/
 src-tauri/.env
 scripts/capture/output/
 .claude/worktrees/
+.claude/autonomy.json
 *.pfx
 *.p12
 *.key
