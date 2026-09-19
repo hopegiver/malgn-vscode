@@ -110,9 +110,23 @@ jobs:
       # macOS: .app 번들만 빌드(dmg 생략) 후 ditto로 zip. plain `zip`이 아니라
       # `ditto`를 쓰는 이유는 .app 번들의 리소스 포크/확장 속성을 안전하게 보존하는
       # Apple 권장 방식이기 때문이다.
+      #
+      # --config로 createUpdaterArtifacts를 이 빌드에서만 false로 덮어쓴다(로컬
+      # 확인: `pnpm tauri build --help`의 `-c, --config <CONFIG>` — "JSON strings
+      # or paths to JSON ... to merge with the default configuration file").
+      # src-tauri/tauri.conf.json의 전역 설정(true)은 건드리지 않는다 — 그건
+      # tauri-release-build.yml의 실제 릴리스가 updater(.sig)를 만드는 데 필요하다.
+      # 이 포터블 빌드는 updater 대상이 아니므로(§0), 전역 pubkey는 있는데
+      # TAURI_SIGNING_PRIVATE_KEY 시크릿은 없는 이 워크플로에서 매번
+      # "A public key has been found, but no private key" 로 실패하던 문제를,
+      # 서명 시크릿을 새로 노출하지 않고 updater 아티팩트 생성 자체를 끄는
+      # 방식으로 해결한다. 로컬 재현: env에서 TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)를
+      # 제거하고 `pnpm tauri build --bundles app`을 실행하면 CI와 동일한 에러가
+      # 재현되고, 동일 조건에서 아래처럼 --config를 추가하면 .app만 만들고
+      # (.app.tar.gz 생성 없이) 성공한다(직접 실행 확인, claimed 아님).
       - name: Build (macOS, .app only)
         if: runner.os == 'macOS'
-        run: pnpm tauri build --bundles app
+        run: pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       # 서명/공증을 아직 안 하므로(§0 참고) zip 안에 .app과 나란히 실행방법.txt를
       # 넣는다 — xattr -cr로 quarantine 속성을 지우는 우회법 안내.
