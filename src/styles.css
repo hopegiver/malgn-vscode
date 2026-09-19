@@ -18,6 +18,13 @@
     가장 불리한 badge-unknown(.badge-unknown, 배경 --color-neutral-100) 기준 4.595:1로 다크닝. */
   --color-ink-faint-inverse: #9ca3af; /* 어두운 배경(사이드바 #14161c)용 — 기존 값 그대로 유지(대비
     7.123:1로 이미 AA 충족), 밝은 배경용 --color-ink-faint와는 별개 토큰으로 분리만 함. */
+  --color-ink-muted-inverse: #7d8590; /* P2 — .sidebar-subnav-empty가 밝은 배경용 --color-ink-muted의
+    리터럴(#6b7280)을 다크 사이드바 위에 그대로 재사용해 3.739:1로 AA 미달이던 것을 위와 같은
+    패턴(분리)으로 수정. 사용처 전수 확인 결과 이 한 곳뿐(밝은 배경용 --color-ink-muted의 24개
+    사용처는 전부 --color-surface/--color-canvas/--color-neutral-100 등 밝은 배경 위라 문제 없음,
+    값 변경 없이 유지). #14161c 위 4.848:1로 AA 충족, 같은 배경 위 --color-ink-faint-inverse
+    (7.123:1)보다는 낮은 대비로 둬 원래 리터럴(#6b7280, 3.739:1)에서 최소한만 밝혀 시각적
+    변화를 줄인다(faint-inverse 수준까지 밝히면 육안 인상이 달라진다). */
   --color-surface-inverse: #14161c; /* --color-ink과 계산된 값은 같지만(#14161c) 의미가 다르다 —
     --color-ink은 밝은 배경 위 "텍스트" 색, 이 토큰은 사이드바/토스트/코드블록 등 "어두운
     배경 자체"의 색이다. 순수 리팩터: 시각적 변화 없음. */
@@ -38,6 +45,27 @@
   --color-warn-border: #fde68a;
   --color-warn-text: #92400e;
   --sidebar-width: 216px;
+
+  /* radius 토큰화(P2) — 실측 결과 4/6/7/8/9/10/12/14/16px(999px·50% 제외) 9종 리터럴이 흩어져
+     있었다. 14px(로그인 카드)·16px(채팅 말풍선)는 각 1곳뿐인 단독 값이라 토큰화 이득이 없어
+     리터럴로 남긴다(기계적으로 토큰을 만들지 않는다). 나머지는 1px 차이뿐인 인접 값을
+     하나로 합쳐(7→8, 9→10 — P1의 font-size 0.5px 내림과 같은 크기의, 육안으로 구분 안 되는
+     보정) 5단계로 정리했다: xs/sm/md/lg/xl. 999px(필/캡슐)과 50%(원)는 스케일과 무관한
+     별도 의미라 각각의 토큰으로 분리한다. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+  --radius-circle: 50%;
+
+  /* box-shadow 토큰화(P2) — 실측 결과 6곳 중 로그인카드(4px 24px/0.06)·모달(12px 40px/0.2)·
+     토글 썸(1px 2px/0.25)은 각 1곳뿐이라 리터럴로 남긴다. 카드 hover 리프트(1px 6px/0.06)는
+     project-card·home-widget 2곳이 값은 동일한데 rgba 표기(공백 유무)만 달라 근접-중복이었고,
+     토스트/카운트다운 배너(4px 16px/0.2)도 2곳이 완전히 같은 값이라 각각 토큰으로 묶는다. */
+  --shadow-hover: 0 1px 6px rgba(0, 0, 0, 0.06);
+  --shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 /* font-size 정수화(P1) — 11.5/12.5/13.5/10.5px(실측 50곳)를 정수 스케일로 내림(floor)
@@ -100,12 +128,16 @@ html, body {
 }
 .sidebar-nav-item {
   display: flex; align-items: center; gap: 8px;
-  padding: 9px 10px; border-radius: 8px;
+  padding: 9px 10px; border-radius: var(--radius-md);
   color: #cbd5e1; font-weight: 500; font-size: 13px;
   cursor: pointer; user-select: none;
 }
 .sidebar-nav-item.active { background: var(--color-brand); color: #fff; }
+.sidebar-nav-item.active:active { background: #3730a3; }
 .sidebar-nav-item:not(.active):hover { background: rgba(255,255,255,0.06); }
+/* active 상태 보강(P2) — hover 대비 두 배 알파로 눌림을 표현(아래 sidebar-logout/
+   update-item/subnav-item/chevron-btn도 각자 hover 알파의 대략 두 배로 통일). */
+.sidebar-nav-item:not(.active):active { background: rgba(255,255,255,0.12); }
 
 /* 다크 사이드바(#14161c) 위에서는 기본 인디고 아웃라인(#4f46e5)의 실측 대비가
    ~2.9:1로 WCAG 1.4.11 비텍스트 대비(3:1) 미달이라, 더 밝은 인디고(indigo-400,
@@ -133,27 +165,39 @@ html, body {
   display: inline-flex; align-items: center; gap: 6px;
   /* 버튼·인풋 패딩 정렬(P1) — 기존 7/9/9/6px 불일치를 세로 패딩 8px 공통값으로
      맞춘다(가로 패딩은 버튼 14px/인풋 11px로 용도별 유지). */
-  padding: 8px 14px; border-radius: 7px; font-size: 13px; font-weight: 500;
+  /* radius 토큰화(P2)로 --radius-md(8px)에 편입 — 구 7px에서 1px 병합, 아래 .btn:active와
+     함께 settings-input/sidebar-subnav-item도 동일하게 맞춘다(P2 radius 토큰화 주석 참고). */
+  padding: 8px 14px; border-radius: var(--radius-md); font-size: 13px; font-weight: 500;
   border: 1px solid var(--color-hairline); background: var(--color-surface);
   color: var(--color-ink); cursor: pointer;
 }
 .btn:hover { background: var(--color-neutral-100); }
+/* active 상태 보강(P2) — :hover는 있는데 :active(눌린 순간 피드백)가 없던 곳을 전수
+   보강한다. 배경 hover 톤이 있는 요소는 그보다 한 단계 더 짙은 톤(neutral-200 등)으로,
+   브랜드색 hover는 인디고 한 단계 더(indigo-800 #3730a3)로 press 피드백을 준다. */
+.btn:active { background: var(--color-neutral-200); }
 .btn:disabled { opacity: 0.6; cursor: default; }
 /* 목록 재조회 중임을 알리는 최소 표시 — 새 애니메이션 없이 opacity만 낮춘다
    (MCP 관리 새로고침처럼 재조회에 수 초~수십 초가 걸릴 수 있는 목록에 사용). */
 .is-refreshing { opacity: 0.55; pointer-events: none; transition: opacity 0.15s ease; }
 .btn-primary { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
 .btn-primary:hover { background: #4338ca; }
+.btn-primary:active { background: #3730a3; }
 
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
 .filter-row .filter-group { margin-bottom: 0; }
 .filter-group { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; }
 .filter-btn {
-  padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 500;
+  padding: 8px 14px; border-radius: var(--radius-pill); font-size: 13px; font-weight: 500;
   border: 1px solid var(--color-hairline); background: var(--color-surface);
   color: var(--color-ink-muted); cursor: pointer;
 }
+/* 탭 형태로 쓰이는 필터 버튼도 다른 버튼류처럼 눌림 피드백이 있어야 하는데
+   hover/active 둘 다 없었다(P2) — .btn과 같은 neutral 톤 단계를 재사용한다. */
+.filter-btn:hover { background: var(--color-neutral-100); }
+.filter-btn:active { background: var(--color-neutral-200); }
 .filter-btn.active { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
+.filter-btn.active:active { background: #3730a3; border-color: #3730a3; }
 
 /* ---------------- 카드 그리드 ---------------- */
 .project-grid {
@@ -164,11 +208,13 @@ html, body {
 .project-card {
   background: var(--color-surface);
   border: 1px solid var(--color-hairline);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 16px;
   display: flex; flex-direction: column;
 }
-.project-card:hover { border-color: var(--color-brand); box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+/* 카드 자체는 클릭 타깃이 아니라 순수 hover 어포던스라(위 주석 참고) :active는 추가하지
+   않는다 — 실제 클릭 타깃인 .project-card-link 쪽에 press 피드백을 둔다. */
+.project-card:hover { border-color: var(--color-brand); box-shadow: var(--shadow-hover); }
 .project-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
 .project-card-name { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-card-desc { color: var(--color-ink-muted); font-size: 12px; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
@@ -182,12 +228,14 @@ html, body {
   font-size: 12px; color: var(--color-brand); font-weight: 600; cursor: pointer;
 }
 .project-card-link:hover { text-decoration: underline; }
+.project-card-link:active { color: #4338ca; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-large { padding: 12px 28px; font-size: 15px; font-weight: 600; border-radius: 9px; }
+/* radius --radius-lg(10px)로 편입 — 구 9px에서 1px 병합(P1의 font-size 0.5px 내림과 같은 급). */
+.btn-large { padding: 12px 28px; font-size: 15px; font-weight: 600; border-radius: var(--radius-lg); }
 
 .badge {
   display: inline-flex; align-items: center;
-  padding: 2px 9px; border-radius: 999px;
+  padding: 2px 9px; border-radius: var(--radius-pill);
   font-size: 11px; font-weight: 600; white-space: nowrap;
 }
 .badge-active { background: var(--color-brand-soft); color: var(--color-brand); }
@@ -203,22 +251,25 @@ html, body {
 .alert {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
   background: var(--color-warn-bg); border: 1px solid var(--color-warn-border); color: var(--color-warn-text);
-  padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;
+  padding: 12px 16px; border-radius: var(--radius-md); margin-bottom: 16px; font-size: 13px;
 }
 
 .skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-.skeleton-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 10px; padding: 16px; min-height: 96px; }
-.skeleton-line { background: var(--color-neutral-200); border-radius: 4px; animation: pulse 1.2s ease-in-out infinite; }
+.skeleton-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 16px; min-height: 96px; }
+.skeleton-line { background: var(--color-neutral-200); border-radius: var(--radius-xs); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 /* ---------------- 상세 화면 ---------------- */
 .back-link { color: var(--color-ink-muted); font-size: 13px; cursor: pointer; margin-bottom: 10px; display: inline-block; }
 .back-link:hover { color: var(--color-ink); }
+/* hover가 이미 가장 진한 토큰(--color-ink)까지 가 더 짙게 할 색 여지가 없어, 다른 곳처럼
+   색을 더 짙게 하는 대신 살짝 옅게(opacity)해 눌림을 표현한다. */
+.back-link:active { opacity: 0.7; }
 .detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
 .detail-title { font-size: 22px; font-weight: 700; margin: 0 0 4px 0; }
 .detail-path { font-size: 12px; color: var(--color-ink-faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 
-.overview-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 10px; padding: 20px; }
+.overview-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 20px; }
 .overview-section + .overview-section { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--color-hairline); }
 .overview-label { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 6px; font-weight: 600; }
 .overview-label.danger { color: var(--color-danger); }
@@ -249,7 +300,7 @@ html, body {
 .raw-fallback-note { font-size: 12px; color: var(--color-ink-faint); margin-bottom: 10px; }
 .raw-fallback-pre {
   white-space: pre-wrap; word-break: break-word; background: var(--color-surface);
-  border: 1px solid var(--color-hairline); border-radius: 10px; padding: 16px;
+  border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 16px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; line-height: 1.6;
   max-height: 60vh; overflow: auto;
 }
@@ -289,7 +340,7 @@ html, body {
 .login-note { margin-top: 18px; font-size: 11px; color: var(--color-ink-faint); }
 .login-error {
   background: var(--color-danger-soft); color: var(--color-danger); font-size: 12px;
-  padding: 10px 12px; border-radius: 8px; margin-bottom: 16px; text-align: left; line-height: 1.5;
+  padding: 10px 12px; border-radius: var(--radius-md); margin-bottom: 16px; text-align: left; line-height: 1.5;
 }
 
 /* ---------------- 사이드바 그룹/서브메뉴 ---------------- */
@@ -300,15 +351,17 @@ html, body {
 }
 .sidebar-logout { color: #f87171; }
 .sidebar-logout:hover { background: rgba(248, 113, 113, 0.12); }
+.sidebar-logout:active { background: rgba(248, 113, 113, 0.2); }
 /* 자동 업데이트 버튼 — 평소엔 렌더조차 되지 않다가(sidebar.ts renderUpdateItem)
    감지됐을 때만 나타나는 조용한 항목이라, 다른 사이드바 메뉴와 톤은 맞추되
    인디고 계열로 살짝 강조해 "새 상태"임을 표시한다. live-pulse 애니메이션은
    기존 실시간 감시 표시(.live-dot)와 동일한 것을 재사용한다. */
 .sidebar-update-item { color: #a5b4fc; }
 .sidebar-update-item:hover { background: rgba(129, 140, 248, 0.14); }
+.sidebar-update-item:active { background: rgba(129, 140, 248, 0.22); }
 .sidebar-update-item.disabled { cursor: default; opacity: 0.75; }
 .sidebar-update-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: #818cf8; flex-shrink: 0;
+  width: 7px; height: 7px; border-radius: var(--radius-circle); background: #818cf8; flex-shrink: 0;
   animation: live-pulse 1.6s ease-in-out infinite;
 }
 .sidebar-user-email {
@@ -319,15 +372,17 @@ html, body {
 .sidebar-nav-chevron { font-size: 10px; color: var(--color-ink-faint-inverse); }
 .sidebar-subnav { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 4px 14px; }
 .sidebar-subnav-item {
-  padding: 7px 10px; border-radius: 7px; font-size: 12px; color: var(--color-ink-faint-inverse);
+  padding: 7px 10px; border-radius: var(--radius-md); font-size: 12px; color: var(--color-ink-faint-inverse);
   cursor: pointer; user-select: none;
 }
 .sidebar-subnav-item.active { background: rgba(79, 70, 229, 0.25); color: #fff; }
+.sidebar-subnav-item.active:active { background: rgba(79, 70, 229, 0.4); }
 .sidebar-subnav-item:not(.active):hover { background: rgba(255, 255, 255, 0.06); color: #cbd5e1; }
+.sidebar-subnav-item:not(.active):active { background: rgba(255, 255, 255, 0.12); color: #cbd5e1; }
 
 /* ---------------- 카탈로그 (플러그인 단위) ---------------- */
 .plugin-list { display: flex; flex-direction: column; gap: 16px; }
-.plugin-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 12px; padding: 20px; }
+.plugin-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-xl); padding: 20px; }
 .plugin-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--color-hairline); }
 .plugin-card-name { font-size: 16px; font-weight: 700; }
 .plugin-card-version { font-size: 12px; color: var(--color-ink-muted); margin-top: 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
@@ -367,7 +422,7 @@ html, body {
 .mcp-row {
   display: flex; align-items: center; justify-content: space-between; gap: 14px;
   background: var(--color-surface); border: 1px solid var(--color-hairline);
-  border-radius: 10px; padding: 14px 16px;
+  border-radius: var(--radius-lg); padding: 14px 16px;
 }
 .mcp-row-main { flex: 1; min-width: 0; }
 .mcp-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
@@ -383,19 +438,20 @@ html, body {
 /* 토글 스위치 */
 .toggle-track {
   display: inline-flex; align-items: center; width: 36px; height: 20px;
-  border-radius: 999px; background: #d1d5db; cursor: pointer; padding: 2px;
+  border-radius: var(--radius-pill); background: #d1d5db; cursor: pointer; padding: 2px;
   flex-shrink: 0; transition: background 0.15s ease;
 }
 .toggle-track.on { background: var(--color-brand); justify-content: flex-end; }
-.toggle-thumb { width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); }
+.toggle-thumb { width: 16px; height: 16px; border-radius: var(--radius-circle); background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); }
 
 /* ---------------- 설정 폼 ---------------- */
-.settings-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 10px; padding: 24px; max-width: 480px; }
+.settings-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 24px; max-width: 480px; }
 .settings-form-hint { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 18px; overflow-wrap: anywhere; }
 .settings-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 .settings-field-label { font-size: 12px; font-weight: 600; color: var(--color-ink); }
 .settings-input {
-  padding: 8px 11px; border-radius: 7px; border: 1px solid var(--color-hairline);
+  /* radius --radius-md(8px)로 편입 — 구 7px에서 1px 병합(.btn/.sidebar-subnav-item과 동일). */
+  padding: 8px 11px; border-radius: var(--radius-md); border: 1px solid var(--color-hairline);
   font-size: 13px; font-family: inherit; color: var(--color-ink); background: var(--color-surface);
 }
 /* :focus(마우스 클릭 포함)에서 outline 대신 border-color로 포커스를 표시하는
@@ -407,10 +463,18 @@ textarea.settings-input { resize: vertical; }
 /* 자율업무 폼의 cron 표현식 등 인라인 필드 에러 — settings-form-hint와 같은
    자리에 놓이되 위험색으로 구분한다(#/tasks 고정시간 "사용자 지정" 탭). */
 .settings-field-error { font-size: 12px; color: var(--color-danger); margin-bottom: 18px; overflow-wrap: anywhere; }
+/* validation 테두리 정본(P2) — 입력 오류 상태의 테두리 규칙이 화면마다 없거나 제각각이었다
+   (실측: 사용처 전수 조사 결과 input 테두리를 에러색으로 바꾸는 규칙이 어디에도 없었고,
+   .settings-field-error 텍스트만 표시됨). 위 .settings-field-error와 같은 --color-danger를
+   테두리에도 써서 짝을 맞춘 정본 클래스를 추가한다. :focus보다 뒤에 둬 포커스 중에도 에러
+   테두리가 유지되게 한다(동일 특이도 2단계, 소스 순서로 우선). 실제 입력 요소에 이 클래스를
+   붙이는 것은 TS 쪽 작업이라 이번 CSS 전용 라운드 범위 밖 — 정의만 해둔다(아래 보고 참고). */
+.settings-input.settings-input-error,
+.settings-input.settings-input-error:focus { border-color: var(--color-danger); }
 
 /* ---------------- 사용량 통계 ---------------- */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
-.stat-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 10px; padding: 16px; }
+.stat-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 16px; }
 .stat-card-label { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 6px; }
 .stat-card-value { font-size: 22px; font-weight: 700; }
 
@@ -418,23 +482,27 @@ textarea.settings-input { resize: vertical; }
 .bar-row { display: grid; grid-template-columns: 120px 1fr 110px; align-items: center; gap: 10px; font-size: 12px; }
 .bar-row-label { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar-row-value { text-align: right; color: var(--color-ink-muted); }
-.bar-track { height: 8px; border-radius: 999px; background: var(--color-neutral-200); overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 999px; background: var(--color-brand); }
-.bar-row-clickable { cursor: pointer; border-radius: 6px; padding: 4px 6px; margin: -4px -6px; }
+.bar-track { height: 8px; border-radius: var(--radius-pill); background: var(--color-neutral-200); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: var(--radius-pill); background: var(--color-brand); }
+.bar-row-clickable { cursor: pointer; border-radius: var(--radius-sm); padding: 4px 6px; margin: -4px -6px; }
 .bar-row-clickable:hover { background: var(--color-neutral-100); }
+.bar-row-clickable:active { background: var(--color-neutral-200); }
 .bar-row-clickable.selected { background: #eef2ff; }
 .daily-detail-panel { display: flex; flex-direction: column; gap: 12px; padding: 4px 6px 12px; }
 .session-detail-card { padding: 14px; }
 .tool-usage-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.tool-usage-chip { font-size: 11px; background: var(--color-neutral-100); border-radius: 999px; padding: 4px 10px; color: var(--color-ink-muted); }
+.tool-usage-chip { font-size: 11px; background: var(--color-neutral-100); border-radius: var(--radius-pill); padding: 4px 10px; color: var(--color-ink-muted); }
 
 /* ---------------- 홈 대시보드 위젯 ---------------- */
 .home-widget-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 .home-widget {
-  background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 12px;
+  background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-xl);
   padding: 18px; cursor: pointer; display: flex; flex-direction: column;
 }
-.home-widget:hover { border-color: var(--color-brand); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.06); }
+.home-widget:hover { border-color: var(--color-brand); box-shadow: var(--shadow-hover); }
+/* 카드 전체가 클릭 타깃(cursor:pointer)이라 project-card와 달리 :active를 둔다 — 배경을
+   살짝 눌러(canvas 톤) press를 표현. */
+.home-widget:active { background: var(--color-canvas); }
 .home-widget-title { font-size: 13px; font-weight: 700; margin-bottom: 12px; }
 .home-widget-big-number { font-size: 30px; font-weight: 700; }
 .home-widget-desc { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 10px; }
@@ -453,9 +521,10 @@ textarea.settings-input { resize: vertical; }
 .session-row {
   display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 16px;
   background: var(--color-surface); border: 1px solid var(--color-hairline);
-  border-radius: 10px; padding: 12px 16px; cursor: pointer;
+  border-radius: var(--radius-lg); padding: 12px 16px; cursor: pointer;
 }
 .session-row:hover { border-color: var(--color-brand); }
+.session-row:active { border-color: var(--color-brand); background: var(--color-canvas); }
 .session-row-main { min-width: 0; }
 .session-row-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-row-cwd { font-size: 12px; color: var(--color-ink-muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
@@ -475,7 +544,7 @@ textarea.settings-input { resize: vertical; }
 .task-row {
   display: flex; align-items: flex-start; gap: 14px;
   background: var(--color-surface); border: 1px solid var(--color-hairline);
-  border-radius: 10px; padding: 14px 16px;
+  border-radius: var(--radius-lg); padding: 14px 16px;
 }
 .task-row-main { flex: 1; min-width: 0; cursor: pointer; }
 .task-row-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
@@ -493,20 +562,20 @@ textarea.settings-input { resize: vertical; }
 
 /* ---------------- 자율업무 진행상황판 ---------------- */
 .task-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-items: start; }
-.task-board-column { background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: 10px; padding: 10px; min-height: 80px; }
+.task-board-column { background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 10px; min-height: 80px; }
 .task-board-column-head {
   display: flex; justify-content: space-between; align-items: center;
   font-size: 12px; font-weight: 700; color: var(--color-ink-muted); padding: 4px 4px 10px 4px;
 }
 .task-board-count {
-  background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 999px;
+  background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill);
   padding: 1px 8px; font-size: 11px; color: var(--color-ink);
 }
 .task-board-cards { display: flex; flex-direction: column; gap: 8px; }
 .task-board-empty { font-size: 11px; color: var(--color-ink-faint); text-align: center; padding: 12px 0; }
 .task-run-card {
   background: var(--color-surface); border: 1px solid var(--color-hairline); border-left: 3px solid var(--color-hairline);
-  border-radius: 8px; padding: 10px 12px; font-size: 12px;
+  border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px;
 }
 .task-run-card.status-running { border-left-color: var(--color-brand); }
 .task-run-card.status-ok { border-left-color: var(--color-success-text); }
@@ -521,7 +590,7 @@ textarea.settings-input { resize: vertical; }
   display: flex; align-items: center; gap: 12px;
 }
 .integration-account-avatar {
-  width: 36px; height: 36px; border-radius: 50%; background: var(--color-brand);
+  width: 36px; height: 36px; border-radius: var(--radius-circle); background: var(--color-brand);
   color: #fff; font-weight: 700; font-size: 15px;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
@@ -535,7 +604,7 @@ textarea.settings-input { resize: vertical; }
 .devtool-row {
   display: flex; align-items: center; gap: 14px;
   background: var(--color-surface); border: 1px solid var(--color-hairline);
-  border-radius: 10px; padding: 14px 16px;
+  border-radius: var(--radius-lg); padding: 14px 16px;
 }
 .devtool-main { flex: 1; min-width: 0; }
 .devtool-name { font-weight: 600; font-size: 13px; }
@@ -543,7 +612,7 @@ textarea.settings-input { resize: vertical; }
 
 .devtool-item { display: flex; flex-direction: column; gap: 6px; }
 .devtool-panel {
-  background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: 8px;
+  background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-md);
   padding: 12px 14px; font-size: 12px; display: flex; flex-direction: column; gap: 8px;
 }
 .devtool-panel-running { flex-direction: row; align-items: center; background: var(--color-brand-soft); border-color: var(--color-brand); }
@@ -554,7 +623,7 @@ textarea.settings-input { resize: vertical; }
 .devtool-panel-verified { font-size: 11px; color: var(--color-ink-faint); }
 .devtool-panel-command {
   font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px;
-  background: var(--color-surface-inverse); color: #e5e7eb; padding: 8px 10px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap;
+  background: var(--color-surface-inverse); color: #e5e7eb; padding: 8px 10px; border-radius: var(--radius-sm); overflow-x: auto; white-space: pre-wrap;
 }
 .devtool-affected-list { margin: 0; padding-left: 18px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; }
 .devtool-panel-actions { display: flex; gap: 8px; }
@@ -563,11 +632,11 @@ textarea.settings-input { resize: vertical; }
 .devtool-panel-danger { background: var(--color-danger-soft); border-color: #fecaca; color: var(--color-danger); }
 .devtool-log {
   margin: 6px 0 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-  background: var(--color-surface-inverse); color: #e5e7eb; padding: 8px 10px; border-radius: 6px; font-size: 11px;
+  background: var(--color-surface-inverse); color: #e5e7eb; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 11px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
 .devtool-spinner {
-  width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+  width: 14px; height: 14px; border-radius: var(--radius-circle); flex-shrink: 0;
   border: 2px solid rgba(79, 70, 229, 0.25); border-top-color: var(--color-brand);
   animation: devtool-spin 0.7s linear infinite;
 }
@@ -575,14 +644,16 @@ textarea.settings-input { resize: vertical; }
 
 /* ---------------- 사이드바 펼침 서브목록(프로젝트/세션목록 실데이터) ---------------- */
 .sidebar-nav-expandable { display: flex; align-items: center; justify-content: space-between; }
-.sidebar-nav-chevron-btn { cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+.sidebar-nav-chevron-btn { cursor: pointer; padding: 2px 4px; border-radius: var(--radius-xs); }
 .sidebar-nav-chevron-btn:hover { background: rgba(255, 255, 255, 0.12); }
-.sidebar-subnav-empty { padding: 7px 10px; font-size: 11px; color: #6b7280; }
+.sidebar-nav-chevron-btn:active { background: rgba(255, 255, 255, 0.2); }
+/* P2 — 다크 사이드바 위 리터럴 #6b7280(대비 3.739:1, AA 미달) → --color-ink-muted-inverse로 교체 */
+.sidebar-subnav-empty { padding: 7px 10px; font-size: 11px; color: var(--color-ink-muted-inverse); }
 .sidebar-subnav-item.sidebar-subnav-viewall { color: var(--color-brand); font-weight: 600; }
 .sidebar-subnav-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------- 플러그인 업데이트 결과 안내 ---------------- */
-.plugin-update-note { font-size: 12px; padding: 8px 12px; border-radius: 8px; margin-bottom: 16px; }
+.plugin-update-note { font-size: 12px; padding: 8px 12px; border-radius: var(--radius-md); margin-bottom: 16px; }
 .plugin-update-note.ok { background: var(--color-success-soft); color: var(--color-success-text); }
 .plugin-update-note.fail { background: var(--color-danger-soft); color: var(--color-danger); }
 
@@ -594,10 +665,11 @@ textarea.settings-input { resize: vertical; }
 
 /* ---------------- 프로젝트 폴더 구조 + 파일 미리보기 ---------------- */
 .project-tree-layout { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 16px; margin-top: 20px; align-items: start; }
-.project-tree-panel { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 10px; padding: 16px; }
+.project-tree-panel { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 16px; }
 .tree-root { max-height: 480px; overflow: auto; }
-.tree-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+.tree-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12px; }
 .tree-row:hover { background: var(--color-canvas); }
+.tree-row:active { background: var(--color-neutral-200); }
 .tree-row.tree-file.active { background: var(--color-brand-soft); color: var(--color-brand); font-weight: 600; }
 .tree-icon { font-size: 12px; flex-shrink: 0; }
 .tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -657,7 +729,7 @@ textarea.settings-input { resize: vertical; }
   z-index: 1000; padding: 24px;
 }
 .modal-box {
-  background: var(--color-surface); border-radius: 12px; max-width: 560px; width: 100%;
+  background: var(--color-surface); border-radius: var(--radius-xl); max-width: 560px; width: 100%;
   max-height: 80vh; display: flex; flex-direction: column;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
 }
@@ -668,22 +740,23 @@ textarea.settings-input { resize: vertical; }
 .modal-title { font-size: 15px; font-weight: 700; margin: 0; }
 .modal-close-btn {
   border: none; background: transparent; font-size: 16px; line-height: 1; cursor: pointer;
-  color: var(--color-ink-muted); padding: 4px 8px; border-radius: 6px;
+  color: var(--color-ink-muted); padding: 4px 8px; border-radius: var(--radius-sm);
 }
 .modal-close-btn:hover { background: var(--color-canvas); color: var(--color-ink); }
+.modal-close-btn:active { background: var(--color-neutral-200); color: var(--color-ink); }
 .modal-body { padding: 16px 20px; overflow-y: auto; }
 
 /* ---------------- 실시간 감시 인디케이터 ---------------- */
 .overview-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .overview-label-row .overview-label { margin-bottom: 0; }
 .live-indicator { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; color: var(--color-success-text); }
-.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-success-text); animation: live-pulse 1.6s ease-in-out infinite; }
+.live-dot { width: 7px; height: 7px; border-radius: var(--radius-circle); background: var(--color-success-text); animation: live-pulse 1.6s ease-in-out infinite; }
 @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 /* 세션 행의 "지금 실행 중" 조용한 점 표시(경고 배너 아님) — session-row-meta 안,
    badge 옆에 나란히 놓인다. */
 .session-running-dot {
-  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block; width: 7px; height: 7px; border-radius: var(--radius-circle);
   background: var(--color-success-text); animation: live-pulse 1.6s ease-in-out infinite;
   align-self: center;
 }
@@ -709,7 +782,7 @@ textarea.settings-input { resize: vertical; }
 }
 .toast {
   background: var(--color-surface-inverse); color: #fff; font-size: 13px; padding: 10px 18px;
-  border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-toast);
   opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease;
 }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -719,10 +792,11 @@ textarea.settings-input { resize: vertical; }
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 14px; z-index: 1000;
   background: var(--color-surface-inverse); color: #fff; font-size: 13px; padding: 10px 14px 10px 18px;
-  border-radius: 8px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-toast);
 }
 .update-countdown-later-btn { background: rgba(255, 255, 255, 0.12); color: #fff; border-color: rgba(255, 255, 255, 0.24); }
 .update-countdown-later-btn:hover { background: rgba(255, 255, 255, 0.2); }
+.update-countdown-later-btn:active { background: rgba(255, 255, 255, 0.28); }
 
 /* ---------------- 세션 상세 — 도구 호출 한 줄(§8, docs/design/session-chat.md) ---------------- */
 .chat-tool-line { padding: 4px 6px 4px 18px; font-size: 12px; color: var(--color-ink-faint); }
