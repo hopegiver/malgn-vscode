@@ -23,9 +23,8 @@ const PATTERNS = [
   { name: "Anthropic API key", re: /sk-ant-[A-Za-z0-9_-]{20,}/g },
   { name: "Generic API key literal", re: /sk-[A-Za-z0-9]{20,}/g },
   { name: "PEM private key block", re: /-----BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----/g },
-  // minisign/rsign 개인키 파일의 첫 줄 형식이다(예: `untrusted comment: minisign encrypted
-  // secret key`). 이 저장소의 업데이터 서명키가 이 형식이라 가장 중요한 패턴 — 공개키
-  // 줄("... public key")은 "secret key"를 포함하지 않으므로 매치되지 않는다.
+  // minisign/rsign 개인키 파일 첫 줄 형식 탐지(업데이터 서명키가 이 형식이라 가장 중요).
+  // pragma: allowlist-secret — 이 정규식 리터럴이 자기 자신과 자기참조 매치되는 걸 막는 마커(실제 키 아님, 지우면 이 파일 push마다 자기차단됨).
   { name: "minisign/rsign secret key", re: /untrusted comment:.*secret key/gi },
   // PKCS#12(.pfx/.p12)를 base64로 인코딩해 커밋하는 사고 패턴. DER 인코딩된 X.509/PKCS
   // 구조는 거의 항상 base64로 "MII"로 시작한다. 200자 이상으로 문턱을 높게 잡아 우연한
