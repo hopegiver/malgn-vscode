@@ -129,8 +129,44 @@ pub(crate) fn load() -> Result<UserConfig, String> {
 /// `~`로 시작하는 항목만 홈 기준으로 확장한다. `~user` 형태(다른 사용자 홈)는
 /// 거부하고, 그 외 범용 환경변수 확장은 하지 않는다(설계 §5 보안 핵심).
 /// `home`을 인자로 받는 순수 함수라 테스트에서 임시 디렉터리를 "가짜 홈"으로
-/// 주입할 수 있다.
+/// 주입할 수 있다. 실제 호출부는 `cfg!(windows)`(런타임 상수 — `#[cfg(windows)]`와
+/// 달리 모든 플랫폼에서 컴파일된다)를 넘긴다.
 pub(crate) fn expand_tilde(entry: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+    expand_tilde_for_platform(entry, home, cfg!(windows))
+}
+
+/// 홈-상대 구분자를 문자열 수준에서만 판정하는 순수 함수(`Path`/`PathBuf`를
+/// 쓰지 않는다) — `is_windows`를 인자로 받아 macOS CI에서도 Windows 분기를
+/// 그대로 검증할 수 있다. `PathBuf::join`을 여기서 썼다면 결과가 **컴파일
+/// 호스트**의 구분자 규칙을 따라 macOS에서 도는 테스트가 Windows 경로 조립을
+/// 검증하지 못했을 것이다(`dev_tools/platform.rs`의 `win_join` 주석과 동일한
+/// 함정 — 그 문서화된 교훈을 그대로 재사용한다).
+///
+/// 실사용자 버그(hub 이슈 01m2wm499xmh3046rnvx4cyn8n, Windows): 기존 구현은
+/// `~/`(슬래시)만 인정해 `~\workspace`(Windows 사용자가 탐색기 주소창에서
+/// 복사하거나 손으로 입력할 때 자연스러운 백슬래시 표기)를 `~사용자명` 형태로
+/// 오판하고 거부했다 — workspace 항목이 통째로 빠지면서 "C드라이브에 폴더가
+/// 분명히 있는데 자율업무가 프로젝트를 못 찾는다"는 증상으로 나타난다.
+/// Windows에서만 `~\`도 `~/`와 동일하게 인정한다(비-Windows 플랫폼은 기존
+/// 동작 그대로 — 이미 `~/`가 아닌 다른 구분자는 전부 거부되고 있었으므로
+/// 새로 받아들이는 입력이 없으면 기존에 거부되던 입력도 그대로 거부된다).
+fn strip_home_relative<'a>(rest: &'a str, is_windows: bool) -> Option<&'a str> {
+    if let Some(sub) = rest.strip_prefix('/') {
+        return Some(sub);
+    }
+    if is_windows {
+        if let Some(sub) = rest.strip_prefix('\\') {
+            return Some(sub);
+        }
+    }
+    None
+}
+
+fn expand_tilde_for_platform(
+    entry: &str,
+    home: Option<&Path>,
+    is_windows: bool,
+) -> Result<PathBuf, String> {
     let Some(rest) = entry.strip_prefix('~') else {
         return Ok(PathBuf::from(entry));
     };
@@ -139,7 +175,7 @@ pub(crate) fn expand_tilde(entry: &str, home: Option<&Path>) -> Result<PathBuf, 
             .map(|h| h.to_path_buf())
             .ok_or_else(|| format!("홈 디렉터리를 확인할 수 없어 '{entry}' 항목을 건너뜁니다."));
     }
-    if let Some(sub) = rest.strip_prefix('/') {
+    if let Some(sub) = strip_home_relative(rest, is_windows) {
         return home
             .map(|h| h.join(sub))
             .ok_or_else(|| format!("홈 디렉터리를 확인할 수 없어 '{entry}' 항목을 건너뜁니다."));
@@ -304,6 +340,63 @@ mod tests {
     fn expand_tilde_expands_using_provided_home() {
         let expanded = expand_tilde("~/workspace", Some(Path::new("/Users/me"))).unwrap();
         assert_eq!(expanded, PathBuf::from("/Users/me/workspace"));
+    }
+
+    // 신규 — 실사용자 버그 회귀 고정(hub 이슈 01m2wm499xmh3046rnvx4cyn8n, Windows).
+    // `Path`/`PathBuf`를 전혀 쓰지 않는 순수 문자열 함수라 macOS에서도 Windows
+    // 분기(`is_windows: true`)를 그대로 검증할 수 있다.
+    #[test]
+    fn strip_home_relative_accepts_backslash_only_when_windows() {
+        assert_eq!(strip_home_relative("\\workspace", true), Some("workspace"));
+        assert_eq!(strip_home_relative("\\workspace", false), None);
+    }
+
+    #[test]
+    fn strip_home_relative_accepts_forward_slash_on_any_platform() {
+        assert_eq!(strip_home_relative("/workspace", true), Some("workspace"));
+        assert_eq!(strip_home_relative("/workspace", false), Some("workspace"));
+    }
+
+    // `expand_tilde_for_platform`은 `home.join(sub)`을 쓰므로 결과 문자열의
+    // 구분자 표기는 컴파일 호스트를 따른다(`dev_tools/platform.rs`의 `win_join`
+    // 주석과 동일한 함정) — 그래서 Windows 리터럴 문자열과 비교하지 않고,
+    // 슬래시 버전과 동일한 조합(`home.join("workspace")`)으로 계산한 기대값과
+    // 비교한다. 이 비교는 호스트가 무엇이든 항상 성립한다.
+    #[test]
+    fn expand_tilde_for_platform_accepts_windows_backslash_separator() {
+        let home = Path::new("/Users/me");
+        let expanded = expand_tilde_for_platform("~\\workspace", Some(home), true)
+            .expect("Windows에서는 백슬래시도 허용되어야 합니다");
+        assert_eq!(expanded, home.join("workspace"));
+    }
+
+    #[test]
+    fn expand_tilde_for_platform_rejects_backslash_separator_when_not_windows() {
+        let result = expand_tilde_for_platform("~\\workspace", Some(Path::new("/Users/me")), false);
+        assert!(
+            result.is_err(),
+            "비-Windows 플랫폼에서는 기존 동작대로 백슬래시가 거부되어야 합니다"
+        );
+    }
+
+    // 공개 API(`expand_tilde`)가 현재 컴파일 타깃에 맞는 `is_windows`를 스스로
+    // 정하는지 확인한다 — `cfg!(windows)`가 곧 컴파일 호스트를 반영하므로, 이
+    // 단언은 macOS/windows-latest 양쪽 CI에서 각각 반대 분기를 실제로 실행해
+    // 검증한다(둘 다 의미 있게 통과해야 하는 진짜 크로스플랫폼 테스트).
+    #[test]
+    fn expand_tilde_uses_current_platform_for_backslash_acceptance() {
+        let result = expand_tilde("~\\workspace", Some(Path::new("/Users/me")));
+        if cfg!(windows) {
+            assert!(
+                result.is_ok(),
+                "Windows 호스트에서는 '~\\workspace'가 허용되어야 합니다"
+            );
+        } else {
+            assert!(
+                result.is_err(),
+                "비-Windows 호스트에서는 '~\\workspace'가 거부되어야 합니다"
+            );
+        }
     }
 
     // 신규(최소) — workspace 검증(루트 거부).
