@@ -31,8 +31,10 @@
 #     GOOGLE_MCP_OAUTH_CLIENT_ID·GOOGLE_MCP_OAUTH_CLIENT_SECRET — 앱 소스에
 #     리터럴로 두지 않으려고(이 저장소는 public) repo secret으로 등록해 빌드
 #     시점에만 env로 주입한다. 로그에 값이 찍히지 않도록 `echo`/`run` 블록에서
-#     직접 참조하지 않고, job 레벨 env로만 노출한다(GitHub Actions가 시크릿
-#     값을 로그에서 자동 마스킹하기도 한다). GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET은
+#     직접 참조하지 않고, 실제로 `tauri build`를 실행하는 스텝의 step-level
+#     env로만 노출한다 — checkout·pnpm/Node/Rust 셋업·rust-cache 등 시크릿이
+#     필요 없는 스텝(서드파티 액션 포함)에는 전달되지 않는다(GitHub Actions가
+#     시크릿 값을 로그에서 자동 마스킹하기도 한다). GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET은
 #     gmail/google-drive/google-calendar MCP 카탈로그 3개 항목이 공유하는
 #     Google Cloud OAuth 클라이언트다(앱 자체 로그인용
 #     GOOGLE_OAUTH_CLIENT_SECRET과는 별개 — 이름으로 구분).
@@ -69,16 +71,6 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
-      MALGN_OTEL_COLLECTOR_BASE: ${{ secrets.MALGN_OTEL_COLLECTOR_BASE }}
-      # gmail/google-drive/google-calendar MCP 카탈로그가 공유하는 Google
-      # OAuth 클라이언트(§0 참고). 아직 repo secret으로 등록/이름변경되지
-      # 않았다면 빈 문자열로 주입되고, build.rs의 option_env!()가 이를 빈
-      # 값으로 받아 해당 카탈로그 설치는 기존처럼(DCR 미지원으로 인증 실패)
-      # 동작한다 — 등록 전까지 이 CI 잡을 깨뜨리지 않는다.
-      GOOGLE_MCP_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_ID }}
-      GOOGLE_MCP_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,8 +116,24 @@ jobs:
       # 제거하고 `pnpm tauri build --bundles app`을 실행하면 CI와 동일한 에러가
       # 재현되고, 동일 조건에서 아래처럼 --config를 추가하면 .app만 만들고
       # (.app.tar.gz 생성 없이) 성공한다(직접 실행 확인, claimed 아님).
+      #
+      # env는 이 스텝에서만 필요하다(build.rs가 컴파일 시점에 읽는 4개 값).
+      # 이전에는 job-level env:로 올려져 있어 checkout·pnpm install·Rust/캐시
+      # 셋업 등 시크릿이 필요 없는 모든 스텝(서드파티 액션 포함)에까지 노출됐다
+      # — 실제로 필요한 이 스텝의 step-level env로 내렸다(tauri-release-build.yml의
+      # 동일 수정과 같은 방식).
       - name: Build (macOS, .app only)
         if: runner.os == 'macOS'
+        env:
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          MALGN_OTEL_COLLECTOR_BASE: ${{ secrets.MALGN_OTEL_COLLECTOR_BASE }}
+          # gmail/google-drive/google-calendar MCP 카탈로그가 공유하는 Google
+          # OAuth 클라이언트(§0 참고). 아직 repo secret으로 등록/이름변경되지
+          # 않았다면 빈 문자열로 주입되고, build.rs의 option_env!()가 이를 빈
+          # 값으로 받아 해당 카탈로그 설치는 기존처럼(DCR 미지원으로 인증 실패)
+          # 동작한다 — 등록 전까지 이 CI 잡을 깨뜨리지 않는다.
+          GOOGLE_MCP_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_ID }}
+          GOOGLE_MCP_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_SECRET }}
         run: pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       # 서명/공증을 아직 안 하므로(§0 참고) zip 안에 .app과 나란히 실행방법.txt를
@@ -177,8 +185,15 @@ jobs:
           if-no-files-found: error
 
       # Windows: 번들링(설치 프로그램 생성) 자체를 건너뛰고 cargo가 만든 원본 exe만 쓴다.
+      # env는 macOS 빌드 스텝과 동일한 이유(build.rs가 컴파일 시점에 읽는 4개
+      # 값)로 이 스텝에만 step-level로 부여한다.
       - name: Build (Windows, no installer)
         if: runner.os == 'Windows'
+        env:
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          MALGN_OTEL_COLLECTOR_BASE: ${{ secrets.MALGN_OTEL_COLLECTOR_BASE }}
+          GOOGLE_MCP_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_ID }}
+          GOOGLE_MCP_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_MCP_OAUTH_CLIENT_SECRET }}
         run: pnpm tauri build --no-bundle
 
       - name: Locate raw exe (Windows)
