@@ -176,6 +176,8 @@ export async function buildBaseFixtures() {
     update_plugin: { success: true, message: '업데이트 완료(테스트 기본값)' },
     install_plugin: { success: true, message: '설치 완료(테스트 기본값)' },
     refresh_marketplaces: { success: true, message: '새로고침 완료(테스트 기본값)' },
+    add_marketplace: { success: true, message: '추가 완료(테스트 기본값)' },
+    remove_marketplace: { success: true, message: '제거 완료(테스트 기본값)' },
     // invoke<void> 커맨드는 실제로도 JSON null(Rust 유닛 타입)이 내려온다 —
     // 그리고 Playwright의 addInitScript(fn, arg)는 arg를 JSON.stringify로
     // 직렬화하므로 값이 `undefined`인 키는 통째로 사라져(JSON에 undefined가

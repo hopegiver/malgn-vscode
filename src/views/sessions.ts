@@ -5,7 +5,7 @@
 // 보여주고(read_session_transcript, 설계 docs/design/session-chat.md), 하단
 // 입력창으로 보낸 메시지는 그 세션에 실제로 이어져(send_session_message) 응답이
 // 스트리밍된다.
-import { el, liveIndicator, runningDot, createModalOverlay } from '../dom';
+import { el, liveIndicator, runningDot, createModalOverlay, showToast } from '../dom';
 import { state, notifyChange } from '../state';
 import {
   fetchClaudeSessions,
@@ -15,6 +15,7 @@ import {
   cancelSessionTurn,
   onSessionChatDelta,
   onSessionChatDone,
+  openClaudeLoginTerminal,
 } from '../sessionsApi';
 import type { ClaudeSessionRecord, ChatMessageKind, SessionTranscript } from '../sessionsApi';
 import type { UnlistenFn } from '@tauri-apps/api/event';
@@ -353,7 +354,16 @@ function closeMetaModal(): void {
   notifyChange();
 }
 
-async function loadSessionTranscript(sessionId: string, showLoading: boolean): Promise<void> {
+// preserveError: 직전에 session-chat-done이 이미 채워놓은 턴 실패 에러(원문 +
+// authError)를 이 조회가 지우지 않게 한다. 발견 경위(하네스 auth-error
+// 시나리오 디버깅) — done 핸들러는 성공/실패 관계없이 "done 후 전체 재조회"
+// 원칙(§2)에 따라 항상 loadSessionTranscript를 호출하는데, 이 함수가 조회
+// 성공 시 무조건 error를 null로 지워 인증 실패 등 방금 뜬 배너가 거의 즉시
+// (transcript 조회가 보통 매우 빠르므로) 사라지는 회귀가 있었다. 화면 진입 시
+// 최초 로드(§ enterSessionChatView)나 "다시 시도" 버튼은 여전히 기본값(false)
+// 그대로 지운다 — 그쪽은 chat.error가 "이 조회 자체의 실패"를 뜻하므로 자기
+// 성공 시 지우는 게 맞다.
+async function loadSessionTranscript(sessionId: string, showLoading: boolean, preserveError = false): Promise<void> {
   const chat = state.sessionChat;
   if (chat.sessionId !== sessionId) return; // 그 사이 화면을 떠났으면 버린다
   if (showLoading) {
@@ -364,7 +374,7 @@ async function loadSessionTranscript(sessionId: string, showLoading: boolean): P
     const transcript = await fetchSessionTranscript(sessionId);
     if (state.sessionChat.sessionId !== sessionId) return; // 응답 도착 전에 이탈
     state.sessionChat.transcript = transcript;
-    state.sessionChat.error = null;
+    if (!preserveError) state.sessionChat.error = null;
     // 재진입 시 이미 진행 중인 턴에 재부착(M3) — 이 화면 인스턴스가 스스로 보낸
     // 턴을 이미 들고 있으면 덮어쓰지 않는다. 과거 델타는 못 따라잡지만 이후
     // 델타/done은 정상 수신되고, 입력창은 전송 중 상태(취소 버튼)로 전환된다.
@@ -435,11 +445,18 @@ async function attachChatListeners(myGeneration: number): Promise<void> {
       state.sessionChat.streamingTools = [];
       lastTurnCanceled = d.canceled;
       pendingUserText = null;
-      if (!d.ok && d.error) state.sessionChat.error = d.error;
+      // 원문 에러는 항상 그대로 보존한다(home.ts widgetErrorShell 선례) — authError는
+      // 그 원문을 대체하지 않고, 화면이 로그인 안내를 추가로 보여줄지만 결정한다.
+      if (!d.ok && d.error) {
+        state.sessionChat.error = d.error;
+        state.sessionChat.authError = d.authError;
+      }
       notifyChange();
       // "done 후 전체 재조회" — 화면에 남는 최종 상태는 항상 파일(jsonl)
-      // 하나에서만 만든다(중단·다른 창의 동시 기록도 자동 반영됨).
-      if (sid) void loadSessionTranscript(sid, false);
+      // 하나에서만 만든다(중단·다른 창의 동시 기록도 자동 반영됨). 방금 이
+      // 턴이 에러로 끝났다면(d.error) 그 에러를 이 재조회가 지우지 않게
+      // preserveError=true를 넘긴다 — 위 loadSessionTranscript 주석 참고.
+      if (sid) void loadSessionTranscript(sid, false, !d.ok && !!d.error);
     });
     if (myGeneration !== chatViewGeneration) {
       unlistenDone();
@@ -463,6 +480,7 @@ export async function enterSessionChatView(sessionId: string): Promise<void> {
     transcript: null,
     loading: false,
     error: null,
+    authError: false,
     turnId: null,
     streamingText: '',
     streamingTools: [],
@@ -486,6 +504,7 @@ export async function enterSessionDraftView(projectPath: string): Promise<void> 
     transcript: null,
     loading: false,
     error: null,
+    authError: false,
     turnId: null,
     streamingText: '',
     streamingTools: [],
@@ -514,6 +533,7 @@ export function leaveSessionChatView(): void {
     transcript: null,
     loading: false,
     error: null,
+    authError: false,
     turnId: null,
     streamingText: '',
     streamingTools: [],
@@ -533,6 +553,7 @@ export async function sendChatMessage(sessionId: string, text: string): Promise<
     return;
   }
   chat.error = null;
+  chat.authError = false;
   chat.input = '';
   pendingUserText = trimmed;
   notifyChange();
@@ -577,6 +598,7 @@ export async function sendDraftMessage(projectPath: string, text: string): Promi
     return;
   }
   chat.error = null;
+  chat.authError = false;
   chat.input = '';
   pendingUserText = trimmed;
   draftSending = true;
@@ -619,6 +641,42 @@ export async function sendDraftMessage(projectPath: string, text: string): Promi
     draftSending = false;
     notifyChange();
   }
+}
+
+// hub 이슈 01m2wm4e9k822fk73yahrrnnce: 인증 실패 알림의 "터미널에서 로그인"
+// 버튼 — gh/wrangler 연동(views/settings.ts handleLoginMcp 등)과 같은 패턴으로
+// 앱이 대신 로그인하지 않고 터미널 창을 여는 데까지만 관여한다. 로그인 완료
+// 여부는 이 화면이 알 수 없으므로, 결과는 토스트로만 알리고 입력창은 그대로
+// 둔다 — 사용자가 로그인 후 직접 재전송하면 된다.
+async function handleClaudeLogin(): Promise<void> {
+  try {
+    const result = await openClaudeLoginTerminal();
+    showToast(result.message);
+  } catch (err) {
+    showToast(`터미널을 여는 데 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// 세션 상세/draft 화면이 공유하는 하단 에러 표시. 일반 에러는 기존 그대로
+// "⚠ {원문}" 한 줄이지만, 인증 실패(chat.authError)일 때는 원문 에러를 버리지
+// 않으면서(home.ts widgetErrorShell 선례) 무엇을 해야 하는지(터미널에서 로그인)
+// 를 버튼으로 함께 보여준다 — 이 갭이 실사용자 보고(claude CLI 인증 체크/처리
+// 로직도 화면도 없다)의 핵심이었다.
+function renderChatErrorBlock(): HTMLElement[] {
+  const chat = state.sessionChat;
+  if (!chat.error) return [];
+  if (chat.authError) {
+    return [
+      el('div', { className: 'alert' }, [
+        el('div', {}, [
+          el('div', {}, ['claude CLI에 로그인이 필요합니다. 터미널에서 로그인한 뒤 다시 시도해주세요.']),
+          el('div', { className: 'chat-sample-note' }, [`원본 에러: ${chat.error}`]),
+        ]),
+        el('button', { className: 'btn btn-primary', onClick: () => void handleClaudeLogin() }, ['터미널 열기 (claude login)']),
+      ]),
+    ];
+  }
+  return [el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${chat.error}`])])];
 }
 
 export async function cancelChatTurn(): Promise<void> {
@@ -738,10 +796,7 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     // (이 판단 로직 자체는 건드리지 않았다).
     scheduleChatAutoScroll();
 
-    const bottomFixed: HTMLElement[] = [];
-    if (chat.error) {
-      bottomFixed.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${chat.error}`])]));
-    }
+    const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
     bottomFixed.push(renderChatInputArea(cwd, (text) => void sendChatMessage(sessionId, text)));
     body.push(el('div', { className: 'chat-bottom-fixed' }, bottomFixed));
   }
@@ -795,10 +850,7 @@ export function renderSessionDraftView(projectPath: string): HTMLElement {
   }
   scheduleChatAutoScroll();
 
-  const bottomFixed: HTMLElement[] = [];
-  if (chat.error) {
-    bottomFixed.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${chat.error}`])]));
-  }
+  const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
   bottomFixed.push(renderChatInputArea(projectPath, (text) => void sendDraftMessage(projectPath, text), draftSending));
 
   return el('div', { className: 'chat-page' }, [

@@ -230,6 +230,28 @@ pub fn cancel_session_turn(turn_id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ==================== (d) open_claude_login_terminal ====================
+//
+// hub 이슈 01m2wm4e9k822fk73yahrrnnce: 턴이 인증 실패(`authError`, turn.rs
+// `parse_result_event`)로 끝났을 때 프론트가 보여주는 "로그인" 버튼용. 앱이
+// 대신 로그인하지 않는다 — `github_connect`/`cloudflare_connect`/`mcp_login`과
+// 동일한 기존 패턴(cli_launcher::open_terminal_program)을 그대로 재사용해,
+// 사용자가 직접 보는 터미널 창에서 `claude login`을 실행하게 한다.
+#[tauri::command]
+pub fn open_claude_login_terminal() -> Result<crate::cli_launcher::TerminalLaunchResult, String> {
+    let Some(claude_path) = crate::cli_launcher::resolve_binary_expand_home(&CLAUDE_PATH_CANDIDATES, "claude") else {
+        return Ok(crate::cli_launcher::TerminalLaunchResult {
+            opened: false,
+            message: "claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패).".to_string(),
+        });
+    };
+    crate::cli_launcher::open_terminal_program(&claude_path, &["login"])?;
+    Ok(crate::cli_launcher::TerminalLaunchResult {
+        opened: true,
+        message: "터미널 창에서 claude login 절차를 진행한 뒤 다시 시도해주세요.".to_string(),
+    })
+}
+
 // ==================== 단위 테스트 ====================
 
 #[cfg(test)]

@@ -111,6 +111,9 @@ export interface AppState {
     transcript: SessionTranscript | null;
     loading: boolean;
     error: string | null;
+    /** error가 claude CLI 미인증으로 인한 실패인지(SessionChatDone.authError를
+     * 그대로 반영). true일 때만 화면이 "터미널에서 claude login" 버튼을 보여준다. */
+    authError: boolean;
     /** 전송 중인 턴. null이면 입력 가능 */
     turnId: string | null;
     /** 스트리밍으로 쌓는 임시 assistant 말풍선 */
@@ -209,13 +212,17 @@ export interface AppState {
     loaded: boolean;
   };
   // 마켓플레이스 저장소 목록 — 실제 로컬 데이터(known_marketplaces.json). 새로고침
-  // 버튼은 실제로 `claude plugin marketplace update`를 실행한다.
+  // 버튼은 실제로 `claude plugin marketplace update`를 실행하고, adding/removingId는
+  // 사용자가 직접 소스를 추가하거나 등록된 항목을 제거하는 진행 중 상태다(둘 다
+  // `claude plugin marketplace add|remove`를 실제로 실행한다).
   marketplaces: {
     items: MarketplaceInfo[];
     loading: boolean;
     error: string | null;
     loaded: boolean;
     refreshing: boolean;
+    adding: boolean;
+    removingId: string | null;
   };
   // OTel 설정 — otel_settings_get()으로 ~/.claude/settings.json의 관리대상
   // 14키를 allowlist 기반으로 읽고, otel_settings_save()로 실제로 저장한다(더
@@ -326,6 +333,7 @@ export const state: AppState = {
     transcript: null,
     loading: false,
     error: null,
+    authError: false,
     turnId: null,
     streamingText: '',
     streamingTools: [],
@@ -362,7 +370,7 @@ export const state: AppState = {
     installDefaultResult: null,
   },
   globalCatalog: { data: null, loading: false, error: null, loaded: false },
-  marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false },
+  marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false, adding: false, removingId: null },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
   malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editingAutonomy: false, editingWorkspaces: false, saving: false },
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },

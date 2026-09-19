@@ -11,6 +11,7 @@
 // list_claude_sessions()를 다시 호출해 최신 목록을 반영한다.
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { TerminalLaunchResult } from './integrationsApi';
 
 export interface ClaudeSessionRecord {
   readonly [key: string]: unknown;
@@ -81,6 +82,10 @@ export interface SessionChatDone {
   readonly ok: boolean;
   readonly canceled: boolean;
   readonly error: string | null;
+  /** hub 이슈 01m2wm4e9k822fk73yahrrnnce: `error`가 claude CLI 미인증으로 인한
+   * 실패인지(백엔드 turn.rs `parse_result_event`가 판별) — true면 UI가 원문
+   * 에러와 함께 "터미널에서 claude login" 안내를 보여준다. */
+  readonly authError: boolean;
 }
 
 export async function fetchSessionTranscript(sessionId: string): Promise<SessionTranscript> {
@@ -93,6 +98,13 @@ export async function sendSessionMessage(sessionId: string, text: string): Promi
 
 export async function cancelSessionTurn(turnId: string): Promise<void> {
   return invoke<void>('cancel_session_turn', { turnId });
+}
+
+// 인증 실패로 턴이 끝났을 때(SessionChatDone.authError) "로그인" 버튼이 호출한다.
+// gh/wrangler 연동과 같은 패턴 — 앱이 대신 로그인하지 않고 사용자가 직접 보는
+// 터미널 창을 연다(src-tauri/src/cli_launcher.rs).
+export async function openClaudeLoginTerminal(): Promise<TerminalLaunchResult> {
+  return invoke<TerminalLaunchResult>('open_claude_login_terminal');
 }
 
 export async function onSessionChatDelta(cb: (d: SessionChatDelta) => void): Promise<UnlistenFn> {

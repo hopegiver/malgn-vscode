@@ -39,12 +39,20 @@ export function installTauriBridge(fixtures) {
   let eventIdSeq = 1;
   window.__invokeLog = [];
   window.__unstubbedCommands = [];
+  // 이벤트 이름 → transformCallback이 부여한 콜백 id 목록. session-chat-done
+  // 같은 백엔드 스트리밍 이벤트를 시나리오가 직접 발화(emitTauriEvent)할 수
+  // 있게, 이 이름으로 구독 중인 콜백만 정확히 골라 부르기 위한 인덱스다
+  // (이름 필터 없이 아무 콜백이나 부르면 delta 리스너가 done payload를 받는 등
+  // 엉뚱한 이벤트로 잘못 호출된다).
+  window.__eventCallbackIdsByName = {};
 
   function resolveFixture(cmd, args) {
     // plugin:event|listen/unlisten은 세션 내내 여러 화면(세션 채팅 스트리밍,
     // 자율업무 런타임 갱신 등)이 반복 구독하는 프레임워크 커맨드라 픽스처
     // 선언 없이 항상 지원한다 — 매 호출마다 고유 id가 필요하다.
     if (cmd === 'plugin:event|listen') {
+      const list = (window.__eventCallbackIdsByName[args.event] ??= []);
+      list.push(args.handler);
       return Promise.resolve(eventIdSeq++);
     }
     if (cmd === 'plugin:event|unlisten') {
@@ -101,4 +109,19 @@ export function installTauriBridge(fixtures) {
     },
     metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
   };
+}
+
+/**
+ * 시나리오가 백엔드 스트리밍 이벤트(session-chat-delta/session-chat-done 등)를
+ * 흉내 낼 때 쓴다 — installTauriBridge가 채운 __eventCallbackIdsByName에서 그
+ * 이벤트 이름을 구독 중인 콜백만 정확히 호출한다. `page.evaluate(emitTauriEvent,
+ * { name, payload })` 형태로 호출한다(addInitScript로 주입되는 다른 함수들과
+ * 같은 Playwright 직렬화 제약 — 인자로 받은 값만 참조할 수 있다).
+ */
+export function emitTauriEvent({ name, payload }) {
+  const ids = window.__eventCallbackIdsByName?.[name] ?? [];
+  for (const id of ids) {
+    const cb = window['_cb' + id];
+    if (typeof cb === 'function') cb({ event: name, id: 0, payload });
+  }
 }

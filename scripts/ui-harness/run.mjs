@@ -16,7 +16,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { installListenerProbe, installTauriBridge } from './lib/bridge.mjs';
+import { installListenerProbe, installTauriBridge, emitTauriEvent } from './lib/bridge.mjs';
 import { buildBaseFixtures, notes } from './lib/fixtures.mjs';
 
 import * as autonomousTasks from './flows/autonomousTasks.mjs';
@@ -70,6 +70,9 @@ async function runScenario(browser, flow, scenario, baseFixtures) {
     shotPaths.push(file);
   };
   const getListenerCount = async (type) => page.evaluate((t) => window.__listenerCounts?.[t] ?? 0, type);
+  // 백엔드가 실제로 쏘는 session-chat-delta/-done 같은 스트리밍 이벤트를 시나리오가
+  // 흉내 낼 때 쓴다(session_chat/turn.rs가 emit하는 것과 동일한 event 이름 + payload).
+  const emitEvent = async (name, payload) => page.evaluate(emitTauriEvent, { name, payload });
 
   const bugs = [];
   const hash = scenario.startHash ?? flow.startHash;
@@ -85,7 +88,7 @@ async function runScenario(browser, flow, scenario, baseFixtures) {
   }
 
   try {
-    await scenario.run(page, { shot, bugs, errors, getListenerCount });
+    await scenario.run(page, { shot, bugs, errors, getListenerCount, emitEvent });
   } catch (err) {
     bugs.push({ severity: 'Critical', symptom: `시나리오 실행 중 예외: ${err.message}`, file: 'harness', stack: err.stack });
   }

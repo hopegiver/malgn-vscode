@@ -87,6 +87,8 @@ pub fn run() {
             plugins::update_plugin,
             plugins::install_plugin,
             plugins::refresh_marketplaces,
+            plugins::add_marketplace,
+            plugins::remove_marketplace,
             workspace::list_project_tree,
             workspace::read_project_file,
             usage_stats::get_daily_usage,
@@ -119,7 +121,8 @@ pub fn run() {
             session_chat::read_session_transcript,
             session_chat::send_session_message,
             session_chat::start_new_session_message,
-            session_chat::cancel_session_turn
+            session_chat::cancel_session_turn,
+            session_chat::open_claude_login_terminal
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

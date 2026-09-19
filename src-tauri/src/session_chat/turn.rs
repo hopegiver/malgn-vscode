@@ -40,6 +40,11 @@ struct SessionChatDonePayload {
     ok: bool,
     canceled: bool,
     error: Option<String>,
+    /// 백엔드 이슈 01m2wm4e9k822fk73yahrrnnce 대응: `error`가 claude CLI
+    /// 미인증으로 인한 실패인지 프론트가 구분할 수 있게 한다(`parse_result_event`
+    /// 참고). 일반 에러(네트워크 오류, 권한 거부 등)와 섞이지 않도록 이 필드
+    /// 하나로 분기한다 — 프론트는 문자열 패턴을 다시 추측하지 않는다.
+    auth_error: bool,
 }
 
 // pid 생존 확인은 `crate::process_util::pid_alive`(공유 모듈)를 쓴다 —
@@ -242,6 +247,7 @@ fn emit_delta(app: &tauri::AppHandle, session_id: &str, turn_id: &str, kind: &st
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_done(
     app: &tauri::AppHandle,
     session_id: &str,
@@ -249,6 +255,7 @@ fn emit_done(
     ok: bool,
     canceled: bool,
     error: Option<String>,
+    auth_error: bool,
 ) {
     use tauri::Emitter;
     let _ = app.emit(
@@ -259,8 +266,39 @@ fn emit_done(
             ok,
             canceled,
             error,
+            auth_error,
         },
     );
+}
+
+/// stream-json의 `result` 이벤트 하나를 파싱해 (에러 메시지, 인증 문제 여부)를
+/// 반환하는 순수 함수(`run_turn`에서 값만 뽑아 넘겨 단위 테스트 가능하게 분리).
+///
+/// 인증 문제 판별 근거(PM 실측, hub 이슈 01m2wm4e9k822fk73yahrrnnce): 미인증
+/// 상태에서 `claude -p`는 프롬프트 없이 exit code 1로 즉시 종료하며(hang 없음),
+/// stdout 마지막 줄에 다음 모양의 JSON을 낸다 —
+/// `{"type":"result","is_error":true,"error":"authentication_failed",
+///  "result":"Not logged in · Please run /login","subtype":"success"}`
+/// (stderr는 비어 있다). `subtype`만으로는 구분할 수 없다 — 위 실측 예시에서도
+/// `subtype`은 "success"다. 그래서 top-level `error` 필드값이
+/// "authentication_failed"이거나, `result` 텍스트에 "Not logged in" 패턴이
+/// 있으면(CLI 버전에 따라 `error` 필드가 없을 수 있는 경우까지 대비) 인증
+/// 문제로 분류한다.
+fn parse_result_event(value: &Value) -> (Option<String>, bool) {
+    let is_error = value.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !is_error {
+        return (None, false);
+    }
+    let subtype = value.get("subtype").and_then(|v| v.as_str()).unwrap_or("error");
+    let result_text = value.get("result").and_then(|v| v.as_str()).unwrap_or("");
+    let error_field = value.get("error").and_then(|v| v.as_str());
+    let auth_error = error_field == Some("authentication_failed") || result_text.contains("Not logged in");
+    let message = if result_text.is_empty() {
+        subtype.to_string()
+    } else {
+        format!("{subtype}: {result_text}")
+    };
+    (Some(message), auth_error)
 }
 
 /// 스폰부터 종료까지: stdin에 프롬프트를 쓰고(S2) 닫은 뒤, stdout을 줄 단위로
@@ -301,6 +339,7 @@ pub(crate) fn run_turn(
                 false,
                 false,
                 Some(format!("claude 명령을 실행하지 못했습니다: {e}")),
+                false,
             );
             return;
         }
@@ -336,6 +375,7 @@ pub(crate) fn run_turn(
 
     let mut result_error: Option<String> = None;
     let mut saw_result = false;
+    let mut result_auth_error = false;
 
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
@@ -373,16 +413,9 @@ pub(crate) fn run_turn(
                 }
                 Some("result") => {
                     saw_result = true;
-                    let is_error = value.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
-                    if is_error {
-                        let subtype = value.get("subtype").and_then(|v| v.as_str()).unwrap_or("error");
-                        let result_text = value.get("result").and_then(|v| v.as_str()).unwrap_or("");
-                        result_error = Some(if result_text.is_empty() {
-                            subtype.to_string()
-                        } else {
-                            format!("{subtype}: {result_text}")
-                        });
-                    }
+                    let (message, is_auth) = parse_result_event(&value);
+                    result_error = message;
+                    result_auth_error = is_auth;
                 }
                 _ => {}
             }
@@ -412,8 +445,11 @@ pub(crate) fn run_turn(
         None
     };
 
+    // 취소된 턴은 사용자가 스스로 끊은 것이지 인증 문제가 아니다 — canceled일 때는
+    // auth_error를 절대 세우지 않는다(위 `error`와 같은 원칙).
+    let auth_error = !canceled && result_auth_error;
     let ok = !canceled && error.is_none();
-    emit_done(&app, &session_id, &turn_id, ok, canceled, error);
+    emit_done(&app, &session_id, &turn_id, ok, canceled, error, auth_error);
 }
 
 /// 진행 중인 턴을 취소한다: 레지스트리에 `canceled` 표시를 남기고, pid가
@@ -482,6 +518,56 @@ mod tests {
                 "none",
             ]
         );
+    }
+
+    // ==================== 인증 에러 판별(parse_result_event) ====================
+    // hub 이슈 01m2wm4e9k822fk73yahrrnnce — PM이 격리 환경에서 실측한 미인증
+    // 출력 그대로를 픽스처로 못박는다. subtype이 "success"인데도(!) is_error가
+    // true고 error 필드가 "authentication_failed"인 것이 이 케이스의 핵심이라
+    // subtype만 보면 놓친다.
+    #[test]
+    fn parse_result_event_detects_authentication_failed_via_error_field() {
+        let value: Value = serde_json::from_str(
+            r#"{"type":"result","is_error":true,"error":"authentication_failed","result":"Not logged in · Please run /login","subtype":"success"}"#,
+        )
+        .unwrap();
+        let (message, is_auth) = parse_result_event(&value);
+        assert!(is_auth, "error 필드가 authentication_failed면 인증 문제로 분류되어야 합니다");
+        assert_eq!(message.as_deref(), Some("success: Not logged in · Please run /login"));
+    }
+
+    // error 필드가 없어도(CLI 버전 차이 대비) result 텍스트의 "Not logged in"
+    // 패턴만으로도 인증 문제로 분류되어야 한다.
+    #[test]
+    fn parse_result_event_detects_authentication_failed_via_result_text_pattern() {
+        let value: Value = serde_json::from_str(
+            r#"{"type":"result","is_error":true,"result":"Not logged in · Please run /login","subtype":"error"}"#,
+        )
+        .unwrap();
+        let (_, is_auth) = parse_result_event(&value);
+        assert!(is_auth, "result 텍스트의 'Not logged in' 패턴만으로도 인증 문제로 분류되어야 합니다");
+    }
+
+    // 일반 에러(레이트리밋 등)는 인증 문제로 분류되면 안 된다 — 원문 메시지는
+    // 그대로 보존된다.
+    #[test]
+    fn parse_result_event_does_not_flag_unrelated_errors_as_auth() {
+        let value: Value = serde_json::from_str(
+            r#"{"type":"result","is_error":true,"error":"rate_limit","result":"Rate limit exceeded","subtype":"error_max_turns"}"#,
+        )
+        .unwrap();
+        let (message, is_auth) = parse_result_event(&value);
+        assert!(!is_auth, "관련 없는 에러를 인증 문제로 잘못 분류하면 안 됩니다");
+        assert_eq!(message.as_deref(), Some("error_max_turns: Rate limit exceeded"));
+    }
+
+    // is_error가 false면 애초에 에러 메시지/인증 플래그 모두 없어야 한다.
+    #[test]
+    fn parse_result_event_returns_none_when_not_an_error() {
+        let value: Value = serde_json::from_str(r#"{"type":"result","is_error":false,"subtype":"success"}"#).unwrap();
+        let (message, is_auth) = parse_result_event(&value);
+        assert!(message.is_none());
+        assert!(!is_auth);
     }
 
     // build_claude_args: 신규 세션 경로(resume=false)는 --resume 대신

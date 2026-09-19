@@ -39,6 +39,21 @@ export async function fetchKnownMarketplaces(): Promise<MarketplaceInfo[]> {
   return invoke<MarketplaceInfo[]>('list_known_marketplaces');
 }
 
+// 사용자가 마켓플레이스 설정 탭에서 직접 입력한 소스(URL/로컬 경로/GitHub repo)를
+// `claude plugin marketplace add`로 등록한다. 빈 값·공백만·개행 포함은 백엔드
+// (src-tauri/src/plugins/marketplace.rs)가 다시 검증해 거부한다 — 호출부(settings.ts)도
+// 동일 검증을 하지만 프런트만 막으면 우회될 수 있어 이중으로 막는다.
+export async function addMarketplace(source: string): Promise<CommandResult> {
+  return invoke<CommandResult>('add_marketplace', { source });
+}
+
+// 등록된 마켓플레이스를 `claude plugin marketplace remove`로 제거한다. 이 앱이
+// 필수로 고정 표시하는 마켓플레이스(malgnsoft-plugins)는 백엔드가 이름을 다시
+// 확인해 거부한다 — 프런트가 그 항목의 제거 버튼 자체를 숨기는 것과 별개다.
+export async function removeMarketplace(name: string): Promise<CommandResult> {
+  return invoke<CommandResult>('remove_marketplace', { name });
+}
+
 export interface CommandResult {
   readonly success: boolean;
   readonly message: string;

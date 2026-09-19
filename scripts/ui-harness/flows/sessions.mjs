@@ -149,6 +149,109 @@ export function scenarios(base) {
       },
     },
     {
+      // hub 이슈 01m2wm4e9k822fk73yahrrnnce 재발 방지 — claude CLI 미인증
+      // 상태에서 턴이 끝났을 때(session_chat/turn.rs `parse_result_event`가
+      // authError:true로 분류) 사용자가 "무엇을 해야 하는지" 알 수 있는 UI가
+      // 실제로 뜨는지 확인한다. 백엔드는 이 이벤트 모양 그대로 emit한다(PM이
+      // 격리 환경에서 실측한 원문 JSON — turn.rs 단위 테스트의 픽스처와 동일).
+      id: 'auth-error',
+      fixtures: {
+        ...base,
+        start_new_session_message: { sessionId: 'harness-auth-session-1', turnId: 'harness-auth-turn-1' },
+        send_session_message: { turnId: 'harness-auth-turn-2' },
+        read_session_transcript: {
+          sessionId: 'harness-auth-session-1',
+          cwd: '/Users/hopegiver/workspace/malgn-vscode',
+          transcriptPath: '/dev/null',
+          messages: [],
+          truncated: false,
+          activeTurnId: null,
+        },
+        open_claude_login_terminal: { opened: true, message: '터미널 창에서 claude login 절차를 진행한 뒤 다시 시도해주세요.' },
+      },
+      async run(page, { shot, bugs, emitEvent }) {
+        if (base.list_workspace_projects.length === 0) {
+          bugs.push({ severity: 'Major', symptom: 'auth-error 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.waitForSelector('.modal-overlay');
+        const projectRow = page.locator('.modal-body .session-row').first();
+        if ((await projectRow.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'auth-error 시나리오: 새 세션 모달에 선택 가능한 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await projectRow.click();
+        await page.waitForSelector('.chat-page');
+        await page.locator('.chat-input-textarea').fill('인증 실패 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+
+        // 미인증 상태의 실제 claude -p 출력 그대로(PM 실측, stderr는 비고
+        // stdout stream-json 마지막 줄만 이렇다) — turn.rs가 이 JSON을 파싱해
+        // authError:true로 emit한 것을 흉내낸다.
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-auth-session-1',
+          turnId: 'harness-auth-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'success: Not logged in · Please run /login',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+        await shot('01-auth-error-banner');
+
+        const alertText = await page.locator('.alert').first().textContent().catch(() => null);
+        if (!alertText || !alertText.includes('로그인')) {
+          bugs.push({ severity: 'Critical', symptom: `인증 실패(authError) 턴 종료 후 "로그인이 필요합니다" 안내가 뜨지 않음(실제: ${alertText})`, file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        if (!alertText || !alertText.includes('Not logged in')) {
+          bugs.push({ severity: 'Major', symptom: '인증 실패 안내에 원문 에러(Not logged in)가 보존되지 않음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+
+        const loginBtn = page.getByRole('button', { name: /claude login/ });
+        if ((await loginBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '인증 실패 안내에 "터미널 열기(claude login)" 버튼이 없음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        } else {
+          await loginBtn.click();
+          await page.waitForTimeout(150);
+          await shot('02-after-login-button-click');
+          const toastText = await page.locator('.toast').first().textContent().catch(() => null);
+          if (!toastText) {
+            bugs.push({ severity: 'Major', symptom: '"터미널 열기" 버튼을 눌러도 결과 토스트가 뜨지 않음', file: 'src/views/sessions.ts:handleClaudeLogin' });
+          }
+          const loginInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'open_claude_login_terminal'));
+          if (!loginInvoked) {
+            bugs.push({ severity: 'Critical', symptom: '"터미널 열기" 버튼을 눌러도 open_claude_login_terminal 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeLogin' });
+          }
+        }
+
+        // 회귀 방지: authError:false인 일반 에러는 기존처럼 원문 한 줄만 뜨고
+        // 로그인 버튼은 보이지 않아야 한다(모든 에러를 인증 UI로 오탐하면 안 됨).
+        const textarea = page.locator('.chat-input-textarea');
+        await textarea.fill('일반 에러 재현용 메시지');
+        await textarea.press('Enter');
+        await page.waitForTimeout(200);
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-auth-session-1',
+          turnId: 'harness-auth-turn-2',
+          ok: false,
+          canceled: false,
+          error: 'error_max_turns: 도구 실행 한도를 초과했습니다',
+          authError: false,
+        });
+        await page.waitForTimeout(200);
+        await shot('03-non-auth-error-banner');
+        const secondAlertText = await page.locator('.alert').first().textContent().catch(() => null);
+        if (secondAlertText && secondAlertText.includes('로그인')) {
+          bugs.push({ severity: 'Critical', symptom: `authError:false인 일반 에러인데도 로그인 안내가 표시됨(오탐, 실제: ${secondAlertText})`, file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        if ((await page.getByRole('button', { name: /claude login/ }).count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: '일반 에러(authError:false)에도 "claude login" 버튼이 남아있음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+      },
+    },
+    {
       id: 'slow',
       fixtures: { ...base, list_claude_sessions: { __delay: 2500, value: base.list_claude_sessions } },
       async run(page, { shot, bugs }) {

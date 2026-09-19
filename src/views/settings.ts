@@ -5,7 +5,8 @@ import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
 import type { OtelSettings } from '../otelApi';
 import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID } from './catalog';
 import { renderAppLinksPanel } from './appLinks';
-import { refreshMarketplaces, installPlugin } from '../catalogApi';
+import { refreshMarketplaces, installPlugin, addMarketplace, removeMarketplace } from '../catalogApi';
+import type { MarketplaceInfo } from '../catalogApi';
 import {
   fetchGithubStatus,
   connectGithub,
@@ -512,22 +513,144 @@ async function handleRefreshMarketplaces(): Promise<void> {
   }
 }
 
+// malgn-agent 플러그인이 배포되는 마켓플레이스 — catalog.ts의 DEFAULT_PLUGIN_ID
+// ("malgn-agent@malgnsoft-plugins")에서 "@" 뒤쪽 마켓플레이스 이름만 뽑는다.
+// 이 앱이 malgnai-hub MCP 등 필수 기능을 위해 고정 표시·설치하는 플러그인의
+// 출처라 삭제 버튼 자체를 숨긴다 — 백엔드(marketplace.rs)도 같은 이름을
+// 독립적으로 다시 판정해 우회를 막는다.
+const PINNED_MARKETPLACE_ID = DEFAULT_PLUGIN_ID.split('@')[1] ?? 'malgnsoft-plugins';
+
+// U-05 계열(빈 값·공백만·개행 거부)을 프런트에서 먼저 막는다 — 백엔드
+// (marketplace.rs:validate_marketplace_field)가 동일 규칙을 다시 검증하므로
+// 프런트 검증을 우회해도(devtools invoke 직접 호출 등) 최종적으로 거부된다.
+function validateMarketplaceInput(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/[\r\n]/.test(trimmed)) return null;
+  return trimmed;
+}
+
+async function handleAddMarketplace(source: string): Promise<void> {
+  state.marketplaces.adding = true;
+  notifyChange();
+  try {
+    const result = await addMarketplace(source);
+    if (result.success) {
+      showToast(`마켓플레이스를 추가했습니다: ${result.message}`);
+      await loadMarketplaces();
+      await loadCatalog();
+    } else {
+      // 실패 원인 원문을 그대로 보여준다(home.ts의 widgetErrorShell 선례) —
+      // "실패했습니다"로만 뭉개면 잘못된 URL인지 네트워크 문제인지 알 수 없다.
+      showToast(`마켓플레이스 추가 실패: ${result.message}`);
+    }
+  } catch (err) {
+    showToast(`마켓플레이스 추가 실패: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.marketplaces.adding = false;
+    notifyChange();
+  }
+}
+
+async function handleRemoveMarketplace(marketplace: MarketplaceInfo): Promise<void> {
+  // 파괴적 동작이라 confirmDialog로 확인을 받는다(views/settings.ts의
+  // handleRemoveMcp와 동일 패턴) — 잘못 추가한 소스를 되돌릴 수 있어야 하지만,
+  // 실수로 지우는 것은 막는다.
+  if (
+    !(await confirmDialog(`"${marketplace.id}" 마켓플레이스를 제거할까요? 이 마켓플레이스에서 설치한 플러그인은 더 이상 업데이트되지 않습니다.`, {
+      danger: true,
+    }))
+  ) {
+    return;
+  }
+  state.marketplaces.removingId = marketplace.id;
+  notifyChange();
+  try {
+    const result = await removeMarketplace(marketplace.id);
+    if (result.success) {
+      showToast(`"${marketplace.id}" 마켓플레이스를 제거했습니다.`);
+      await loadMarketplaces();
+      await loadCatalog();
+    } else {
+      showToast(`마켓플레이스 제거 실패: ${result.message}`);
+    }
+  } catch (err) {
+    showToast(`마켓플레이스 제거 실패: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.marketplaces.removingId = null;
+    notifyChange();
+  }
+}
+
+// 인라인 추가 폼 — MCP 관리 탭의 "새 MCP 서버" 모달과 달리 필드가 하나뿐이라
+// 모달 없이 카드 상단에 항상 노출한다. 제출 성공 시 loadMarketplaces()로 목록을
+// 다시 읽어오면 이 함수가 통째로 재렌더되어 입력값도 자연히 비워진다.
+function renderMarketplaceAddForm(): HTMLElement {
+  const input = document.createElement('input');
+  input.className = 'settings-input';
+  input.type = 'text';
+  input.placeholder = '예: https://github.com/acme/plugins, ./local/marketplace';
+  input.autocomplete = 'off';
+  input.disabled = state.marketplaces.adding;
+
+  const addBtn = el(
+    'button',
+    { className: 'btn btn-primary', disabled: state.marketplaces.adding },
+    [state.marketplaces.adding ? '추가 중…' : '+ 추가']
+  );
+  addBtn.type = 'submit';
+
+  const form = el('form', { className: 'settings-form marketplace-add-form' }, [
+    el('label', { className: 'settings-field' }, [
+      el('span', { className: 'settings-field-label' }, ['새 마켓플레이스 소스 (URL·경로·GitHub repo)']),
+      input,
+    ]),
+    el('div', { className: 'settings-form-actions' }, [addBtn]),
+  ]);
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const source = validateMarketplaceInput(input.value);
+    if (!source) {
+      showToast(input.value.trim() ? '마켓플레이스 소스에 개행 문자를 포함할 수 없습니다.' : '마켓플레이스 소스를 입력하세요.');
+      return;
+    }
+    void handleAddMarketplace(source);
+  });
+
+  return form;
+}
+
 function renderMarketplacePanel(): HTMLElement {
   if (state.marketplaces.loading && !state.marketplaces.loaded) return loadingBlock();
   if (state.marketplaces.error) return errorBlock(state.marketplaces.error, () => void loadMarketplaces());
 
   const repoRows =
     state.marketplaces.items.length > 0
-      ? state.marketplaces.items.map((m) =>
-          el('div', { className: 'marketplace-repo-row' }, [
+      ? state.marketplaces.items.map((m) => {
+          const locked = m.id === PINNED_MARKETPLACE_ID;
+          const removing = state.marketplaces.removingId === m.id;
+          const actions: HTMLElement[] = [el('span', { className: 'badge badge-active' }, [locked ? '필수' : '연결됨'])];
+          // 고정 마켓플레이스는 제거 버튼 자체를 숨긴다(renderMcpRow의 malgnai-hub
+          // 잠금 행과 동일한 패턴) — 백엔드도 이름으로 다시 판정해 우회를 막는다.
+          if (!locked) {
+            const removeBtn = el(
+              'button',
+              { className: 'btn', disabled: removing, onClick: () => void handleRemoveMarketplace(m) },
+              [removing ? '제거 중…' : '제거']
+            );
+            removeBtn.style.color = 'var(--color-danger)';
+            actions.push(removeBtn);
+          }
+          return el('div', { className: 'marketplace-repo-row' }, [
             el('div', {}, [
               el('div', { className: 'marketplace-repo-name' }, [m.id]),
               el('div', { className: 'marketplace-repo-path' }, [m.repo ? `github.com/${m.repo}` : '저장소 정보 없음']),
               ...(m.lastUpdated ? [el('div', { className: 'marketplace-repo-updated' }, [`마지막 업데이트: ${formatIsoDate(m.lastUpdated)}`])] : []),
             ]),
-            el('span', { className: 'badge badge-active' }, ['연결됨']),
-          ])
-        )
+            el('div', { className: 'mcp-row-actions' }, actions),
+          ]);
+        })
       : [el('div', { className: 'state-block-desc' }, ['등록된 마켓플레이스가 없습니다.'])];
 
   const refreshBtn = el(
@@ -538,7 +661,9 @@ function renderMarketplacePanel(): HTMLElement {
 
   // 자동 업데이트 토글·저장 버튼은 저장되지 않는 로컬 UI 상태였던 목업이라
   // 제거했다 — 이 목록은 설치된 플러그인 이름·버전만 보여주는 조회 전용이다.
-  const description = el('div', { className: 'settings-form-hint' }, ['카탈로그가 플러그인을 받아오는 저장소를 관리합니다.']);
+  const description = el('div', { className: 'settings-form-hint' }, [
+    '카탈로그가 플러그인을 받아오는 저장소를 관리합니다. 아래에서 새 저장소(사내 자체 저장소 등)를 추가하거나 등록된 저장소를 제거할 수 있습니다.',
+  ]);
 
   const pluginList = el(
     'div',
@@ -559,6 +684,7 @@ function renderMarketplacePanel(): HTMLElement {
     description,
     el('div', { className: 'marketplace-repo-list' }, repoRows),
     el('div', { className: 'marketplace-actions' }, [refreshBtn]),
+    renderMarketplaceAddForm(),
     el('div', { className: 'settings-field-label marketplace-list-label' }, ['설치된 플러그인']),
     pluginList,
   ]);
