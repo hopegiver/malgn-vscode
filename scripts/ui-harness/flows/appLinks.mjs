@@ -149,6 +149,105 @@ export function scenarios(base) {
       },
     },
     {
+      id: 'tab-switch',
+      // MCP 관리와 앱링크 설정은 둘 다 'settings' 라우트의 서로 다른 탭이다
+      // (#/settings/mcp, #/settings/applinks). route.kind 단위로만 모달을
+      // 정리하면 탭 간 이동(mcp ↔ applinks)에서는 모달이 안 닫힐 수 있다 —
+      // main.ts가 탭까지 확인하는지 양방향으로 실측한다.
+      fixtures: { ...base },
+      async run(page, { shot, bugs, getListenerCount }) {
+        // 두 방향(applinks→mcp→applinks, mcp→applinks→mcp) 모두 "떠날 때"가
+        // 아니라 "원래 탭으로 되돌아왔을 때" 모달이 저절로 다시 열려 있는지를
+        // 확인한다 — 탭을 바꾼 직후에는 다른 패널이 렌더되므로 이전 탭의 모달
+        // DOM이 어차피 안 보인다(모듈 스코프 상태만 stale하게 남는다). 이
+        // stale 상태는 그 탭으로 "돌아왔을 때" 다시 렌더되어 드러난다 —
+        // settingsMcp.mjs golden 시나리오의 "라우트 이탈 후 복귀" 패턴과 동일.
+
+        // ---- ① applinks 모달 열기 → mcp 탭 → applinks 탭으로 복귀 ----
+        const before1 = await getListenerCount('keydown');
+        await page.getByRole('button', { name: '+ 링크 추가' }).click();
+        await page.waitForSelector('.modal-overlay');
+        await page.evaluate(() => { window.location.hash = '#/settings/mcp'; });
+        await page.waitForTimeout(300);
+        await page.evaluate(() => { window.location.hash = '#/settings/applinks'; });
+        await page.waitForTimeout(300);
+        await shot('01-applinks-modal-after-mcp-roundtrip');
+        if ((await page.locator('.modal-overlay').count()) > 0) {
+          bugs.push({
+            severity: 'Major',
+            symptom: '앱링크 추가 모달을 연 채 MCP 관리 탭으로 이동했다가 앱링크 탭으로 되돌아오면 모달이 저절로 다시 열려 있음(route.kind만 확인하고 탭은 확인하지 않는 것으로 보임)',
+            file: 'src/main.ts:handleNavigation / src/views/appLinks.ts:linkFormModal',
+            repro: '#/settings/applinks → "+ 링크 추가" 열기(닫지 않음) → hash를 "#/settings/mcp"로 변경 → 다시 "#/settings/applinks"로 변경',
+          });
+          await page.keyboard.press('Escape');
+        }
+        // getListenerCount는 baseline(예: updateApi.ts의 상시 keydown 리스너)을
+        // 포함하므로, "정상적으로 정리됐다"는 곧 모달을 열기 직전 수준(before)
+        // 으로 정확히 되돌아온다는 뜻이다 — before보다 커지면(>) 누수, 같으면
+        // (===) 정상.
+        const after1 = await getListenerCount('keydown');
+        if (after1 > before1) {
+          bugs.push({
+            severity: 'Minor',
+            symptom: `앱링크↔MCP 탭 왕복 후에도 앱링크 모달의 keydown 리스너가 잔존함(before=${before1}, after=${after1})`,
+            file: 'src/views/appLinks.ts:linkFormModalEscHandler',
+          });
+        }
+
+        // ---- ② mcp 모달 열기 → applinks 탭 → mcp 탭으로 복귀 ----
+        // (①이 끝난 시점엔 applinks 탭에 있으므로 먼저 mcp 탭으로 이동해야
+        // "+ 새 MCP 서버" 버튼이 존재한다 — 그 버튼은 MCP 탭 패널에만 있다.)
+        await page.evaluate(() => { window.location.hash = '#/settings/mcp'; });
+        // renderMcpPanel()은 loading && !loaded인 동안 loadingBlock()만 그리므로
+        // (mcp 목록이 아직 로드 전이면 버튼 자체가 DOM에 없다), 탭 전환 후
+        // 다른 곳과 동일한 300ms 고정 대기로 렌더 안정화를 기다린다.
+        await page.waitForTimeout(300);
+        const before2 = await getListenerCount('keydown');
+        const addMcpServerBtn = page.getByRole('button', { name: '+ 새 MCP 서버' });
+        // 기본 30초 액셔너빌리티 타임아웃까지 조용히 걸려 시나리오 전체가
+        // Critical 예외로 죽는 것을 막기 위해, 버튼을 짧은 타임아웃으로 먼저
+        // 명시적으로 기다리고 실패 시 원인을 밝히는 Critical 버그로 남긴 뒤
+        // 이 검사만 건너뛴다(뒤 시나리오/스크린샷에 영향 주지 않기 위함).
+        try {
+          await addMcpServerBtn.waitFor({ state: 'visible', timeout: 5000 });
+        } catch (err) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: `mcp 탭으로 전환한 뒤 5초 내에 "+ 새 MCP 서버" 버튼이 렌더되지 않아 역방향 검사를 진행할 수 없음(${err.message})`,
+            file: 'src/views/settings.ts:renderMcpPanel',
+          });
+          return;
+        }
+        await addMcpServerBtn.click();
+        await page.waitForSelector('.modal-overlay');
+        await page.evaluate(() => { window.location.hash = '#/settings/applinks'; });
+        await page.waitForTimeout(300);
+        await page.evaluate(() => { window.location.hash = '#/settings/mcp'; });
+        await page.waitForTimeout(300);
+        await shot('02-mcp-modal-after-applinks-roundtrip');
+        if ((await page.locator('.modal-overlay').count()) > 0) {
+          bugs.push({
+            severity: 'Major',
+            symptom: 'MCP 등록 모달을 연 채 앱링크 설정 탭으로 이동했다가 mcp 탭으로 되돌아오면 모달이 저절로 다시 열려 있음(route.kind만 확인하고 탭은 확인하지 않는 것으로 보임)',
+            file: 'src/main.ts:handleNavigation / src/views/settings.ts:mcpAddModalOpen',
+            repro: '#/settings/mcp → "+ 새 MCP 서버" 열기(닫지 않음) → hash를 "#/settings/applinks"로 변경 → 다시 "#/settings/mcp"로 변경',
+          });
+          await page.keyboard.press('Escape');
+        }
+        // (역방향도 ①과 동일하게 net 카운터다 — before2와 같아지면 정리
+        // 성공이므로 정상, before2보다 커질 때만(>) 누수다. >=로 바꾸면
+        // "같다(=정리 성공)"까지 누수로 오탐하니 되돌리지 말 것.)
+        const after2 = await getListenerCount('keydown');
+        if (after2 > before2) {
+          bugs.push({
+            severity: 'Minor',
+            symptom: `MCP↔앱링크 탭 왕복 후에도 MCP 등록 모달의 keydown 리스너가 잔존함(before=${before2}, after=${after2})`,
+            file: 'src/views/settings.ts:mcpAddModalEscHandler',
+          });
+        }
+      },
+    },
+    {
       id: 'error',
       fixtures: { ...base, app_links_get: { __throw: '테스트 강제 에러: Tauri IPC 브리지 없음' } },
       async run(page, { shot, bugs }) {
