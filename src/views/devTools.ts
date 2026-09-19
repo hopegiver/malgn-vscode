@@ -453,6 +453,10 @@ function renderRunningPanel(tool: DevToolStatus): HTMLElement {
     el('span', { className: 'devtool-spinner' }, []),
     el('span', {}, [`${tool.installed ? '업데이트' : '설치'} 실행 중… (${sec}초 경과)`]),
     el('span', { className: 'devtool-panel-hint' }, ['실행 중에는 창을 닫지 마세요']),
+    // 릴리즈 전 필수 수정(A): winget install/upgrade는 UAC 승인 창을 다른
+    // 모니터나 뒤쪽 창으로 띄울 수 있다 — 사용자가 원인을 모른 채 최대
+    // 600초를 기다리는 것을 막기 위해 실행 중 패널에도 안내를 남긴다.
+    el('span', { className: 'devtool-panel-hint' }, ['관리자 권한 승인 창이 뜨면 승인해주세요']),
   ]);
 }
 

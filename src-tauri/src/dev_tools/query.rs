@@ -229,7 +229,7 @@ fn no_dry_run_install_notes(runner: Runner, installer_label: &str, tool_label: &
     if !winget_preview_is_reliable(runner) {
         (
             format!(
-                "winget(으)로 {tool_label}을(를) 전역 설치합니다. 패키지 id가 공식 문서에 고정돼 있어 자동 실행이 안전합니다. winget은 사전 시뮬레이션을 제공하지 않아 함께 변경될 항목을 미리 확인할 수 없습니다. 앱이 확인한 경로: {searched}"
+                "winget(으)로 {tool_label}을(를) 설치합니다. 관리자 권한 승인(UAC) 창이 뜰 수 있으며, 승인하면 이 PC 전체(모든 사용자)에 설치될 수 있습니다. 패키지 id는 공식 저장소에 고정돼 있지만, winget은 사전 시뮬레이션을 제공하지 않아 함께 변경될 항목을 미리 확인할 수 없습니다. 앱이 확인한 경로: {searched}"
             ),
             false,
         )
@@ -493,6 +493,22 @@ mod tests {
         assert!(!preview_reliable);
         assert!(notes.contains("사전 시뮬레이션을 제공하지 않아"));
         assert!(notes.contains("winget"));
+    }
+
+    // 릴리즈 전 필수 수정(A): winget 동의 화면이 UAC·머신 스코프를 헤지된
+    // 표현으로 고지해야 하고("뜰 수 있으며"/"설치될 수 있습니다"), "자동
+    // 실행이 안전합니다" 같은 과단정 문구는 더는 나오면 안 된다 — 같은
+    // 문단에서 "함께 바뀔 항목을 미리 확인할 수 없다"고 말하면서 안전을
+    // 보증하는 모순을 없앤다.
+    #[test]
+    fn no_dry_run_install_notes_discloses_uac_and_drops_safety_claim() {
+        let (notes, _) =
+            no_dry_run_install_notes(Runner::Winget, "winget", "Git", "C:\\git.exe");
+        assert!(notes.contains("관리자 권한 승인"));
+        assert!(notes.contains("UAC"));
+        assert!(notes.contains("뜰 수 있으며"));
+        assert!(notes.contains("설치될 수 있습니다"));
+        assert!(!notes.contains("안전합니다"));
     }
 
     #[test]

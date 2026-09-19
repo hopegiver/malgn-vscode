@@ -394,19 +394,41 @@ pub(crate) const RUN_WINGET_INSTALL_GIT: RunPlan = RunPlan {
 /// (이 머신에 winget이 없어 실측 불가, microsoft/winget-cli 문서 근거).
 pub(crate) const WINGET_ALREADY_LATEST_EXIT_CODE: i32 = -1978335189;
 
+/// winget-cli 고유 취소 코드(`0x8A15010C` `APPINSTALLER_CLI_ERROR_INSTALL_
+/// CANCELLED_BY_USER`, "You cancelled the installation.") — winget-cli 공식
+/// returnCodes 명세에 있는 값이라 `WINGET_ALREADY_LATEST_EXIT_CODE`
+/// (`0x8A15002B`)와 **동일한 근거 강도**로, "확정적으로 사용자가 취소했다"고
+/// 단정해도 된다. 부호있는 i32 변환: `0x8A15010C` → `-1978334964`. 이 코드가
+/// 빠져 있던 것이 릴리즈 전 필수 수정 (B-1)의 핵심 — 이전에는 이 값이 일반
+/// Failed로 떨어져 "실행이 실패했습니다(종료 코드 -1978334964)"라는 무의미한
+/// 메시지가 나갔다.
+pub(crate) const WINGET_INSTALL_CANCELLED_BY_USER: i32 = -1978334964;
+
 /// Node/Git 자동설치(hub decisionId 01m2wse823xcszvn7km3vap0qs) 도입 배경:
 /// `winget install`은 UAC 프롬프트를 띄운다 — 그 자체는 문제가 아니다(Windows
 /// 표준 설치 경험). 문제는 사용자가 취소하거나 응답하지 않을 때 앱이 "실행이
 /// 실패했습니다(알 수 없는 코드)"처럼 원인을 숨기는 것이다. UAC 프롬프트를
 /// 거부하면 Windows는 HRESULT `0x800704C7`(Win32 `ERROR_CANCELLED`, "The
-/// operation was canceled by the user.")을 돌려준다 — 이 HRESULT는 Microsoft
-/// 공식 트러블슈팅 문서(learn.microsoft.com Q&A, winget 설치 실패 스레드)에
-/// "취소됨"으로 명시돼 있어 WINGET_ALREADY_LATEST_EXIT_CODE와 같은 근거
-/// 강도로 고정한다(이 머신에 winget이 없어 실측 자체는 불가 — 문서 근거).
-/// 부호있는 i32 변환: `0x800704C7` → `-2147023673`. 이 코드가 아닌 다른 실패는
-/// 여기서 추측으로 새 분기를 만들지 않는다 — 기존 일반 Failed 분기가 원본
-/// 종료코드를 그대로 메시지에 담아 보존한다("사실만 말하고 원문을 덧붙인다").
-pub(crate) const WINGET_USER_CANCELLED_EXIT_CODE: i32 = -2147023673;
+/// operation was canceled by the user.")을 돌려준다.
+///
+/// (B-3 정정) 이 코드는 `WINGET_ALREADY_LATEST_EXIT_CODE`/
+/// `WINGET_INSTALL_CANCELLED_BY_USER`와 **근거 강도가 다르다** — 저 둘은
+/// winget-cli 자체의 반환코드 명세에 있는 값이지만, `0x800704C7`은 winget의
+/// 계약이 아니라 **범용 Win32 `ERROR_CANCELLED`**일 뿐이다. 실제로
+/// winget-cli 이슈 #6173(github.com/microsoft/winget-cli/issues/6173)은 이
+/// 코드가 "사용자가 UAC를 취소했다" 외의 상황에서도 나온다고 보고한다:
+/// **비승격 프로세스**에서 승격이 필요한 인스톨러(MSI 등)를 설치할 때,
+/// **사용자가 UAC를 승인했는데도** 셸이 "This file does not have an app
+/// associated with it" 대화상자를 띄우고 이 코드로 종료되는 사례가 있다 —
+/// 이 앱은 비승격 GUI에서 spawn하고 Node.js 패키지는 MSI라 정확히 이 조건에
+/// 해당한다. 그래서 이 코드를 만났을 때 "취소했습니다"라고 확정적으로 말하면
+/// 취소한 적 없는 사용자에게 거짓을 보여줄 수 있다 — `actions.rs`의
+/// `winget_generic_cancelled_message`가 헤지된 문구로 강등해서 쓴다.
+/// 부호있는 i32 변환: `0x800704C7` → `-2147023673`. 이 두 취소 코드가 아닌
+/// 다른 실패는 여기서 추측으로 새 분기를 만들지 않는다 — 기존 일반 Failed
+/// 분기가 원본 종료코드를 그대로 메시지에 담아 보존한다("사실만 말하고
+/// 원문을 덧붙인다").
+pub(crate) const WINGET_GENERIC_CANCELLED: i32 = -2147023673;
 
 // devtools-install-matrix §2.1/§3.1/§7: Claude Code npm 패키지명이 공식 문서에
 // 고정돼 있다(G1) — npm 전역 설치는 셸 불필요(G2), 결과가 <npm prefix>/bin/claude

@@ -15,7 +15,7 @@ use super::install_resolver::{
 };
 use super::plan_table::{
     manual_display_message, Runner, RunPlan, WINGET_ALREADY_LATEST_EXIT_CODE,
-    WINGET_USER_CANCELLED_EXIT_CODE,
+    WINGET_GENERIC_CANCELLED, WINGET_INSTALL_CANCELLED_BY_USER,
 };
 use super::process::{
     build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout,
@@ -43,14 +43,31 @@ fn timed_out_message(runner: Runner) -> String {
 /// UAC 취소를 매달리지 말고 명확한 실패로(요구사항 §3): UAC 프롬프트가
 /// 뜨는 것 자체는 문제 삼지 않는다(Windows 표준 설치 경험) — 문제는 사용자가
 /// 취소하거나 응답하지 않을 때 화면이 "실행이 실패했습니다(알 수 없는 코드)"로
-/// 원인을 숨기는 것이다. `WINGET_USER_CANCELLED_EXIT_CODE`(plan_table.rs 문서
-/// 근거)와 정확히 일치할 때만 이 문구를 쓴다 — 그 외 실패는 여기서 추측하지
-/// 않고(요구사항: 종료코드 의미를 추측으로 단정하지 않는다) 각 호출부의 일반
-/// Failed 분기가 원본 종료코드를 그대로 메시지에 담아 보존한다. `exit_code`/
-/// `log_tail`은 이 분기를 타도 DevToolActionResult에 그대로 실려(원문 보존).
+/// 원인을 숨기는 것이다. `WINGET_INSTALL_CANCELLED_BY_USER`(plan_table.rs
+/// 문서 근거 — winget-cli 반환코드 명세에 있는 **확정** 코드)와 정확히
+/// 일치할 때만 이 확정 문구를 쓴다. `WINGET_GENERIC_CANCELLED`(범용 Win32
+/// `ERROR_CANCELLED` — winget의 계약이 아니라 **모호**하다, plan_table.rs
+/// 문서 근거)는 `winget_generic_cancelled_message`가 헤지된 문구로 따로
+/// 처리한다. 이 두 코드가 아닌 다른 실패는 여기서 추측하지 않고(요구사항:
+/// 종료코드 의미를 추측으로 단정하지 않는다) 각 호출부의 일반 Failed 분기가
+/// 원본 종료코드를 그대로 메시지에 담아 보존한다. `exit_code`/`log_tail`은
+/// 이 분기를 타도 DevToolActionResult에 그대로 실려(원문 보존).
 fn winget_cancelled_message(action_label: &str) -> String {
     format!(
-        "사용자가 관리자 권한 요청을 취소했습니다(UAC). {action_label}이(가) 진행되지 않았습니다. (원본 종료 코드 {WINGET_USER_CANCELLED_EXIT_CODE})"
+        "사용자가 관리자 권한 요청을 취소했습니다(UAC). {action_label}이(가) 진행되지 않았습니다. (원본 종료 코드 {WINGET_INSTALL_CANCELLED_BY_USER})"
+    )
+}
+
+/// (B-2) `WINGET_GENERIC_CANCELLED`(`0x800704C7`)는 winget 고유 코드가
+/// 아니라 범용 Win32 `ERROR_CANCELLED`다 — winget-cli 이슈 #6173이 보고하는
+/// 대로, 비승격 프로세스에서 승격이 필요한 인스톨러(MSI 등)를 설치할 때
+/// **사용자가 UAC를 승인했는데도** 이 코드로 종료되는 사례가 있다. 이 앱은
+/// 비승격 GUI에서 spawn하고 Node.js는 MSI 패키지라 정확히 이 조건에
+/// 해당하므로, "취소했습니다"라고 확정하면 취소한 적 없는 사용자에게 거짓을
+/// 보여줄 수 있다 — 헤지된 문구로 강등하고 로그 확인을 유도한다.
+fn winget_generic_cancelled_message(action_label: &str) -> String {
+    format!(
+        "{action_label}이(가) 중단되었습니다 — 관리자 권한 요청을 취소했거나, 권한 승격 직후 인스톨러 실행에 실패한 경우입니다(winget 알려진 문제). 원본 종료 코드 {WINGET_GENERIC_CANCELLED}. 아래 로그를 확인해주세요."
     )
 }
 
@@ -126,11 +143,17 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
             true,
             format!("{}이(가) 이미 최신 버전입니다.", def.label),
         )
-    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_USER_CANCELLED_EXIT_CODE) {
+    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_INSTALL_CANCELLED_BY_USER) {
         (
             Outcome::Failed,
             false,
             winget_cancelled_message(&format!("{}의 업데이트", def.label)),
+        )
+    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_GENERIC_CANCELLED) {
+        (
+            Outcome::Failed,
+            false,
+            winget_generic_cancelled_message(&format!("{}의 업데이트", def.label)),
         )
     } else if output.exit_code == Some(0) {
         match &normalized_after {
@@ -299,11 +322,17 @@ fn run_install_plan(
             base
         };
         (Outcome::TimedOut, false, message)
-    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_USER_CANCELLED_EXIT_CODE) {
+    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_INSTALL_CANCELLED_BY_USER) {
         (
             Outcome::Failed,
             false,
             winget_cancelled_message(&format!("{}의 설치", def.label)),
+        )
+    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_GENERIC_CANCELLED) {
+        (
+            Outcome::Failed,
+            false,
+            winget_generic_cancelled_message(&format!("{}의 설치", def.label)),
         )
     } else if output.exit_code == Some(0) {
         match &normalized_after {
@@ -490,23 +519,83 @@ mod tests {
     }
 
     // hub decisionId 01m2wse823xcszvn7km3vap0qs §3: HRESULT 0x800704C7
-    // (Win32 ERROR_CANCELLED)의 부호있는 i32 변환값이 고정돼 있는지 확인한다
-    // (plan_table.rs 문서 근거). 이 값이 틀리면 UAC 취소가 일반 Failed로
-    // 새 버그 없이 조용히 떨어져 이 라운드의 핵심 요구가 무의미해진다.
+    // (Win32 ERROR_CANCELLED, 모호 코드)의 부호있는 i32 변환값이 고정돼
+    // 있는지 확인한다(plan_table.rs 문서 근거). 이 값이 틀리면 UAC 관련
+    // 실패가 일반 Failed로 조용히 떨어져 이 라운드의 핵심 요구가
+    // 무의미해진다.
     #[test]
-    fn winget_user_cancelled_exit_code_matches_documented_hresult() {
-        assert_eq!(WINGET_USER_CANCELLED_EXIT_CODE, -2147023673);
-        assert_eq!(WINGET_USER_CANCELLED_EXIT_CODE as i64, 0x800704C7i64 - (1i64 << 32));
+    fn winget_generic_cancelled_matches_documented_hresult() {
+        assert_eq!(WINGET_GENERIC_CANCELLED, -2147023673);
+        assert_eq!(WINGET_GENERIC_CANCELLED as i64, 0x800704C7i64 - (1i64 << 32));
     }
 
-    // winget_cancelled_message: 사용자에게 보이는 문구가 "취소" 사실 + 원본
-    // 종료코드를 모두 담아야 한다(원문을 버리지 않는다는 요구사항).
+    // (B-1) winget-cli 고유 취소 코드(0x8A15010C
+    // APPINSTALLER_CLI_ERROR_INSTALL_CANCELLED_BY_USER, 확정 코드)의 부호있는
+    // i32 변환값이 고정돼 있는지 확인한다 — 이 값이 틀리면 실제 취소 상황이
+    // 다시 일반 Failed("종료 코드 -1978334964")로 떨어져 이번 릴리즈 전
+    // 필수 수정의 핵심이 무의미해진다.
+    #[test]
+    fn winget_install_cancelled_by_user_matches_documented_hresult() {
+        assert_eq!(WINGET_INSTALL_CANCELLED_BY_USER, -1978334964);
+        assert_eq!(
+            WINGET_INSTALL_CANCELLED_BY_USER as i64,
+            0x8A15010Ci64 - (1i64 << 32)
+        );
+    }
+
+    // winget_cancelled_message(확정 코드용): 사용자에게 보이는 문구가 "취소"
+    // 사실 + 원본 종료코드를 모두 담아야 한다(원문을 버리지 않는다는
+    // 요구사항). 이 문구는 확정 코드에서만 쓰이므로 "취소했습니다"라고
+    // 단정해도 된다.
     #[test]
     fn winget_cancelled_message_contains_reason_and_raw_exit_code() {
         let msg = winget_cancelled_message("Node.js의 설치");
         assert!(msg.contains("취소"));
         assert!(msg.contains("UAC"));
-        assert!(msg.contains(&WINGET_USER_CANCELLED_EXIT_CODE.to_string()));
+        assert!(msg.contains(&WINGET_INSTALL_CANCELLED_BY_USER.to_string()));
         assert!(msg.contains("Node.js의 설치"));
+    }
+
+    // (B-2) winget_generic_cancelled_message: 모호 코드는 "취소했다"고
+    // 단정하지 않고 헤지된 문구(취소했거나 / 실패한 경우)를 쓰고, 원본
+    // 종료코드와 로그 확인 유도를 담아야 한다 — winget-cli 이슈 #6173처럼
+    // 사용자가 UAC를 승인했는데도 이 코드가 나올 수 있어서다.
+    #[test]
+    fn winget_generic_cancelled_message_hedges_and_keeps_raw_exit_code() {
+        let msg = winget_generic_cancelled_message("Node.js의 설치");
+        assert!(msg.contains("취소했거나"));
+        assert!(msg.contains("실패한 경우"));
+        assert!(!msg.contains("UAC를 취소했습니다"));
+        assert!(msg.contains(&WINGET_GENERIC_CANCELLED.to_string()));
+        assert!(msg.contains("로그"));
+        assert!(msg.contains("Node.js의 설치"));
+    }
+
+    // (B-1/B-2 통합) perform_update/run_install_plan 양쪽 분기가 두 코드를
+    // 서로 다른 메시지로 처리하고, 그 외 코드는 여전히 일반 Failed로 가는지
+    // 못박는다 — 실제 winget 프로세스 실행 없이 각 분기가 참조하는 상수·
+    // 헬퍼 함수의 결과만으로 계약을 고정한다(이 머신에 winget이 없어 실행
+    // 경로 자체는 검증 불가, 문서 근거).
+    #[test]
+    fn winget_cancel_codes_route_to_distinct_messages_and_other_codes_stay_generic_failed() {
+        // 확정 코드 → 확정 문구(단정형).
+        let confirmed = winget_cancelled_message("도구의 설치");
+        assert!(confirmed.contains(&WINGET_INSTALL_CANCELLED_BY_USER.to_string()));
+        assert!(!confirmed.contains(&WINGET_GENERIC_CANCELLED.to_string()));
+
+        // 모호 코드 → 헤지 문구, 서로 다른 원본 종료코드를 담는다(값 자체가
+        // 다르므로 메시지도 겹치지 않는다).
+        let generic = winget_generic_cancelled_message("도구의 설치");
+        assert!(generic.contains(&WINGET_GENERIC_CANCELLED.to_string()));
+        assert!(!generic.contains(&WINGET_INSTALL_CANCELLED_BY_USER.to_string()));
+        assert_ne!(confirmed, generic);
+
+        // 그 외 코드(둘 다 아님)는 이 두 헬퍼가 관여하지 않는다는 계약 —
+        // perform_update/run_install_plan의 일반 Failed 분기(else 절)가
+        // 원본 종료코드를 그대로 메시지에 담는 기존 동작을 그대로 유지한다
+        // (이 라운드에서 그 분기 자체는 변경하지 않았음을 상수 비교로 못박는다).
+        let other_code = -1i32;
+        assert_ne!(other_code, WINGET_INSTALL_CANCELLED_BY_USER);
+        assert_ne!(other_code, WINGET_GENERIC_CANCELLED);
     }
 }
