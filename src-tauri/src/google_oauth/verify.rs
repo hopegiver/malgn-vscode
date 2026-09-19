@@ -329,4 +329,99 @@ PZjgfX70Iyke1LFgmwoh3Mq4Yicc57EBfPpH5WAGMtPlrpf1NDM=
             "JWKS에 없는 kid로 서명된 토큰은 검증할 방법이 없어 거부되어야 합니다"
         );
     }
+
+    // ---- jsonwebtoken 9→10 업그레이드(CVE-2026-25537, GHSA-h395-gr6q-cpjc) 회귀 방어 ----
+    // 이 세 테스트는 라이브러리 버전 업그레이드 자체가 아니라, 이 앱이 흔히 결합되는
+    // JWT 위조 벡터(서명 변조, 키 불일치, alg 혼동)에 대해 여전히 안전한지를 못박는다.
+
+    #[test]
+    fn rejects_token_with_tampered_signature() {
+        // 서명 바이트를 한 글자 훼손한 토큰 — 클레임은 그대로지만 서명이 그
+        // 클레임에 대해 유효하지 않다. RSA 서명 검증이 실제로 바이트 단위로
+        // 동작함(값만 맞으면 통과하는 게 아님)을 못박는다.
+        let jwks = build_test_jwks();
+        let claims = TestClaims {
+            iss: "https://accounts.google.com",
+            aud: "test-client-id",
+            email: "dev@malgnsoft.com",
+            email_verified: true,
+            hd: "malgnsoft.com",
+            name: "Dev",
+            exp: future_exp(),
+        };
+        let token = sign_test_token(&claims, "test-kid-1");
+        let mut tampered = token.clone();
+        tampered.pop();
+        tampered.push(if token.ends_with('A') { 'B' } else { 'A' });
+
+        let result = verify_google_id_token_signature(&tampered, &jwks, "test-client-id");
+        assert!(result.is_err(), "서명이 변조된 토큰은 거부되어야 합니다");
+    }
+
+    #[test]
+    fn rejects_token_when_jwks_public_key_does_not_match_signing_key() {
+        // kid는 일치하지만 JWKS에 등록된 공개키 컴포넌트(n)가 실제 서명에 쓰인
+        // 개인키와 다른 경우 — kid 문자열 일치만으로 신뢰하지 않고 그 kid에 매핑된
+        // 공개키로 실제 암호학적 서명 검증을 수행함을 못박는다(키 대체/혼동 방지).
+        let claims = TestClaims {
+            iss: "https://accounts.google.com",
+            aud: "test-client-id",
+            email: "dev@malgnsoft.com",
+            email_verified: true,
+            hd: "malgnsoft.com",
+            name: "Dev",
+            exp: future_exp(),
+        };
+        let token = sign_test_token(&claims, "test-kid-1");
+
+        let mut mismatched_n = TEST_RSA_N.to_string();
+        // base64url 첫 글자를 뒤집어 실제 공개키 모듈러스와 다르게 만든다.
+        let first = mismatched_n.chars().next().unwrap();
+        let replacement = if first == 'A' { 'B' } else { 'A' };
+        mismatched_n.replace_range(0..1, &replacement.to_string());
+        let mismatched_jwks = GoogleJwks {
+            keys: vec![GoogleJwk {
+                kid: "test-kid-1".to_string(),
+                n: mismatched_n,
+                e: TEST_RSA_E.to_string(),
+            }],
+        };
+
+        let result = verify_google_id_token_signature(&token, &mismatched_jwks, "test-client-id");
+        assert!(
+            result.is_err(),
+            "kid는 같아도 JWKS 공개키가 실제 서명키와 다르면 거부되어야 합니다"
+        );
+    }
+
+    #[test]
+    fn rejects_token_with_hs256_algorithm_confusion() {
+        // 고전적 JWT alg-혼동 공격 재현: 공격자가 RSA 공개키(n)를 HMAC 대칭키로
+        // 오인시켜 alg를 HS256으로 바꿔 스스로 서명한다. 이 코드는
+        // `Validation::new(Algorithm::RS256)`로 허용 알고리즘을 RS256 하나로
+        // 고정해 두었으므로, HS256으로 서명된 토큰은 서명을 계산하기도 전에
+        // 알고리즘 불일치로 거부되어야 한다(1단계 판정의 핵심 근거).
+        let jwks = build_test_jwks();
+        let claims = TestClaims {
+            iss: "https://accounts.google.com",
+            aud: "test-client-id",
+            email: "dev@malgnsoft.com",
+            email_verified: true,
+            hd: "malgnsoft.com",
+            name: "Dev",
+            exp: future_exp(),
+        };
+        let bogus_hmac_secret = TEST_RSA_N.as_bytes();
+        let encoding_key = jsonwebtoken::EncodingKey::from_secret(bogus_hmac_secret);
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        header.kid = Some("test-kid-1".to_string());
+        let token = jsonwebtoken::encode(&header, &claims, &encoding_key)
+            .expect("HS256 위조 토큰 서명 실패");
+
+        let result = verify_google_id_token_signature(&token, &jwks, "test-client-id");
+        assert!(
+            result.is_err(),
+            "RS256으로 알고리즘을 고정했으므로 HS256 alg-혼동 토큰은 거부되어야 합니다"
+        );
+    }
 }

@@ -34,7 +34,13 @@ serde_json = "1"
 dirs = "6"
 notify-debouncer-mini = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-jsonwebtoken = "9"
+# RUSTSEC/CVE-2026-25537(type confusion, exp/nbf) 대응으로 9→10 메이저 업그레이드.
+# 10부터 crypto 백엔드를 features로 명시 선택해야 한다(aws_lc_rs | rust_crypto).
+# 이 저장소는 reqwest도 native-tls 대신 rustls-tls를 쓰는 순수-Rust 스택 방침이라
+# cmake/nasm 등 외부 C 툴체인이 필요 없는 rust_crypto를 택했다(맥/윈도우 교차
+# 빌드 안정성). RS256 검증(공개키만 사용)이라 rsa crate의 Marvin Attack(개인키
+# 복호화 타이밍 사이드채널)과는 무관하지만, 참고용으로 0.9.6(패치됨) 이상이 딸려온다.
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rand = "0.8"
 tiny_http = "0.12"
