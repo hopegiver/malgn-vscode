@@ -60,6 +60,17 @@ cron-parser = "=0.11.2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
+# `process_util::pid_alive`(Windows 분기 — OpenProcess+GetExitCodeProcess)
+# 전용. 신규 다운로드가 아니다 — `windows 0.61.3`는 tao/webview2-com 등을 통해
+# 이미 Cargo.lock에 고정돼 있다(`cargo tree -i windows@0.61.3` 실측: tao,
+# tauri, tauri-runtime, webview2-com, wry 등 6개 상위 크레이트가 이미 물고
+# 있음). 여기서는 우리가 쓰는 `Win32_Foundation`/`Win32_System_Threading`
+# 피처만 추가로 켠다 — 각 크레이트가 자신이 쓰는 피처만 독립적으로 선언해야
+# 하므로(피처는 유니온되지만 선언 자체는 각자 몫) 우리 코드가 직접 쓰려면
+# 우리 Cargo.toml에도 명시가 필요하다. `cfg(windows)` 타깃 전용이라 macOS
+# 빌드에는 전혀 관여하지 않는다.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

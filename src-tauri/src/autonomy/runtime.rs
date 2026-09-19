@@ -217,10 +217,50 @@ pub(crate) fn force_kill_all_remaining() {
     }
 }
 
+/// Windows에는 유닉스의 프로세스 그룹(음수 pid로 그룹 전체에 SIGKILL) 개념이
+/// 없다. `session_chat::turn::kill_process_group_with_grace`(Windows 분기)가
+/// 이미 확립한 패턴을 그대로 재사용한다: `taskkill /PID <pid> /T /F`로
+/// 자식 + 그 하위 트리 전체를 강제 종료한다.
+///
+/// Job Object(`CreateJobObject` +
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`)가 더 견고한 대안이지만(Job이 닫히는
+/// 순간 트리 전체가 자동 정리되어 이 함수 자체가 필요 없어진다) spawn
+/// 경로(`claude` 자식을 실제로 띄우는 지점) 수정이 필요하다 — 45인 규모
+/// 사내 도구에 그 정도 구조 변경은 과설계라 이번 결함 수정 범위를 넘는다.
+/// `taskkill`은 이 함수 하나만 고치면 되고, 이미 이 저장소가 같은 문제
+/// (자식 트리 종료)에 실제로 쓰고 있는 검증된 패턴이라 이걸 택한다.
+///
+/// `taskkill`을 bare-name으로 스폰하지 않는다 — `kill_process_group_with_grace`의
+/// B2(2라운드 차단) 주석과 동일한 이유: 이 앱의 Windows 배포물은 단일
+/// 포터블 exe라 보통 다운로드 폴더 등에 놓이고, 거기 동명의 악성 실행파일이
+/// 있으면 bare-name spawn이 그것을 대신 실행할 수 있다. 대신
+/// `dev_tools::platform::windows_system_tool`로
+/// `%SystemRoot%\System32\taskkill.exe` 절대경로를 조립해 실행한다.
+/// `.silent()`로 `CREATE_NO_WINDOW`를 적용해 이 저장소가 이미 잡아둔
+/// "콘솔 창이 뜨지 않는다"는 계약을 유지한다.
 #[cfg(windows)]
 pub(crate) fn force_kill_all_remaining() {
-    // Windows는 잔여 손자 프로세스가 남을 수 있다는 제약을 감수한다
-    // (`dev_tools.rs`가 이미 문서화한 동일 제약과 일관된다).
+    use crate::process_util::SilentCommand;
+
+    let pids: Vec<u32> = {
+        let map = RUNTIME.lock().unwrap();
+        map.values()
+            .filter(|rt| rt.running)
+            .filter_map(|rt| rt.child_pid)
+            .collect()
+    };
+    if pids.is_empty() {
+        return;
+    }
+
+    let roots = crate::dev_tools::platform::EnvRoots::from_env();
+    let taskkill = crate::dev_tools::platform::windows_system_tool(&roots, r"System32\taskkill.exe");
+    for pid in pids {
+        let _ = std::process::Command::new(&taskkill)
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .silent()
+            .output();
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +470,114 @@ mod tests {
         assert!(rt.running);
         assert!(rt.last_started_at.is_some());
         drop(map);
+        cleanup(&k);
+    }
+
+    // ── force_kill_all_remaining ──
+    //
+    // 아무것도 등록돼 있지 않거나 running=false인 경우는 두 플랫폼(unix의
+    // libc::kill 분기, windows의 taskkill 분기) 모두 "건드리지 않는다"는
+    // 계약이 같으므로 크로스플랫폼으로 돈다. 실제로 프로세스를 죽이는 동작
+    // 자체(Windows: taskkill /T /F 왕복)는 Windows 전용 API·바이너리라
+    // `#[cfg(windows)]`로 게이팅한다 — 이 로직은 windows-latest CI에서만
+    // 실제 검증된다.
+
+    #[test]
+    fn force_kill_all_remaining_does_not_panic_when_called() {
+        // `cargo test`는 기본적으로 테스트를 병렬 실행하고 RUNTIME은 전역
+        // static이라, 이 시점에 다른 테스트가 넣어 둔 항목이 섞여 있을 수
+        // 있다 — 그래서 "정말 비어있음"은 보장하지 않는다. 이 테스트가
+        // 고정하는 계약은 "호출이 어떤 registry 상태에서도 패닉하지 않는다"
+        // 뿐이다(running=false뿐이거나 완전히 비어 있는 흔한 경우의 스모크
+        // 테스트).
+        force_kill_all_remaining();
+    }
+
+    #[test]
+    fn force_kill_all_remaining_skips_non_running_entries() {
+        let k = key("force-kill-skip-non-running-1");
+        cleanup(&k);
+        {
+            let mut map = RUNTIME.lock().unwrap();
+            map.insert(
+                k.clone(),
+                TaskRuntime {
+                    running: false,
+                    // 자기 자신의 pid — 확실히 살아있다. running=false라
+                    // force_kill_all_remaining이 이 항목을 아예 건드리지
+                    // 않아야 하므로, 호출 뒤에도 테스트 프로세스 자신은
+                    // 당연히 살아있어야 한다(이 값이 바뀌면 필터
+                    // `rt.running` 조건 자체가 깨진 것).
+                    child_pid: Some(std::process::id()),
+                    ..Default::default()
+                },
+            );
+        }
+
+        force_kill_all_remaining();
+
+        assert!(
+            crate::process_util::pid_alive(std::process::id()),
+            "running=false 항목은 건드리지 않아야 하는데 테스트 프로세스 자신이 \
+             영향을 받은 것으로 보입니다(pid_alive(자기자신)==false)"
+        );
+        cleanup(&k);
+    }
+
+    /// Windows 분기의 실제 동작(taskkill /PID <pid> /T /F 왕복)을 검증한다.
+    /// 위임 지시의 권고대로 "죽은 pid를 지어내지" 않고, 직접 spawn한 실제
+    /// 자식 프로세스를 RUNTIME에 running=true로 등록한 뒤
+    /// force_kill_all_remaining을 호출해 그 프로세스가 실제로 죽는지
+    /// 확인한다. `pid_alive`(이번에 같이 고친 함수)로 생존 여부를 재확인하는
+    /// 것 자체가 두 수정 사이의 교차 검증이기도 하다. `#[cfg(windows)]`라
+    /// 이 머신(macOS)에서는 컴파일되지 않는다 — windows-latest CI 전용.
+    #[cfg(windows)]
+    #[test]
+    fn force_kill_all_remaining_terminates_registered_running_child_on_windows() {
+        let k = key("force-kill-windows-1");
+        cleanup(&k);
+
+        let mut child = std::process::Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .spawn()
+            .expect("보조 프로세스(powershell Start-Sleep)를 띄우지 못했습니다");
+        let pid = child.id();
+        assert!(
+            crate::process_util::pid_alive(pid),
+            "막 띄운 자식 프로세스는 살아있어야 합니다"
+        );
+
+        {
+            let mut map = RUNTIME.lock().unwrap();
+            map.insert(
+                k.clone(),
+                TaskRuntime {
+                    running: true,
+                    child_pid: Some(pid),
+                    ..Default::default()
+                },
+            );
+        }
+
+        force_kill_all_remaining();
+
+        // taskkill의 실제 종료 반영에는 약간의 지연이 있을 수 있어 짧게
+        // 폴링한다(최대 3초 — 정상 상황이면 수십~수백ms 안에 끝난다).
+        let mut alive = true;
+        for _ in 0..30 {
+            if !crate::process_util::pid_alive(pid) {
+                alive = false;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(
+            !alive,
+            "force_kill_all_remaining이 등록된 running 자식 프로세스(pid={pid})를 \
+             종료하지 못했습니다"
+        );
+
+        let _ = child.wait();
         cleanup(&k);
     }
 }

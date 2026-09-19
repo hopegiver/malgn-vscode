@@ -274,11 +274,12 @@ mod tests {
         let _ = helper.wait();
     }
 
-    // 플랫폼 전제: `process_util::pid_alive`는 Windows에서 OS 레벨 생존 확인이
-    // 없어(process_util.rs 문서화된 갭) 항상 true를 돌려준다 — "죽은 pid는
-    // 걸러진다"는 이 테스트의 전제 자체가 Windows에서는 성립하지 않는다(버그가
-    // 아니라 설계상 미구현). CI의 windows-latest에서는 컴파일을 건너뛴다.
-    #[cfg(unix)]
+    // 크로스플랫폼(`process_util::pid_alive`가 Windows에서도 OpenProcess+
+    // GetExitCodeProcess로 실제 OS 레벨 생존을 확인하도록 고쳐졌다 —
+    // process_util.rs 참조). u32::MAX-1은 Windows pid 공간에서도 실제
+    // 배정 가능성이 사실상 없어 이 테스트의 전제가 두 플랫폼 모두에서
+    // 성립한다. 예전에는 Windows의 `pid_alive`가 registry 존재만으로 항상
+    // true였던 설계상 미구현이라 `#[cfg(unix)]`로 막아 뒀었다.
     #[test]
     fn dead_pid_session_is_filtered_out() {
         let dead_pid = u32::MAX - 1;
