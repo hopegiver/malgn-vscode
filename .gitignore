@@ -12,3 +12,4 @@ scripts/capture/output/
 *.pfx
 *.p12
 *.key
+scripts/ui-harness/last-run-report.json
