@@ -75,7 +75,7 @@ export async function loadDailyUsage(): Promise<void> {
     state.dailyUsage.items = await fetchDailyUsage();
     state.dailyUsage.loaded = true;
   } catch (err) {
-    state.dailyUsage.error = err instanceof Error ? err.message : '사용량 데이터를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.dailyUsage.error = err instanceof Error ? err.message : '사용량 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.dailyUsage.loading = false;
     notifyChange();
@@ -106,7 +106,7 @@ export async function loadDailyDetail(date: string): Promise<void> {
   try {
     state.dailyDetail.report = await fetchDailyDetail(date);
   } catch (err) {
-    state.dailyDetail.error = err instanceof Error ? err.message : '상세 데이터를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.dailyDetail.error = err instanceof Error ? err.message : '상세 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.dailyDetail.loading = false;
     notifyChange();

@@ -25,7 +25,7 @@ const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[]
   { key: 'cloudflare', label: 'Cloudflare 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
-  { key: 'applinks', label: '앱링크설정' },
+  { key: 'applinks', label: '앱링크 설정' },
   { key: 'devtools', label: '개발 환경' },
 ];
 
@@ -73,7 +73,7 @@ export async function loadOtelEnv(): Promise<void> {
     state.otel.settings = await fetchOtelSettings();
     state.otel.loaded = true;
   } catch (err) {
-    state.otel.error = err instanceof Error ? err.message : 'OTel 설정을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.otel.error = err instanceof Error ? err.message : 'OTel 설정을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.otel.loading = false;
     notifyChange();
@@ -279,7 +279,7 @@ export async function loadGithubStatus(): Promise<void> {
     state.github.status = await fetchGithubStatus();
     state.github.loaded = true;
   } catch (err) {
-    state.github.error = err instanceof Error ? err.message : 'GitHub 연동 상태를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.github.error = err instanceof Error ? err.message : 'GitHub 연동 상태를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.github.loading = false;
     notifyChange();
@@ -389,7 +389,7 @@ export async function loadCloudflareStatus(): Promise<void> {
     state.cloudflare.status = await fetchCloudflareStatus();
     state.cloudflare.loaded = true;
   } catch (err) {
-    state.cloudflare.error = err instanceof Error ? err.message : 'Cloudflare 연동 상태를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.cloudflare.error = err instanceof Error ? err.message : 'Cloudflare 연동 상태를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.cloudflare.loading = false;
     notifyChange();
@@ -579,7 +579,7 @@ export async function loadMcp(): Promise<void> {
     state.mcp.items = await fetchMcpServers();
     state.mcp.loaded = true;
   } catch (err) {
-    state.mcp.error = err instanceof Error ? err.message : 'MCP 서버 목록을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.mcp.error = err instanceof Error ? err.message : 'MCP 서버 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.mcp.loading = false;
     notifyChange();
@@ -602,7 +602,7 @@ export async function loadMcpCatalog(): Promise<void> {
     state.mcpCatalog.items = await fetchMcpCatalog();
     state.mcpCatalog.loaded = true;
   } catch (err) {
-    state.mcpCatalog.error = err instanceof Error ? err.message : 'MCP 카탈로그를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.mcpCatalog.error = err instanceof Error ? err.message : 'MCP 카탈로그를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.mcpCatalog.loading = false;
     notifyChange();

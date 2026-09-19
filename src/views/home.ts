@@ -42,9 +42,9 @@ function widgetShell(title: string, onClick: () => void, children: readonly (Nod
 // 쓰면서도 복구 경로가 없었다(V-10). 카드를 클릭하면 서브페이지로 이동하는 대신
 // 그 자리에서 다시 불러오도록 onClick을 loadX()로 바꾸고, 링크 문구도 이동이
 // 아니라 재시도임을 알리게 바꾼다.
-function widgetErrorShell(title: string, onRetry: () => void): HTMLElement {
+function widgetErrorShell(title: string, message: string | null, onRetry: () => void): HTMLElement {
   return widgetShell(title, onRetry, [
-    el('div', { className: 'home-widget-desc' }, ['상태를 불러오지 못했습니다.']),
+    el('div', { className: 'home-widget-desc' }, [message ?? '상태를 불러오지 못했습니다.']),
     el('div', { className: 'home-widget-link' }, ['다시 확인하기 →']),
   ]);
 }
@@ -77,7 +77,7 @@ function taskBoardWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetErrorShell('자율업무 진행상황', () => void loadAutonomousTasks());
+    return widgetErrorShell('자율업무 진행상황', state.autonomousTasks.error, () => void loadAutonomousTasks());
   }
 
   const tasks = state.autonomousTasks.items;
@@ -105,7 +105,7 @@ function mcpHubWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetErrorShell('malgnai-hub 연동', () => void loadMcp());
+    return widgetErrorShell('malgnai-hub 연동', state.mcp.error, () => void loadMcp());
   }
 
   // R-01′: malgnai-hub 하나만 보고 끝내지 않고, 등록된 MCP 서버 전체에서 미연결
@@ -146,7 +146,7 @@ function usageWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetErrorShell('사용량 통계', () => void loadDailyUsage());
+    return widgetErrorShell('사용량 통계', state.dailyUsage.error, () => void loadDailyUsage());
   }
   if (usage.items.length === 0) {
     return widgetShell('사용량 통계', () => navigate('#/usage'), [
@@ -171,7 +171,7 @@ function catalogWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetErrorShell('카탈로그', () => void loadCatalog());
+    return widgetErrorShell('카탈로그', state.catalog.error, () => void loadCatalog());
   }
 
   const plugins = state.catalog.plugins;
@@ -208,7 +208,7 @@ function projectsWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetErrorShell('프로젝트', () => void loadProjects());
+    return widgetErrorShell('프로젝트', state.dashboard.error, () => void loadProjects());
   }
 
   const projects = state.dashboard.projects;
@@ -242,7 +242,7 @@ function sessionsWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetErrorShell('세션목록', () => void loadSessions());
+    return widgetErrorShell('세션목록', state.sessions.error, () => void loadSessions());
   }
 
   const runningCount = state.sessions.items.filter((s) => asBoolean(s.running)).length;
@@ -262,7 +262,7 @@ function devToolsWidget(): HTMLElement {
     ]);
   }
   if (phase === 'error') {
-    return widgetErrorShell('개발 환경', () => void loadDevTools());
+    return widgetErrorShell('개발 환경', state.devTools.error, () => void loadDevTools());
   }
 
   // R-01′: 몇 개가 설치됐는지가 아니라 "무엇이 미설치인가"가 조치 신호다 —

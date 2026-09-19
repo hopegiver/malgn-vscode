@@ -51,7 +51,7 @@ export async function loadProjects(): Promise<void> {
     state.dashboard.projects = await fetchWorkspaceProjects();
     state.dashboard.loaded = true;
   } catch (err) {
-    state.dashboard.error = err instanceof Error ? err.message : '프로젝트 목록을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.dashboard.error = err instanceof Error ? err.message : '프로젝트 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.dashboard.loading = false;
     notifyChange();

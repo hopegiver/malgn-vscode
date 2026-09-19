@@ -35,7 +35,7 @@ export async function loadDevTools(): Promise<void> {
     state.devTools.items = await fetchDevTools();
     state.devTools.loaded = true;
   } catch (err) {
-    state.devTools.error = err instanceof Error ? err.message : '개발 환경 정보를 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.devTools.error = err instanceof Error ? err.message : '개발 환경 정보를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.devTools.loading = false;
     notifyChange();
@@ -273,7 +273,7 @@ async function handleUpdateAll(): Promise<void> {
   let confirmedInstallTargets: DevToolStatus[] = [];
   if (installTargets.length > 0) {
     const names = installTargets.map((t) => t.name).join(', ');
-    const proceed = await confirmDialog(`다음 ${installTargets.length}개 도구를 설치합니다: ${names}\n계속할까요?`);
+    const proceed = await confirmDialog(`다음 ${installTargets.length}개 도구를 설치합니다: ${names}. 계속할까요?`);
     if (proceed) {
       confirmedInstallTargets = installTargets;
     }

@@ -19,7 +19,7 @@ export async function loadAppLinks(): Promise<void> {
   try {
     state.appLinks.status = await fetchAppLinks();
   } catch (err) {
-    state.appLinks.error = err instanceof Error ? err.message : '앱링크 목록을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.appLinks.error = err instanceof Error ? err.message : '앱링크 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     // 성공 시에만 loaded=true를 세우면 실패 시 이 값이 영원히 false로 남아
     // 사이드바(renderAppLinksGroup)가 "불러오는 중…"에 무한히 머무는 버그가
@@ -256,7 +256,7 @@ export function renderAppLinksPanel(): HTMLElement {
   const disabled = blocked || state.appLinks.saving;
   const addBtn = el('button', { className: 'btn btn-primary', disabled, onClick: () => openLinkFormModal(null) }, ['+ 링크 추가']);
   const countLabel = el('span', { className: 'applink-count-label' }, [
-    `사이드바에 노출할 링크를 체크하세요. (${status.links.length} / ${status.limits.maxLinks})`,
+    `사이드바에 노출할 링크를 켜세요. (${status.links.length} / ${status.limits.maxLinks})`,
   ]);
   body.push(el('div', { className: 'filter-row' }, [countLabel, addBtn]));
 

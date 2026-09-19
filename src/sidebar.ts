@@ -16,7 +16,7 @@ const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: strin
   { key: 'cloudflare', label: 'Cloudflare 설정' },
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
-  { key: 'applinks', label: '앱링크설정' },
+  { key: 'applinks', label: '앱링크 설정' },
   { key: 'devtools', label: '개발 환경' },
 ];
 
@@ -41,6 +41,7 @@ export function renderSidebar(route: Route): HTMLElement {
       state.sidebar.settingsExpanded = !state.sidebar.settingsExpanded;
       notifyChange();
     },
+    onNavigate: () => navigate('#/settings'),
     subItems: SETTINGS_TABS.map((t) => ({
       label: t.label,
       active: route.kind === 'settings' && route.tab === t.key,
@@ -56,6 +57,7 @@ export function renderSidebar(route: Route): HTMLElement {
       state.sidebar.catalogExpanded = !state.sidebar.catalogExpanded;
       notifyChange();
     },
+    onNavigate: () => navigate('#/catalog'),
     subItems: CATALOG_TABS.map((t) => ({
       label: t.label,
       active: route.kind === 'catalog' && route.tab === t.key,
@@ -188,7 +190,7 @@ function renderAppLinksGroup(): HTMLElement {
       const items =
         links.length > 0
           ? links.map((l) => ({ label: l.name, active: false, onClick: () => void openLink(l) }))
-          : [{ label: '앱링크설정에서 추가 →', active: false, onClick: () => navigate('#/settings/applinks') }];
+          : [{ label: '앱링크 설정에서 추가 →', active: false, onClick: () => navigate('#/settings/applinks') }];
       children.push(subList(items, null, () => {}));
     }
   }
@@ -259,6 +261,7 @@ interface NavGroupSpec {
   readonly active: boolean;
   readonly expanded: boolean;
   readonly onToggle: () => void;
+  readonly onNavigate: () => void;
   readonly subItems: readonly { readonly label: string; readonly active: boolean; readonly onClick: () => void }[];
 }
 
@@ -266,12 +269,15 @@ function navGroup(spec: NavGroupSpec): HTMLElement {
   // 수동 토글 상태이거나, 그 섹션이 현재 활성 라우트면 항상 펼쳐 보여준다.
   const expanded = spec.expanded || spec.active;
 
+  // expandableNavItem()과 동일하게 본문 클릭=navigate / 화살표 클릭=onToggle로
+  // 분리한다(P1-1) — 이전에는 헤더 전체가 onToggle만 호출해 "설정"·"카탈로그"
+  // 라벨을 클릭해도 화면 전환이 안 됐다.
   const header = clickable(
     el('div', { className: `sidebar-nav-item sidebar-nav-group-header${spec.active ? ' active' : ''}` }, [
       el('span', { className: 'sidebar-nav-group-label' }, [spec.label]),
-      el('span', { className: 'sidebar-nav-chevron' }, [expanded ? '▾' : '▸']),
+      expandChevron(expanded, spec.onToggle),
     ]),
-    spec.onToggle
+    spec.onNavigate
   );
 
   const children: HTMLElement[] = [header];

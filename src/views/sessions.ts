@@ -63,7 +63,7 @@ export async function loadSessions(): Promise<void> {
     state.sessions.items = await fetchClaudeSessions();
     state.sessions.loaded = true;
   } catch (err) {
-    state.sessions.error = err instanceof Error ? err.message : '세션 목록을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.sessions.error = err instanceof Error ? err.message : '세션 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.sessions.loading = false;
     notifyChange();

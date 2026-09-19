@@ -323,7 +323,7 @@ export async function loadAutonomousTasks(): Promise<void> {
   } catch (err) {
     // 전역 설정(malgn-agent.json)이 손상되면 autonomy_list가 Err를 던진다
     // (fail-closed) — 목록을 비우는 대신 오류 배너로 원인을 보여준다.
-    state.autonomousTasks.error = err instanceof Error ? err.message : '자율업무 목록을 불러오지 못했습니다. Tauri 앱(pnpm tauri dev)에서 실행 중인지 확인하세요.';
+    state.autonomousTasks.error = err instanceof Error ? err.message : '자율업무 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.autonomousTasks.loading = false;
     notifyChange();
