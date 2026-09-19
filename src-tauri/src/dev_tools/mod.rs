@@ -74,6 +74,17 @@ pub(crate) struct DevTool {
     /// 등 토큰은 `resolve_tool_path`가 `resolve_binary_expand_home`을 거쳐
     /// `platform::expand_path_tokens`로 확장한다.
     pub(crate) windows_path_candidates: &'static [&'static str],
+    /// "필수" 표시(devTools.ts UI)의 단일 정본. 사용자 결정(hub decisionId
+    /// 01m2wse823xcszvn7km3vap0qs): 직원 대다수가 개발환경 설정에 익숙하지 않아
+    /// Node.js/Git을 "있으면 편한 선택"이 아니라 앱/업무가 돌아가는 데 필요한
+    /// 전제조건으로 본다. 이 필드를 프런트 상수로 따로 두지 않고 여기 두는
+    /// 이유: label/path_candidates 등 도구 메타데이터가 이미 이 테이블
+    /// 하나에 모여 있고(단일 정본), "필수 여부"도 도구 자체에 귀속되는 같은
+    /// 성격의 정적 사실이라 프런트가 별도 id 목록을 유지하면 ToolId가 바뀔 때
+    /// 드리프트할 위험이 생긴다. Claude Code는 이번 결정(Node/Git 자동설치
+    /// 전환)의 대상이 아니라서 포함하지 않았다 — 필요하면 별도 판단으로
+    /// 추가한다.
+    pub(crate) required: bool,
 }
 
 // docker는 완전 삭제(부록 C 프론트 변경 메모, 7→6).
@@ -101,6 +112,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%APPDATA%\npm\claude.cmd",
             r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
         ],
+        required: false,
     },
     DevTool {
         id: ToolId::Node,
@@ -114,6 +126,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"C:\Program Files\nodejs\node.exe",
             r"%LOCALAPPDATA%\Programs\nodejs\node.exe",
         ],
+        required: true,
     },
     DevTool {
         id: ToolId::Gh,
@@ -128,6 +141,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"C:\Program Files\GitHub CLI\gh.exe",
             r"%LOCALAPPDATA%\Microsoft\WinGet\Links\gh.exe",
         ],
+        required: false,
     },
     DevTool {
         id: ToolId::Git,
@@ -153,6 +167,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"C:\Program Files (x86)\Git\cmd\git.exe",
             r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe",
         ],
+        required: true,
     },
     DevTool {
         id: ToolId::Pnpm,
@@ -171,6 +186,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%LOCALAPPDATA%\pnpm\pnpm.exe",
             r"%APPDATA%\npm\pnpm.cmd",
         ],
+        required: false,
     },
     DevTool {
         id: ToolId::Wrangler,
@@ -194,6 +210,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%LOCALAPPDATA%\pnpm\wrangler.cmd",
             r"%APPDATA%\npm\wrangler.cmd",
         ],
+        required: false,
     },
 ];
 
@@ -342,6 +359,20 @@ mod tests {
     fn tool_path_candidates_selects_mac_array_on_this_machine() {
         for def in DEV_TOOLS.iter() {
             assert_eq!(tool_path_candidates(def), def.path_candidates);
+        }
+    }
+
+    // hub decisionId 01m2wse823xcszvn7km3vap0qs: "필수" 정의의 단일 정본이 이
+    // 테이블이라는 계약 자체를 고정한다 — Node/Git만 true, 나머지는 false.
+    #[test]
+    fn only_node_and_git_are_marked_required() {
+        for def in DEV_TOOLS.iter() {
+            let expected = matches!(def.id, ToolId::Node | ToolId::Git);
+            assert_eq!(
+                def.required, expected,
+                "{}의 required 플래그가 기대값과 다릅니다",
+                def.key
+            );
         }
     }
 }

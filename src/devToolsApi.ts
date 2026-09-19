@@ -32,6 +32,10 @@ export interface DevToolStatus {
   readonly installMethod?: string | null;
   readonly actionKind: DevToolActionKind;
   readonly manualHint?: string | null;
+  // 이 도구가 없으면 앱/업무가 돌아가지 않는 전제조건인지 — 정본은 백엔드
+  // DevTool.required(src-tauri/src/dev_tools/mod.rs DEV_TOOLS 테이블) 하나뿐이다.
+  // 프론트는 이 값을 그대로 배지 표시에만 쓴다(별도 id 목록을 두지 않는다).
+  readonly required: boolean;
 }
 
 export interface DevToolPreview {

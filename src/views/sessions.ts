@@ -21,6 +21,7 @@ import type { ClaudeSessionRecord, ChatMessageKind, SessionTranscript } from '..
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { navigate } from '../route';
 import { loadProjects, sortedProjectsByRecency } from './projects';
+import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 
 export function asString(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -299,12 +300,15 @@ function renderNewSessionModal(): HTMLElement {
       ])
     );
   } else if (state.dashboard.projects.length === 0) {
-    bodyChildren.push(
-      el('div', { className: 'state-block' }, [
-        el('div', { className: 'state-block-title' }, ['먼저 프로젝트를 추가하세요']),
-        el('div', { className: 'state-block-desc' }, ['~/workspace 아래 CLAUDE.md가 있는 폴더가 malgn-agent 프로젝트로 표시됩니다.']),
-      ])
-    );
+    const emptyStateChildren: HTMLElement[] = [
+      el('div', { className: 'state-block-title' }, ['먼저 프로젝트를 추가하세요']),
+      el('div', { className: 'state-block-desc' }, [describeWorkspaceScanScope()]),
+    ];
+    const skipSummary = summarizeSkippedProjects(state.dashboard.skipped);
+    if (skipSummary) {
+      emptyStateChildren.push(el('div', { className: 'state-block-desc' }, [skipSummary]));
+    }
+    bodyChildren.push(el('div', { className: 'state-block' }, emptyStateChildren));
   } else {
     const list = el('div', { className: 'session-list' });
     for (const p of sortedProjectsByRecency()) {

@@ -24,8 +24,25 @@ export interface WorkspaceProject {
   readonly updatedAt: number;
 }
 
-export async function fetchWorkspaceProjects(): Promise<WorkspaceProject[]> {
-  return invoke<WorkspaceProject[]>('list_workspace_projects');
+// Rust SkipReason(src-tauri/src/workspace/mod.rs)과 1:1 대응 — serde
+// rename_all=camelCase로 내려오는 값 그대로다. 프로젝트로 인식되려면
+// CLAUDE.md가 있어야 한다는 스캔 조건 자체는 바뀌지 않았다 — 이 값은 그
+// 판정 결과에 이름을 붙여 프런트까지 올려줄 뿐이다.
+export type WorkspaceSkipReason = 'notDirectory' | 'hidden' | 'noClaudeMd' | 'invalidName' | 'rootUnreadable';
+
+export interface WorkspaceSkippedEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly reason: WorkspaceSkipReason;
+}
+
+export interface WorkspaceScanResult {
+  readonly projects: readonly WorkspaceProject[];
+  readonly skipped: readonly WorkspaceSkippedEntry[];
+}
+
+export async function fetchWorkspaceProjects(): Promise<WorkspaceScanResult> {
+  return invoke<WorkspaceScanResult>('list_workspace_projects');
 }
 
 // ---------------- 프로젝트 폴더 구조 + 파일 미리보기 (읽기 전용) ----------------

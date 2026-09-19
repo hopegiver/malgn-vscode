@@ -2,7 +2,7 @@
 // 순환 import를 피하려고 render() 자체는 여기 두지 않는다: main.ts가 `onStateChange(render)`로
 // 한 번 구독하고, 다른 모듈들은 상태를 바꾼 뒤 `notifyChange()`만 호출해 재렌더를 요청한다.
 import type { ClaudeSessionRecord, SessionTranscript } from './sessionsApi';
-import type { WorkspaceProject, ProjectTreeNode, FilePreview } from './workspaceApi';
+import type { WorkspaceProject, WorkspaceSkippedEntry, ProjectTreeNode, FilePreview } from './workspaceApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devToolsApi';
 import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } from './catalogApi';
 import type { DailyUsage } from './usageApi';
@@ -65,6 +65,9 @@ export interface AppState {
   // 목업이 아니라 실제 ~/workspace 아래를 스캔해온 값이 들어간다(workspaceApi.ts).
   dashboard: {
     projects: readonly WorkspaceProject[];
+    // 후보였지만 프로젝트로 인정되지 않고 제외된 폴더(CLAUDE.md 없음 등,
+    // 사유별로 이름 붙여 온다) — projects와 동시에 채워진다(loadProjects).
+    skipped: readonly WorkspaceSkippedEntry[];
     loading: boolean;
     error: string | null;
     loaded: boolean;
@@ -313,7 +316,7 @@ export const state: AppState = {
   // 재현된 버그 — 프로젝트 목록이 "새로고침 중…" 스켈레톤에서 멈춰 있었다).
   // loadProjects() 자신이 시작하자마자 loading을 true로 바꾸므로 스켈레톤은
   // 여전히 짧게 보인다.
-  dashboard: { projects: [], loading: false, error: null, loaded: false, filter: 'all', sort: 'updated' },
+  dashboard: { projects: [], skipped: [], loading: false, error: null, loaded: false, filter: 'all', sort: 'updated' },
   projectTree: {
     projectPath: null,
     nodes: [],

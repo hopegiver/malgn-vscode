@@ -15,6 +15,7 @@ use super::install_resolver::{
 };
 use super::plan_table::{
     manual_display_message, Runner, RunPlan, WINGET_ALREADY_LATEST_EXIT_CODE,
+    WINGET_USER_CANCELLED_EXIT_CODE,
 };
 use super::process::{
     build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout,
@@ -37,6 +38,20 @@ fn timed_out_message(runner: Runner) -> String {
     } else {
         base.to_string()
     }
+}
+
+/// UAC 취소를 매달리지 말고 명확한 실패로(요구사항 §3): UAC 프롬프트가
+/// 뜨는 것 자체는 문제 삼지 않는다(Windows 표준 설치 경험) — 문제는 사용자가
+/// 취소하거나 응답하지 않을 때 화면이 "실행이 실패했습니다(알 수 없는 코드)"로
+/// 원인을 숨기는 것이다. `WINGET_USER_CANCELLED_EXIT_CODE`(plan_table.rs 문서
+/// 근거)와 정확히 일치할 때만 이 문구를 쓴다 — 그 외 실패는 여기서 추측하지
+/// 않고(요구사항: 종료코드 의미를 추측으로 단정하지 않는다) 각 호출부의 일반
+/// Failed 분기가 원본 종료코드를 그대로 메시지에 담아 보존한다. `exit_code`/
+/// `log_tail`은 이 분기를 타도 DevToolActionResult에 그대로 실려(원문 보존).
+fn winget_cancelled_message(action_label: &str) -> String {
+    format!(
+        "사용자가 관리자 권한 요청을 취소했습니다(UAC). {action_label}이(가) 진행되지 않았습니다. (원본 종료 코드 {WINGET_USER_CANCELLED_EXIT_CODE})"
+    )
 }
 
 pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevToolActionResult, String> {
@@ -110,6 +125,12 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
             Outcome::AlreadyLatest,
             true,
             format!("{}이(가) 이미 최신 버전입니다.", def.label),
+        )
+    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_USER_CANCELLED_EXIT_CODE) {
+        (
+            Outcome::Failed,
+            false,
+            winget_cancelled_message(&format!("{}의 업데이트", def.label)),
         )
     } else if output.exit_code == Some(0) {
         match &normalized_after {
@@ -278,6 +299,12 @@ fn run_install_plan(
             base
         };
         (Outcome::TimedOut, false, message)
+    } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_USER_CANCELLED_EXIT_CODE) {
+        (
+            Outcome::Failed,
+            false,
+            winget_cancelled_message(&format!("{}의 설치", def.label)),
+        )
     } else if output.exit_code == Some(0) {
         match &normalized_after {
             Some(after) => (
@@ -460,5 +487,26 @@ mod tests {
     #[test]
     fn winget_already_latest_exit_code_is_reexported_correctly() {
         assert_eq!(WINGET_ALREADY_LATEST_EXIT_CODE, -1978335189);
+    }
+
+    // hub decisionId 01m2wse823xcszvn7km3vap0qs §3: HRESULT 0x800704C7
+    // (Win32 ERROR_CANCELLED)의 부호있는 i32 변환값이 고정돼 있는지 확인한다
+    // (plan_table.rs 문서 근거). 이 값이 틀리면 UAC 취소가 일반 Failed로
+    // 새 버그 없이 조용히 떨어져 이 라운드의 핵심 요구가 무의미해진다.
+    #[test]
+    fn winget_user_cancelled_exit_code_matches_documented_hresult() {
+        assert_eq!(WINGET_USER_CANCELLED_EXIT_CODE, -2147023673);
+        assert_eq!(WINGET_USER_CANCELLED_EXIT_CODE as i64, 0x800704C7i64 - (1i64 << 32));
+    }
+
+    // winget_cancelled_message: 사용자에게 보이는 문구가 "취소" 사실 + 원본
+    // 종료코드를 모두 담아야 한다(원문을 버리지 않는다는 요구사항).
+    #[test]
+    fn winget_cancelled_message_contains_reason_and_raw_exit_code() {
+        let msg = winget_cancelled_message("Node.js의 설치");
+        assert!(msg.contains("취소"));
+        assert!(msg.contains("UAC"));
+        assert!(msg.contains(&WINGET_USER_CANCELLED_EXIT_CODE.to_string()));
+        assert!(msg.contains("Node.js의 설치"));
     }
 }

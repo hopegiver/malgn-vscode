@@ -36,6 +36,7 @@ import type {
 } from '../autonomyApi';
 import { fetchMalgnAgentConfig, saveMalgnAgentConfig } from '../configApi';
 import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
+import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 import { navigate } from '../route';
 
 const INTERVAL_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
@@ -793,12 +794,24 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     projectSelect = document.createElement('select');
     projectSelect.className = 'settings-input';
     const projects = state.dashboard.projects;
+    const projectFieldChildren: HTMLElement[] = [el('span', { className: 'settings-field-label' }, ['프로젝트']), projectSelect];
     if (projects.length === 0) {
       const placeholderOption = document.createElement('option');
       placeholderOption.value = '';
       placeholderOption.textContent = state.dashboard.loading ? '프로젝트 목록 불러오는 중…' : '등록된 프로젝트가 없습니다';
       projectSelect.appendChild(placeholderOption);
       projectSelect.disabled = true;
+      // 정작 사용자가 "프로젝트가 없다"를 실제로 겪은 화면이 여기다 — projects.ts/
+      // sessions.ts의 빈 상태 안내와 같은 문구·톤을 재사용한다(hub 이슈
+      // 01m2wm499xmh3046rnvx4cyn8n). 불러오는 중일 때는 조건 설명 대신 로딩
+      // 안내만 이미 있으므로 중복 표시하지 않는다.
+      if (!state.dashboard.loading) {
+        projectFieldChildren.push(el('div', { className: 'settings-form-hint' }, [describeWorkspaceScanScope()]));
+        const skipSummary = summarizeSkippedProjects(state.dashboard.skipped);
+        if (skipSummary) {
+          projectFieldChildren.push(el('div', { className: 'settings-form-hint' }, [skipSummary]));
+        }
+      }
     } else {
       for (const project of projects) {
         const optionEl = document.createElement('option');
@@ -807,7 +820,7 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
         projectSelect.appendChild(optionEl);
       }
     }
-    projectField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['프로젝트']), projectSelect]);
+    projectField = el('label', { className: 'settings-field' }, projectFieldChildren);
   }
 
   const intervalSelect = document.createElement('select');

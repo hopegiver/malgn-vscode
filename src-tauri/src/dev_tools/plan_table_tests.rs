@@ -144,13 +144,21 @@ fn install_manual_plan_windows_variant_uses_winget_not_brew() {
         .unwrap_or("")
         .starts_with("winget install --id GitHub.cli"));
 
+    // hub decisionId 01m2wse823xcszvn7km3vap0qs 이후: install_candidates가
+    // winget 후보를 갖게 되면서 이 Manual 분기는 "winget을 찾지 못했다"는
+    // 뜻이 됐다 — copyable_command도 실제 RunPlan(RUN_WINGET_INSTALL_NODE/GIT)
+    // 인자와 동일하게(--id/-e/--source/--accept-*/--disable-interactivity/
+    // --silent 전부 포함) 맞춰 사용자가 그대로 복사해 실행할 수 있게 한다.
     let node = install_manual_plan_windows(ToolId::Node);
-    assert_eq!(node.copyable_command, Some("winget install OpenJS.NodeJS.LTS"));
+    assert_eq!(
+        node.copyable_command,
+        Some("winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent")
+    );
 
     let git = install_manual_plan_windows(ToolId::Git);
     assert_eq!(
         git.copyable_command,
-        Some("winget install --id Git.Git -e --source winget")
+        Some("winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent")
     );
 
     let pnpm = install_manual_plan_windows(ToolId::Pnpm);

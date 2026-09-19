@@ -97,7 +97,7 @@ export function scenarios(base) {
     },
     {
       id: 'empty',
-      fixtures: { ...base, list_claude_sessions: [], list_workspace_projects: [] },
+      fixtures: { ...base, list_claude_sessions: [], list_workspace_projects: { projects: [], skipped: [] } },
       async run(page, { shot, bugs }) {
         await shot('01-empty');
         const emptyTitle = await page.locator('.state-block-title').first().textContent().catch(() => null);
@@ -170,7 +170,7 @@ export function scenarios(base) {
         open_claude_login_terminal: { opened: true, message: '터미널 창에서 claude login 절차를 진행한 뒤 다시 시도해주세요.' },
       },
       async run(page, { shot, bugs, emitEvent }) {
-        if (base.list_workspace_projects.length === 0) {
+        if (base.list_workspace_projects.projects.length === 0) {
           bugs.push({ severity: 'Major', symptom: 'auth-error 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
           return;
         }

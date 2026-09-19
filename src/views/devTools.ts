@@ -12,16 +12,23 @@
 //                않은 도구는 "전체 업데이트"의 동의 범위 밖이라 "N개를 설치합니다"
 //                요약 확인 1회를 받은 경우에만 같은 배치에 포함된다(M1,
 //                handleUpdateAll).
-//   - "manual" : 이 앱이 별도 프로세스로 실행하지 않는다(예: git처럼 이 앱이 직접
-//                설치/업데이트를 실행하지 않는 도구). "안내 보기"로 안내문과 복사
-//                가능한 명령을 보여주며, "터미널에서 실행"은 어떤 명령이 실행될지
-//                먼저 보여주고 확인을 받은 뒤에만 터미널 창에서 그 명령을
-//                실행한다(M2).
+//   - "manual" : 이 앱이 별도 프로세스로 실행하지 않는 경우(예: macOS의 Git처럼
+//                시스템이 소유해 이 앱이 대신 설치/업데이트할 수 없는 도구, 또는
+//                필요한 실행기(winget 등)를 이 머신에서 찾지 못한 경우). "안내
+//                보기"로 안내문과 복사 가능한 명령을 보여주며, "터미널에서 실행"은
+//                어떤 명령이 실행될지 먼저 보여주고 확인을 받은 뒤에만 터미널
+//                창에서 그 명령을 실행한다(M2). 같은 도구도 install/update 경로가
+//                서로 다른 actionKind를 낼 수 있다(예: Windows의 Node/Git은
+//                미설치 상태에서는 winget으로 "run", 이미 설치돼 있으면 업데이트는
+//                여전히 "manual" — hub decisionId 01m2wse823xcszvn7km3vap0qs).
 //   - "none"   : 설치 경로 자체를 찾지 못해 아무 것도 할 수 없다. 버튼은 비활성이다.
 // 실행 결과는 성공/실패 2상태가 아니라 updated/alreadyLatest/unknownAfter/failed/
 // timedOut/notSupported 3+ 상태로 구분해 보여준다 — exit code만으로 "성공"을
 // 주장하지 않는다(verified=false는 명령이 성공을 보고했지만 버전 재조회로 확인하지
 // 못했다는 뜻이며, 성공으로 표시하지 않는다).
+// required(DevToolStatus.required)는 이 도구 없이는 앱/업무가 돌아가지 않는
+// 전제조건인지를 나타낸다(현재 Node.js/Git) — 정본은 백엔드 하나뿐이고(위
+// devToolsApi.ts 주석 참고), 이 화면은 그 값을 "필수" 배지로만 반영한다.
 import { el, showToast, confirmDialog } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
@@ -386,9 +393,19 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   const metaParts = [tool.id, tool.installMethod, tool.path].filter((v): v is string => !!v);
   const metaLine = el('div', { className: 'devtool-binary' }, [metaParts.join(' · ')]);
 
+  // 배지 클래스는 기존 두 개(badge-active/badge-archived)만 재사용한다(styles.css
+  // 수정 금지) — 미설치 필수 도구를 눈에 띄게 하는 강조는 appLinks.ts의 기존
+  // 패턴(인라인 style.color = 'var(--color-danger)')을 그대로 따른다.
+  const badges = [statusBadge];
+  if (tool.required) {
+    const requiredBadge = el('span', { className: 'badge badge-archived' }, ['필수']);
+    if (!tool.installed) requiredBadge.style.color = 'var(--color-danger)';
+    badges.push(requiredBadge);
+  }
+
   const row = el('div', { className: 'devtool-row' }, [
     el('div', { className: 'devtool-main' }, [el('div', { className: 'devtool-name' }, [tool.name]), metaLine]),
-    statusBadge,
+    ...badges,
     renderActionArea(tool, updating, previewLoading, !!pendingPreview),
   ]);
 

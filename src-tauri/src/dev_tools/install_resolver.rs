@@ -5,8 +5,9 @@
 use super::classify::{canonicalize_best_effort, classify_install_method_with_defaults, InstallMethod};
 use super::plan_table::{
     compute_action, install_manual_plan, manual_no_runner_plan, Action, Arg, ManualPlan, Runner,
-    RunPlan, MANUAL_NOT_WRITABLE, RUN_BREW_INSTALL_GH, RUN_NPM_GLOBAL_INSTALL_WRANGLER,
-    RUN_NPM_INSTALL_CLAUDE, RUN_PNPM_GLOBAL_ADD, RUN_WINGET_INSTALL_GH,
+    RunPlan, MANUAL_NOT_WRITABLE, RUN_BREW_INSTALL_GH, RUN_NPM_GLOBAL_INSTALL_PNPM,
+    RUN_NPM_GLOBAL_INSTALL_WRANGLER, RUN_NPM_INSTALL_CLAUDE, RUN_PNPM_GLOBAL_ADD,
+    RUN_WINGET_INSTALL_GH, RUN_WINGET_INSTALL_GIT, RUN_WINGET_INSTALL_NODE,
 };
 // 설계 §F.2: 실행기(runner) 해석 자체는 runners.rs로 분리했다(install_resolver.rs
 // 1,000줄 규율 + Windows 증분이 거의 전부 그쪽에 떨어지는 경계 — F.2 근거).
@@ -93,11 +94,22 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
 // | gh        | run       | mac: brew formula명 "gh" 고정(dry-run 프리뷰 필수 — §3.4 실측).      |
 // |           |           | win: winget id "GitHub.cli" 고정(§B.1/§B.2, 전용 winget 러너)        |
 // | Wrangler  | run       | npm 레지스트리 패키지명이 "wrangler"로 고정(원 설계 §12.5 결정 승계) |
-// | pnpm      | manual    | 공식 설치기가 셸 스크립트 + rc 파일 수정(G2·G3 탈락) — §3.2          |
-// | Node.js   | manual    | 공식 고정 식별자 없음 + 버전매니저 관리본을 앱이 못 봄(G1·G4 탈락)    |
-// |           |           | — §3.3(승격 트리거: 사내 표준 major 확정 또는 버전매니저 무셸 탐지)  |
-// | Git       | manual    | mac: 시스템(Xcode CLT) 소유(G4 탈락, §4.3). win: 머신 스코프         |
-// |           |           | MSI라 UAC 승격이 뜸(G4 탈락, §B.1)                                   |
+// | pnpm      | run       | 공식 설치기(셸 스크립트+rc수정) 자체는 여전히 G2·G3 탈락이지만, Node/ |
+// |           |           | npm이 있으면 `npm install -g pnpm`으로 그 설치기를 안 쓰고도 비대화형 |
+// |           |           | ·rc파일 무수정 설치가 된다(npm 패키지명 "pnpm" 고정 — G1 충족).      |
+// |           |           | corepack은 Windows에서 Node가 Program Files 아래 있으면 shim 생성에  |
+// |           |           | 관리자 권한이 필요해 채택하지 않는다 — npm 경로만 후보로 둔다.        |
+// | Node.js   | mac:manual| mac: 공식 고정 식별자 없음 + 버전매니저 관리본을 앱이 못 봄(G1·G4    |
+// |           | win:run   | 탈락). win: 사용자 결정(hub decisionId                               |
+// |           |           | 01m2wse823xcszvn7km3vap0qs — Node/Git을 "있으면 편한 선택"이 아니라  |
+// |           |           | 필수 전제조건으로 재분류)에 따라 winget id "OpenJS.NodeJS.LTS" 고정  |
+// |           |           | 경로를 새로 연다 — winget install은 비대화형·rc파일 무수정이라 원래  |
+// |           |           | manual로 둔 근거("공식 설치기가 대화형+rc수정이라 위험")가 적용되지  |
+// |           |           | 않는다. winget이 없는 머신은 그대로 manual로 강등된다(NoRunner).     |
+// | Git       | mac:manual| mac: 시스템(Xcode CLT) 소유(G4 탈락, §4.3). win: Node.js와 동일 근거  |
+// |           | win:run   | 로 winget id "Git.Git" 고정 경로를 연다(머신 스코프 설치라 UAC 승격  |
+// |           |           | 프롬프트가 뜨는 것 자체는 Windows 표준 동작으로 취급 — 문제는 사용자 |
+// |           |           | 취소/무응답이며 그 경우는 명확한 실패로 변환한다, actions.rs 참고).  |
 //
 // Windows 완전 지원(devtools-windows-parity.md, Phase 1+2): 예전 이 자리의
 // 주석은 macOS 전용 게이트(`!cfg!(target_os = "macos")`) 4곳이 Windows 실행을
@@ -105,7 +117,9 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
 // 자체는 플랫폼과 무관하게 같은 테이블이지만, gh는 Windows에서 도달 가능한
 // 후보가 하나 더 있다(winget) — Brew가 먼저 오므로 macOS 결과·순서는
 // 무변경이다(Windows에서는 brew 후보가 항상 None으로 실패해 자연히 winget으로
-// 넘어간다).
+// 넘어간다). Node/Git은 winget 후보 하나뿐이라(brew 후보 자체가 없음) mac에서는
+// 이 표만 보면 후보가 있는 것처럼 보이지만 실제로는 항상 Manual로 떨어진다
+// (runners.rs: mac에서 Runner::Winget은 구조적으로 항상 None).
 
 pub(crate) struct InstallCandidate {
     runner: Runner,
@@ -157,8 +171,31 @@ pub(crate) fn install_candidates(tool: ToolId) -> &'static [InstallCandidate] {
                 installer_label: "npm",
             },
         ],
-        // G1/G2/G3/G4 중 최소 하나씩 탈락 — 위 표 참고. 후보 없음 = 항상 manual.
-        ToolId::Node | ToolId::Git | ToolId::Pnpm => &[],
+        // pnpm은 공식 설치기(대화형 셸 스크립트 + rc 파일 수정) 대신 npm 경로
+        // 하나만 후보로 연다 — Node/npm이 없으면 아래 loop가 그냥 빈 채로
+        // 끝나 resolve_install_plan이 기존과 동일하게 Manual로 떨어진다(§F.2
+        // Wrangler 선례와 동일 메커니즘, 위 표 참고).
+        ToolId::Pnpm => &[InstallCandidate {
+            runner: Runner::Npm,
+            plan: RUN_NPM_GLOBAL_INSTALL_PNPM,
+            installer_label: "npm",
+        }],
+        // hub decisionId 01m2wse823xcszvn7km3vap0qs: Node/Git을 winget 경로로
+        // 자동설치 대상에 포함한다(위 도구별 표 참고). mac에서는 Runner::Winget이
+        // 구조적으로 항상 미해석이라(runners.rs 상단 주석) 이 후보가 있어도
+        // resolve_install_plan이 자동으로 Manual로 떨어진다 — mac 쪽 동작은
+        // 무변경이다. Windows에서 winget 자체가 없는 머신도 같은 이유로 Manual로
+        // 강등된다(install_manual_plan_windows의 갱신된 문구가 그 이유를 명시한다).
+        ToolId::Node => &[InstallCandidate {
+            runner: Runner::Winget,
+            plan: RUN_WINGET_INSTALL_NODE,
+            installer_label: "winget",
+        }],
+        ToolId::Git => &[InstallCandidate {
+            runner: Runner::Winget,
+            plan: RUN_WINGET_INSTALL_GIT,
+            installer_label: "winget",
+        }],
     }
 }
 
@@ -429,6 +466,11 @@ mod tests {
     // 무관하게 정적으로 "run 후보 있음/없음"을 결정한다는 정책 자체를 검증한다
     // (G1~G4 게이트 결과). 실제 브루/npm 해석 여부와 독립적이라 이 머신에
     // 무엇이 설치돼 있는지와 상관없이 항상 같은 값이 나와야 한다.
+    //
+    // hub decisionId 01m2wse823xcszvn7km3vap0qs 이후: Node/Git도 이제 winget
+    // 후보를 갖는다(이전엔 이 테스트가 둘 다 빈 배열을 기대했다 — 뒤집었다).
+    // 이 정적 함수는 플랫폼을 보지 않으므로(런타임에 winget이 실제로 해석되는지는
+    // resolve_install_plan의 몫) mac에서 돌려도 항상 비어있지 않아야 한다.
     #[test]
     fn install_candidates_match_new_run_manual_policy() {
         assert!(
@@ -444,16 +486,16 @@ mod tests {
             "Wrangler는 npm 레지스트리 패키지명이 고정돼 있어 run 후보가 있어야 합니다"
         );
         assert!(
-            install_candidates(ToolId::Pnpm).is_empty(),
-            "pnpm은 G2/G3 탈락으로 run 후보가 없어야 합니다"
+            !install_candidates(ToolId::Pnpm).is_empty(),
+            "pnpm은 npm이 있으면 공식 설치기를 우회해 run 후보를 가져야 합니다"
         );
         assert!(
-            install_candidates(ToolId::Node).is_empty(),
-            "Node.js는 G1/G4 탈락으로 run 후보가 없어야 합니다"
+            !install_candidates(ToolId::Node).is_empty(),
+            "Node.js는 winget id가 고정돼 있어 run 후보가 있어야 합니다(hub decisionId 01m2wse823xcszvn7km3vap0qs)"
         );
         assert!(
-            install_candidates(ToolId::Git).is_empty(),
-            "Git은 G4 탈락(시스템 소유)으로 run 후보가 없어야 합니다"
+            !install_candidates(ToolId::Git).is_empty(),
+            "Git은 winget id가 고정돼 있어 run 후보가 있어야 합니다(hub decisionId 01m2wse823xcszvn7km3vap0qs)"
         );
     }
 
@@ -525,15 +567,20 @@ mod tests {
     }
 
     // 합성 러너 경로가 전부 존재할 때: gh→brew, Claude→npm 리터럴 argv, Wrangler는
-    // pnpm을 우선한다. pnpm/node/git은 러너가 있어도 여전히 Manual이다(G4는
-    // 러너 존재 여부와 무관하게 탈락시키는 게이트이기 때문).
+    // pnpm을 우선한다. pnpm은 npm이 있으면 run이다(공식 설치기 우회 경로).
+    // node/git은 winget이 해석되면 이제 run이다(hub decisionId
+    // 01m2wse823xcszvn7km3vap0qs — 이전엔 "G4는 러너 존재 여부와 무관하게
+    // 탈락시키는 게이트"라며 이 자리에서 Manual을 단언했다. 그 근거 자체가
+    // 뒤집혔다: winget 경로는 대화형 설치기가 아니라 비대화형·rc파일
+    // 무수정이라 G2/G3 탈락 근거가 적용되지 않는다 — install_resolver.rs 상단
+    // 표 참고. winget이 이번 픽스처에도 Some으로 해석되도록 추가했다).
     #[test]
     fn resolve_install_plan_picks_run_with_expected_literal_argv() {
         let runners = ResolvedRunners {
             brew: Some("/opt/homebrew/bin/brew".to_string()),
             npm: Some("/opt/homebrew/bin/npm".to_string()),
             pnpm: Some("/opt/homebrew/bin/pnpm".to_string()),
-            winget: None,
+            winget: Some(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe".to_string()),
         };
 
         match resolve_install_plan(ToolId::Gh, &runners) {
@@ -570,14 +617,64 @@ mod tests {
             InstallResolution::Manual(_) => panic!("wrangler는 pnpm이 있으면 run이어야 합니다"),
         }
 
-        for tool in [ToolId::Pnpm, ToolId::Node, ToolId::Git] {
-            assert!(
-                matches!(
-                    resolve_install_plan(tool, &runners),
-                    InstallResolution::Manual(_)
-                ),
-                "{tool:?}은(는) 러너가 있어도 G4 탈락으로 Manual이어야 합니다"
-            );
+        // pnpm은 Node/Git과 달리 npm이 있으면 run이어야 한다(공식 설치기
+        // 우회 경로 — 위 install_candidates() 주석 참고).
+        match resolve_install_plan(ToolId::Pnpm, &runners) {
+            InstallResolution::Run {
+                runner_path,
+                argv,
+                installer_label,
+                ..
+            } => {
+                assert_eq!(installer_label, "npm");
+                assert_eq!(runner_path, "/opt/homebrew/bin/npm");
+                assert_eq!(argv, vec!["install", "-g", "pnpm"]);
+            }
+            InstallResolution::Manual(_) => panic!("pnpm은 npm이 있으면 run이어야 합니다"),
+        }
+
+        match resolve_install_plan(ToolId::Node, &runners) {
+            InstallResolution::Run {
+                runner_path,
+                argv,
+                installer_label,
+                ..
+            } => {
+                assert_eq!(installer_label, "winget");
+                assert_eq!(
+                    runner_path,
+                    r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe"
+                );
+                assert!(
+                    argv.iter().any(|a| a == "OpenJS.NodeJS.LTS"),
+                    "argv에 winget 패키지 id OpenJS.NodeJS.LTS가 실려야 합니다: {argv:?}"
+                );
+            }
+            InstallResolution::Manual(_) => {
+                panic!("Node.js는 winget이 있으면 run이어야 합니다(hub decisionId 01m2wse823xcszvn7km3vap0qs)")
+            }
+        }
+
+        match resolve_install_plan(ToolId::Git, &runners) {
+            InstallResolution::Run {
+                runner_path,
+                argv,
+                installer_label,
+                ..
+            } => {
+                assert_eq!(installer_label, "winget");
+                assert_eq!(
+                    runner_path,
+                    r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe"
+                );
+                assert!(
+                    argv.iter().any(|a| a == "Git.Git"),
+                    "argv에 winget 패키지 id Git.Git이 실려야 합니다: {argv:?}"
+                );
+            }
+            InstallResolution::Manual(_) => {
+                panic!("Git은 winget이 있으면 run이어야 합니다(hub decisionId 01m2wse823xcszvn7km3vap0qs)")
+            }
         }
     }
 

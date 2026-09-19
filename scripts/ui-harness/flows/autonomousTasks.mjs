@@ -108,6 +108,76 @@ export function scenarios(base) {
       },
     },
     {
+      // hub 이슈 01m2wm499xmh3046rnvx4cyn8n 재발 방지 — 프로젝트 폴더가 실제로
+      // 있는데도 CLAUDE.md가 없어(또는 workspace 루트를 읽지 못해) 조용히
+      // 제외되던 문제. list_workspace_projects가 0건 + skipped 몇 건을 반환할
+      // 때, "새 자율업무" 폼의 빈 프로젝트 드롭다운에 스캔 조건 설명과 제외
+      // 사유 요약이 실제로 뜨는지 못박는다(기존 'empty' 시나리오의 판정 로직은
+      // 건드리지 않고 이 시나리오만 추가한다).
+      id: 'empty-workspace-scan',
+      fixtures: {
+        ...base,
+        list_workspace_projects: {
+          projects: [],
+          skipped: [
+            { name: 'no-claude-project', path: '/Users/hopegiver/workspace/no-claude-project', reason: 'noClaudeMd' },
+            { name: 'legacy-tool', path: '/Users/hopegiver/workspace/legacy-tool', reason: 'noClaudeMd' },
+            { name: 'D-workspace', path: 'D:\\workspace', reason: 'rootUnreadable' },
+          ],
+        },
+      },
+      async run(page, { shot, bugs }) {
+        await page.getByRole('button', { name: '+ 새 자율업무' }).click();
+        await page.waitForSelector('.modal-overlay');
+        await shot('01-empty-project-select-hint');
+
+        const projectField = page
+          .locator('.modal-body .settings-field', { has: page.locator('.settings-field-label', { hasText: '프로젝트' }) })
+          .first();
+        const hints = await projectField.locator('.settings-form-hint').allTextContents();
+        const combined = hints.join(' / ');
+
+        if (!hints.some((h) => h.includes('CLAUDE.md'))) {
+          bugs.push({
+            severity: 'Major',
+            symptom: `프로젝트 0건인데 스캔 조건 안내(CLAUDE.md 언급)가 보이지 않음(실제: ${combined || '(없음)'})`,
+            file: 'src/views/autonomousTasks.ts:renderTaskForm',
+            repro: 'list_workspace_projects=[]로 #/tasks → "+ 새 자율업무" 클릭',
+          });
+        }
+        if (!hints.some((h) => h.includes('CLAUDE.md가 없어 제외'))) {
+          bugs.push({
+            severity: 'Major',
+            symptom: `제외된 폴더(skipped)가 있는데 제외 사유 요약이 보이지 않음(실제: ${combined || '(없음)'})`,
+            file: 'src/views/autonomousTasks.ts:renderTaskForm',
+          });
+        }
+        if (!hints.some((h) => h.includes('no-claude-project'))) {
+          bugs.push({
+            severity: 'Minor',
+            symptom: `제외 사유 요약에 실제 폴더 이름이 포함되지 않음(실제: ${combined || '(없음)'})`,
+            file: 'src/workspaceScanHint.ts:summarizeSkippedProjects',
+          });
+        }
+        if (!hints.some((h) => h.includes('읽을 수 없습니다'))) {
+          bugs.push({
+            severity: 'Minor',
+            symptom: `workspace 루트를 읽지 못한 경우(rootUnreadable) 안내가 보이지 않음(실제: ${combined || '(없음)'})`,
+            file: 'src/workspaceScanHint.ts:summarizeSkippedProjects',
+          });
+        }
+
+        const select = projectField.locator('select');
+        if (await select.isEnabled()) {
+          bugs.push({
+            severity: 'Major',
+            symptom: '프로젝트가 0건인데 프로젝트 선택 드롭다운이 활성화되어 있음',
+            file: 'src/views/autonomousTasks.ts:renderTaskForm',
+          });
+        }
+      },
+    },
+    {
       id: 'single',
       fixtures: {
         ...base,

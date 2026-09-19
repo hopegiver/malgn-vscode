@@ -227,6 +227,26 @@ pub(crate) const RUN_NPM_GLOBAL_INSTALL_WRANGLER: RunPlan = RunPlan {
     env: &NPM_ENV,
     timeout_secs: 300,
 };
+// pnpm 전용 실설치(install_resolver.rs 상단 G1~G4 표 주석 참조): pnpm의 공식
+// 설치기는 대화형 셸 스크립트 + rc 파일 수정이라 G2/G3 탈락으로 manual이다.
+// 그런데 Node/npm이 이미 있으면 `npm install -g pnpm`은 비대화형·rc파일
+// 무수정으로 설치되어(npm 레지스트리 패키지명 "pnpm" 고정 — G1, argv 배열로
+// 그대로 실행 — G2, 결과가 기존 NpmGlobal 판별기 자리에 놓임 — G3) 그 위험을
+// 피해 간다. corepack
+// (`corepack enable pnpm`)은 의도적으로 후보에 넣지 않는다 — Windows에서
+// Node가 `Program Files\nodejs`에 있으면 corepack이 그 디렉터리에 shim을
+// 만들어야 해 관리자 권한이 필요하고, 비관리자로 뜬 GUI 자식 프로세스가
+// 거기서 막힌다. `npm install -g pnpm`은 `%APPDATA%\npm`(사용자 쓰기 가능)에
+// 설치되어 그 문제가 없다. 이 예외는 pnpm에만 적용한다 — Node/Git은 여전히
+// manual이다(그 둘은 진짜 위험한 설치기뿐이라 이 우회가 없다).
+pub(crate) const PNPM_PACKAGE: &str = "pnpm";
+pub(crate) const RUN_NPM_GLOBAL_INSTALL_PNPM: RunPlan = RunPlan {
+    runner: Runner::Npm,
+    args: &[Arg::Lit("install"), Arg::Lit("-g"), Arg::Lit(PNPM_PACKAGE)],
+    preview_args: None,
+    env: &NPM_ENV,
+    timeout_secs: 300,
+};
 // devtools-install-matrix §2.1/§7: gh는 brew formula명이 "gh" 하나로 고정돼
 // 있고 버전 접미가 없다(G1) — brew install은 셸 불필요(G2), 결과가
 // <prefix>/bin/gh에 놓여 기존 HomebrewFormula 판별기에 그대로 물린다(G3), gh를
@@ -315,12 +335,78 @@ pub(crate) const RUN_WINGET_UPGRADE_GH: RunPlan = RunPlan {
     timeout_secs: 600,
 };
 
+// devtools-install-matrix §1.2/§2.1 결정 뒤집기(hub decisionId
+// 01m2wse823xcszvn7km3vap0qs): Node/Git은 원래 "공식 설치기가 대화형 + rc
+// 파일 수정이라 위험"해서 G2/G3 탈락으로 manual이었다 — 그 근거는 winget
+// 경로에는 적용되지 않는다(비대화형, rc 파일 무수정). 패키지 id는
+// MANUAL_WINDOWS_SYSTEM_MANAGED_NODE/GIT(위 §업데이트 경로)이 이미 쓰는 값과
+// 동일하게 맞춘다(OpenJS.NodeJS.LTS, Git.Git — 새 id를 지어내지 않는다).
+// RUN_WINGET_INSTALL_GH와 인자 구조가 완전히 동일하다(G-5 보안: `--id` 고정
+// 리터럴 + `-e`(exact) + `--source winget` 고정(msstore 배제) +
+// `--accept-*`/`--disable-interactivity`로 모든 프롬프트를 argv에서 차단,
+// `--silent`). Windows 전용(macOS는 Runner::Winget이 구조적으로 항상
+// 미해석이라 이 두 RunPlan은 macOS에서 절대 선택되지 않는다 — runners.rs
+// 상단 주석 참고, mac은 기존 xcode-select/brew 안내 문구가 무변경이다).
+pub(crate) const RUN_WINGET_INSTALL_NODE: RunPlan = RunPlan {
+    runner: Runner::Winget,
+    args: &[
+        Arg::Lit("install"),
+        Arg::Lit("--id"),
+        Arg::Lit("OpenJS.NodeJS.LTS"),
+        Arg::Lit("-e"),
+        Arg::Lit("--source"),
+        Arg::Lit("winget"),
+        Arg::Lit("--accept-source-agreements"),
+        Arg::Lit("--accept-package-agreements"),
+        Arg::Lit("--disable-interactivity"),
+        Arg::Lit("--silent"),
+    ],
+    // winget에는 dry-run이 없다(B.3, RUN_WINGET_INSTALL_GH와 동일 근거) —
+    // query::no_dry_run_install_notes가 Runner::Winget을 보고 자동으로
+    // preview_reliable:false로 처리한다(별도 분기 불필요).
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 600,
+};
+pub(crate) const RUN_WINGET_INSTALL_GIT: RunPlan = RunPlan {
+    runner: Runner::Winget,
+    args: &[
+        Arg::Lit("install"),
+        Arg::Lit("--id"),
+        Arg::Lit("Git.Git"),
+        Arg::Lit("-e"),
+        Arg::Lit("--source"),
+        Arg::Lit("winget"),
+        Arg::Lit("--accept-source-agreements"),
+        Arg::Lit("--accept-package-agreements"),
+        Arg::Lit("--disable-interactivity"),
+        Arg::Lit("--silent"),
+    ],
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 600,
+};
+
 /// winget이 "이미 최신"일 때 돌려주는 종료 코드(`0x8A15002B` =
 /// `APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE`, 부호있는 i32로는
 /// `-1978335189`). 이걸 `Failed`로 두면 화면이 거짓을 말한다 — actions.rs의
 /// `perform_update`가 이 값을 `Outcome::AlreadyLatest`로 매핑한다(B.3). 미검증
 /// (이 머신에 winget이 없어 실측 불가, microsoft/winget-cli 문서 근거).
 pub(crate) const WINGET_ALREADY_LATEST_EXIT_CODE: i32 = -1978335189;
+
+/// Node/Git 자동설치(hub decisionId 01m2wse823xcszvn7km3vap0qs) 도입 배경:
+/// `winget install`은 UAC 프롬프트를 띄운다 — 그 자체는 문제가 아니다(Windows
+/// 표준 설치 경험). 문제는 사용자가 취소하거나 응답하지 않을 때 앱이 "실행이
+/// 실패했습니다(알 수 없는 코드)"처럼 원인을 숨기는 것이다. UAC 프롬프트를
+/// 거부하면 Windows는 HRESULT `0x800704C7`(Win32 `ERROR_CANCELLED`, "The
+/// operation was canceled by the user.")을 돌려준다 — 이 HRESULT는 Microsoft
+/// 공식 트러블슈팅 문서(learn.microsoft.com Q&A, winget 설치 실패 스레드)에
+/// "취소됨"으로 명시돼 있어 WINGET_ALREADY_LATEST_EXIT_CODE와 같은 근거
+/// 강도로 고정한다(이 머신에 winget이 없어 실측 자체는 불가 — 문서 근거).
+/// 부호있는 i32 변환: `0x800704C7` → `-2147023673`. 이 코드가 아닌 다른 실패는
+/// 여기서 추측으로 새 분기를 만들지 않는다 — 기존 일반 Failed 분기가 원본
+/// 종료코드를 그대로 메시지에 담아 보존한다("사실만 말하고 원문을 덧붙인다").
+pub(crate) const WINGET_USER_CANCELLED_EXIT_CODE: i32 = -2147023673;
 
 // devtools-install-matrix §2.1/§3.1/§7: Claude Code npm 패키지명이 공식 문서에
 // 고정돼 있다(G1) — npm 전역 설치는 셸 불필요(G2), 결과가 <npm prefix>/bin/claude
@@ -585,11 +671,14 @@ pub(crate) fn lookup_action(tool_id: ToolId, kind: MethodKind) -> Action {
 /// devtools-install-matrix 이후 이 함수는 두 상황 모두에서 호출된다(둘을
 /// 문구로 구분하지 않는다 — 어느 쪽이든 "지금 이 앱은 못 하니 이렇게
 /// 하라"는 실행 가능한 다음 행동을 주는 것이 핵심이다):
-///  ① G1~G4 중 하나라도 원천적으로 탈락하는 도구(pnpm/node/git — §1.2)
-///  ② G1~G4는 통과했지만(gh/claude/wrangler) 필요한 실행기(brew/npm/pnpm)를
-///     이 머신에서 찾지 못해 resolve_install_plan이 Manual로 강등한 경우
-///     (설계 §4.2 "NoRunner" 시나리오 — 무엇이 없어서 안 되는지 구체적으로
-///     말한다).
+///  ① G1~G4 중 하나라도 원천적으로 탈락하는 도구/플랫폼 조합(mac의 node/git —
+///     §1.2. hub decisionId 01m2wse823xcszvn7km3vap0qs 이후 win의 node/git은
+///     더 이상 여기 속하지 않는다 — winget 경로로 G1~G4를 통과한다)
+///  ② G1~G4는 통과했지만(win의 node/git 포함 — gh/claude/wrangler/pnpm) 필요한
+///     실행기(brew/npm/pnpm/winget)를 이 머신에서 찾지 못해 resolve_install_plan이
+///     Manual로 강등한 경우(설계 §4.2 "NoRunner" 시나리오 — 무엇이 없어서 안
+///     되는지 구체적으로 말한다). pnpm은 npm 러너 후보를 가지므로(install_resolver
+///     상단 G1~G4 표 참고) npm이 없을 때만 이 ②경로로 들어온다.
 pub(crate) fn install_manual_plan(tool: ToolId) -> ManualPlan {
     match super::platform::platform_now() {
         super::platform::Platform::Win => install_manual_plan_windows(tool),
@@ -628,7 +717,7 @@ fn install_manual_plan_mac(tool: ToolId) -> ManualPlan {
         },
         ToolId::Pnpm => ManualPlan {
             reason: ManualReason::NotInstalled,
-            message_ko: "pnpm이 설치되어 있지 않습니다. Homebrew가 있으면 아래 명령이 가장 간단합니다. 공식 설치 문서는 현재 `npx get-pnpm`만 제시하지만, 대화형 확인(Ok to proceed?)에 앱이 응답할 수 없어 자동 실행하지 않습니다.",
+            message_ko: "pnpm이 설치되어 있지 않습니다. Node.js(npm)가 있으면 앱이 자동으로 설치 버튼을 보여주는데, 이 머신에서는 npm을 찾지 못했습니다. Node.js를 먼저 설치하거나, Homebrew가 있으면 아래 명령으로 직접 설치해주세요.",
             copyable_command: Some("brew install pnpm"),
             doc_url: Some("https://pnpm.io/installation"),
         },
@@ -652,10 +741,20 @@ fn install_manual_plan_windows(tool: ToolId) -> ManualPlan {
             copyable_command: Some("npm install -g @anthropic-ai/claude-code"),
             doc_url: Some("https://docs.claude.com/en/docs/claude-code/setup"),
         },
+        // devtools-install-matrix §1.2 결정 뒤집기(hub decisionId
+        // 01m2wse823xcszvn7km3vap0qs) 이후: install_candidates(ToolId::Node)가
+        // winget 후보 하나를 갖게 되면서(위 RUN_WINGET_INSTALL_NODE), 이
+        // Manual 분기에 실제로 도달하는 경우는 사실상 "이 머신에 winget이
+        // 없다"뿐이다(resolve_install_plan이 러너를 못 찾아 여기로 강등) —
+        // gh의 기존 Windows manual 문구("...winget(앱 설치 관리자)을 찾을 수
+        // 없습니다")와 같은 이유를 명시한다(§0.1 사고① 재발 방지: 이유 없이
+        // "안 됩니다"만 말하지 않는다).
         ToolId::Node => ManualPlan {
             reason: ManualReason::NotInstalled,
-            message_ko: "Node.js가 설치되어 있지 않습니다. 이미 nvm-windows/fnm/volta 등으로 관리 중이라면 그쪽에서 설치해주세요. 그렇지 않다면 아래 명령으로 설치할 수 있습니다(winget).",
-            copyable_command: Some("winget install OpenJS.NodeJS.LTS"),
+            message_ko: "Node.js가 설치되어 있지 않거나 winget(앱 설치 관리자)을 찾을 수 없습니다. 이미 nvm-windows/fnm/volta 등으로 관리 중이라면 그쪽에서 설치해주세요. 그렇지 않다면 Microsoft Store에서 '앱 설치 관리자'를 업데이트한 뒤 아래 명령을 시도해주세요.",
+            copyable_command: Some(
+                "winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent",
+            ),
             doc_url: Some("https://nodejs.org/en/download"),
         },
         ToolId::Gh => ManualPlan {
@@ -666,15 +765,20 @@ fn install_manual_plan_windows(tool: ToolId) -> ManualPlan {
             ),
             doc_url: Some("https://cli.github.com/"),
         },
+        // Node와 동일한 이유(§ 위 주석): install_candidates(ToolId::Git)가
+        // winget 후보를 가지므로 이 Manual 분기는 사실상 "winget을 찾지
+        // 못했다"는 뜻이다. UAC 승인 창 안내는 기존 문구를 그대로 유지한다.
         ToolId::Git => ManualPlan {
             reason: ManualReason::NotInstalled,
-            message_ko: "Git이 설치되어 있지 않습니다. 관리자 권한 승인 창이 뜰 수 있습니다(머신 스코프 설치).",
-            copyable_command: Some("winget install --id Git.Git -e --source winget"),
+            message_ko: "Git이 설치되어 있지 않거나 winget(앱 설치 관리자)을 찾을 수 없습니다. Microsoft Store에서 '앱 설치 관리자'를 업데이트한 뒤 아래 명령을 시도해주세요. 관리자 권한 승인 창이 뜰 수 있습니다(머신 스코프 설치).",
+            copyable_command: Some(
+                "winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent",
+            ),
             doc_url: Some("https://git-scm.com/downloads"),
         },
         ToolId::Pnpm => ManualPlan {
             reason: ManualReason::NotInstalled,
-            message_ko: "pnpm이 설치되어 있지 않습니다. 아래 명령으로 설치할 수 있습니다(winget). 설치 후 새 터미널을 열어야 PATH가 반영됩니다.",
+            message_ko: "pnpm이 설치되어 있지 않습니다. Node.js(npm)가 있으면 앱이 자동으로 설치 버튼을 보여주는데, 이 머신에서는 npm을 찾지 못했습니다. Node.js를 먼저 설치하거나, 아래 명령으로 직접 설치할 수 있습니다(winget). 설치 후 새 터미널을 열어야 PATH가 반영됩니다.",
             copyable_command: Some("winget install pnpm.pnpm"),
             doc_url: Some("https://pnpm.io/installation"),
         },

@@ -10,6 +10,7 @@ import type { WorkspaceProject, ProjectTreeNode } from '../workspaceApi';
 import { saveMalgnAgentConfig } from '../configApi';
 import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
 import { loadMalgnAgentConfigStatus } from './autonomousTasks';
+import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 import { navigate } from '../route';
 
 const BADGE_META: Readonly<Record<ArchiveStatus, { readonly label: string; readonly cls: string }>> = {
@@ -48,7 +49,9 @@ export async function loadProjects(): Promise<void> {
   state.dashboard.error = null;
   notifyChange();
   try {
-    state.dashboard.projects = await fetchWorkspaceProjects();
+    const result = await fetchWorkspaceProjects();
+    state.dashboard.projects = result.projects;
+    state.dashboard.skipped = result.skipped;
     state.dashboard.loaded = true;
   } catch (err) {
     state.dashboard.error = err instanceof Error ? err.message : '프로젝트 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
@@ -119,6 +122,18 @@ function closeWorkspacesModal(): void {
 export function leaveProjectsListView(): void {
   state.malgnAgentConfig.editingWorkspaces = false;
   detachWorkspacesModalEscHandler();
+}
+
+// 전역 설정(malgn-agent.json)의 workspace 루트 수준 경고(존재하지 않음/디렉터리
+// 아님/중복 등, config/user_config.rs::validate_workspace_entries)를 보여준다.
+// 자율업무 화면(renderConfigStatusBanner)에는 이미 떠 있었지만 이 화면에는
+// 없었다 — 실제 사용자가 "프로젝트가 안 보인다"를 겪은 화면이 여기라 먼저
+// 띄운다(루트 안쪽 개별 폴더 제외 사유는 아래 빈 상태 블록의 별도 채널이
+// 맡는다 — 중복 표시 방지를 위한 역할 분리).
+function renderWorkspaceWarningsBanner(): HTMLElement | null {
+  const status = state.malgnAgentConfig.status;
+  if (!status || !status.ok || status.warnings.length === 0) return null;
+  return el('div', { className: 'alert' }, [`⚠ 전역 설정 경고: ${status.warnings.join(' / ')}`]);
 }
 
 // 헤더의 "workspace 설정" 버튼 — 항상 열기만 하는 단일 버튼이다(닫기는 모달
@@ -245,6 +260,9 @@ export function renderProjectsListView(): HTMLElement {
 
   const body: HTMLElement[] = [];
 
+  const warningsBanner = renderWorkspaceWarningsBanner();
+  if (warningsBanner) body.push(warningsBanner);
+
   if (!state.dashboard.loading && !state.dashboard.error && state.dashboard.projects.length > 0) {
     const filterGroup = el('div', { className: 'filter-group' });
     const filters: readonly { readonly key: typeof state.dashboard.filter; readonly label: string }[] = [
@@ -304,12 +322,18 @@ export function renderProjectsListView(): HTMLElement {
   } else if (state.dashboard.projects.length > 0) {
     body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['해당 조건의 프로젝트가 없습니다'])]));
   } else {
-    body.push(
-      el('div', { className: 'state-block' }, [
-        el('div', { className: 'state-block-title' }, ['아직 인식된 프로젝트가 없습니다']),
-        el('div', { className: 'state-block-desc' }, ['~/workspace 아래 CLAUDE.md가 있는 폴더가 malgn-agent 프로젝트로 표시됩니다.']),
-      ])
-    );
+    const emptyStateChildren: HTMLElement[] = [
+      el('div', { className: 'state-block-title' }, ['아직 인식된 프로젝트가 없습니다']),
+      el('div', { className: 'state-block-desc' }, [describeWorkspaceScanScope()]),
+    ];
+    // 후보 폴더를 찾았지만 CLAUDE.md가 없어(또는 workspace 루트를 읽지 못해)
+    // 제외된 경우 그 사실과 사유를 보여준다 — 예전엔 이 경로가 조용히 "프로젝트
+    // 없음"으로만 보였다(hub 이슈 01m2wm499xmh3046rnvx4cyn8n).
+    const skipSummary = summarizeSkippedProjects(state.dashboard.skipped);
+    if (skipSummary) {
+      emptyStateChildren.push(el('div', { className: 'state-block-desc' }, [skipSummary]));
+    }
+    body.push(el('div', { className: 'state-block' }, emptyStateChildren));
   }
 
   const rootChildren: HTMLElement[] = [header, ...body];

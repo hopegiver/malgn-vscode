@@ -15,6 +15,9 @@ pub struct DevToolStatus {
     /// "run" | "manual" | "none"
     pub action_kind: String,
     pub manual_hint: Option<String>,
+    /// "필수" UI 배지(devTools.ts)의 근거 — 정본은 `DevTool.required`(mod.rs
+    /// DEV_TOOLS 테이블) 하나뿐이다.
+    pub required: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]

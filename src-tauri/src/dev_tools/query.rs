@@ -53,6 +53,7 @@ pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
                     install_method: None,
                     action_kind,
                     manual_hint,
+                    required: def.required,
                 }
             }
             Some(resolved_path) => {
@@ -71,6 +72,7 @@ pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
                         )),
                         action_kind: "manual".to_string(),
                         manual_hint: Some(manual_display_message(&MANUAL_XCODE_CLT)),
+                        required: def.required,
                     };
                 }
 
@@ -91,6 +93,7 @@ pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
                     install_method: Some(describe_install_method(&method)),
                     action_kind,
                     manual_hint,
+                    required: def.required,
                 }
             }
         })
@@ -438,7 +441,7 @@ mod tests {
     }
 
     // check_dev_tools_blocking()의 "경로 자체를 못 찾은"(path == None) 상태의
-    // action_kind는 새 정책(gh·Claude·Wrangler는 run, pnpm·Node·Git은 manual)을
+    // action_kind는 새 정책(gh·Claude·Wrangler·pnpm은 run, Node·Git은 manual)을
     // 따라야 하고, "none"을 반환하는 경로는 완전히 사라져야 한다(§6.2). 이
     // 머신에 어떤 도구가 실제로 설치돼 있는지와 무관하게 성립해야 하므로
     // 하드코딩된 도구 목록이 아니라 install_candidates()의 유무로 기대값을
