@@ -118,6 +118,15 @@ function renderLinkFormModalIfOpen(): HTMLElement | null {
   return renderLinkFormModal(linkFormModal.editingLink);
 }
 
+// 앱링크 설정 탭을 벗어날 때(다른 탭으로 이동하거나 라우트를 완전히 떠날 때)
+// main.ts에서 호출한다 — 열려 있던 추가/수정 모달이 있었다면 window에 남은
+// ESC 리스너를 정리한다(leaveProjectsListView/leaveAutonomousTasksListView와
+// 동일한 원칙).
+export function leaveAppLinksView(): void {
+  linkFormModal = null;
+  detachLinkFormModalEscHandler();
+}
+
 // 프론트는 UX용 사전 체크만 한다(빈 값 차단 + maxlength 힌트) — 정본 검증은
 // Rust 한 곳(app_links/store.rs)이고, 거부되면 에러 원문을 그대로 보여준다(§4-1).
 // limits는 하드코딩하지 않고 항상 status.limits에서 읽는다(§3-2).
@@ -253,11 +262,19 @@ export function renderAppLinksPanel(): HTMLElement {
     );
   }
 
-  const disabled = blocked || state.appLinks.saving;
+  // 한도 도달(>=) 시 추가 버튼을 비활성화한다 — 백엔드도 어차피 거부하지만
+  // (app_links/store.rs), 폼을 다 채운 뒤에야 실패를 알게 하지 않기 위해
+  // 프론트에서 먼저 막는다. "왜 못 누르는지"는 버튼 title 툴팁 + 카운트
+  // 라벨을 danger 색으로 강조하는 두 가지로 함께 알린다(deleteBtn의 인라인
+  // style.color 지정과 동일한 패턴, --color-danger 재사용).
+  const atCapacity = status.links.length >= status.limits.maxLinks;
+  const disabled = blocked || state.appLinks.saving || atCapacity;
   const addBtn = el('button', { className: 'btn btn-primary', disabled, onClick: () => openLinkFormModal(null) }, ['+ 링크 추가']);
+  if (atCapacity) addBtn.title = `링크 개수 한도(${status.limits.maxLinks}개)에 도달했습니다. 추가하려면 기존 링크를 먼저 삭제하세요.`;
   const countLabel = el('span', { className: 'applink-count-label' }, [
     `사이드바에 노출할 링크를 켜세요. (${status.links.length} / ${status.limits.maxLinks})`,
   ]);
+  if (atCapacity) countLabel.style.color = 'var(--color-danger)';
   body.push(el('div', { className: 'filter-row' }, [countLabel, addBtn]));
 
   if (status.links.length === 0) {

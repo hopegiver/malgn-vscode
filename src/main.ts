@@ -52,6 +52,7 @@ import {
   loadMcp,
   loadMcpCatalog,
   ensureOtelAutoConfigured,
+  leaveMcpSettingsView,
 } from './views/settings';
 import { renderUsageView, loadDailyUsage } from './views/usage';
 import {
@@ -72,7 +73,7 @@ import {
   loadAutonomousTasks,
   leaveAutonomousTasksListView,
 } from './views/autonomousTasks';
-import { loadAppLinks } from './views/appLinks';
+import { loadAppLinks, leaveAppLinksView } from './views/appLinks';
 import { tryDevAutoLogin } from './authApi';
 import { initUpdateCheck } from './updateApi';
 
@@ -231,6 +232,11 @@ function handleNavigation(): void {
   if (route.kind !== 'tasks-list') leaveAutonomousTasksListView();
   if (route.kind !== 'projects-list') leaveProjectsListView();
   if (route.kind !== 'sessions-list') leaveSessionsListView();
+  // MCP 관리/앱링크 설정은 둘 다 'settings' 라우트의 서로 다른 탭이다
+  // (#/settings/mcp, #/settings/applinks) — route.kind만 보면 탭 간 이동
+  // (mcp ↔ applinks)에서는 모달이 닫히지 않으므로 탭까지 함께 확인한다.
+  if (!(route.kind === 'settings' && route.tab === 'mcp')) leaveMcpSettingsView();
+  if (!(route.kind === 'settings' && route.tab === 'applinks')) leaveAppLinksView();
 }
 
 // 세션목록·사용량 통계 실시간 감시 — 앱이 켜져 있는 동안 딱 한 번만 구독한다.

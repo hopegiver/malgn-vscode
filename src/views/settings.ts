@@ -763,6 +763,16 @@ function renderMcpAddModalIfOpen(): HTMLElement | null {
   return renderMcpAddModal(mcpAddPrefill ?? undefined);
 }
 
+// 설정 화면에서 MCP 관리 탭을 벗어날 때(다른 탭으로 이동하거나 라우트를 완전히
+// 떠날 때) main.ts에서 호출한다 — 열려 있던 "새 MCP 서버 등록" 모달이 있었다면
+// window에 남은 ESC 리스너를 정리한다(leaveProjectsListView/
+// leaveAutonomousTasksListView와 동일한 원칙).
+export function leaveMcpSettingsView(): void {
+  mcpAddModalOpen = false;
+  mcpAddPrefill = null;
+  detachMcpAddModalEscHandler();
+}
+
 // createModalOverlay로 배경 클릭·ESC·닫기 버튼 3가지 경로로 닫힌다(다른
 // 화면들과 동일한 modal-overlay/modal-box/modal-header+modal-close-btn/
 // modal-body 구조).
