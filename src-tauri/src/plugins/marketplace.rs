@@ -68,10 +68,14 @@ pub(crate) fn read_known_marketplaces() -> Vec<MarketplaceInfo> {
 }
 
 // malgn-agent 플러그인이 배포되는 마켓플레이스 — 프런트 `src/views/catalog.ts`의
-// `DEFAULT_PLUGIN_ID`("malgn-agent@malgnsoft-plugins")와 동일한 값이다. 이
-// 앱이 malgnai-hub MCP 등 필수 기능을 위해 고정 표시·설치하는 플러그인의
-// 출처라, 사용자가 여기서 실수로(또는 악의적으로) 제거하지 못하게 막는다.
-pub(crate) const PINNED_MARKETPLACE_ID: &str = "malgnsoft-plugins";
+// `DEFAULT_PLUGIN_ID`("malgn-agent@malgnsoft-plugins")와 동일한 값이다.
+// 예전에는 이 이름의 마켓플레이스 제거를 여기서 거부했으나, 45명 사내
+// 사용자가 잘못 추가한 마켓플레이스를 되돌릴 수 있어야 한다는 결정에 따라
+// 더는 특별 취급하지 않는다(build_marketplace_remove_args 참고) — 다른
+// 마켓플레이스와 동일하게 제거할 수 있다. 테스트에서 리터럴 대신 이 상수를
+// 참조하기 위해 남겨둔다.
+#[cfg(test)]
+const PINNED_MARKETPLACE_ID: &str = "malgnsoft-plugins";
 
 /// 사용자 자유 입력(source/name)에 대한 공용 검증 — 빈 값·공백만·개행 포함을
 /// 거부하고, 통과하면 앞뒤 공백만 제거한 값을 돌려준다. argv에 그대로 들어갈
@@ -100,15 +104,14 @@ fn build_marketplace_add_args(source: &str) -> Result<Vec<String>, String> {
     ])
 }
 
-/// `claude plugin marketplace remove <name>` argv를 조립한다. 검증 실패 또는
-/// 고정 마켓플레이스(PINNED_MARKETPLACE_ID) 대상이면 CLI를 전혀 실행하지 않는다.
+/// `claude plugin marketplace remove <name>` argv를 조립한다. 검증 실패 시에만
+/// CLI를 실행하지 않는다 — malgn-agent의 출처 마켓플레이스(과거
+/// PINNED_MARKETPLACE_ID)도 더는 특별 취급하지 않고 다른 이름과 동일하게
+/// 제거를 허용한다(사용자 결정: 잘못 추가한 마켓플레이스를 되돌릴 수 있어야
+/// 한다). 프런트(views/settings.ts)도 이 이름에 대한 "필수" 배지·제거 버튼
+/// 숨김을 두지 않는다.
 fn build_marketplace_remove_args(name: &str) -> Result<Vec<String>, String> {
     let trimmed = validate_marketplace_field(name, "마켓플레이스 이름")?;
-    if trimmed == PINNED_MARKETPLACE_ID {
-        return Err(format!(
-            "\"{PINNED_MARKETPLACE_ID}\"는 이 앱의 필수 마켓플레이스라 여기서 제거할 수 없습니다."
-        ));
-    }
     Ok(vec![
         "plugin".to_string(),
         "marketplace".to_string(),
@@ -141,10 +144,10 @@ pub(crate) fn run_add_marketplace(source: String) -> CommandResult {
     }
 }
 
-/// 사용자가 마켓플레이스 설정 탭에서 등록된 항목을 제거한다. 프런트가 삭제 전
-/// confirmDialog로 확인을 받지만, 고정 마켓플레이스(PINNED_MARKETPLACE_ID)
-/// 보호는 프런트가 삭제 버튼 자체를 숨기는 것과 별개로 백엔드에서도 다시
-/// 판정한다(우회 방지).
+/// 사용자가 마켓플레이스 설정 탭에서 등록된 항목을 제거한다. 파괴적 동작이라
+/// 프런트가 삭제 전 confirmDialog로 확인을 받는다 — malgn-agent의 출처
+/// 마켓플레이스도 다른 이름과 동일하게 제거 대상이다(더 이상 고정 표시하지
+/// 않는다).
 pub(crate) fn run_remove_marketplace(name: String) -> CommandResult {
     match build_marketplace_remove_args(&name) {
         Ok(args) => {
@@ -237,15 +240,18 @@ mod tests {
         assert!(build_marketplace_remove_args("").is_err());
     }
 
+    // 새 계약: malgn-agent의 출처 마켓플레이스(예전 PINNED_MARKETPLACE_ID)도
+    // 더 이상 특별 취급하지 않고 다른 이름과 동일하게 제거 argv를 만든다
+    // (사용자 결정: 잘못 추가한 마켓플레이스를 되돌릴 수 있어야 한다).
     #[test]
-    fn build_marketplace_remove_args_rejects_pinned_marketplace() {
-        let err = build_marketplace_remove_args(PINNED_MARKETPLACE_ID).unwrap_err();
-        assert!(err.contains("필수 마켓플레이스"));
+    fn build_marketplace_remove_args_allows_formerly_pinned_marketplace() {
+        let args = build_marketplace_remove_args(PINNED_MARKETPLACE_ID).unwrap();
+        assert_eq!(args, vec!["plugin", "marketplace", "remove", PINNED_MARKETPLACE_ID]);
     }
 
     #[test]
-    fn build_marketplace_remove_args_rejects_pinned_marketplace_even_with_surrounding_whitespace() {
-        let err = build_marketplace_remove_args("  malgnsoft-plugins  ").unwrap_err();
-        assert!(err.contains("필수 마켓플레이스"));
+    fn build_marketplace_remove_args_allows_formerly_pinned_marketplace_with_surrounding_whitespace() {
+        let args = build_marketplace_remove_args("  malgnsoft-plugins  ").unwrap();
+        assert_eq!(args, vec!["plugin", "marketplace", "remove", PINNED_MARKETPLACE_ID]);
     }
 }

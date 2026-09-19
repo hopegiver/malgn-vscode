@@ -205,5 +205,104 @@ export function scenarios(base) {
         }
       },
     },
+    // 회사 마켓플레이스(malgnsoft-plugins) 원클릭 추가 추천 — 없을 때만 뜨고
+    // 이미 있으면 뜨지 않는지를 양쪽 픽스처로 못박는다(views/settings.ts
+    // :renderMarketplaceRecommendBlock). 실제 개발 머신 상태(loadKnownMarketplaces가
+    // 읽는 known_marketplaces.json)에 의존하지 않도록 두 시나리오 모두 목록을
+    // 명시적으로 고정한다.
+    {
+      id: 'marketplace-recommend-absent',
+      startHash: '#/settings/marketplace',
+      fixtures: {
+        ...base,
+        list_known_marketplaces: [{ id: 'acme-plugins', repo: 'acme/plugins', lastUpdated: new Date().toISOString() }],
+      },
+      async run(page, { shot, bugs }) {
+        await shot('01-recommend-shown');
+        const recommend = page.locator('.alert', { hasText: '맑은소프트 마켓플레이스를 추가하시겠습니까' });
+        if ((await recommend.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: 'malgnsoft-plugins가 목록에 없는데도 회사 마켓플레이스 추천 블록이 뜨지 않음', file: 'src/views/settings.ts:renderMarketplaceRecommendBlock' });
+          return;
+        }
+        const addBtn = recommend.getByRole('button', { name: /\+ 마켓플레이스 추가/ });
+        if ((await addBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '추천 블록에 원클릭 추가 버튼이 없음', file: 'src/views/settings.ts:renderMarketplaceRecommendBlock' });
+          return;
+        }
+
+        // handleAddMarketplace는 성공 시 loadMarketplaces()로 목록을 즉시
+        // 다시 읽는다(views/settings.ts:handleAddMarketplace) — 정적 픽스처로는
+        // 그 재조회 응답을 바꿀 수 없어(bridge.mjs 주석 참고) 클릭 전에
+        // list_known_marketplaces만 다음 호출부터 malgnsoft-plugins를 포함한
+        // 값을 돌려주도록 invoke를 즉석 교체한다(add_marketplace 등 나머지
+        // 커맨드는 원래 픽스처로 그대로 위임). main.ts의 "이미 loaded면
+        // 재조회 안 함" 라우트 가드(loadMarketplaces 호출부와 별개 경로)를
+        // 타지 않도록 페이지 이동 없이 같은 화면에서 클릭만 한다.
+        await page.evaluate(() => {
+          const orig = window.__TAURI_INTERNALS__.invoke;
+          window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+            if (cmd === 'list_known_marketplaces') {
+              return [
+                { id: 'malgnsoft-plugins', repo: 'malgnsoft/claude-plugins', lastUpdated: new Date().toISOString() },
+                { id: 'acme-plugins', repo: 'acme/plugins', lastUpdated: new Date().toISOString() },
+              ];
+            }
+            return orig(cmd, args);
+          };
+        });
+
+        // 클릭 시 입력 폼을 거치지 않고 곧장 회사 마켓플레이스 URL로
+        // add_marketplace를 호출하는지 확인한다.
+        await addBtn.click();
+        await page.waitForTimeout(300);
+        await shot('02-after-recommend-click');
+        const calls = await page.evaluate(() => window.__invokeLog?.filter((e) => e.cmd === 'add_marketplace') ?? []);
+        if (calls.length === 0) {
+          bugs.push({ severity: 'Critical', symptom: '추천 블록의 원클릭 추가 버튼이 add_marketplace IPC를 호출하지 않음', file: 'src/views/settings.ts:handleAddMarketplace' });
+        } else if (calls[calls.length - 1].args?.source !== 'https://github.com/malgnsoft/claude-plugins') {
+          bugs.push({
+            severity: 'Critical',
+            symptom: `추천 버튼 클릭이 잘못된 소스로 add_marketplace를 호출함(실제: ${JSON.stringify(calls[calls.length - 1].args)})`,
+            file: 'src/views/settings.ts:renderMarketplaceRecommendBlock',
+          });
+        }
+        await shot('03-after-refresh-with-company-marketplace');
+        if ((await page.locator('.alert', { hasText: '맑은소프트 마켓플레이스를 추가하시겠습니까' }).count()) > 0) {
+          bugs.push({
+            severity: 'Major',
+            symptom: 'malgnsoft-plugins가 목록에 포함된 뒤에도 추천 블록이 계속 표시됨(이미 추가된 걸 또 권함)',
+            file: 'src/views/settings.ts:renderMarketplaceRecommendBlock',
+          });
+        }
+      },
+    },
+    {
+      id: 'marketplace-recommend-present',
+      startHash: '#/settings/marketplace',
+      fixtures: {
+        ...base,
+        list_known_marketplaces: [
+          { id: 'malgnsoft-plugins', repo: 'malgnsoft/claude-plugins', lastUpdated: new Date().toISOString() },
+          { id: 'acme-plugins', repo: 'acme/plugins', lastUpdated: new Date().toISOString() },
+        ],
+      },
+      async run(page, { shot, bugs }) {
+        await shot('01-recommend-hidden');
+        if ((await page.locator('.alert', { hasText: '맑은소프트 마켓플레이스를 추가하시겠습니까' }).count()) > 0) {
+          bugs.push({ severity: 'Major', symptom: 'malgnsoft-plugins가 이미 목록에 있는데도 추천 블록이 뜸(잡음)', file: 'src/views/settings.ts:renderMarketplaceRecommendBlock' });
+        }
+
+        // 사용자 결정: malgnsoft-plugins도 다른 마켓플레이스와 동등하게 "필수"
+        // 배지 없이, 제거 버튼이 노출되어야 한다(더 이상 고정 표시하지 않음).
+        const companyRow = page.locator('.marketplace-repo-row', { hasText: 'malgnsoft-plugins' });
+        const badges = await companyRow.locator('.badge').allTextContents();
+        if (badges.some((b) => b.includes('필수'))) {
+          bugs.push({ severity: 'Major', symptom: 'malgnsoft-plugins 마켓플레이스 행에 여전히 "필수" 배지가 표시됨(제거 가능해야 함)', file: 'src/views/settings.ts:renderMarketplacePanel' });
+        }
+        if ((await companyRow.getByRole('button', { name: '제거' }).count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: 'malgnsoft-plugins 마켓플레이스 행에 제거 버튼이 없음(사용자 결정: 제거 가능해야 함)', file: 'src/views/settings.ts:renderMarketplacePanel' });
+        }
+      },
+    },
   ];
 }

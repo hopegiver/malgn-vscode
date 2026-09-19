@@ -513,12 +513,17 @@ async function handleRefreshMarketplaces(): Promise<void> {
   }
 }
 
-// malgn-agent 플러그인이 배포되는 마켓플레이스 — catalog.ts의 DEFAULT_PLUGIN_ID
-// ("malgn-agent@malgnsoft-plugins")에서 "@" 뒤쪽 마켓플레이스 이름만 뽑는다.
-// 이 앱이 malgnai-hub MCP 등 필수 기능을 위해 고정 표시·설치하는 플러그인의
-// 출처라 삭제 버튼 자체를 숨긴다 — 백엔드(marketplace.rs)도 같은 이름을
-// 독립적으로 다시 판정해 우회를 막는다.
-const PINNED_MARKETPLACE_ID = DEFAULT_PLUGIN_ID.split('@')[1] ?? 'malgnsoft-plugins';
+// malgn-agent 플러그인이 배포되는 회사 마켓플레이스 — catalog.ts의
+// DEFAULT_PLUGIN_ID("malgn-agent@malgnsoft-plugins")에서 "@" 뒤쪽 이름만 뽑는다.
+// 45명 사용자에게 이 URL을 직접 타이핑시키지 않고 추천 블록(원클릭 추가) 노출
+// 여부를 판단하는 용도로만 쓴다 — 이전 커밋의 PINNED_MARKETPLACE_ID처럼 제거를
+// 막거나 "필수" 배지를 붙이는 특별 취급은 하지 않는다(사용자 결정: 추가 후에도
+// 다른 마켓플레이스와 동등하게 제거 가능해야 한다). 백엔드(marketplace.rs)도
+// 더는 이 이름을 특별 취급하지 않는다.
+const COMPANY_MARKETPLACE_ID = DEFAULT_PLUGIN_ID.split('@')[1] ?? 'malgnsoft-plugins';
+// public 저장소 주소라 시크릿이 아니다(README에도 같은 값이 실릴 수 있는 수준) —
+// 소스코드에 리터럴로 두어도 된다.
+const COMPANY_MARKETPLACE_URL = 'https://github.com/malgnsoft/claude-plugins';
 
 // U-05 계열(빈 값·공백만·개행 거부)을 프런트에서 먼저 막는다 — 백엔드
 // (marketplace.rs:validate_marketplace_field)가 동일 규칙을 다시 검증하므로
@@ -621,6 +626,44 @@ function renderMarketplaceAddForm(): HTMLElement {
   return form;
 }
 
+// 45명 사용자가 회사 마켓플레이스 URL을 직접 타이핑하지 않도록, 아직 등록되지
+// 않았을 때만 원클릭 추가 추천을 보여준다. 이미 등록돼 있으면(대부분의 경우 —
+// malgn-agent 자체가 이 마켓플레이스에서 온다) null을 돌려줘 잡음을 만들지
+// 않는다. 클릭 시 renderMarketplaceAddForm의 입력 폼을 거치지 않고
+// handleAddMarketplace(URL)을 바로 호출한다 — addMarketplace(catalogApi.ts)와
+// 백엔드 검증(marketplace.rs)을 그대로 재사용하는 동일 경로다.
+function renderMarketplaceRecommendBlock(): HTMLElement | null {
+  const alreadyAdded = state.marketplaces.items.some((m) => m.id === COMPANY_MARKETPLACE_ID);
+  if (alreadyAdded) return null;
+
+  const addBtn = el(
+    'button',
+    {
+      className: 'btn btn-primary',
+      disabled: state.marketplaces.adding,
+      onClick: () => void handleAddMarketplace(COMPANY_MARKETPLACE_URL),
+    },
+    // 버튼 라벨은 짧게(맑은소프트라는 사실은 옆 문구가 이미 설명한다) — .alert는
+    // 좁은 flex 행이라 긴 라벨이 여러 줄로 쪼개져 읽기 어려워진다(캡처로 실측).
+    [state.marketplaces.adding ? '추가 중…' : '+ 마켓플레이스 추가']
+  );
+  // styles.css는 수정 범위 밖이라, 버튼이 글자 단위로 줄바꿈되던 문제(캡처로
+  // 실측)는 다른 el() 호출부(removeBtn.style.color 등)와 같은 인라인 스타일로
+  // 고친다 — flex item 기본 min-width:auto 때문에 텍스트가 줄바꿈 가능한
+  // 상태에서는 버튼이 라벨 폭보다 더 줄어들 수 있다. nowrap을 주면 버튼은
+  // 라벨 전체 폭을 최소 폭으로 확보하고, 대신 옆 span(줄바꿈 가능한 문단)이
+  // 줄어든다.
+  addBtn.style.whiteSpace = 'nowrap';
+  addBtn.style.flexShrink = '0';
+
+  return el('div', { className: 'alert' }, [
+    el('span', {}, [
+      `맑은소프트 마켓플레이스를 추가하시겠습니까? 이 저장소(${COMPANY_MARKETPLACE_URL.replace('https://', '')})는 지금 쓰고 있는 맑은에이전트(malgn-agent) 플러그인의 출처입니다. 등록해 두면 URL을 직접 입력하지 않고도 사내 플러그인을 마켓플레이스에서 찾아 설치·업데이트할 수 있습니다.`,
+    ]),
+    addBtn,
+  ]);
+}
+
 function renderMarketplacePanel(): HTMLElement {
   if (state.marketplaces.loading && !state.marketplaces.loaded) return loadingBlock();
   if (state.marketplaces.error) return errorBlock(state.marketplaces.error, () => void loadMarketplaces());
@@ -628,20 +671,18 @@ function renderMarketplacePanel(): HTMLElement {
   const repoRows =
     state.marketplaces.items.length > 0
       ? state.marketplaces.items.map((m) => {
-          const locked = m.id === PINNED_MARKETPLACE_ID;
           const removing = state.marketplaces.removingId === m.id;
-          const actions: HTMLElement[] = [el('span', { className: 'badge badge-active' }, [locked ? '필수' : '연결됨'])];
-          // 고정 마켓플레이스는 제거 버튼 자체를 숨긴다(renderMcpRow의 malgnai-hub
-          // 잠금 행과 동일한 패턴) — 백엔드도 이름으로 다시 판정해 우회를 막는다.
-          if (!locked) {
-            const removeBtn = el(
-              'button',
-              { className: 'btn', disabled: removing, onClick: () => void handleRemoveMarketplace(m) },
-              [removing ? '제거 중…' : '제거']
-            );
-            removeBtn.style.color = 'var(--color-danger)';
-            actions.push(removeBtn);
-          }
+          // 회사 마켓플레이스(COMPANY_MARKETPLACE_ID)도 다른 소스와 동등하게
+          // 취급한다 — "필수" 배지·제거 버튼 숨김을 두지 않는다(사용자 결정:
+          // 추가 후에도 원치 않으면 제거할 수 있어야 한다). 백엔드도 더는 이
+          // 이름을 특별 취급해 제거를 거부하지 않는다(marketplace.rs 참고).
+          const removeBtn = el(
+            'button',
+            { className: 'btn', disabled: removing, onClick: () => void handleRemoveMarketplace(m) },
+            [removing ? '제거 중…' : '제거']
+          );
+          removeBtn.style.color = 'var(--color-danger)';
+          const actions: HTMLElement[] = [el('span', { className: 'badge badge-active' }, ['연결됨']), removeBtn];
           return el('div', { className: 'marketplace-repo-row' }, [
             el('div', {}, [
               el('div', { className: 'marketplace-repo-name' }, [m.id]),
@@ -680,8 +721,11 @@ function renderMarketplacePanel(): HTMLElement {
       : [el('div', { className: 'state-block-desc' }, ['설치된 플러그인이 없습니다.'])]
   );
 
+  const recommendBlock = renderMarketplaceRecommendBlock();
+
   return el('div', { className: 'settings-card marketplace-panel' }, [
     description,
+    ...(recommendBlock ? [recommendBlock] : []),
     el('div', { className: 'marketplace-repo-list' }, repoRows),
     el('div', { className: 'marketplace-actions' }, [refreshBtn]),
     renderMarketplaceAddForm(),
