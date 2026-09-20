@@ -256,7 +256,7 @@ pub(crate) fn run_task(snapshot: TaskSnapshot, app_handle: tauri::AppHandle) {
 pub(crate) fn emit_status(app_handle: &tauri::AppHandle, key: &TaskKey) {
     use tauri::Emitter;
     let payload = {
-        let map = runtime::RUNTIME.lock().unwrap();
+        let map = super::lock_recovering(&runtime::RUNTIME);
         map.get(key).map(|rt| runtime::to_status(key, rt))
     };
     if let Some(payload) = payload {

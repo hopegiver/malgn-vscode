@@ -106,6 +106,7 @@ pub fn run() {
             autonomy::autonomy_delete_task,
             autonomy::autonomy_set_enabled,
             autonomy::autonomy_runtime_status,
+            autonomy::autonomy_scheduler_health,
             autonomy::autonomy_run_now,
             autonomy::autonomy_task_history,
             config::malgn_agent_config_get,

@@ -42,6 +42,22 @@ pub(crate) static RUNTIME: Mutex<BTreeMap<TaskKey, TaskRuntime>> = Mutex::new(BT
 /// 앱 종료 훅이 세우는 플래그. 워커의 `should_abort` 콜백이 이 값을 폴링한다.
 pub(crate) static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
+/// 스케줄러 heartbeat(리뷰 D1 권고 ③) — `scheduler::tick()`이 한 회차를 끝까지
+/// 마칠 때마다(정상 완료든, 설정 오류로 일찍 반환하든) 갱신한다. `tick()` 도중
+/// 패닉하면 이 값이 갱신되지 않으므로, "지금 시각 - 이 값"이 `TICK_SECONDS`를
+/// 한참 넘겨 벌어지면 스케줄러 스레드가 멈췄다는 뜻이다. 프런트가 아직 이
+/// 값을 쓰지 않는다 — 백엔드에서 관측 가능하게 내보내는 것까지가 이번 범위다.
+pub(crate) static LAST_TICK_AT: Mutex<Option<DateTime<Utc>>> = Mutex::new(None);
+
+/// `scheduler::tick()`의 각 반환 지점에서 호출해 heartbeat를 갱신한다.
+pub(crate) fn record_tick_completed() {
+    *super::lock_recovering(&LAST_TICK_AT) = Some(Utc::now());
+}
+
+pub(crate) fn last_tick_at() -> Option<DateTime<Utc>> {
+    *super::lock_recovering(&LAST_TICK_AT)
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct AutonomyRuntimeStatus {
     #[serde(rename = "projectPath")]
@@ -79,12 +95,12 @@ pub(crate) fn to_status(key: &TaskKey, rt: &TaskRuntime) -> AutonomyRuntimeStatu
 }
 
 pub(crate) fn snapshot_all() -> Vec<AutonomyRuntimeStatus> {
-    let map = RUNTIME.lock().unwrap();
+    let map = super::lock_recovering(&RUNTIME);
     map.iter().map(|(k, rt)| to_status(k, rt)).collect()
 }
 
 pub(crate) fn running_count() -> usize {
-    RUNTIME.lock().unwrap().values().filter(|rt| rt.running).count()
+    super::lock_recovering(&RUNTIME).values().filter(|rt| rt.running).count()
 }
 
 /// 미등록 task를 레지스트리에 등록한다 — `next_run_at`은 호출자(scheduler)가
@@ -100,7 +116,7 @@ pub(crate) fn running_count() -> usize {
 /// 모드가 들어오면 그 무의미한 재계산에 파싱 비용이 실리므로, 신규 키를
 /// 등록할 때만 계산이 실제로 일어나도록 클로저로 감싼다.
 pub(crate) fn ensure_registered(key: &TaskKey, initial_next_run_at: impl FnOnce() -> Option<DateTime<Utc>>) {
-    let mut map = RUNTIME.lock().unwrap();
+    let mut map = super::lock_recovering(&RUNTIME);
     map.entry(key.clone()).or_insert_with(|| TaskRuntime {
         next_run_at: initial_next_run_at(),
         ..Default::default()
@@ -116,7 +132,7 @@ pub(crate) fn ensure_registered(key: &TaskKey, initial_next_run_at: impl FnOnce(
 /// tick의 `ensure_registered`는 이미 등록된 키엔 손대지 않으므로(`or_insert_with`)
 /// 이 함수가 미리 넣어 둔 값을 덮어쓰지 않는다.
 pub(crate) fn reschedule_or_register(key: &TaskKey, next: Option<DateTime<Utc>>) {
-    let mut map = RUNTIME.lock().unwrap();
+    let mut map = super::lock_recovering(&RUNTIME);
     let rt = map.entry(key.clone()).or_default();
     if !rt.running {
         rt.next_run_at = next;
@@ -126,7 +142,7 @@ pub(crate) fn reschedule_or_register(key: &TaskKey, next: Option<DateTime<Utc>>)
 /// 설정에서 사라진 키는 `running==false`일 때만 제거한다 — 실행 중이면 끝난
 /// 뒤 다음 tick에 제거한다(설계 §1 — 실행 중 삭제가 현재 실행을 끊지 않는다).
 pub(crate) fn prune_missing(keep: &std::collections::HashSet<TaskKey>) {
-    let mut map = RUNTIME.lock().unwrap();
+    let mut map = super::lock_recovering(&RUNTIME);
     map.retain(|key, rt| keep.contains(key) || rt.running);
 }
 
@@ -137,7 +153,7 @@ pub(crate) fn prune_missing(keep: &std::collections::HashSet<TaskKey>) {
 /// 워커 스레드 spawn을 건너뛰게 한다(중복 `claude -p`·`child_pid` 유실 방지).
 /// 반환값이 `true`일 때만 실제로 시작 마킹이 일어난 것이다.
 pub(crate) fn mark_started(key: &TaskKey) -> bool {
-    let mut map = RUNTIME.lock().unwrap();
+    let mut map = super::lock_recovering(&RUNTIME);
     let rt = map.entry(key.clone()).or_default();
     if rt.running {
         return false;
@@ -156,7 +172,7 @@ pub(crate) fn mark_started(key: &TaskKey) -> bool {
 /// 실패해도 상태를 바꾸지 않는다(부분 마킹 없음). 성공하면 `mark_started`와
 /// 동일한 필드를 채운다.
 pub(crate) fn try_start_now(key: &TaskKey, concurrency: usize) -> Result<(), String> {
-    let mut map = RUNTIME.lock().unwrap();
+    let mut map = super::lock_recovering(&RUNTIME);
     if let Some(rt) = map.get(key) {
         if rt.running {
             return Err("이미 실행 중인 작업입니다.".to_string());
@@ -174,7 +190,7 @@ pub(crate) fn try_start_now(key: &TaskKey, concurrency: usize) -> Result<(), Str
 }
 
 pub(crate) fn set_child_pid(key: &TaskKey, pid: Option<u32>) {
-    let mut map = RUNTIME.lock().unwrap();
+    let mut map = super::lock_recovering(&RUNTIME);
     if let Some(rt) = map.get_mut(key) {
         rt.child_pid = pid;
     }
@@ -189,7 +205,7 @@ pub(crate) fn mark_finished(
     log_path: Option<String>,
     next_run_at: Option<DateTime<Utc>>,
 ) {
-    let mut map = RUNTIME.lock().unwrap();
+    let mut map = super::lock_recovering(&RUNTIME);
     let rt = map.entry(key.clone()).or_default();
     rt.running = false;
     rt.child_pid = None;
@@ -205,7 +221,7 @@ pub(crate) fn mark_finished(
 /// 보관 중인 `child_pid`들에 직접 `SIGKILL`을 쏜다(설계 §1-4-4).
 #[cfg(unix)]
 pub(crate) fn force_kill_all_remaining() {
-    let map = RUNTIME.lock().unwrap();
+    let map = super::lock_recovering(&RUNTIME);
     for rt in map.values() {
         if rt.running {
             if let Some(pid) = rt.child_pid {
@@ -243,7 +259,7 @@ pub(crate) fn force_kill_all_remaining() {
     use crate::process_util::SilentCommand;
 
     let pids: Vec<u32> = {
-        let map = RUNTIME.lock().unwrap();
+        let map = super::lock_recovering(&RUNTIME);
         map.values()
             .filter(|rt| rt.running)
             .filter_map(|rt| rt.child_pid)

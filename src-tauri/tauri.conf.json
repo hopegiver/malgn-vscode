@@ -16,7 +16,9 @@
       {
         "title": "맑은에이전트",
         "width": 1180,
-        "height": 760
+        "height": 760,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {

@@ -132,6 +132,70 @@ export async function loadGlobalCatalog() {
   return { agents: agents.map((a) => ({ ...a, path: '', status: 'valid' })), skills: skills.map((s) => ({ ...s, path: '', status: 'valid' })) };
 }
 
+// ---------------- STATUS.md 이모지 섹션 파싱 + 보관 상태 분류 ----------------
+// `src-tauri/src/workspace/status.rs`(`is_heading_line`/`parse_status_markdown`/
+// `classify_archive_status`)를 그대로 재현한다(C2 — "픽스처는 백엔드보다
+// 똑똑해서도, 멍청해서도 안 된다"). 값을 고정하지 않고 로직을 포팅했으므로
+// 실제 STATUS.md 내용에 따라 active/archived/unknown이 갈린다.
+
+/// `^#{1,6}\s+`와 동등한 판정 — Rust `is_heading_line`(status.rs:24-32) 포팅.
+function isHeadingLine(line) {
+  let hashCount = 0;
+  while (hashCount < line.length && line[hashCount] === '#') hashCount++;
+  if (hashCount === 0 || hashCount > 6) return false;
+  const next = line[hashCount];
+  return next !== undefined && /\s/.test(next);
+}
+
+/// 🟢/✅/🚧/⛔ 이모지만으로 섹션을 식별한다(제목 텍스트는 보지 않음). Rust
+/// `parse_status_markdown`(status.rs:38-90) 포팅 — 필드명은 프론트 계약
+/// (`workspaceApi.ts`의 `ProjectStatusSections`, camelCase)에 맞춘다.
+function parseStatusMarkdown(content) {
+  const lines = content.split('\n');
+  const headings = [];
+  lines.forEach((line, i) => {
+    if (isHeadingLine(line)) headings.push({ lineIndex: i, text: line });
+  });
+
+  let current = null;
+  let recentDone = null;
+  let inProgress = null;
+  let blocked = null;
+
+  headings.forEach((heading, i) => {
+    const bodyEnd = i + 1 < headings.length ? headings[i + 1].lineIndex : lines.length;
+    const body = lines.slice(heading.lineIndex + 1, bodyEnd).join('\n').trim();
+    if (current === null && heading.text.includes('🟢')) current = body;
+    if (recentDone === null && heading.text.includes('✅')) recentDone = body;
+    if (inProgress === null && heading.text.includes('🚧')) inProgress = body;
+    if (blocked === null && heading.text.includes('⛔')) blocked = body;
+  });
+
+  const parsed = current !== null || recentDone !== null || inProgress !== null || blocked !== null;
+  return { parsed, current, recentDone, inProgress, blocked, raw: content };
+}
+
+// "이 프로젝트가 보관/중단됐다"는 의도가 분명한 구(phrase)만 본다 — Rust
+// `ARCHIVE_KEYWORDS`(status.rs:95-104)와 1:1 동일한 목록·순서를 유지한다.
+const ARCHIVE_KEYWORDS = [
+  '프로젝트 보관',
+  '보관 처리',
+  '보관 상태',
+  '개발 중단',
+  '서비스 종료',
+  '운영 종료',
+  'archived',
+  'deprecated',
+];
+
+/// Rust `classify_archive_status`(status.rs:106-127) 포팅.
+function classifyArchiveStatus(hasStatus, currentSectionBody) {
+  if (!hasStatus) return 'unknown';
+  if (currentSectionBody === null || currentSectionBody === undefined) return 'unknown';
+  const normalized = currentSectionBody.toLowerCase();
+  return ARCHIVE_KEYWORDS.some((k) => normalized.includes(k.toLowerCase())) ? 'archived' : 'active';
+}
+
 // ---------------- 워크스페이스 프로젝트 (~/workspace/*/CLAUDE.md) ----------------
 export async function loadWorkspaceProjects() {
   const wsDir = path.join(HOME, 'workspace');
@@ -154,19 +218,35 @@ export async function loadWorkspaceProjects() {
       const statusMd = path.join(dir, 'STATUS.md');
       let hasStatus = false;
       let updatedAt = st.mtimeMs;
+      // Rust와 동일: STATUS.md가 없으면 "unknown"으로 접는다(추측 분류 금지).
+      let archiveStatus = 'unknown';
+      let sections = null;
       try {
         const sst = await stat(statusMd);
         hasStatus = true;
         updatedAt = Math.max(updatedAt, sst.mtimeMs);
+        try {
+          const content = await readFile(statusMd, 'utf-8');
+          sections = parseStatusMarkdown(content);
+          archiveStatus = classifyArchiveStatus(true, sections.current);
+        } catch (err) {
+          // Rust: read_to_string 실패 시 ("unknown", None)으로 폴백하되
+          // has_status는 true를 유지한다(파일은 있는데 못 읽은 상태).
+          note(`STATUS.md 읽기 실패(archiveStatus=unknown로 폴백): ${statusMd} — ${err.message}`);
+        }
       } catch {
-        /* STATUS.md 없음 — hasStatus false 유지 */
+        /* STATUS.md 없음 — hasStatus false 유지, archiveStatus 'unknown' */
       }
-      projects.push({ name: e.name, path: dir, hasStatus, archiveStatus: 'unknown', sections: null, updatedAt: Math.round(updatedAt) });
+      projects.push({ name: e.name, path: dir, hasStatus, archiveStatus, sections, updatedAt: Math.round(updatedAt) });
     } catch {
       /* CLAUDE.md 없는 폴더는 프로젝트로 인식되지 않는다(Rust와 동일 규칙) */
     }
   }
   if (projects.length === 0) note('~/workspace 아래 CLAUDE.md 있는 폴더 없음 — 빈 배열(정상 "빈 상태")');
+  const activeCount = projects.filter((p) => p.archiveStatus === 'active').length;
+  const archivedCount = projects.filter((p) => p.archiveStatus === 'archived').length;
+  const unknownCount = projects.filter((p) => p.archiveStatus === 'unknown').length;
+  note(`프로젝트 archiveStatus 분류: active ${activeCount}건, archived ${archivedCount}건, unknown ${unknownCount}건 (status.rs 로직 재현, 값 고정 아님)`);
   projects.sort((a, b) => b.updatedAt - a.updatedAt);
   return projects;
 }

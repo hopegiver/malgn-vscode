@@ -35,7 +35,7 @@ fn scan_all_tasks(roots: &[PathBuf]) -> Vec<ScannedTask> {
             if !config::autonomy_file_path(&project_path).is_file() {
                 continue;
             }
-            let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
+            let _guard = super::lock_recovering(&config::AUTONOMY_FILE_LOCK);
             let file = config::read_autonomy_file(&project_path);
             drop(_guard);
             let project_path_str = project_path.to_string_lossy().to_string();
@@ -96,7 +96,7 @@ pub(crate) fn select_due(
 static LAST_CONFIG_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
 fn report_config_error(err: &str) {
-    let mut last = LAST_CONFIG_ERROR.lock().unwrap();
+    let mut last = super::lock_recovering(&LAST_CONFIG_ERROR);
     if last.as_deref() != Some(err) {
         eprintln!("[autonomy] 전역 설정 오류로 스케줄러가 대기합니다: {err}");
         *last = Some(err.to_string());
@@ -104,7 +104,7 @@ fn report_config_error(err: &str) {
 }
 
 fn clear_config_error() {
-    let mut last = LAST_CONFIG_ERROR.lock().unwrap();
+    let mut last = super::lock_recovering(&LAST_CONFIG_ERROR);
     *last = None;
 }
 
@@ -118,6 +118,9 @@ pub(crate) fn tick(app_handle: &tauri::AppHandle) {
         Ok(c) => c,
         Err(e) => {
             report_config_error(&e);
+            // 설정 오류로 일찍 반환해도 스케줄러 루프 자체는 살아서 재시도
+            // 중이다 — heartbeat를 갱신해 "패닉으로 멈춤"과 구분한다(D1 ③).
+            runtime::record_tick_completed();
             return;
         }
     };
@@ -126,6 +129,7 @@ pub(crate) fn tick(app_handle: &tauri::AppHandle) {
         Ok(r) => r,
         Err(e) => {
             report_config_error(&e);
+            runtime::record_tick_completed();
             return;
         }
     };
@@ -169,7 +173,7 @@ pub(crate) fn tick(app_handle: &tauri::AppHandle) {
         .collect();
 
     let due_keys = {
-        let map = runtime::RUNTIME.lock().unwrap();
+        let map = super::lock_recovering(&runtime::RUNTIME);
         select_due(&map, &candidates, now, concurrency)
     };
 
@@ -214,6 +218,13 @@ pub(crate) fn tick(app_handle: &tauri::AppHandle) {
         &roots,
         config::effective_log_retention_days(cfg.logs.retention_days),
     );
+
+    // heartbeat 갱신은 함수의 마지막 문장이다(D1 ③) — 이 지점에 도달했다는
+    // 것은 이번 tick이 패닉 없이 끝까지 돌았다는 뜻이다. `spawn_scheduler`의
+    // `catch_unwind`가 이 함수 호출 자체를 감싸므로, 중간에 패닉하면 이 줄이
+    // 실행되지 않고 heartbeat가 정체되어(catch_unwind가 잡아 다음 tick은
+    // 계속 돌더라도) "이 tick은 패닉했었다"는 신호가 남는다.
+    runtime::record_tick_completed();
 }
 
 #[cfg(test)]

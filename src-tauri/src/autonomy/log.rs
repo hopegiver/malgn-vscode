@@ -185,7 +185,7 @@ static LAST_SWEEP_DATE: Mutex<Option<chrono::NaiveDate>> = Mutex::new(None);
 pub(crate) fn maybe_sweep_logs(roots: &[PathBuf], retention_days: u32) {
     let today = Local::now().date_naive();
     {
-        let mut last = LAST_SWEEP_DATE.lock().unwrap();
+        let mut last = super::lock_recovering(&LAST_SWEEP_DATE);
         if *last == Some(today) {
             return;
         }

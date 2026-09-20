@@ -28,6 +28,22 @@ use std::time::Duration;
 pub use log::RunHistoryEntry;
 pub use runtime::AutonomyRuntimeStatus;
 
+/// `Mutex::lock()`이 poison(락을 쥔 다른 스레드가 패닉)되어도 값을 그대로
+/// 복구해 계속 쓴다(리뷰 D1 권고 ②). 이 크레이트의 자율업무 상태
+/// (`runtime::RUNTIME`·`config::AUTONOMY_FILE_LOCK`·설정 오류 중복 로그 억제용
+/// static 등)는 전부 재구성 가능한 상태다 — poisoning 이후에도 마지막으로 쓰인
+/// 값을 신뢰하고 계속 도는 편이, `unwrap()`으로 이 락을 쓰는 모든 후속 호출을
+/// 연쇄 패닉시켜 스케줄러 스레드를 영구 정지시키는 것보다 안전하다. 이
+/// 크레이트의 모든 `Mutex::lock()`은 `.unwrap()` 대신 이 헬퍼를 쓴다(테스트
+/// 코드의 셋업/단언용 락은 예외 — 그쪽은 poisoning 자체가 테스트 격리 실패의
+/// 신호라 그대로 패닉하는 편이 낫다).
+pub(crate) fn lock_recovering<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// TaskKey의 `project_path` 컴포넌트를 만드는 정본(C1) — `resolve_validated_project_root`
 /// (`workspace/tree.rs:39`)가 돌려주는 **std** `canonicalize()` 결과를,
 /// 스케줄러 스캐너(`scheduler::scan_all_tasks`/`autonomy_list_blocking`)가
@@ -123,7 +139,7 @@ fn autonomy_list_blocking() -> Result<Vec<AutonomyProjectTasks>, String> {
                 continue;
             }
 
-            let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
+            let _guard = lock_recovering(&config::AUTONOMY_FILE_LOCK);
             let file = config::read_autonomy_file(&project_path);
             drop(_guard);
 
@@ -159,7 +175,7 @@ pub fn autonomy_save_task(
     validate_schedule_fields(&task)?;
     let task_id = task.id.clone();
 
-    let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
+    let _guard = lock_recovering(&config::AUTONOMY_FILE_LOCK);
     let mut file = config::read_autonomy_file(&root);
     let previous_mode = file
         .tasks
@@ -194,7 +210,7 @@ pub fn autonomy_delete_task(project_path: String, task_id: String) -> Result<(),
     let root = crate::resolve_validated_project_root(&project_path)
         .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
 
-    let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
+    let _guard = lock_recovering(&config::AUTONOMY_FILE_LOCK);
     let mut file = config::read_autonomy_file(&root);
     file.tasks.retain(|t| t.id != task_id);
     config::write_autonomy_file(&root, &file)
@@ -210,7 +226,7 @@ pub fn autonomy_set_enabled(
     let root = crate::resolve_validated_project_root(&project_path)
         .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
 
-    let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
+    let _guard = lock_recovering(&config::AUTONOMY_FILE_LOCK);
     let mut file = config::read_autonomy_file(&root);
     let (should_reschedule, saved) = {
         let Some(task) = file.tasks.iter_mut().find(|t| t.id == task_id) else {
@@ -260,7 +276,7 @@ pub fn autonomy_run_now(
     let root = crate::resolve_validated_project_root(&project_path)
         .ok_or_else(|| "프로젝트 경로가 올바르지 않습니다.".to_string())?;
 
-    let _guard = config::AUTONOMY_FILE_LOCK.lock().unwrap();
+    let _guard = lock_recovering(&config::AUTONOMY_FILE_LOCK);
     let file = config::read_autonomy_file(&root);
     drop(_guard);
 
@@ -307,6 +323,34 @@ pub fn autonomy_runtime_status() -> Vec<AutonomyRuntimeStatus> {
     runtime::snapshot_all()
 }
 
+/// 스케줄러 heartbeat 조회(리뷰 D1 권고 ③) — `lastTickAt`과 `now`(같은 커맨드
+/// 호출 시점의 서버 시각) 둘 다 내려준다. `nextRunAt`(각 task의 다음 예정
+/// 시각)과 달리 이건 "스케줄러 루프 자체가 살아 있는가"를 나타낸다:
+/// `now - lastTickAt`이 `tickSeconds`를 한참(수 배) 넘기면 스케줄러 스레드가
+/// 멈춘 것이다(패닉으로 스레드가 죽었거나, 앱이 아직 `spawn_scheduler`를 호출하기
+/// 전이면 `lastTickAt`이 `null`이다). 프런트가 이 값을 "N분째 응답 없음" 같은
+/// 배너로 쓰려면 `src/`쪽에서 이 커맨드를 주기적으로 invoke하고 임계값(예:
+/// `tickSeconds`의 3~6배)을 정해 비교하는 코드가 별도로 필요하다 — 이 커맨드는
+/// 그 판단에 쓸 원값만 내보낸다(판단 로직을 백엔드에 넣지 않는다 — 임계값은
+/// UI 정책이라 프런트 소관).
+#[derive(Serialize, Clone, Debug)]
+pub struct SchedulerHealth {
+    #[serde(rename = "lastTickAt")]
+    pub last_tick_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub now: chrono::DateTime<chrono::Utc>,
+    #[serde(rename = "tickSeconds")]
+    pub tick_seconds: u64,
+}
+
+#[tauri::command]
+pub fn autonomy_scheduler_health() -> SchedulerHealth {
+    SchedulerHealth {
+        last_tick_at: runtime::last_tick_at(),
+        now: chrono::Utc::now(),
+        tick_seconds: config::TICK_SECONDS,
+    }
+}
+
 /// 과거 실행 이력 조회 — "설정=파일 / 상태=메모리 / 이력=로그" 3분리(설계 §2)의
 /// 세 번째 축을 읽기 전용으로 노출한다. `autonomy.json`에는 `history`를
 /// 되살리지 않기로 한 PM 결정에 따른 대안 경로다. 다른 3개 커맨드와 동일하게
@@ -341,12 +385,44 @@ pub async fn autonomy_task_history(
     .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }
 
+/// `catch_unwind`에 넘긴 클로저가 패닉했을 때 `Box<dyn Any + Send>` 페이로드에서
+/// 사람이 읽을 수 있는 메시지를 최대한 뽑아낸다(`&str`/`String` 두 가지 흔한
+/// 페닉 페이로드 형태만 다룬다 — 그 외 타입이면 고정 문자열로 폴백, 과설계
+/// 금지).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "(알 수 없는 패닉 페이로드)".to_string()
+    }
+}
+
 /// `run()`의 `setup()`에서 한 번 호출한다. `TICK_SECONDS`(10초)마다
 /// `scheduler::tick`을 돈다 — 그 tick 자체가 설정 리로드+reconcile+실행
 /// 트리거를 전부 포함한다.
+///
+/// `catch_unwind`로 `tick()` 호출 자체를 감싼다(리뷰 D1 권고 ① — 이 스케줄러는
+/// 스레드가 1개뿐이라 `tick()` 안에서 패닉하면 그 스레드가 영구 종료되고,
+/// 이후 모든 자율업무가 조용히(화면에 아무 오류도 없이) 멈춘다. 세션 채팅
+/// 모듈(`session_chat`)에 이미 있는 것과 같은 기법을 여기 적용 누락분에
+/// 적용한다 — `AssertUnwindSafe`가 필요한 이유는 `app_handle`을 참조로 넘기는
+/// 클로저가 기본적으로 `UnwindSafe`로 추론되지 않기 때문인데, 패닉 이후에도
+/// 이 핸들 자체는 계속 정상 재사용 가능한 값이라(내부적으로 이미 Arc 기반
+/// 공유 핸들) 안전하다.
 pub fn spawn_scheduler(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || loop {
-        scheduler::tick(&app_handle);
+        let handle = app_handle.clone();
+        if let Err(payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scheduler::tick(&handle)))
+        {
+            eprintln!(
+                "[autonomy] 스케줄러 tick이 패닉했습니다 — 다음 tick({}s 후)으로 계속 진행합니다: {}",
+                config::TICK_SECONDS,
+                panic_message(&*payload)
+            );
+        }
         std::thread::sleep(Duration::from_secs(config::TICK_SECONDS));
     });
 }
@@ -380,6 +456,72 @@ mod tests {
     fn resolve_validated_project_root_rejects_path_outside_workspace() {
         assert!(crate::resolve_validated_project_root("/etc").is_none());
         assert!(crate::resolve_validated_project_root("/etc/passwd").is_none());
+    }
+
+    // ---------------- D1: 스케줄러 패닉 방지 ----------------
+
+    // D1② — `lock_recovering`은 poisoning된 뮤텍스에서도 패닉하지 않고 마지막
+    // 값을 그대로 복구한다. `.lock().unwrap()`이었다면 이 테스트의 두 번째
+    // `lock_recovering` 호출이 그대로 패닉했을 것이다.
+    #[test]
+    fn lock_recovering_recovers_value_after_poisoning() {
+        let mutex = std::sync::Mutex::new(41);
+
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut guard = mutex.lock().unwrap();
+            *guard += 1;
+            panic!("의도적으로 락을 쥔 채 패닉시켜 poisoning을 유발한다");
+        }));
+        assert!(poisoned.is_err(), "패닉이 실제로 일어나야 poisoning 시나리오가 성립한다");
+        assert!(mutex.is_poisoned(), "이 시점에 뮤텍스가 poisoned 상태여야 한다");
+
+        // 여기서 일반 `.lock().unwrap()`을 썼다면 아래 줄이 그대로 패닉한다.
+        let recovered = *lock_recovering(&mutex);
+        assert_eq!(recovered, 42, "패닉 직전에 쓴 값(42)이 poisoning 이후에도 살아남아야 한다");
+    }
+
+    // D1① — `panic_message`가 흔한 두 패닉 페이로드 형태(&str/String)에서 메시지를
+    // 뽑아내는지 확인한다. `spawn_scheduler`의 `catch_unwind` 로그 메시지가 이
+    // 함수에 의존한다.
+    #[test]
+    fn panic_message_extracts_str_and_string_payloads() {
+        let str_payload = std::panic::catch_unwind(|| panic!("정적 문자열 패닉"))
+            .unwrap_err();
+        assert_eq!(panic_message(&*str_payload), "정적 문자열 패닉");
+
+        let owned = "동적 String 패닉".to_string();
+        let string_payload = std::panic::catch_unwind(move || panic!("{owned}")).unwrap_err();
+        assert_eq!(panic_message(&*string_payload), "동적 String 패닉");
+    }
+
+    // D1① — `spawn_scheduler`가 쓰는 것과 동일한 `catch_unwind(AssertUnwindSafe(..))`
+    // 패턴을 재현해, 한 번의 패닉이 다음 호출을 막지 않음을 고정한다(스케줄러
+    // 스레드가 패닉 1회로 영구 종료되지 않는다는 계약의 핵심).
+    #[test]
+    fn catch_unwind_pattern_survives_panic_and_next_call_still_runs() {
+        let panicking_tick = || panic!("이번 tick만 패닉(테스트 유발)");
+        let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(panicking_tick));
+        assert!(first.is_err(), "패닉이 catch_unwind 밖으로 전파되면 안 된다");
+
+        let ran = std::sync::atomic::AtomicBool::new(false);
+        let ok_tick = || ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(ok_tick));
+        assert!(second.is_ok(), "패닉 이후에도 다음 호출은 정상 진행돼야 한다");
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst), "다음 tick이 실제로 실행돼야 한다");
+    }
+
+    // D1③ — heartbeat: `record_tick_completed`가 `last_tick_at`을 갱신하고,
+    // 이 값이 `autonomy_scheduler_health` 커맨드로 그대로 노출된다.
+    #[test]
+    fn record_tick_completed_updates_last_tick_at_and_scheduler_health_reflects_it() {
+        let before = chrono::Utc::now();
+        runtime::record_tick_completed();
+        let after = chrono::Utc::now();
+
+        let health = autonomy_scheduler_health();
+        let last = health.last_tick_at.expect("record_tick_completed 직후에는 값이 있어야 한다");
+        assert!(last >= before && last <= after, "heartbeat 시각이 호출 구간 안에 있어야 한다");
+        assert_eq!(health.tick_seconds, config::TICK_SECONDS);
     }
 
     // 비정상 케이스(project_path가 워크스페이스 밖/존재하지 않음) — 신규

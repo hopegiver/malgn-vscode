@@ -23,7 +23,11 @@ pub(crate) struct GlobalCatalog {
 
 /// YAML 프론트매터에서 최상위 `name:`/`description:` 값만 뽑아낸다. 들여쓰기된
 /// 중첩 라인은 무시한다 — 과설계 금지.
-fn parse_frontmatter(content: &str) -> Option<(String, String)> {
+///
+/// `pub(crate)` — `plugins::installed`(설치된 플러그인 카탈로그의 agents/skills
+/// description 채움, 리뷰 C4)가 그대로 재사용한다. 신규 파싱 코드를 만들지
+/// 않고 이 하나만 정본으로 둔다.
+pub(crate) fn parse_frontmatter(content: &str) -> Option<(String, String)> {
     let mut lines = content.lines();
     let first = lines.next()?;
     if first.trim() != "---" {
