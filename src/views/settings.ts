@@ -1,4 +1,4 @@
-import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, boundField } from '../dom';
+import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, boundField, restoreModalFocus } from '../dom';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
@@ -982,6 +982,7 @@ function closeMcpAddModal(): void {
   mcpAddModalOpen = false;
   mcpAddDraft = null;
   detachMcpAddModalEscHandler();
+  restoreModalFocus(closeMcpAddModal); // C3: 열기 직전 포커스로 복원
   notifyChange();
 }
 

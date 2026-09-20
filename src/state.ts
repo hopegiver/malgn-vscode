@@ -308,15 +308,20 @@ export interface AppState {
   };
 }
 
-export const state: AppState = {
-  authenticated: false,
-  auth: { loading: false, error: null, userEmail: null, userName: null },
-  // loading을 처음부터 true로 두면 main.ts의 `!state.dashboard.loading` 트리거
-  // 가드와 충돌해 loadProjects()가 영원히 호출되지 않는 교착 상태가 된다(실제
-  // 재현된 버그 — 프로젝트 목록이 "새로고침 중…" 스켈레톤에서 멈춰 있었다).
-  // loadProjects() 자신이 시작하자마자 loading을 true로 바꾸므로 스켈레톤은
-  // 여전히 짧게 보인다.
-  dashboard: { projects: [], skipped: [], loading: false, error: null, loaded: false, filter: 'all', sort: 'updated' },
+// 앱 상태의 초기값 — 로그인 직후 한 번 만드는 `state`와, 로그아웃 시 데이터
+// 슬라이스를 되돌리는 resetStateForLogout() 양쪽이 이 팩토리를 공유한다(G1,
+// 리뷰 v0.2.5). 두 곳이 이 리터럴을 따로 들고 있으면 필드가 하나 늘 때마다
+// 한쪽만 갱신되는 드리프트가 나기 쉽다.
+function createInitialState(): AppState {
+  return {
+    authenticated: false,
+    auth: { loading: false, error: null, userEmail: null, userName: null },
+    // loading을 처음부터 true로 두면 main.ts의 `!state.dashboard.loading` 트리거
+    // 가드와 충돌해 loadProjects()가 영원히 호출되지 않는 교착 상태가 된다(실제
+    // 재현된 버그 — 프로젝트 목록이 "새로고침 중…" 스켈레톤에서 멈춰 있었다).
+    // loadProjects() 자신이 시작하자마자 loading을 true로 바꾸므로 스켈레톤은
+    // 여전히 짧게 보인다.
+    dashboard: { projects: [], skipped: [], loading: false, error: null, loaded: false, filter: 'all', sort: 'updated' },
   projectTree: {
     projectPath: null,
     nodes: [],
@@ -379,8 +384,11 @@ export const state: AppState = {
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },
   mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
   appLinks: { status: null, loading: false, error: null, loaded: false, saving: false },
-  update: { available: false, version: null, installing: false },
-};
+    update: { available: false, version: null, installing: false },
+  };
+}
+
+export const state: AppState = createInitialState();
 
 type Listener = () => void;
 const listeners: Listener[] = [];
@@ -403,4 +411,26 @@ export function applyAuthenticatedIdentity(email: string, name: string): void {
   state.auth.userEmail = email;
   state.auth.userName = name;
   state.authenticated = true;
+}
+
+// 로그아웃 — 인증 필드만 지우던 이전 구현은 나머지 데이터 슬라이스(세션 목록,
+// 채팅 전문, 프로젝트, 자율업무 등)를 그대로 남겨뒀다(G1, 리뷰 v0.2.5). 1인
+// 1머신 사내 도구라 실질 노출 위험은 낮지만, "로그아웃했는데 이전 사용자의
+// 데이터가 화면에 남아 있다"는 것은 수명 계약의 구멍이다 — 다음 로그인
+// 사용자에게 이전 세션의 잔상이 보이면 안 된다. createInitialState()로 만든
+// 새 값을 최상위 슬라이스에 되돌린다(sidebar.ts 로그아웃 핸들러가 호출한다).
+//
+// sessionChat만 예외다 — main.ts의 handleNavigation()이 이 호출 직후(해시가
+// ''로 바뀌며 발생하는 hashchange) 라우트 이탈 정리를 돌리는데, 그 정리는
+// "state.sessionChat.sessionId !== null"을 보고 leaveSessionChatView()(실제
+// unlisten 호출 + 상태 초기화 둘 다 책임진다)를 부를지 판단한다. 여기서
+// sessionChat을 먼저 비워버리면 그 가드가 항상 거짓이 되어 leaveSessionChatView()
+// 가 스킵되고, 정작 G1이 고치려던 스트리밍 리스너 누수가 그대로 남는다 —
+// 데이터 초기화보다 리스너 해제가 항상 먼저(같은 함수 안에서) 일어나야 한다.
+export function resetStateForLogout(): void {
+  const fresh = createInitialState();
+  for (const key of Object.keys(fresh) as (keyof AppState)[]) {
+    if (key === 'sessionChat') continue;
+    (state[key] as unknown) = fresh[key];
+  }
 }

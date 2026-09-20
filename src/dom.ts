@@ -115,6 +115,27 @@ export function runningDot(): HTMLElement {
 // 그래서 mousedown 시점에 "오버레이 자기 자신에서 시작했는가"를 기록해뒀다가
 // click 시점에 그 기록과 현재 target을 함께 확인한다. role="dialog"/aria-modal도
 // 여기서 함께 설정한다. (기존 4곳의 modal-overlay가 공통으로 겪던 버그를 승격.)
+// 포커스 가능 요소 selector — confirmDialog()가 이미 쓰던 기준(버튼/링크/입력/
+// select/textarea + tabindex 음수 아닌 것)을 그대로 승격했다.
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (n) => n.offsetParent !== null || n === document.activeElement
+  );
+}
+
+// 모달별 "열기 직전 포커스" 기억소 — onClose 함수 참조(모듈 스코프의
+// closeXxxModal, 모달이 열려 있는 동안 매 재렌더에도 항상 같은 참조)를 키로
+// 쓴다. 이 앱은 배경 이벤트로 root.replaceChildren() 전체 재빌드가 일어나면
+// 모달도 매번 새 DOM 노드로 다시 만들어지므로(모달이 열려 있다는 사실은
+// state 플래그로만 남는다), "모달을 새로 열었다"와 "열려 있던 모달이
+// 재렌더로 다시 그려졌다"를 이 맵의 존재 여부로 구분한다 — 재렌더마다
+// previouslyFocused를 <body>(재빌드 직후 activeElement)로 덮어쓰지 않기
+// 위함이다.
+const modalFocusMemory = new WeakMap<() => void, HTMLElement | null>();
+
 export function createModalOverlay(modalBox: HTMLElement, onClose: () => void): HTMLElement {
   modalBox.addEventListener('click', (e) => e.stopPropagation());
 
@@ -129,7 +150,71 @@ export function createModalOverlay(modalBox: HTMLElement, onClose: () => void): 
   });
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
+
+  // 포커스 트랩(C3, 리뷰 v0.2.5) — role="dialog"/aria-modal="true"가 선언만
+  // 하고 실제로는 안 지켜지던 부분. confirmDialog()가 이미 쓰던 "열기 직전
+  // activeElement 기억 → 열 때 모달 안 첫 포커스 가능 요소로 이동 → Tab을
+  // 가로채 모달 내부로 순환 → 닫을 때 원래 요소로 복원" 패턴을 여기 승격해
+  // 호출부 7곳(sessions.ts 메타모달/새세션, projects.ts, autonomousTasks.ts
+  // 2곳, settings.ts, appLinks.ts)에 한 번에 적용한다. "닫을 때 복원"은
+  // 이 함수만으로는 닫힘을 감지할 수 없어(각 호출부의 close*Modal()이 실제
+  // 소유자다) restoreModalFocus(onClose)를 별도로 내보낸다 — 호출부가 이미
+  // 갖고 있는 close*Modal() 끝에 한 줄만 추가하면 된다(detach*EscHandler()와
+  // 같은 자리에 두는 기존 관례를 그대로 따른다).
+  const isFreshOpen = !modalFocusMemory.has(onClose);
+  if (isFreshOpen) {
+    modalFocusMemory.set(onClose, document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  }
+
+  // 오버레이가 문서에 실제로 붙는 시점(다음 마이크로태스크)까지 기다렸다가
+  // 포커스를 옮긴다 — 호출부가 반환값을 아직 DOM에 appendChild하지 않았을
+  // 수 있다. boundField가 이미 이번 렌더에서 포커스 복원을 예약해뒀다면
+  // (pendingFocus) 그쪽이 우선한다 — 재렌더로 모달이 다시 그려질 때 안의
+  // 입력 필드에 포커스가 있었다면 첫 요소로 되돌리지 않는다.
+  queueMicrotask(() => {
+    if (!overlay.isConnected) return;
+    if (hasPendingFocus()) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && modalBox.contains(active)) return;
+    const focusable = focusableElements(modalBox);
+    (focusable[0] ?? modalBox).focus();
+  });
+
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const focusable = focusableElements(modalBox);
+    if (focusable.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey) {
+      if (active === first || !modalBox.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last || !modalBox.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  });
+
   return overlay;
+}
+
+// createModalOverlay와 짝을 이루는 "닫을 때 포커스 복원" — 각 화면의
+// close*Modal() 끝에서 자기 자신의 참조를 넘겨 호출한다(예:
+// `restoreModalFocus(closeMetaModal)`). 모달을 열 때 기억해둔 요소가 아직
+// 문서에 남아 있으면 그리로 포커스를 되돌리고, 기억소는 비운다(다음에 같은
+// onClose로 모달을 다시 열면 그 시점의 activeElement를 새로 기억해야 하므로).
+export function restoreModalFocus(onClose: () => void): void {
+  const target = modalFocusMemory.get(onClose);
+  modalFocusMemory.delete(onClose);
+  if (target && target.isConnected) target.focus();
 }
 
 // 확인 다이얼로그 — window.confirm()을 대체한다. 이 앱의 Tauri v2 WKWebView
@@ -199,29 +284,139 @@ export function confirmDialog(
 // 때는 `document.createElement('input')` 뒤에 `.value = x`를 직접 대입하지
 // 말고 이 함수로 감싸라 — 그래야 다음 폼에서 같은 버그가 재발하지 않는다.
 //
-// 커서 위치(selection)는 복원하지 않는다 — DOM 노드 자체가 매 렌더 교체되는
-// 구조에서 selection까지 복원하려면 매 렌더마다 활성 포커스 노드를 추적해
-// 재렌더 직후 같은 자리에 focus()+setSelectionRange()를 호출해야 하는데, 이
-// 앱은 배경 이벤트가 잦아(세션 파일 감시·자율업무 폴링·devtools 경과시간
-// 타이머) 그 훅을 모든 라우트에 안전하게 얹는 비용이 값 보존이라는 핵심 목표
-// 대비 크다. 값이 보존되면 최소한 실질적 데이터 유실 없이 이어서 타이핑할 수
-// 있다(포커스가 한 번 끊기는 것은 남지만, 지금까지 입력한 내용은 남는다).
+// 커서 위치(selection)·포커스 복원(A2, 리뷰 v0.2.5) — fieldId를 주면(선택)
+// 이 필드가 재렌더 직전에 포커스를 갖고 있었는지 계속 추적해뒀다가, 노드가
+// 통째로 교체된 뒤에도 새 노드로 포커스·캐럿을 이어받는다. 실측(리뷰
+// probe-p1): 배경 워처 이벤트 1회로 채팅 입력창 포커스가 `focused:true,
+// start:7` → `focused:false,start:13`(body)로 날아갔다 — 값은 위 드래프트
+// 저장소 덕에 남았지만 커서 자리는 잃었다.
+//
+// 메커니즘: focusedFieldId/focusedSelectionStart/End는 "지금 어떤 필드가
+// 포커스를 갖고 있는가"를 실시간으로 따라간다(focus/blur/keyup/click/select).
+// main.ts의 renderApp()이 root.replaceChildren() 직전에
+// captureActiveFocusForRerender()를 불러 그 시점 값을 renderTarget*으로
+// 스냅샷한다 — replaceChildren() 자체가 포커스된 옛 노드를 지우며 즉시
+// blur를 일으켜 focusedFieldId를 지우므로, 스냅을 먼저 떠 둬야 그 blur에
+// 스냅이 지워지지 않는다. 이후 이번 렌더에서 boundField가 fieldId가 일치하는
+// 새 노드를 만들면 pendingFocus로 예약해두고, main.ts가 새 트리를 문서에
+// 붙인 직후 flushPendingFieldFocus()를 불러 실제로 focus()+
+// setSelectionRange()를 적용한다(문서에 붙기 전에는 focus()가 먹지 않는다).
+// fieldId를 생략하면 기존과 동일하게 값만 보존된다(포커스·캐럿 복원 없음) —
+// 매 폼에 강제하지 않는다.
+let focusedFieldId: string | null = null;
+let focusedSelectionStart: number | null = null;
+let focusedSelectionEnd: number | null = null;
+
+let renderTargetFieldId: string | null = null;
+let renderTargetSelectionStart: number | null = null;
+let renderTargetSelectionEnd: number | null = null;
+
+let pendingFocus: {
+  readonly node: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+  readonly start: number | null;
+  readonly end: number | null;
+} | null = null;
+
+// main.ts의 renderApp()이 root.replaceChildren() 직전에 정확히 한 번 호출한다.
+export function captureActiveFocusForRerender(): void {
+  renderTargetFieldId = focusedFieldId;
+  renderTargetSelectionStart = focusedSelectionStart;
+  renderTargetSelectionEnd = focusedSelectionEnd;
+  pendingFocus = null;
+}
+
+// main.ts의 renderApp()이 새 트리를 root에 appendChild한 직후 정확히 한 번
+// 호출한다. pendingFocus가 없으면(이번 렌더에 포커스 복원 대상 필드가 없었다면)
+// 아무 일도 하지 않는다.
+//
+// 버그 수정 메모: node.focus()는 'focus' 이벤트를 동기 발생시키고, 그 리스너
+// (attachFocusCaretTracking)가 이 시점의 selectionStart를 즉시 캡처한다 — 그런데
+// 이 시점은 아직 setSelectionRange()를 부르기 "전"이라 브라우저 기본 커서
+// 위치(보통 문자열 끝)가 잘못 캡처된다. 연쇄 배경 이벤트로 렌더가 한 프레임 안에
+// 두 번 일어나면(예: loadSessions()의 loading=true/loaded=true 각각이 렌더를
+// 하나씩 냄), 두 번째 렌더가 이 잘못된 값을 스냅샷해 캐럿이 다시 끝으로
+// 밀리는 재발이 있었다(실측). setSelectionRange() 호출 "직후" 여기서 직접
+// focusedSelectionStart/End를 덮어써 다음 렌더가 항상 정확한 값을 스냅샷하게
+// 한다 — 'select' 이벤트 발생 여부(브라우저마다 다를 수 있음)에 기대지 않는다.
+export function flushPendingFieldFocus(): void {
+  if (!pendingFocus) return;
+  const { node, start, end } = pendingFocus;
+  pendingFocus = null;
+  node.focus();
+  if (start !== null && 'setSelectionRange' in node) {
+    try {
+      (node as HTMLInputElement | HTMLTextAreaElement).setSelectionRange(start, end ?? start);
+      focusedSelectionStart = start;
+      focusedSelectionEnd = end ?? start;
+    } catch {
+      /* type=email/number 등 setSelectionRange를 지원하지 않는 입력 — 무시 */
+    }
+  }
+}
+
+// createModalOverlay가 "모달 첫 요소로 기본 포커스"보다 이 예약을 우선하기
+// 위해 참조한다(모달 안의 boundField 입력이 재렌더로 다시 만들어지는 경우,
+// 모달의 기본 포커스 로직이 그 복원을 가로채지 않아야 한다).
+export function hasPendingFocus(): boolean {
+  return pendingFocus !== null;
+}
+
+function attachFocusCaretTracking(node: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, fieldId: string): void {
+  const captureSelection = (): void => {
+    if ('selectionStart' in node) {
+      try {
+        focusedSelectionStart = (node as HTMLInputElement | HTMLTextAreaElement).selectionStart;
+        focusedSelectionEnd = (node as HTMLInputElement | HTMLTextAreaElement).selectionEnd;
+      } catch {
+        // type="email"/"number" 등 일부 input은 selectionStart 접근 자체가 예외를 던진다.
+        focusedSelectionStart = null;
+        focusedSelectionEnd = null;
+      }
+    }
+  };
+  node.addEventListener('focus', () => {
+    focusedFieldId = fieldId;
+    captureSelection();
+  });
+  node.addEventListener('blur', () => {
+    if (focusedFieldId === fieldId) focusedFieldId = null;
+  });
+  node.addEventListener('keyup', () => {
+    if (focusedFieldId === fieldId) captureSelection();
+  });
+  node.addEventListener('click', () => {
+    if (focusedFieldId === fieldId) captureSelection();
+  });
+  node.addEventListener('select', () => {
+    if (focusedFieldId === fieldId) captureSelection();
+  });
+  // 이 노드가 만들어지는 시점이 이번 렌더의 스냅샷과 일치하면(=재렌더 직전에
+  // 이 필드가 포커스를 갖고 있었다면) 새 노드로 포커스를 이어받도록 예약한다.
+  if (renderTargetFieldId === fieldId) {
+    pendingFocus = { node, start: renderTargetSelectionStart, end: renderTargetSelectionEnd };
+  }
+}
+
 export function boundField<E extends HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
   node: E,
   get: () => string,
   set: (value: string) => void,
-  eventName: 'input' | 'change' = 'input'
+  eventName: 'input' | 'change' = 'input',
+  fieldId?: string
 ): E {
   node.value = get();
   node.addEventListener(eventName, () => set(node.value));
+  if (fieldId) attachFocusCaretTracking(node, fieldId);
   return node;
 }
 
 // 체크박스/라디오 전용 — boundField와 같은 이유로 checked 상태도 드래프트에
-// 보관한다.
-export function boundChecked(node: HTMLInputElement, get: () => boolean, set: (checked: boolean) => void): HTMLInputElement {
+// 보관한다. fieldId를 주면 위와 동일하게 포커스를 복원한다(체크박스는 캐럿
+// 개념이 없어 start/end는 항상 null로 무시된다).
+export function boundChecked(node: HTMLInputElement, get: () => boolean, set: (checked: boolean) => void, fieldId?: string): HTMLInputElement {
   node.checked = get();
   node.addEventListener('change', () => set(node.checked));
+  if (fieldId) attachFocusCaretTracking(node, fieldId);
   return node;
 }
 

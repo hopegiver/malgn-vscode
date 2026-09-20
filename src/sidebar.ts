@@ -1,5 +1,5 @@
 import { el, clickable } from './dom';
-import { state, notifyChange } from './state';
+import { state, notifyChange, resetStateForLogout } from './state';
 import type { SettingsTab, CatalogTab } from './state';
 import { navigate } from './route';
 import type { Route } from './route';
@@ -85,10 +85,14 @@ export function renderSidebar(route: Route): HTMLElement {
   const logoutItem = clickable(
     el('div', { className: 'sidebar-nav-item sidebar-logout' }, ['로그아웃']),
     () => {
-      state.authenticated = false;
-      state.auth.userEmail = null;
-      state.auth.userName = null;
-      state.auth.error = null;
+      // G1(리뷰 v0.2.5) — 인증 필드만 지우던 이전 구현은 채팅 스트리밍
+      // 리스너를 해제하지 않고(unlisten 0건 실측) 이전 사용자의 대화 전문을
+      // 메모리에 남겼다. resetStateForLogout()이 sessionChat을 제외한 모든
+      // 데이터 슬라이스를 초기값으로 되돌리고(다음 사용자에게 이전 데이터가
+      // 보이지 않도록), 해시를 리셋해 발생하는 hashchange가
+      // main.ts의 handleNavigation()을 거쳐 실제 리스너 해제
+      // (leaveSessionChatView() 등)까지 수행한다(main.ts 참고).
+      resetStateForLogout();
       window.location.hash = '';
       notifyChange();
     }
@@ -122,7 +126,16 @@ function renderProjectsGroup(route: Route): HTMLElement {
       onClick: () => navigate(`#/project/${encodeURIComponent(p.path)}`),
     }));
     if (items.length === 0) {
-      children.push(el('div', { className: 'sidebar-subnav' }, [el('div', { className: 'sidebar-subnav-empty' }, ['불러오는 중…'])]));
+      // B1(리뷰 v0.2.5) — items.length === 0만으로 "불러오는 중…"을 단정하면
+      // 로드가 끝났는데 프로젝트가 진짜 0건인 사용자(신규 입사자 첫 실행이
+      // 정확히 이 상태)에게 이 문구가 영원히 뜬다. 같은 파일의 앱링크 그룹
+      // (renderAppLinksGroup, `!state.appLinks.loaded`)이 이미 올바른 선례라
+      // 그대로 따른다.
+      children.push(
+        el('div', { className: 'sidebar-subnav' }, [
+          el('div', { className: 'sidebar-subnav-empty' }, [state.dashboard.loaded ? '프로젝트가 없습니다' : '불러오는 중…']),
+        ])
+      );
     } else {
       children.push(subList(items, state.dashboard.projects.length > SIDEBAR_SUBLIST_LIMIT ? '전체 보기 →' : null, () => navigate('#/projects')));
     }
@@ -152,7 +165,12 @@ function renderSessionsGroup(route: Route): HTMLElement {
       };
     });
     if (items.length === 0) {
-      children.push(el('div', { className: 'sidebar-subnav' }, [el('div', { className: 'sidebar-subnav-empty' }, ['불러오는 중…'])]));
+      // B1(리뷰 v0.2.5) — 프로젝트 그룹과 동일한 원인·동일한 수정.
+      children.push(
+        el('div', { className: 'sidebar-subnav' }, [
+          el('div', { className: 'sidebar-subnav-empty' }, [state.sessions.loaded ? '세션이 없습니다' : '불러오는 중…']),
+        ])
+      );
     } else {
       children.push(subList(items, state.sessions.items.length > SIDEBAR_SUBLIST_LIMIT ? '전체 보기 →' : null, () => navigate('#/sessions')));
     }

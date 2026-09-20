@@ -35,7 +35,7 @@
 // 컴퓨터처럼 여러 프로젝트에서 계속 쓰고 있으면 재계산이 끝나기도 전에 다음
 // 이벤트가 쌓여 오히려 계속 느려졌다. 대신 메뉴 클릭 시점에만 새로 불러온다
 // (sidebar.ts).
-import { el } from './dom';
+import { el, captureActiveFocusForRerender, flushPendingFieldFocus } from './dom';
 import { state, onStateChange, notifyChange, applyAuthenticatedIdentity } from './state';
 import { parseRoute } from './route';
 import { renderSidebar } from './sidebar';
@@ -82,10 +82,15 @@ import { initUpdateCheck } from './updateApi';
 function renderApp(): void {
   const root = document.getElementById('app');
   if (!root) return;
+  // A2(리뷰 v0.2.5) — root.replaceChildren() 직전에 "지금 어떤 필드가 포커스를
+  // 갖고 있는가"를 스냅샷한다(dom.ts 참고). replaceChildren() 자체가 포커스된
+  // 옛 노드를 지우며 즉시 blur를 일으키므로, 그 전에 떠야 한다.
+  captureActiveFocusForRerender();
   root.replaceChildren();
 
   if (!state.authenticated) {
     root.appendChild(renderLoginView());
+    flushPendingFieldFocus();
     return;
   }
 
@@ -138,6 +143,8 @@ function renderApp(): void {
   const main = el('main', { className: contentClassName }, [content]);
   root.appendChild(renderSidebar(route));
   root.appendChild(main);
+  // 새 트리가 문서에 완전히 붙은 뒤에만 focus()가 먹는다(dom.ts 참고).
+  flushPendingFieldFocus();
 }
 
 // 네비게이션 진입점 — 렌더 후에 필요한 데이터 로딩을 "따로" 트리거한다(렌더 함수
@@ -162,6 +169,46 @@ let updateCheckStarted = false;
 
 function handleNavigation(): void {
   renderApp();
+
+  // G1(리뷰 v0.2.5) — 라우트 이탈 정리는 인증 여부와 무관하게 항상 돈다.
+  // 이전엔 이 블록 전체가 아래 `!state.authenticated` 조기 return 뒤에
+  // 있어서, 로그아웃(=state.authenticated를 false로 바꾸고 해시를 리셋하는
+  // 것도 "라우트 이탈"이다) 시 leaveSessionChatView() 등이 한 번도 실행되지
+  // 않았다(실측: 세션 상세에서 로그아웃해도 plugin:event|unlisten 호출 0건).
+  // 그 결과 채팅 스트리밍 리스너가 살아남고 state.sessionChat.transcript에
+  // 이전 사용자의 대화 전문이 메모리에 남았다. "인증 여부와 무관하게 라우트
+  // 이탈 정리는 항상 돈다"로 계약을 바꾸기 위해 이 블록을 조기 return보다
+  // 앞으로 옮긴다 — 단, 실제 데이터를 새로 불러오는
+  // enterSessionChatView/enterSessionDraftView는 인증된 세션에서만 호출한다
+  // (로그인 화면에서 새 IPC 왕복을 열 이유가 없다 — leaveSessionChatView()로
+  // 정리만 하고 재진입은 하지 않는다).
+  const route = parseRoute();
+  if (route.kind === 'sessions-detail') {
+    if (state.sessionChat.sessionId !== route.sessionId) {
+      leaveSessionChatView();
+      if (state.authenticated) void enterSessionChatView(route.sessionId);
+    }
+  } else if (route.kind === 'sessions-draft') {
+    if (state.sessionChat.draftProjectPath !== route.projectPath || state.sessionChat.sessionId !== null) {
+      leaveSessionChatView();
+      if (state.authenticated) void enterSessionDraftView(route.projectPath);
+    }
+  } else if (state.sessionChat.sessionId !== null || state.sessionChat.draftProjectPath !== null) {
+    leaveSessionChatView();
+  }
+  // 자율업무/프로젝트 화면의 설정 모달은 각 화면의 목록 뷰에서만 렌더된다 —
+  // 그 라우트를 완전히 벗어나면(로그아웃 포함) 열려 있던 모달의 ESC 리스너가
+  // window에 남지 않도록 매번 정리한다(sessionChat 리스너 해제와 같은 원칙).
+  // 모달이 닫혀 있던 경우엔 아무 일도 하지 않는다.
+  if (route.kind !== 'tasks-list') leaveAutonomousTasksListView();
+  if (route.kind !== 'projects-list') leaveProjectsListView();
+  if (route.kind !== 'sessions-list') leaveSessionsListView();
+  // MCP 관리/앱링크 설정은 둘 다 'settings' 라우트의 서로 다른 탭이다
+  // (#/settings/mcp, #/settings/applinks) — route.kind만 보면 탭 간 이동
+  // (mcp ↔ applinks)에서는 모달이 닫히지 않으므로 탭까지 함께 확인한다.
+  if (!(route.kind === 'settings' && route.tab === 'mcp')) leaveMcpSettingsView();
+  if (!(route.kind === 'settings' && route.tab === 'applinks')) leaveAppLinksView();
+
   if (!state.authenticated) return;
 
   if (!updateCheckStarted) {
@@ -192,7 +239,6 @@ function handleNavigation(): void {
     void ensureOtelAutoConfigured();
   }
 
-  const route = parseRoute();
   if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {
     void loadOtelEnv();
   }
@@ -205,38 +251,11 @@ function handleNavigation(): void {
   if (route.kind === 'projects-detail' && state.projectTree.projectPath !== route.path && !state.projectTree.loading) {
     void loadProjectTree(route.path);
   }
-  // 세션 상세 = 실제 대화 + 이어쓰기 (docs/design/session-chat.md). 다른 세션으로
-  // 옮기거나 이 라우트를 완전히 떠나면 항상 먼저 리스너를 해제한다(UnlistenFn 누수 방지).
-  if (route.kind === 'sessions-detail') {
-    if (state.sessionChat.sessionId !== route.sessionId) {
-      leaveSessionChatView();
-      void enterSessionChatView(route.sessionId);
-    }
-  } else if (route.kind === 'sessions-draft') {
-    if (state.sessionChat.draftProjectPath !== route.projectPath || state.sessionChat.sessionId !== null) {
-      leaveSessionChatView();
-      void enterSessionDraftView(route.projectPath);
-    }
-  } else if (state.sessionChat.sessionId !== null || state.sessionChat.draftProjectPath !== null) {
-    leaveSessionChatView();
-  }
   if (route.kind === 'usage') {
     // 실시간 감시 대신 메뉴 클릭(=이 라우트 진입) 시점마다 새로 불러온다 — 이미
     // 불러오는 중이면 겹쳐 쌓이지 않게 건너뛴다.
     if (!state.dailyUsage.loading) void loadDailyUsage();
   }
-  // 자율업무/프로젝트 화면의 설정 모달은 각 화면의 목록 뷰에서만 렌더된다 —
-  // 그 라우트를 완전히 벗어나면 열려 있던 모달의 ESC 리스너가 window에 남지
-  // 않도록 매번 정리한다(sessionChat 리스너 해제와 같은 원칙). 모달이 닫혀
-  // 있던 경우엔 두 함수 모두 아무 일도 하지 않는다.
-  if (route.kind !== 'tasks-list') leaveAutonomousTasksListView();
-  if (route.kind !== 'projects-list') leaveProjectsListView();
-  if (route.kind !== 'sessions-list') leaveSessionsListView();
-  // MCP 관리/앱링크 설정은 둘 다 'settings' 라우트의 서로 다른 탭이다
-  // (#/settings/mcp, #/settings/applinks) — route.kind만 보면 탭 간 이동
-  // (mcp ↔ applinks)에서는 모달이 닫히지 않으므로 탭까지 함께 확인한다.
-  if (!(route.kind === 'settings' && route.tab === 'mcp')) leaveMcpSettingsView();
-  if (!(route.kind === 'settings' && route.tab === 'applinks')) leaveAppLinksView();
 }
 
 // 세션목록·사용량 통계 실시간 감시 — 앱이 켜져 있는 동안 딱 한 번만 구독한다.

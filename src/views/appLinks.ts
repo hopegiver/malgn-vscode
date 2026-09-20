@@ -7,7 +7,7 @@
 // (별도 "저장" 버튼 없음). 낙관적 갱신은 하지 않는다 — 저장이 실패하면
 // state.appLinks.status를 건드리지 않으므로(성공했을 때만 교체) 화면은 저절로
 // 저장 전 상태로 남는다.
-import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, toggleSwitch, boundField } from '../dom';
+import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, toggleSwitch, boundField, restoreModalFocus } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchAppLinks, saveAppLinks, openAppLink } from '../appLinksApi';
 import type { AppLink } from '../appLinksApi';
@@ -108,6 +108,7 @@ function openLinkFormModal(editingLink: AppLink | null): void {
 function closeLinkFormModal(): void {
   linkFormModal = null;
   detachLinkFormModalEscHandler();
+  restoreModalFocus(closeLinkFormModal); // C3: 열기 직전 포커스로 복원
   notifyChange();
 }
 

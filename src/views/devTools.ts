@@ -33,6 +33,7 @@ import { el, showToast, confirmDialog } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
+import { parseRoute } from '../route';
 
 export async function loadDevTools(): Promise<void> {
   state.devTools.loading = true;
@@ -54,12 +55,25 @@ export async function loadDevTools(): Promise<void> {
 // (직렬화할 필요도 없고, 재렌더마다 새로 만들 이유도 없다).
 const elapsedTimers: Record<string, ReturnType<typeof setInterval>> = {};
 
+// A3(리뷰 v0.2.5) — 이 1초 타이머는 개발 환경 화면(#/settings/devtools)을 보고
+// 있을 때만 사용자가 실제로 보는 값이다. 다른 화면(예: OTel 설정 폼을 입력
+// 중)에 있는 동안에도 매초 notifyChange()를 부르면 그 화면과 무관하게 초당
+// 전체 DOM 재빌드가 돈다 — "설치를 걸어두고 그 사이 다른 설정을 입력한다"는
+// 평범한 동선에서 입력이 끊기던 원인 중 하나(리뷰가 코드 전수로만 지적하고
+// 런타임 미검증이라 표기한 경로). 경과시간 값 자체는 라우트와 무관하게 계속
+// 갱신해둔다(다음에 devtools 탭으로 돌아오면 정확한 값을 바로 보여줘야 하므로)
+// — 재렌더만 그 탭을 보고 있을 때로 제한한다.
+function isDevToolsRouteActive(): boolean {
+  const route = parseRoute();
+  return route.kind === 'settings' && route.tab === 'devtools';
+}
+
 function startElapsedTimer(id: string): void {
   state.devTools.elapsedSec[id] = 0;
   stopElapsedTimer(id);
   elapsedTimers[id] = setInterval(() => {
     state.devTools.elapsedSec[id] = (state.devTools.elapsedSec[id] ?? 0) + 1;
-    notifyChange();
+    if (isDevToolsRouteActive()) notifyChange();
   }, 1000);
 }
 

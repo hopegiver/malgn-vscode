@@ -2,7 +2,7 @@
 // 이 화면은 이제 목업이 아니다 — Rust 커맨드 list_workspace_projects()가 실제
 // ~/workspace 아래를 스캔한 결과를 그대로 쓴다(workspaceApi.ts, src-tauri/src/lib.rs
 // 주석 참고). "세션목록"에 이은 이 앱의 두 번째 실동작 화면.
-import { el, clickable, showToast, createModalOverlay, boundField } from '../dom';
+import { el, clickable, showToast, createModalOverlay, boundField, restoreModalFocus } from '../dom';
 import { state, notifyChange } from '../state';
 import type { ArchiveStatus } from '../state';
 import { fetchWorkspaceProjects, fetchProjectTree, fetchFilePreview } from '../workspaceApi';
@@ -115,6 +115,7 @@ function closeWorkspacesModal(): void {
   state.malgnAgentConfig.editingWorkspaces = false;
   workspacesDraft = null;
   detachWorkspacesModalEscHandler();
+  restoreModalFocus(closeWorkspacesModal); // C3: 열기 직전 포커스로 복원
   notifyChange();
 }
 

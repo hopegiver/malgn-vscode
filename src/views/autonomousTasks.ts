@@ -13,7 +13,7 @@
 // 결과는 (projectPath, taskId) 키의 모듈 스코프 캐시(historyCache)에 저장해,
 // 이 화면의 전체 재렌더 구조(notifyChange)에서도 이미 로드했거나 로딩 중이면
 // 재조회하지 않는다.
-import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog, loadingBlock, errorBlock, boundField, boundChecked } from '../dom';
+import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog, loadingBlock, errorBlock, boundField, boundChecked, restoreModalFocus } from '../dom';
 import { state, notifyChange } from '../state';
 import type { AutonomousTask } from '../state';
 import {
@@ -37,7 +37,7 @@ import type {
 import { fetchMalgnAgentConfig, saveMalgnAgentConfig } from '../configApi';
 import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
-import { navigate } from '../route';
+import { navigate, parseRoute } from '../route';
 
 const INTERVAL_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
   { value: '5', label: '5분마다' },
@@ -88,6 +88,7 @@ function closeAutonomyConfigModal(): void {
   state.malgnAgentConfig.editingAutonomy = false;
   autonomyConfigDraft = null;
   detachAutonomyConfigModalEscHandler();
+  restoreModalFocus(closeAutonomyConfigModal); // C3: 열기 직전 포커스로 복원
   notifyChange();
 }
 
@@ -180,6 +181,7 @@ function openTaskFormModal(editingTask: AutonomousTask | null): void {
 function closeTaskFormModal(): void {
   taskFormModal = null;
   detachTaskFormModalEscHandler();
+  restoreModalFocus(closeTaskFormModal); // C3: 열기 직전 포커스로 복원
   notifyChange();
 }
 
@@ -370,12 +372,32 @@ function toDisplayTask(group: ProjectAutonomyGroup, task: AutonomyTaskConfig, ru
   );
 }
 
+// A3(리뷰 v0.2.5) — 자율업무 데이터는 배경 이벤트(런타임 push·폴백 폴링)로도
+// 갱신된다. 그 화면을 지금 아무도 보고 있지 않을 때도 매번 notifyChange()로
+// 전체 DOM을 재빌드하면, 전혀 무관한 다른 화면(예: OTel 설정 입력 중)에서
+// 불필요하게 재렌더가 돈다. 데이터(state.autonomousTasks.*)는 항상 최신으로
+// 갱신해 다음 네비게이션(=handleNavigation()의 renderApp() 재호출)에서 바로
+// 보이게 하되, 재렌더 자체는 지금 그 데이터가 보이는 라우트일 때로 제한한다
+// — 홈 위젯(home.ts)도 이 데이터를 보여주므로 홈을 포함한다. loadAutonomousTasks()
+// 의 모든 호출부(main.ts 최초 로드, home.ts/이 파일의 "다시 시도" 버튼)는
+// 이미 관련 라우트에 있을 때만 호출되므로 이 게이트가 그 경로들의 기존
+// 동작을 바꾸지 않는다 — 유일하게 실제로 걸러지는 것은 30초 폴백 폴링
+// (ensureRuntimeWatcher 아래)이 무관한 화면에 있는 동안 도는 경우다.
+function isAutonomyRouteActive(): boolean {
+  const route = parseRoute();
+  return route.kind === 'home' || route.kind === 'tasks-list' || route.kind === 'tasks-board' || route.kind === 'tasks-detail';
+}
+
+function notifyAutonomyChange(): void {
+  if (isAutonomyRouteActive()) notifyChange();
+}
+
 export async function loadAutonomousTasks(): Promise<void> {
   ensureRuntimeWatcher();
 
   state.autonomousTasks.loading = true;
   state.autonomousTasks.error = null;
-  notifyChange();
+  notifyAutonomyChange();
   try {
     // 설정(autonomy_list)과 런타임(autonomy_runtime_status)은 서로 다른 저장소
     // (파일 / 메모리)라 별도 커맨드다 — 병렬로 조회해 IPC 왕복을 한 번만 더 쓴다
@@ -394,7 +416,7 @@ export async function loadAutonomousTasks(): Promise<void> {
     state.autonomousTasks.error = err instanceof Error ? err.message : '자율업무 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.autonomousTasks.loading = false;
-    notifyChange();
+    notifyAutonomyChange();
   }
 
   // 전역 설정 표시(§5-3)는 자율업무 목록 조회와 독립적으로 갱신한다 — 목록
@@ -642,7 +664,7 @@ function applyRuntimeUpdate(update: AutonomyRuntimeStatus): void {
   // 없는 task는 historyCache에 항목이 없으므로 refreshHistoryIfTracked가
   // 아무 일도 하지 않는다 — 방문한 적 없는 task까지 미리 불러오지 않는다.
   refreshHistoryIfTracked(update.projectPath, update.taskId);
-  notifyChange();
+  notifyAutonomyChange();
 }
 
 function ensureRuntimeWatcher(): void {

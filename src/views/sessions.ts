@@ -5,7 +5,7 @@
 // 보여주고(read_session_transcript, 설계 docs/design/session-chat.md), 하단
 // 입력창으로 보낸 메시지는 그 세션에 실제로 이어져(send_session_message) 응답이
 // 스트리밍된다.
-import { el, liveIndicator, runningDot, createModalOverlay, showToast } from '../dom';
+import { el, liveIndicator, runningDot, createModalOverlay, showToast, boundField, restoreModalFocus } from '../dom';
 import { state, notifyChange } from '../state';
 import {
   fetchClaudeSessions,
@@ -277,6 +277,7 @@ function openNewSessionModal(): void {
 function closeNewSessionModal(): void {
   newSessionModalOpen = false;
   detachNewSessionModalEscHandler();
+  restoreModalFocus(closeNewSessionModal); // C3: 열기 직전 포커스로 복원
   notifyChange();
 }
 
@@ -355,6 +356,7 @@ function openMetaModal(): void {
 function closeMetaModal(): void {
   metaModalOpen = false;
   detachMetaModalEscHandler();
+  restoreModalFocus(closeMetaModal); // C3: 열기 직전 포커스로 복원
   notifyChange();
 }
 
@@ -892,15 +894,26 @@ function renderChatInputArea(cwd: string, onSend: (text: string) => void, extraS
   const chat = state.sessionChat;
   const sending = chat.turnId !== null || extraSending;
   // claude.ai 스타일 단순 입력창 — 버튼 없이 Enter로만 전송.
-  const textarea = document.createElement('textarea');
+  // A2(리뷰 v0.2.5) — 값은 state.sessionChat.input 덕에 배경 재렌더에도
+  // 살아남지만(이 패턴이 dom.ts의 boundField로 승격된 원본이다), 노드 자체가
+  // 매 렌더 새로 만들어져 포커스가 <body>로, 캐럿이 문장 끝으로 날아갔다
+  // (실측: `focused:true,start:7` → `focused:false,start:13`). boundField에
+  // fieldId('chat-input')를 주면 재렌더 직전 포커스·캐럿을 기억했다가 새
+  // 노드에 그대로 이어준다(dom.ts 참고) — 개별 폼 땜질 대신 이미 있는 공용
+  // 헬퍼를 확장해 처리한다.
+  const textarea = boundField(
+    document.createElement('textarea'),
+    () => state.sessionChat.input,
+    (v) => {
+      state.sessionChat.input = v; // 렌더를 트리거하지 않는다(키 입력마다 포커스가 끊기지 않도록)
+    },
+    'input',
+    'chat-input'
+  );
   textarea.className = 'settings-input chat-input-textarea';
   textarea.placeholder = sending ? '응답을 기다리는 중…' : '메시지를 입력하세요 (Enter 전송 / Shift+Enter 줄바꿈)';
   textarea.rows = 2;
-  textarea.value = chat.input;
   textarea.disabled = sending;
-  textarea.addEventListener('input', () => {
-    state.sessionChat.input = textarea.value; // 렌더를 트리거하지 않는다(키 입력마다 포커스가 끊기지 않도록)
-  });
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
