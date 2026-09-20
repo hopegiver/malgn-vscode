@@ -742,11 +742,16 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
   const startedAt = session ? formatTimestamp(asNumber(session.startedAt)) : '-';
   const updatedAt = session ? formatTimestamp(asNumber(session.updatedAt)) : '-';
 
+  // 긴 제목은 ellipsis로 잘리므로(styles.css .chat-header-row .chat-title)
+  // title 속성으로 전체 텍스트를 hover 시 볼 수 있게 한다.
+  const titleEl = el('h1', { className: 'chat-title' }, [title]);
+  titleEl.title = title;
+
   const header = el('div', { className: 'chat-header' }, [
     back,
     el('div', { className: 'chat-header-row' }, [
-      el('h1', { className: 'chat-title' }, [title]),
-      ...(session ? [el('button', { className: 'btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
+      titleEl,
+      ...(session ? [el('button', { className: 'btn chat-meta-btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
     ]),
     renderChatMetaRow(cwd, version, kind, startedAt, updatedAt),
   ]);

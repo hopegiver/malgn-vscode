@@ -426,7 +426,13 @@ html, body {
 }
 .mcp-row-main { flex: 1; min-width: 0; }
 .mcp-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.mcp-row-name { font-weight: 600; font-size: 13px; }
+/* 이름이 길어 2줄로 감싸지면 옆 배지가 align-items:center 때문에 두 줄 "사이"에
+   낀 것처럼 보이던 버그 — .session-row-name/.project-card-name과 동일한 선례를
+   그대로 따른다(overflow:hidden이 flex 자식의 automatic minimum size를 0으로
+   만들어 별도 min-width:0 없이도 줄어든다). 이 클래스는 MCP 관리와 앱링크
+   설정이 공유하며, 두 화면 모두 이름 길이가 사실상 제한적이라 ellipsis가
+   적절하다(자율업무는 이름 길이 제한이 없어 .task-row-name은 다른 처리). */
+.mcp-row-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-row-target { font-size: 11px; color: var(--color-ink-faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-row-status-label { font-size: 11px; color: var(--color-ink-faint); margin-top: 2px; }
 .mcp-row-actions { flex-shrink: 0; display: flex; gap: 8px; }
@@ -548,7 +554,11 @@ textarea.settings-input { resize: vertical; }
 }
 .task-row-main { flex: 1; min-width: 0; cursor: pointer; }
 .task-row-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-.task-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+/* 자율업무 이름은 코드상 길이 제한이 없어(mcp-row-name과 달리 ellipsis로
+   자르면 정보 손실이 있다) ellipsis 대신 줄바꿈을 허용하고, align-items를
+   flex-start로 바꿔 배지가 2줄 이름 "사이"에 끼는 대신 첫 줄 옆(위쪽)에
+   붙도록 한다. 행 높이가 들쭉날쭉해지는 트레이드오프는 감수한다. */
+.task-row-top { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 4px; }
 .task-row-name { font-weight: 600; font-size: 13px; }
 .task-row-desc { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 8px; }
 .task-row-schedule { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--color-ink-faint); }
@@ -694,7 +704,12 @@ textarea.settings-input { resize: vertical; }
 .chat-page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .chat-header { flex-shrink: 0; margin-bottom: 12px; }
 .chat-header-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; }
-.chat-header-row .chat-title { margin: 0; }
+/* 긴 세션 제목이 버튼을 밀어내 "메타데 / 이터"처럼 2줄로 깨지던 버그(기본
+   창 폭 1180px에서도 재현) — 제목 쪽은 min-width:0(flex 자식 기본값 auto라
+   축소되지 않는 함정) + ellipsis로 1줄 고정, 버튼 쪽은 flex-shrink:0으로
+   자기 크기를 지킨다. 전체 제목은 title 속성(sessions.ts)으로 hover 시 확인. */
+.chat-header-row .chat-title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-header-row .chat-meta-btn { flex-shrink: 0; white-space: nowrap; }
 /* 헤딩 크기 통일(P1) — .page-title/.detail-title/.stat-card-value와 동일한 22px로 맞춘다(구 21px). */
 .chat-title { font-size: 22px; font-weight: 700; margin: 10px 0 8px 0; }
 .chat-meta-row { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--color-ink-muted); }
