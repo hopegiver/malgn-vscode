@@ -841,10 +841,15 @@ function renderMcpCatalogRow(entry: McpCatalogEntry): HTMLElement {
     [installing ? '터미널 여는 중…' : '설치']
   );
 
+  // 긴 이름은 ellipsis로 잘리므로(styles.css .mcp-row-name) title 속성으로
+  // 전체 텍스트를 hover 시 볼 수 있게 한다(views/sessions.ts의 chat-title과 동일 패턴).
+  const catalogNameEl = el('span', { className: 'mcp-row-name' }, [entry.label]);
+  catalogNameEl.title = entry.label;
+
   return el('div', { className: 'mcp-row' }, [
     el('div', { className: 'mcp-row-main' }, [
       el('div', { className: 'mcp-row-top' }, [
-        el('span', { className: 'mcp-row-name' }, [entry.label]),
+        catalogNameEl,
         el('span', { className: 'badge badge-unknown' }, [entry.transport]),
       ]),
       el('div', { className: 'mcp-row-target' }, [entry.target]),
@@ -1111,10 +1116,15 @@ function renderMcpRow(server: McpServerSummary, opts?: { readonly locked?: boole
   // 이 화면에서 등록을 해제할 수 없다(플러그인 삭제로만 함께 사라진다).
   if (!locked) actions.push(deleteBtn);
 
+  // 긴 이름은 ellipsis로 잘리므로(styles.css .mcp-row-name) title 속성으로
+  // 전체 텍스트를 hover 시 볼 수 있게 한다(views/sessions.ts의 chat-title과 동일 패턴).
+  const serverNameEl = el('span', { className: 'mcp-row-name' }, [server.name]);
+  serverNameEl.title = server.name;
+
   return el('div', { className: 'mcp-row' }, [
     el('div', { className: 'mcp-row-main' }, [
       el('div', { className: 'mcp-row-top' }, [
-        el('span', { className: 'mcp-row-name' }, [server.name]),
+        serverNameEl,
         el('span', { className: 'badge badge-unknown' }, [server.transport]),
         el('span', { className: `badge ${server.connected ? 'badge-active' : 'badge-archived'}` }, [server.connected ? '연결됨' : '미연결']),
         ...(locked ? [el('span', { className: 'badge badge-active' }, ['필수'])] : []),

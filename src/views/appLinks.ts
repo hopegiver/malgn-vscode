@@ -237,13 +237,18 @@ function renderAppLinkRow(link: AppLink): HTMLElement {
   const deleteBtn = el('button', { className: 'btn', disabled: saving, onClick: () => void handleDeleteLink(link) }, ['삭제']);
   deleteBtn.style.color = 'var(--color-danger)';
 
+  // 긴 이름은 ellipsis로 잘리므로(styles.css .mcp-row-name) title 속성으로
+  // 전체 텍스트를 hover 시 볼 수 있게 한다(views/sessions.ts의 chat-title과 동일 패턴).
+  const nameEl = el('span', { className: 'mcp-row-name' }, [link.name]);
+  nameEl.title = link.name;
+
   return el('div', { className: 'mcp-row' }, [
     toggleSwitch(link.enabled, () => {
       if (!saving) void handleToggleLink(link);
     }),
     el('div', { className: 'mcp-row-main' }, [
       el('div', { className: 'mcp-row-top' }, [
-        el('span', { className: 'mcp-row-name' }, [link.name]),
+        nameEl,
         ...(insecure ? [el('span', { className: 'mcp-row-status-label' }, ['암호화되지 않음'])] : []),
       ]),
       el('div', { className: 'mcp-row-target' }, [link.url]),
