@@ -25,6 +25,7 @@ import {
   onAutonomyRuntimeChanged,
   runAutonomyTaskNow,
   fetchAutonomyTaskHistory,
+  fetchSchedulerHealth,
 } from '../autonomyApi';
 import type {
   AutonomyTaskConfig,
@@ -33,6 +34,7 @@ import type {
   AutonomyScheduleMode,
   RunHistoryEntry,
   AutonomyHistoryResult,
+  SchedulerHealth,
 } from '../autonomyApi';
 import { fetchMalgnAgentConfig, saveMalgnAgentConfig } from '../configApi';
 import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
@@ -394,6 +396,7 @@ function notifyAutonomyChange(): void {
 
 export async function loadAutonomousTasks(): Promise<void> {
   ensureRuntimeWatcher();
+  ensureSchedulerHealthWatcher();
 
   state.autonomousTasks.loading = true;
   state.autonomousTasks.error = null;
@@ -422,6 +425,86 @@ export async function loadAutonomousTasks(): Promise<void> {
   // 전역 설정 표시(§5-3)는 자율업무 목록 조회와 독립적으로 갱신한다 — 목록
   // 조회가 실패해도 workspace 안내는 그대로 최신 상태를 유지한다.
   void loadMalgnAgentConfigStatus();
+}
+
+// ---------------- 스케줄러 heartbeat 정체 배너 (리뷰 D1 권고 ③) ----------------
+// autonomy_scheduler_health는 판단 없이 원값만 내려준다(백엔드 주석 — 임계값은
+// UI 정책). 여기서 "정체"를 판정하고 배너로 알린다. 순수 UI 상태라 전역
+// state가 아니라 이 화면의 다른 모듈 스코프 값들(taskFormModal 등)과 같은
+// 원칙으로 모듈 스코프에 둔다 — 이 값을 읽는 곳은 이 파일뿐이다.
+let schedulerHealth: SchedulerHealth | null = null;
+
+// 정체 판정 배수 — tick은 순수 메모리/파일 스캔이라 정상이면 밀리초~1초
+// 안에 끝난다. 그래도 워크스페이스가 많거나(느린 디스크) 설정 오류 재시도가
+// 겹치는 등 일시적으로 느려질 수 있어 3배(30초)는 오탐 여지가 있다고 보고,
+// 보수적으로 6배(리뷰가 예시로 든 범위의 상한)를 택한다 — TICK_SECONDS=10초
+// 기준 60초. "며칠 뒤에나 안다"가 원래 문제였던 것에 비하면 60초도 압도적으로
+// 빠르고, 너무 민감해 정상 지연에도 배너가 떴다 사라지는 잡음을 만들지 않는다.
+const STALL_THRESHOLD_MULTIPLIER = 6;
+
+// 폴링 주기 — 기존 런타임 상태 폴백 폴링(ensureRuntimeWatcher 아래, 30초)과
+// 같은 값을 재사용한다. 이 화면에 폴링 주기가 여러 개 섞이지 않게 하고,
+// TICK_SECONDS(10초)보다 충분히 길게 잡아 A3(리뷰 v0.2.5)가 막았던 재렌더
+// 증폭을 되살리지 않는다.
+const SCHEDULER_HEALTH_POLL_MS = 30000;
+
+// lastTickAt이 null이면(앱 기동 직후, 스케줄러가 아직 한 번도 tick을 돌지
+// 않은 상태) 정상이다 — 오판하지 않는다. now/lastTickAt 둘 다 서버가 같은
+// 호출에서 내려준 값이라 클라이언트 시계와 무관하게 diff를 계산할 수 있다
+// (클럭 스큐 회피).
+function isSchedulerStalled(health: SchedulerHealth): boolean {
+  if (!health.lastTickAt) return false;
+  const lastTickMs = Date.parse(health.lastTickAt);
+  const nowMs = Date.parse(health.now);
+  if (Number.isNaN(lastTickMs) || Number.isNaN(nowMs)) return false;
+  return nowMs - lastTickMs > health.tickSeconds * 1000 * STALL_THRESHOLD_MULTIPLIER;
+}
+
+// A3 가드와 동일한 원칙(isAutonomyRouteActive)을 폴링 자체에도 적용한다 —
+// 화면 밖이면 IPC 조회조차 하지 않는다(기존 런타임 상태 폴백 폴링은 조회는
+// 항상 하고 재렌더만 걸렀지만, 이 지시서는 폴링·재렌더 둘 다 화면을 보고
+// 있을 때만 하라고 명시했다 — 그 쪽을 따른다).
+async function checkSchedulerHealth(): Promise<void> {
+  if (!isAutonomyRouteActive()) return;
+  try {
+    schedulerHealth = await fetchSchedulerHealth();
+  } catch {
+    // 부차적 지표다 — IPC 브리지가 없는 환경(플레인 브라우저) 등으로 조회에
+    // 실패해도 별도 에러 배너를 띄우지 않고 조용히 건너뛴다(다음 폴링에서
+    // 다시 시도).
+    return;
+  }
+  notifyAutonomyChange();
+}
+
+// 인터벌 핸들 자체는 보관하지 않는다 — 이 앱이 켜져 있는 동안 딱 한 번만
+// 시작되고(schedulerHealthWatcherInitialized 가드) 이후 멈출 일이 없어(다른
+// 화면으로 이동해도 앱은 계속 실행 중이다), 정리(clearInterval)할 시점이
+// 없다 — ensureRuntimeWatcher의 pollTimer(구독 실패 시에만 한정적으로 켜지는
+// 열화 경로)와 달리 이 폴링은 처음부터 유일한 경로라 재시작 로직도 없다.
+let schedulerHealthWatcherInitialized = false;
+
+function ensureSchedulerHealthWatcher(): void {
+  if (schedulerHealthWatcherInitialized) return;
+  schedulerHealthWatcherInitialized = true;
+  void checkSchedulerHealth();
+  setInterval(() => void checkSchedulerHealth(), SCHEDULER_HEALTH_POLL_MS);
+}
+
+// 정상일 때는 아무것도 그리지 않는다(상시 표시 상태 뱃지는 잡음 — 지시서
+// 요구사항). 문구는 개발자 표현("스케줄러 응답 없음") 대신 실제로 일어난 일과
+// 대응을 말한다 — 마지막 tick 시각도 함께 보여 사용자가 "언제부터"인지 알게
+// 한다. 기존 .alert 배너를 그대로 재사용한다(renderConfigStatusBanner와 같은
+// 클래스 — 새 스타일을 만들지 않는다).
+function renderSchedulerStallBanner(): HTMLElement | null {
+  if (!schedulerHealth || !isSchedulerStalled(schedulerHealth)) return null;
+  const lastTickAt = schedulerHealth.lastTickAt;
+  const lastTickLabel = lastTickAt && !Number.isNaN(Date.parse(lastTickAt)) ? formatElapsedSince(Date.parse(lastTickAt)) : '알 수 없음';
+  return el('div', { className: 'alert' }, [
+    el('span', {}, [
+      `⚠ 예약된 자율업무가 실행되지 않고 있습니다(스케줄러 마지막 응답: ${lastTickLabel}). 맑은에이전트 앱을 완전히 종료했다가 다시 실행해 주세요. 재시작 후에도 계속되면 IT/개발팀에 문의하세요.`,
+    ]),
+  ]);
 }
 
 // ---------------- 전역 설정(malgn-agent.json) 상시 표시 + 편집 ----------------
@@ -781,6 +864,8 @@ export function renderAutonomousTasksListView(): HTMLElement {
   ]);
 
   const body: HTMLElement[] = [];
+  const stallBanner = renderSchedulerStallBanner();
+  if (stallBanner) body.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
   if (configBanner) body.push(configBanner);
   body.push(tabsRow('list'));
@@ -1397,6 +1482,8 @@ export function renderAutonomousTaskBoardView(): HTMLElement {
   ]);
 
   const body: HTMLElement[] = [];
+  const stallBanner = renderSchedulerStallBanner();
+  if (stallBanner) body.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
   if (configBanner) body.push(configBanner);
   body.push(tabsRow('board'));

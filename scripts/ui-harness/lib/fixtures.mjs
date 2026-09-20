@@ -140,6 +140,15 @@ export async function buildBaseFixtures() {
     get_daily_usage: dailyUsageSample(),
     autonomy_list: autonomyGroups,
     autonomy_runtime_status: runtimeStatuses,
+    // D1③ — 스케줄러 heartbeat. main.ts가 세션당 항상 loadAutonomousTasks()를
+    // 부팅 시 먼저 불러오고(홈 위젯 프리로드, route 무관), 그 안에서
+    // ensureSchedulerHealthWatcher()가 최초 1회 즉시 조회한다 — 그 시점 라우트가
+    // home/tasks-*(isAutonomyRouteActive)면 실제로 이 커맨드가 호출된다.
+    // otel_settings_get과 같은 이유로 베이스에 "정상" 기본값을 채워 모든 기존
+    // 시나리오에서 UNSTUBBED_COMMAND 오탐과 불필요한 정체 배너를 막는다 — 정체
+    // 상태 자체는 이 흐름 전용 시나리오(autonomousTasks.mjs의 scheduler-* 시나리오)가
+    // override해서 검증한다.
+    autonomy_scheduler_health: { lastTickAt: new Date().toISOString(), now: new Date().toISOString(), tickSeconds: 10 },
     mcp_list: mcpServersSample(),
     mcp_catalog_list: mcpCatalogSample(mcpServersSample().map((s) => s.name)),
     app_links_get: {

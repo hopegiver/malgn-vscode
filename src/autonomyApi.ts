@@ -131,3 +131,22 @@ export interface RunHistoryEntry {
 export async function fetchAutonomyTaskHistory(projectPath: string, taskId: string, limit?: number): Promise<RunHistoryEntry[]> {
   return invoke<RunHistoryEntry[]>('autonomy_task_history', { projectPath, taskId, limit });
 }
+
+// 스케줄러 heartbeat(리뷰 D1 권고 ③) — src-tauri/src/autonomy/mod.rs의
+// SchedulerHealth를 그대로 옮긴 타입이다. lastTickAt/now는 chrono
+// DateTime<Utc>가 RFC3339 문자열로 직렬화된 값(serde 기본 동작 — 이 프로젝트는
+// #[serde(rename)]만 걸었을 뿐 커스텀 직렬화가 없다), tickSeconds는 u64라
+// number로 받는다. lastTickAt은 `Option<DateTime<Utc>>`이므로 스케줄러가 아직
+// 한 번도 tick을 돌지 않은 상태(앱 기동 직후)에서는 null이다 — 이 상태를
+// "정체"로 오판하면 안 된다(호출부 판단 로직, views/autonomousTasks.ts 참고).
+// 이 커맨드는 순수 메모리 읽기라 Result가 아니다(항상 성공) — 다른 "항상 성공"
+// 커맨드(autonomy_runtime_status)와 동일하게 Rust 시그니처에 Err 경로가 없다.
+export interface SchedulerHealth {
+  readonly lastTickAt: string | null; // RFC3339 UTC
+  readonly now: string; // RFC3339 UTC — 클라이언트 시계가 아니라 서버 시각. 클럭 스큐를 피하려면 반드시 이 값으로 diff를 계산한다(Date.now()로 비교하지 않는다).
+  readonly tickSeconds: number;
+}
+
+export async function fetchSchedulerHealth(): Promise<SchedulerHealth> {
+  return invoke<SchedulerHealth>('autonomy_scheduler_health');
+}

@@ -251,5 +251,121 @@ export function scenarios(base) {
         }
       },
     },
+    // ---- 스케줄러 heartbeat 정체 배너 (리뷰 D1 권고 ③, PM 지시서) ----
+    // autonomy_scheduler_health의 lastTickAt/now는 chrono DateTime<Utc>가
+    // RFC3339 문자열로 직렬화된 값이다(src-tauri/src/autonomy/mod.rs:337-343
+    // 확인) — 픽스처도 동일하게 ISO 문자열로 준다.
+    {
+      id: 'scheduler-stall',
+      fixtures: (() => {
+        const now = new Date();
+        // 임계값(STALL_THRESHOLD_MULTIPLIER=6 × tickSeconds=10초 = 60초)을
+        // 넉넉히 초과하는 120초 전 tick — 확실한 정체 케이스.
+        const stale = new Date(now.getTime() - 120_000);
+        return { ...base, autonomy_scheduler_health: { lastTickAt: stale.toISOString(), now: now.toISOString(), tickSeconds: 10 } };
+      })(),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        const banner = page.locator('.alert', { hasText: '예약된 자율업무가 실행되지 않고 있습니다' });
+        if ((await banner.count()) === 0) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: '스케줄러 heartbeat가 임계값(60초)을 훨씬 넘겨 정체됐는데도 정체 배너가 뜨지 않음',
+            file: 'src/views/autonomousTasks.ts:renderSchedulerStallBanner',
+            repro: 'autonomy_scheduler_health.lastTickAt을 120초 전으로 픽스처 주입하고 #/tasks 진입',
+          });
+        }
+        await shot('01-scheduler-stall-banner');
+      },
+    },
+    {
+      id: 'scheduler-healthy',
+      fixtures: (() => {
+        const now = new Date();
+        const recent = new Date(now.getTime() - 5_000); // 임계값(60초) 안쪽의 정상 지연
+        return { ...base, autonomy_scheduler_health: { lastTickAt: recent.toISOString(), now: now.toISOString(), tickSeconds: 10 } };
+      })(),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        const banner = page.locator('.alert', { hasText: '예약된 자율업무가 실행되지 않고 있습니다' });
+        if ((await banner.count()) > 0) {
+          bugs.push({
+            severity: 'Major',
+            symptom: '스케줄러 heartbeat가 정상(5초 전)인데도 정체 배너가 표시됨(오탐)',
+            file: 'src/views/autonomousTasks.ts:renderSchedulerStallBanner',
+            repro: 'autonomy_scheduler_health.lastTickAt을 5초 전으로 픽스처 주입하고 #/tasks 진입',
+          });
+        }
+        await shot('01-scheduler-healthy-no-banner');
+      },
+    },
+    {
+      id: 'scheduler-not-ticked-yet',
+      fixtures: { ...base, autonomy_scheduler_health: { lastTickAt: null, now: new Date().toISOString(), tickSeconds: 10 } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        const banner = page.locator('.alert', { hasText: '예약된 자율업무가 실행되지 않고 있습니다' });
+        if ((await banner.count()) > 0) {
+          bugs.push({
+            severity: 'Major',
+            symptom: 'lastTickAt이 아직 없는(앱 기동 직후, 첫 tick 전) 정상 상태인데도 정체 배너가 표시됨(오판)',
+            file: 'src/views/autonomousTasks.ts:isSchedulerStalled',
+            repro: 'autonomy_scheduler_health.lastTickAt을 null로 픽스처 주입하고 #/tasks 진입',
+          });
+        }
+        await shot('01-scheduler-not-ticked-yet-no-banner');
+      },
+    },
+    {
+      // A3 가드(리뷰 v0.2.5) 실측 — 이 화면(home/tasks-*)에 있을 때만 스케줄러
+      // heartbeat를 폴링하고, 벗어나면 멈추는지를 실제 IPC 호출 로그
+      // (window.__invokeLog)로 확인한다. 폴링 주기가 30초라 두 구간(온/오프
+      // 라우트)을 real-time으로 기다린다 — 이 시나리오만 따로 돌릴 때는 넉넉한
+      // 타임아웃이 필요하다(`node scripts/ui-harness/run.mjs autonomousTasks scheduler-poll-gate`).
+      id: 'scheduler-poll-gate',
+      fixtures: { ...base },
+      async run(page, { shot, bugs }) {
+        const countCalls = async () =>
+          page.evaluate(() => (window.__invokeLog ?? []).filter((e) => e.cmd === 'autonomy_scheduler_health').length);
+
+        const initialCount = await countCalls();
+        if (initialCount === 0) {
+          bugs.push({
+            severity: 'Major',
+            symptom: '#/tasks 진입 직후 최초 스케줄러 heartbeat 조회(autonomy_scheduler_health)가 호출되지 않음',
+            file: 'src/views/autonomousTasks.ts:ensureSchedulerHealthWatcher',
+          });
+        }
+
+        // ---- 화면 안(자율업무 라우트): 폴링이 실제로 도는지 ----
+        await page.waitForTimeout(31000);
+        const afterOnRoute = await countCalls();
+        if (afterOnRoute <= initialCount) {
+          bugs.push({
+            severity: 'Major',
+            symptom: `자율업무 화면에 머무는 동안(31초 대기) 스케줄러 heartbeat 폴링이 추가로 호출되지 않음(before=${initialCount}, after=${afterOnRoute})`,
+            file: 'src/views/autonomousTasks.ts:ensureSchedulerHealthWatcher',
+          });
+        }
+        await shot('01-poll-on-route');
+
+        // ---- 화면 밖(무관한 라우트): 폴링이 멈추는지(A3 가드) ----
+        await page.evaluate(() => {
+          window.location.hash = '#/catalog';
+        });
+        await page.waitForTimeout(300);
+        const beforeOffRoute = await countCalls();
+        await page.waitForTimeout(31000);
+        const afterOffRoute = await countCalls();
+        if (afterOffRoute > beforeOffRoute) {
+          bugs.push({
+            severity: 'Major',
+            symptom: `자율업무 화면을 벗어난 동안(31초 대기)에도 스케줄러 heartbeat가 계속 폴링됨(A3 가드 미적용, before=${beforeOffRoute}, after=${afterOffRoute})`,
+            file: 'src/views/autonomousTasks.ts:checkSchedulerHealth',
+          });
+        }
+        await shot('02-poll-off-route');
+      },
+    },
   ];
 }
