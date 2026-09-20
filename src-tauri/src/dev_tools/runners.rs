@@ -110,17 +110,28 @@ impl ResolvedRunners {
 }
 
 /// M2(devtools-install-matrix §4.2, 직전 리뷰 지적) — 설치 경로 쓰기권한
-/// 사전검사. gh(brew)는 `<prefix>/Cellar`·`<prefix>/bin`을, Claude(npm)는
-/// `<npm prefix>/lib/node_modules`(없으면 `<prefix>/lib`, 그마저 없으면 검사
-/// 생략)를 본다 — `plan_table::compute_action`(update 경로)이 이미 하는 검사를
-/// 설치 경로에도 재사용한다. prefix는 runner 경로의 조부모다
+/// 사전검사. gh(brew)는 `<prefix>/Cellar`·`<prefix>/bin`을, npm 러너를 쓰는
+/// 모든 도구는 `<npm prefix>/lib/node_modules`(없으면 `<prefix>/lib`, 그마저
+/// 없으면 검사 생략)를 본다 — `plan_table::compute_action`(update 경로)이 이미
+/// 하는 검사를 설치 경로에도 재사용한다. prefix는 runner 경로의 조부모다
 /// (`/opt/homebrew/bin/brew` → `/opt/homebrew`).
+///
+/// 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w) 처리: 원 설계
+/// §4.2 표는 gh·Claude 두 행만 명시했지만, 그 표는 "이 두 도구가 실제로 npm/
+/// brew 러너를 쓴다"는 당시 사실을 나열한 것이지 "다른 도구는 검사가
+/// 면제된다"는 의도적 결정이 아니었다 — install_candidates()를 보면 Pnpm(npm
+/// 전역 설치 우회 경로)과 Wrangler(pnpm 실패 시 npm 폴백)도 같은 npm 러너를
+/// 쓴다. 매치를 도구별로 쪼개 두면 같은 러너인데 어떤 도구는 사전 쓰기권한을
+/// 확인하고 어떤 도구는 곧장 실행해 EACCES로 드러나는 비일관이 생긴다(실패
+/// 방향 자체는 안전하지만 오해의 소지가 크다) — `(_, Runner::Npm)`으로 합쳐
+/// npm을 쓰는 모든 도구가 같은 기준을 받게 한다. Claude의 기존 동작은
+/// 무변경이다(패턴이 이전에도 지금도 이 분기를 그대로 타므로 —
+/// `install_prefix_writable_checks_pnpm_npm_prefix_same_as_claude` 참고).
 ///
 /// §4.2 단서 그대로: 없는 경로에 대해 `access(W_OK)`가 무조건 false를 주므로,
 /// "아직 없는 경로"를 "쓰기 불가"로 오판해 fail-closed로 기능을 죽이지 않도록
 /// 경로가 존재할 때만 검사한다(존재하지 않으면 통과시키고, 실제로 못 쓰면
-/// exit code로 드러난다). 설계 §4.2 표는 gh·Claude 두 행만 요구하므로 그 외
-/// 조합(Wrangler의 pnpm/npm, gh의 winget)은 대상이 아니다 — winget은 애초에
+/// exit code로 드러난다). gh의 winget 경로는 대상이 아니다 — winget은 애초에
 /// "prefix" 개념이 없어(winget이 스스로 설치 경로를 관리) 와일드카드가
 /// `true`(검사 생략)로 처리한다(설계 §D.5, 새 분기 불필요).
 pub(crate) fn install_prefix_writable(tool: ToolId, runner: Runner, runner_path: &str) -> bool {
@@ -135,7 +146,7 @@ pub(crate) fn install_prefix_writable(tool: ToolId, runner: Runner, runner_path:
             (!cellar.exists() || is_writable_by_current_user(&cellar))
                 && (!bin.exists() || is_writable_by_current_user(&bin))
         }
-        (ToolId::Claude, Runner::Npm) => {
+        (_, Runner::Npm) => {
             let node_modules = prefix.join("lib").join("node_modules");
             if node_modules.exists() {
                 is_writable_by_current_user(&node_modules)
@@ -213,6 +224,72 @@ mod tests {
                 "/opt/homebrew_does_not_exist_malgn/bin/npm"
             ),
             "lib/node_modules와 lib이 모두 없으면 검사를 건너뛰고 통과시켜야 합니다"
+        );
+        assert!(
+            install_prefix_writable(
+                ToolId::Pnpm,
+                Runner::Npm,
+                "/opt/homebrew_does_not_exist_malgn/bin/npm"
+            ),
+            "pnpm도 Claude와 동일하게 없는 경로는 통과시켜야 합니다"
+        );
+    }
+
+    // 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w) — (_, Runner::Npm)
+    // 와일드카드로 합친 뒤에도 Claude의 기존 동작이 그대로인지, 그리고 이전엔
+    // 검사를 건너뛰던 Pnpm이 이제 같은 검사를 받는지 실측한다. 두 도구가 같은
+    // 합성 prefix/lib/node_modules에 대해 완전히 동일한 결과(쓰기 가능/불가)를
+    // 내야 한다.
+    #[test]
+    #[cfg(unix)]
+    fn install_prefix_writable_checks_pnpm_npm_prefix_same_as_claude() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let tmp_prefix = home.join(format!(
+            "malgn_vscode_test_runners_npm_prefix_{}",
+            std::process::id()
+        ));
+        let node_modules = tmp_prefix.join("lib").join("node_modules");
+        std::fs::create_dir_all(&node_modules).expect("create synthetic node_modules dir");
+        let runner_path = tmp_prefix.join("bin").join("npm");
+
+        // 쓰기 가능하면 Claude·Pnpm 둘 다 true여야 한다.
+        assert!(install_prefix_writable(
+            ToolId::Claude,
+            Runner::Npm,
+            &runner_path.to_string_lossy()
+        ));
+        assert!(install_prefix_writable(
+            ToolId::Pnpm,
+            Runner::Npm,
+            &runner_path.to_string_lossy()
+        ));
+
+        let mut perms = std::fs::metadata(&node_modules)
+            .expect("stat node_modules")
+            .permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&node_modules, perms).expect("chmod node_modules read-only");
+
+        let claude_result =
+            install_prefix_writable(ToolId::Claude, Runner::Npm, &runner_path.to_string_lossy());
+        let pnpm_result =
+            install_prefix_writable(ToolId::Pnpm, Runner::Npm, &runner_path.to_string_lossy());
+
+        let mut restore = std::fs::metadata(&node_modules)
+            .expect("stat node_modules for restore")
+            .permissions();
+        restore.set_mode(0o755);
+        let _ = std::fs::set_permissions(&node_modules, restore);
+        let _ = std::fs::remove_dir_all(&tmp_prefix);
+
+        assert!(!claude_result, "node_modules가 쓰기 불가면 Claude는 false여야 합니다");
+        assert!(
+            !pnpm_result,
+            "node_modules가 쓰기 불가면 Pnpm도 이제 Claude와 동일하게 false여야 합니다"
         );
     }
 

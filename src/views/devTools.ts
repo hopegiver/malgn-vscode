@@ -612,7 +612,19 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
     children.push(
       el('div', {}, [
         el('button', { className: 'btn', onClick: () => toggleLog(tool.id) }, [expanded ? '로그 접기' : '로그 보기']),
-        ...(expanded ? [el('pre', { className: 'devtool-log' }, [result.logTail || '(로그 없음)'])] : []),
+        // 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w): 이 로그를
+        // 붙여넣도록 유도하는 안내(MANUAL_UNKNOWN_METHOD.doc_url 등)가 공개
+        // GitHub 이슈 트래커를 가리킨다 — 사내 채널 URL로 교체가 필요하지만
+        // 임의로 지어낼 수 없어(모르는 값 금지) 이번 라운드에서는 최소 방어로
+        // 사용자에게 직접 경고한다.
+        ...(expanded
+          ? [
+              el('div', { className: 'devtool-panel-label' }, [
+                '⚠ 이 로그에는 사용자명·사내 경로가 포함될 수 있습니다. 공개 저장소(GitHub 이슈 등)에 붙여넣기 전 반드시 확인하세요.',
+              ]),
+              el('pre', { className: 'devtool-log' }, [result.logTail || '(로그 없음)']),
+            ]
+          : []),
       ])
     );
   }

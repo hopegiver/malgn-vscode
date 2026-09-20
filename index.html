@@ -3,7 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <!-- src-tauri/tauri.conf.json의 app.security.csp/devCsp가 정본이다 — Tauri가
+       실행 시점(패키징 빌드 및 `tauri dev`)에 이 태그를 그 값으로 덮어쓴다.
+       이 태그는 Tauri를 거치지 않는 `pnpm dev`(UI 하네스가 그대로 여는 Vite
+       개발서버, Playwright 브라우저로 접속)에서만 실제로 쓰인다 — 그 경로에서도
+       보호가 비지 않도록 devCsp와 동일한(HMR 웹소켓 허용 포함) 값을 유지한다. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 ws://localhost:1421" />
   <title>맑은에이전트</title>
   <link rel="stylesheet" href="/src/styles.css" />
 </head>

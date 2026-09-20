@@ -28,6 +28,44 @@ fn corepack_guard_overrides_before_table_lookup() {
     ));
 }
 
+// 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w) — Node의 신규
+// WinGet\Links 후보(mod.rs)가 실제로 (Node, WingetPackage) 행에 물려 사실대로
+// 안내하는지, MANUAL_CLAUDE_WINGET_UNSUPPORTED와 같은 UnsupportedMethod
+// 사유인지(=UnknownMethod로 조용히 강등되지 않는지) 엔드투엔드로 검증한다.
+#[test]
+fn node_winget_links_candidate_routes_to_unsupported_manual_not_unknown() {
+    use super::super::classify::classify_install_method_windows;
+    use super::super::platform::{EnvRoots, Platform};
+    use std::path::{Path, PathBuf};
+
+    let roots = EnvRoots {
+        home: Some(PathBuf::from(r"C:\Users\hopegiver")),
+        appdata: Some(PathBuf::from(r"C:\Users\hopegiver\AppData\Roaming")),
+        local_appdata: Some(PathBuf::from(r"C:\Users\hopegiver\AppData\Local")),
+        program_files: Some(PathBuf::from(r"C:\Program Files")),
+        program_files_x86: Some(PathBuf::from(r"C:\Program Files (x86)")),
+        pnpm_home: None,
+        system_root: Some(PathBuf::from(r"C:\Windows")),
+    };
+    let expanded = r"C:\Users\hopegiver\AppData\Local\Microsoft\WinGet\Links\node.exe";
+    let method = classify_install_method_windows(Path::new(expanded), &roots);
+    assert_eq!(method.kind(), MethodKind::WingetPackage);
+
+    let action = compute_action_for_platform(ToolId::Node, &method, Platform::Win);
+    match action {
+        Action::Manual(mp) => {
+            assert_eq!(mp.reason, ManualReason::UnsupportedMethod);
+            assert_eq!(
+                mp.copyable_command,
+                Some("winget upgrade --id OpenJS.NodeJS.LTS -e --source winget")
+            );
+        }
+        Action::Run(_) => panic!(
+            "이번 라운드는 winget upgrade 자동 실행을 새로 열지 않는다 — Manual이어야 합니다"
+        ),
+    }
+}
+
 // 쓰기 권한 검사는 읽기 전용 syscall이라 실제 경로로 안전하게 검증 가능.
 #[test]
 fn writability_check_matches_known_real_paths() {

@@ -107,9 +107,15 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
 // |           |           | manual로 둔 근거("공식 설치기가 대화형+rc수정이라 위험")가 적용되지  |
 // |           |           | 않는다. winget이 없는 머신은 그대로 manual로 강등된다(NoRunner).     |
 // | Git       | mac:manual| mac: 시스템(Xcode CLT) 소유(G4 탈락, §4.3). win: Node.js와 동일 근거  |
-// |           | win:run   | 로 winget id "Git.Git" 고정 경로를 연다(머신 스코프 설치라 UAC 승격  |
-// |           |           | 프롬프트가 뜨는 것 자체는 Windows 표준 동작으로 취급 — 문제는 사용자 |
-// |           |           | 취소/무응답이며 그 경우는 명확한 실패로 변환한다, actions.rs 참고).  |
+// |           | win:run   | 로 winget id "Git.Git" 고정 경로를 연다. 보안 리뷰(2026-09-21, hub    |
+// |           |           | 이슈 01m2wvpx9v548h6yce9jpxpm0w) 정정: 이 설치가 "머신 스코프라 UAC  |
+// |           |           | 승격 프롬프트가 뜬다"고 예전엔 단정했으나, `Git.Git`은 공식적으로     |
+// |           |           | user 스코프 인스톨러도 제공하고(mod.rs Git windows_path_candidates에 |
+// |           |           | 이미 `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`가 있는 이유) winget   |
+// |           |           | 기본 scope preference가 user라 UAC 없이 그 경로에 설치될 수도 있다   |
+// |           |           | (실측 전 — 285행 winget scope 미고정 판단과 같은 미검증 계열). UAC   |
+// |           |           | 프롬프트가 뜰 수 있다는 것 자체는 Windows 표준 동작으로 취급 — 문제는|
+// |           |           | 사용자 취소/무응답이며 그 경우는 명확한 실패로 변환한다(actions.rs). |
 //
 // Windows 완전 지원(devtools-windows-parity.md, Phase 1+2): 예전 이 자리의
 // 주석은 macOS 전용 게이트(`!cfg!(target_os = "macos")`) 4곳이 Windows 실행을

@@ -123,13 +123,21 @@ const BREW_ENV: [(&str, &str); 7] = [
     // 인덱스로 "이미 최신"이라는 거짓 판정이 난다). 그 대신 타임아웃 예산(600s)에
     // 흡수시킨다.
 ];
-const NPM_ENV: [(&str, &str); 7] = [
+// 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w) 처리: 예전에는
+// `npm_config_audit=false`가 fund/progress와 함께 "대화·잡음 제거" 한 줄
+// 근거로 묶여 있었다(원 설계 scratch-design-devtools-update.md, git 이력에만
+// 남음 — c88f296). fund(후원 권유 문구)·progress(ANSI 진행바, log_tail에 제어
+// 문자가 섞여 들어간다)는 실제로 출력 잡음이 맞지만, audit은 다르다 — npm이
+// 설치 시점에 알려진 취약점 개수를 요약해 찍어주는 유일한 인밴드 신호라(이
+// 앱은 exit code/stdout을 파싱하지 않고 버전 재조회로만 성공을 판정하므로 —
+// process.rs 참고 — audit 출력이 그 판정 로직에 끼어들 위험도 없다), 끌
+// 이유가 없다. fund/progress만 남기고 audit은 기본값(켜짐)을 그대로 둔다.
+const NPM_ENV: [(&str, &str); 6] = [
     ("NO_COLOR", "1"),
     ("TERM", "dumb"),
     ("CI", "1"),
     ("npm_config_yes", "true"),
     ("npm_config_fund", "false"),
-    ("npm_config_audit", "false"),
     ("npm_config_progress", "false"),
 ];
 // 설치 전용(devtools-install-matrix §3.4 실측): `brew install`은 도움말 기준
@@ -575,6 +583,22 @@ const MANUAL_CLAUDE_WINGET_UNSUPPORTED: ManualPlan = ManualPlan {
     copyable_command: Some("claude update"),
     doc_url: Some("https://docs.claude.com/en/docs/claude-code/setup"),
 };
+// 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w) 처리: mod.rs
+// DEV_TOOLS의 Node Windows 후보에 `%LOCALAPPDATA%\Microsoft\WinGet\Links\
+// node.exe`(winget portable 변형 감지용)를 추가하면서 함께 필요해진 행 —
+// classify.rs 1번 분기가 이 경로를 도구 구분 없이 WingetPackage로 분류하므로,
+// UPDATE_TABLE에 (Node, WingetPackage) 행을 두지 않으면 MANUAL_CLAUDE_WINGET_
+// UNSUPPORTED가 막았던 것과 같은 결함(정확히 분류했는데 "설치 방식을 확인할
+// 수 없습니다"라는 사실과 다른 문구로 조용히 강등)이 재발한다. 이 자리에서
+// 자동 `winget upgrade`를 새로 여는 대신(그건 실행 경계를 넓히는 구조적
+// 결정이라 이번 좁은 수정 범위 밖이다 — PM 승인 없이 넓히지 않는다) Claude와
+// 같은 패턴으로 사실을 그대로 안내하는 Manual로 라우팅한다.
+const MANUAL_NODE_WINGET_UPGRADE_UNSUPPORTED: ManualPlan = ManualPlan {
+    reason: ManualReason::UnsupportedMethod,
+    message_ko: "Node.js가 winget으로 설치된 것으로 보이지만, 이 방식의 자동 업데이트는 아직 지원하지 않습니다. 아래 명령을 터미널에서 직접 실행해주세요.",
+    copyable_command: Some("winget upgrade --id OpenJS.NodeJS.LTS -e --source winget"),
+    doc_url: Some("https://nodejs.org/en/download"),
+};
 // T3(review-devtools-windows-parity-2026-09-15-r3.md, 2차 m4 승계) 재발 방지:
 // 예전에는 "brew/npm/winget"을 한 문구에 전부 나열했다 — Windows 사용자는
 // 존재하지 않는 brew를, macOS 사용자는 존재하지 않는 winget을 보는 양방향
@@ -656,6 +680,14 @@ static UPDATE_TABLE: &[Row] = &[
         tool: Some(ToolId::Claude),
         method: MethodKind::WingetPackage,
         action: Action::Manual(MANUAL_CLAUDE_WINGET_UNSUPPORTED),
+    },
+    // 위 MANUAL_NODE_WINGET_UPGRADE_UNSUPPORTED 주석 참고 — Node의 신규
+    // WinGet\Links 후보가 WingetPackage로 분류될 때 조용한 UnknownMethod
+    // 강등을 막는다.
+    Row {
+        tool: Some(ToolId::Node),
+        method: MethodKind::WingetPackage,
+        action: Action::Manual(MANUAL_NODE_WINGET_UPGRADE_UNSUPPORTED),
     },
     Row {
         tool: None,
@@ -792,7 +824,12 @@ fn install_manual_plan_windows(tool: ToolId) -> ManualPlan {
         // 못했다"는 뜻이다. UAC 승인 창 안내는 기존 문구를 그대로 유지한다.
         ToolId::Git => ManualPlan {
             reason: ManualReason::NotInstalled,
-            message_ko: "Git이 설치되어 있지 않거나 winget(앱 설치 관리자)을 찾을 수 없습니다. Microsoft Store에서 '앱 설치 관리자'를 업데이트한 뒤 아래 명령을 시도해주세요. 관리자 권한 승인 창이 뜰 수 있습니다(머신 스코프 설치).",
+            // 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w) 정정:
+            // "(머신 스코프 설치)"라고 단정하지 않는다 — Git.Git은 user 스코프
+            // 인스톨러도 제공해(mod.rs의 %LOCALAPPDATA%\Programs\Git 후보가
+            // 그 근거) winget이 UAC 없이 설치할 수도 있다(install_resolver.rs
+            // 상단 도구별 표 참고, 실측 전).
+            message_ko: "Git이 설치되어 있지 않거나 winget(앱 설치 관리자)을 찾을 수 없습니다. Microsoft Store에서 '앱 설치 관리자'를 업데이트한 뒤 아래 명령을 시도해주세요. 설치 방식에 따라 관리자 권한 승인 창이 뜰 수 있습니다.",
             copyable_command: Some(
                 "winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity --silent",
             ),

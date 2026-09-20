@@ -122,9 +122,23 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
         path_candidates: &["/opt/homebrew/bin/node", "/usr/local/bin/node"],
         // 설계 §B.5(미검증): nvm-windows 등 버전매니저 관리본은 앱이 못 보는 게
         // 의도된 동작이다(G4 — devtools-install-matrix §3.3과 동일 이유).
+        //
+        // 보안 리뷰(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w) 처리: gh/
+        // claude는 이미 `%LOCALAPPDATA%\Microsoft\WinGet\Links\*.exe`(winget이
+        // 설치한 앱 실행 별칭) 후보를 갖는데 Node만 빠져 있었다 — winget Node
+        // 매니페스트(OpenJS.NodeJS.LTS)는 msi 인스톨러 외 portable(zip) 변형이
+        // 있고, winget 기본 scope preference가 user라 portable이 선택되면 msi
+        // 처럼 Program Files/LOCALAPPDATA\Programs 아래 놓이지 않는다 — 설치
+        // 자체는 성공하는데 이 앱은 그 자리를 못 봐 unknownAfter("설치 확인에
+        // 실패했습니다")를 낸다. WinGet\Links 후보를 셋째로 추가해 그 경우도
+        // 찾게 한다(classify.rs가 이 경로를 WingetPackage로 분류하고,
+        // plan_table.rs UPDATE_TABLE의 (Node, WingetPackage) 행이 그 결과를
+        // 조용한 UnknownMethod 강등이 아니라 사실대로 안내한다 — Claude의
+        // MANUAL_CLAUDE_WINGET_UNSUPPORTED 선례와 동일 패턴).
         windows_path_candidates: &[
             r"C:\Program Files\nodejs\node.exe",
             r"%LOCALAPPDATA%\Programs\nodejs\node.exe",
+            r"%LOCALAPPDATA%\Microsoft\WinGet\Links\node.exe",
         ],
         required: true,
     },
