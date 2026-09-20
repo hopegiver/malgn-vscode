@@ -13,7 +13,7 @@
 // 결과는 (projectPath, taskId) 키의 모듈 스코프 캐시(historyCache)에 저장해,
 // 이 화면의 전체 재렌더 구조(notifyChange)에서도 이미 로드했거나 로딩 중이면
 // 재조회하지 않는다.
-import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog, loadingBlock, errorBlock } from '../dom';
+import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog, loadingBlock, errorBlock, boundField, boundChecked } from '../dom';
 import { state, notifyChange } from '../state';
 import type { AutonomousTask } from '../state';
 import {
@@ -86,8 +86,75 @@ function detachAutonomyConfigModalEscHandler(): void {
 
 function closeAutonomyConfigModal(): void {
   state.malgnAgentConfig.editingAutonomy = false;
+  autonomyConfigDraft = null;
   detachAutonomyConfigModalEscHandler();
   notifyChange();
+}
+
+// 입력 중 드래프트 — workspacesDraft(projects.ts)와 동일한 원칙: 모달이 열려
+// 있는 동안 한 번만 초기화되고, 닫힐 때 버려진다(dom.ts의 boundField 참고).
+interface AutonomyConfigFormDraft {
+  concurrency: string;
+  defaultTimeout: string;
+  retentionDays: string;
+}
+let autonomyConfigDraft: AutonomyConfigFormDraft | null = null;
+
+// 입력 중 드래프트 — 이 폼은 필드가 많아(이름·프롬프트·프로젝트·실행방식·
+// 하위탭 4종·서브에이전트·타임아웃) 개별 필드마다 draft를 따로 두지 않고 폼
+// 전체를 하나의 객체로 관리한다. openTaskFormModal에서 editingTask를 기반으로
+// 딱 한 번 초기화되고, closeTaskFormModal에서 버려진다(dom.ts의 boundField/
+// boundChecked 참고). 제출 검증/변환 로직(renderTaskForm의 submit 핸들러)은
+// 그대로 DOM 노드의 `.value`/`.checked`를 읽는다 — draft는 "재렌더에서 살아남는
+// 초기값 저장소" 역할만 하고, 제출 시점의 정본은 여전히 DOM이다.
+interface TaskFormDraft {
+  name: string;
+  prompt: string;
+  projectPath: string; // 추가 모드(프로젝트 select)에서만 쓰인다 — 수정 모드는 editingTask.projectPath 고정
+  interval: string;
+  scheduleMode: 'interval' | 'fixedTime';
+  activeSubTab: FixedTimeSubTab;
+  hourlyMinute: string;
+  time: string;
+  days: number[];
+  cron: string;
+  subagent: string;
+  timeout: string;
+}
+
+// 편집 모달을 열 때 어느 하위 탭을 선택할지 판정한다(설계서 §2.3 역매핑
+// 정본). fixedTime은 days.length로 매일/매주를 가른다 — 7개 전부(레거시
+// "매일" 저장 형태)도 매일로 접는다(computeFixedTimeScheduleLabel과 동일한
+// 판단 기준).
+function initialFixedTimeSubTabFor(editingTask: AutonomousTask | null): FixedTimeSubTab {
+  if (!editingTask) return 'daily';
+  if (editingTask.scheduleMode === 'hourly') return 'hourly';
+  if (editingTask.scheduleMode === 'cron') return 'custom';
+  if (editingTask.scheduleMode === 'fixedTime') {
+    return editingTask.days.length === 0 || editingTask.days.length >= 7 ? 'daily' : 'weekly';
+  }
+  return 'daily';
+}
+
+function buildInitialTaskFormDraft(editingTask: AutonomousTask | null): TaskFormDraft {
+  const initialWeeklyDays: readonly number[] =
+    editingTask && editingTask.scheduleMode === 'fixedTime' && editingTask.days.length > 0 && editingTask.days.length < 7
+      ? editingTask.days
+      : WEEKDAY_PRESET_WEEKDAYS;
+  return {
+    name: editingTask?.name ?? '',
+    prompt: editingTask?.prompt ?? '',
+    projectPath: '', // renderTaskForm이 첫 렌더에서 실제 프로젝트 목록의 첫 항목으로 채운다
+    interval: editingTask ? String(editingTask.interval) : '60',
+    scheduleMode: editingTask && editingTask.scheduleMode !== 'interval' ? 'fixedTime' : 'interval',
+    activeSubTab: initialFixedTimeSubTabFor(editingTask),
+    hourlyMinute: editingTask?.hourlyMinute !== null && editingTask?.hourlyMinute !== undefined ? String(editingTask.hourlyMinute) : '0',
+    time: editingTask?.atTime ?? '09:00',
+    days: [...initialWeeklyDays],
+    cron: editingTask?.cron ?? '',
+    subagent: editingTask?.subagent ?? '',
+    timeout: editingTask?.timeout !== null && editingTask?.timeout !== undefined ? String(editingTask.timeout) : '',
+  };
 }
 
 // "새 자율업무" / "자율업무 수정" 겸용 모달 — editingTask가 null이면 추가 모드,
@@ -95,7 +162,7 @@ function closeAutonomyConfigModal(): void {
 // 목록 화면의 헤더 버튼과 상세 화면의 "수정" 버튼이 둘 다 이 모달을 연다 —
 // 열림 상태를 이 화면 전용 값이라 전역 state까지 보낼 필요는 없다(config
 // 모달과 달리 다른 화면과 공유되지 않으므로 모듈 로컬로 충분하다).
-let taskFormModal: { readonly editingTask: AutonomousTask | null } | null = null;
+let taskFormModal: { readonly editingTask: AutonomousTask | null; readonly draft: TaskFormDraft } | null = null;
 let taskFormModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
 
 function detachTaskFormModalEscHandler(): void {
@@ -106,7 +173,7 @@ function detachTaskFormModalEscHandler(): void {
 }
 
 function openTaskFormModal(editingTask: AutonomousTask | null): void {
-  taskFormModal = { editingTask };
+  taskFormModal = { editingTask, draft: buildInitialTaskFormDraft(editingTask) };
   notifyChange();
 }
 
@@ -130,7 +197,7 @@ function renderTaskFormModalIfOpen(): HTMLElement | null {
     };
     window.addEventListener('keydown', taskFormModalEscHandler);
   }
-  return renderTaskFormModal(taskFormModal.editingTask);
+  return renderTaskFormModal(taskFormModal.editingTask, taskFormModal.draft);
 }
 
 // 자율업무 화면을 완전히 떠날 때(다른 라우트로 이동) main.ts에서 호출한다 —
@@ -435,31 +502,55 @@ async function handleSaveMalgnAgentConfig(payload: MalgnAgentConfigInput): Promi
 function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
   const { limits } = status;
 
-  const concurrencyInput = document.createElement('input');
+  if (!autonomyConfigDraft) {
+    autonomyConfigDraft = {
+      concurrency: String(status.autonomy.concurrency),
+      defaultTimeout: String(status.autonomy.defaultTimeout),
+      retentionDays: String(status.logs.retentionDays),
+    };
+  }
+  const draft = autonomyConfigDraft;
+
+  const concurrencyInput = boundField(
+    document.createElement('input'),
+    () => draft.concurrency,
+    (v) => {
+      draft.concurrency = v;
+    }
+  );
   concurrencyInput.id = 'malgn-config-concurrency';
   concurrencyInput.className = 'settings-input';
   concurrencyInput.type = 'number';
   concurrencyInput.min = '1';
   concurrencyInput.max = String(limits.maxConcurrency);
-  concurrencyInput.value = String(status.autonomy.concurrency);
   concurrencyInput.autocomplete = 'off';
 
-  const defaultTimeoutInput = document.createElement('input');
+  const defaultTimeoutInput = boundField(
+    document.createElement('input'),
+    () => draft.defaultTimeout,
+    (v) => {
+      draft.defaultTimeout = v;
+    }
+  );
   defaultTimeoutInput.id = 'malgn-config-default-timeout';
   defaultTimeoutInput.className = 'settings-input';
   defaultTimeoutInput.type = 'number';
   defaultTimeoutInput.min = String(limits.minTimeout);
   defaultTimeoutInput.max = String(limits.maxTimeout);
-  defaultTimeoutInput.value = String(status.autonomy.defaultTimeout);
   defaultTimeoutInput.autocomplete = 'off';
 
-  const retentionDaysInput = document.createElement('input');
+  const retentionDaysInput = boundField(
+    document.createElement('input'),
+    () => draft.retentionDays,
+    (v) => {
+      draft.retentionDays = v;
+    }
+  );
   retentionDaysInput.id = 'malgn-config-retention-days';
   retentionDaysInput.className = 'settings-input';
   retentionDaysInput.type = 'number';
   retentionDaysInput.min = '1';
   retentionDaysInput.max = '365';
-  retentionDaysInput.value = String(status.logs.retentionDays);
   retentionDaysInput.autocomplete = 'off';
 
   const form = el('form', { className: 'settings-form' }, [
@@ -766,17 +857,27 @@ function renderAppMustBeRunningBanner(): HTMLElement {
 // id·projectPath로 upsert한다(project는 바꿀 수 없다 — 바꾸면 원래 프로젝트의
 // autonomy.json에 고아 항목이 남고 다른 쪽엔 중복 항목이 생기므로, 그 경우엔
 // 삭제 후 새로 등록하도록 안내한다).
-function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
-  const nameInput = document.createElement('input');
+function renderTaskForm(editingTask: AutonomousTask | null, draft: TaskFormDraft): HTMLElement {
+  const nameInput = boundField(
+    document.createElement('input'),
+    () => draft.name,
+    (v) => {
+      draft.name = v;
+    }
+  );
   nameInput.className = 'settings-input';
   nameInput.placeholder = '예: 야간 프로젝트 상태 점검';
-  nameInput.value = editingTask?.name ?? '';
 
-  const promptInput = document.createElement('textarea');
+  const promptInput = boundField(
+    document.createElement('textarea'),
+    () => draft.prompt,
+    (v) => {
+      draft.prompt = v;
+    }
+  );
   promptInput.className = 'settings-input task-form-textarea';
   promptInput.placeholder = '이 자율업무가 실제로 실행될 때 claude에게 전달할 지시문을 구체적으로 적으세요';
   promptInput.rows = 4;
-  promptInput.value = editingTask?.prompt ?? '';
 
   let projectSelect: HTMLSelectElement | null = null;
   let projectField: HTMLElement;
@@ -791,7 +892,14 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
       el('div', { className: 'settings-form-hint' }, ['등록된 프로젝트는 수정할 수 없습니다. 다른 프로젝트로 옮기려면 삭제 후 새로 등록하세요.']),
     ]);
   } else {
-    projectSelect = document.createElement('select');
+    projectSelect = boundField(
+      document.createElement('select'),
+      () => draft.projectPath,
+      (v) => {
+        draft.projectPath = v;
+      },
+      'change'
+    );
     projectSelect.className = 'settings-input';
     const projects = state.dashboard.projects;
     const projectFieldChildren: HTMLElement[] = [el('span', { className: 'settings-field-label' }, ['프로젝트']), projectSelect];
@@ -819,11 +927,26 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
         optionEl.textContent = project.name;
         projectSelect.appendChild(optionEl);
       }
+      // 드래프트가 아직 프로젝트를 고르지 않았거나(최초 오픈), 이전에 고른
+      // 프로젝트가 지금 로드된 목록에 더 이상 없으면(드문 경합) 첫 항목으로
+      // 되돌린다 — 이전에는 <select> 기본 동작(첫 옵션 자동 선택)에만 기대던
+      // 초기 선택을, 재렌더에서도 그대로 유지되도록 드래프트에 명시적으로 써둔다.
+      if (!projects.some((p) => p.path === draft.projectPath)) {
+        draft.projectPath = projects[0].path;
+      }
     }
+    projectSelect.value = draft.projectPath;
     projectField = el('label', { className: 'settings-field' }, projectFieldChildren);
   }
 
-  const intervalSelect = document.createElement('select');
+  const intervalSelect = boundField(
+    document.createElement('select'),
+    () => draft.interval,
+    (v) => {
+      draft.interval = v;
+    },
+    'change'
+  );
   intervalSelect.className = 'settings-input';
   for (const opt of INTERVAL_OPTIONS) {
     const optionEl = document.createElement('option');
@@ -831,7 +954,7 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     optionEl.textContent = opt.label;
     intervalSelect.appendChild(optionEl);
   }
-  intervalSelect.value = editingTask ? String(editingTask.interval) : '60';
+  intervalSelect.value = draft.interval;
   const intervalHint = el('div', { className: 'settings-form-hint' }, [
     '이전 실행이 끝난 뒤(시작 시점이 아니라 완료 시점 기준) 이 시간만큼 지나야 다시 실행됩니다.',
   ]);
@@ -844,19 +967,27 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
   // 선택 시 동작·문구는 아래 두 요소(intervalSelect/intervalFields)를 그대로
   // 재사용하고 손대지 않는다(지시서 금지 범위). 고정시간 선택 시에만 그 아래
   // 2단 하위 탭(매시간/매일/매주/사용자 지정, 설계서 §2.2)이 나타난다.
-  const initialScheduleMode: AutonomyScheduleMode = editingTask?.scheduleMode ?? 'interval';
-
-  const modeIntervalRadio = document.createElement('input');
+  const modeIntervalRadio = boundChecked(
+    document.createElement('input'),
+    () => draft.scheduleMode === 'interval',
+    (checked) => {
+      if (checked) draft.scheduleMode = 'interval';
+    }
+  );
   modeIntervalRadio.type = 'radio';
   modeIntervalRadio.name = 'task-form-schedule-mode';
   modeIntervalRadio.value = 'interval';
-  modeIntervalRadio.checked = initialScheduleMode === 'interval';
 
-  const modeFixedRadio = document.createElement('input');
+  const modeFixedRadio = boundChecked(
+    document.createElement('input'),
+    () => draft.scheduleMode === 'fixedTime',
+    (checked) => {
+      if (checked) draft.scheduleMode = 'fixedTime';
+    }
+  );
   modeFixedRadio.type = 'radio';
   modeFixedRadio.name = 'task-form-schedule-mode';
   modeFixedRadio.value = 'fixedTime';
-  modeFixedRadio.checked = initialScheduleMode !== 'interval';
 
   const modeField = el('div', { className: 'settings-field' }, [
     el('span', { className: 'settings-field-label' }, ['실행 방식']),
@@ -866,20 +997,7 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     ]),
   ]);
 
-  // 편집 모달을 열 때 어느 하위 탭을 선택할지 판정한다(설계서 §2.3 역매핑
-  // 정본). fixedTime은 days.length로 매일/매주를 가른다 — 7개 전부(레거시
-  // "매일" 저장 형태)도 매일로 접는다(computeFixedTimeScheduleLabel과 동일한
-  // 판단 기준).
-  function initialFixedTimeSubTab(): FixedTimeSubTab {
-    if (!editingTask) return 'daily';
-    if (editingTask.scheduleMode === 'hourly') return 'hourly';
-    if (editingTask.scheduleMode === 'cron') return 'custom';
-    if (editingTask.scheduleMode === 'fixedTime') {
-      return editingTask.days.length === 0 || editingTask.days.length >= 7 ? 'daily' : 'weekly';
-    }
-    return 'daily';
-  }
-  let activeSubTab: FixedTimeSubTab = initialFixedTimeSubTab();
+  let activeSubTab: FixedTimeSubTab = draft.activeSubTab;
 
   const SUB_TAB_DEFS: readonly { readonly key: FixedTimeSubTab; readonly label: string }[] = [
     { key: 'hourly', label: '매시간' },
@@ -898,13 +1016,18 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
 
   // 매시간 탭 — 분(0~59) 1개. 벽시계 정각 기준이라 "상대 간격 60분"과
   // 의미가 다르다는 점을 힌트 문구로 고지한다(지시서 필수 요구사항).
-  const hourlyMinuteInput = document.createElement('input');
+  const hourlyMinuteInput = boundField(
+    document.createElement('input'),
+    () => draft.hourlyMinute,
+    (v) => {
+      draft.hourlyMinute = v;
+    }
+  );
   hourlyMinuteInput.type = 'number';
   hourlyMinuteInput.min = '0';
   hourlyMinuteInput.max = '59';
   hourlyMinuteInput.className = 'settings-input';
   hourlyMinuteInput.autocomplete = 'off';
-  hourlyMinuteInput.value = editingTask?.hourlyMinute !== null && editingTask?.hourlyMinute !== undefined ? String(editingTask.hourlyMinute) : '0';
   const hourlyMinuteField = el('label', { className: 'settings-field' }, [
     el('span', { className: 'settings-field-label' }, ['실행 분 (매시)']),
     hourlyMinuteInput,
@@ -918,10 +1041,15 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
   // 파서·입력 마스킹을 두지 않는다(설계서 §7 필수 계약). 매일/매주 두 탭이
   // 이 입력 하나를 공유한다 — 둘 다 "실행 시각"이라는 같은 의미이므로 탭을
   // 오가도 값이 재해석되지 않는다(지시서 필수 요구사항 2).
-  const timeInput = document.createElement('input');
+  const timeInput = boundField(
+    document.createElement('input'),
+    () => draft.time,
+    (v) => {
+      draft.time = v;
+    }
+  );
   timeInput.type = 'time';
   timeInput.className = 'settings-input';
-  timeInput.value = editingTask?.atTime ?? '09:00';
   const timeField = el('label', { className: 'settings-field' }, [
     el('span', { className: 'settings-field-label' }, ['실행 시각']),
     timeInput,
@@ -932,20 +1060,22 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
   // 바꾸지 않는다. "매일" 프리셋은 독립 탭으로 승격되어 불필요해졌으므로
   // 없앴다(지시서의 PM 판단) — 평일/주말 프리셋만 매주 탭 전용으로 남긴다.
   // 새로 추가할 때는 평일(월~금)을 기본값으로 보여준다.
-  const initialWeeklyDays: readonly number[] =
-    editingTask && editingTask.scheduleMode === 'fixedTime' && editingTask.days.length > 0 && editingTask.days.length < 7
-      ? editingTask.days
-      : WEEKDAY_PRESET_WEEKDAYS;
   const dayCheckboxes: HTMLInputElement[] = WEEKDAY_LABELS.map((_, idx) => {
-    const cb = document.createElement('input');
+    const cb = boundChecked(
+      document.createElement('input'),
+      () => draft.days.includes(idx),
+      (checked) => {
+        draft.days = checked ? [...new Set([...draft.days, idx])] : draft.days.filter((d) => d !== idx);
+      }
+    );
     cb.type = 'checkbox';
     cb.value = String(idx);
-    cb.checked = initialWeeklyDays.includes(idx);
     return cb;
   });
   function setDayCheckboxes(days: readonly number[]): void {
+    draft.days = [...days];
     dayCheckboxes.forEach((cb, idx) => {
-      cb.checked = days.includes(idx);
+      cb.checked = draft.days.includes(idx);
     });
   }
   const dayPresetWeekdaysBtn = el('button', { className: 'filter-btn', onClick: () => setDayCheckboxes(WEEKDAY_PRESET_WEEKDAYS) }, ['평일']);
@@ -968,12 +1098,17 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
   // 실패 시 인라인 에러(cronError)를 필드 아래에 표시하고, 저장 시점에
   // 백엔드가 거부하면 그 한국어 메시지를 그대로 여기에 노출한다(프론트에서
   // 새 문구를 짓지 않는다, 지시서 필수 요구사항).
-  const cronInput = document.createElement('input');
+  const cronInput = boundField(
+    document.createElement('input'),
+    () => draft.cron,
+    (v) => {
+      draft.cron = v;
+    }
+  );
   cronInput.type = 'text';
   cronInput.className = 'settings-input';
   cronInput.placeholder = '0 9 * * 1-5 (평일 오전 9시)';
   cronInput.autocomplete = 'off';
-  cronInput.value = editingTask?.cron ?? '';
   const cronError = el('div', { className: 'settings-field-error' }, ['']);
   cronInput.addEventListener('input', () => {
     cronError.textContent = '';
@@ -995,6 +1130,7 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
 
   function setActiveSubTab(tab: FixedTimeSubTab): void {
     activeSubTab = tab;
+    draft.activeSubTab = tab;
     subTabButtons.forEach((btn, idx) => btn.classList.toggle('active', SUB_TAB_DEFS[idx].key === tab));
     updateSubTabVisibility();
   }
@@ -1009,20 +1145,30 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
     cronField.style.display = activeSubTab === 'custom' ? '' : 'none';
   }
 
-  const subagentInput = document.createElement('input');
+  const subagentInput = boundField(
+    document.createElement('input'),
+    () => draft.subagent,
+    (v) => {
+      draft.subagent = v;
+    }
+  );
   subagentInput.className = 'settings-input';
   subagentInput.placeholder = '예: malgn-agent:qa-engineer (비워두면 지정 안 함)';
-  subagentInput.value = editingTask?.subagent ?? '';
 
   const limits = state.malgnAgentConfig.status?.limits ?? null;
   const defaultTimeout = state.malgnAgentConfig.status?.autonomy.defaultTimeout ?? null;
-  const timeoutInput = document.createElement('input');
+  const timeoutInput = boundField(
+    document.createElement('input'),
+    () => draft.timeout,
+    (v) => {
+      draft.timeout = v;
+    }
+  );
   timeoutInput.className = 'settings-input';
   timeoutInput.type = 'number';
   timeoutInput.min = String(limits?.minTimeout ?? 1);
   timeoutInput.max = String(limits?.maxTimeout ?? 480);
   timeoutInput.placeholder = defaultTimeout !== null ? `비우면 전역 기본값(${defaultTimeout}분) 사용` : '비우면 전역 기본값 사용';
-  timeoutInput.value = editingTask?.timeout !== null && editingTask?.timeout !== undefined ? String(editingTask.timeout) : '';
   const timeoutHint = el('div', { className: 'settings-form-hint' }, [
     limits ? `선택 항목입니다. 범위: ${limits.minTimeout}~${limits.maxTimeout}분.` : '선택 항목입니다 — 비우면 전역 기본값을 사용합니다.',
   ]);
@@ -1202,13 +1348,13 @@ function renderTaskForm(editingTask: AutonomousTask | null): HTMLElement {
 // 구조(modal-overlay/modal-box/modal-header+modal-close-btn/modal-body) —
 // 배경 클릭·ESC·닫기 버튼·취소 버튼 4가지 경로로 닫힌다. 오버레이 생성은
 // dom.ts의 createModalOverlay로 공용화했다.
-function renderTaskFormModal(editingTask: AutonomousTask | null): HTMLElement {
+function renderTaskFormModal(editingTask: AutonomousTask | null, draft: TaskFormDraft): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
       el('h2', { className: 'modal-title' }, [editingTask ? '자율업무 수정' : '새 자율업무 추가']),
       el('button', { className: 'modal-close-btn', onClick: closeTaskFormModal }, ['✕']),
     ]),
-    el('div', { className: 'modal-body' }, [renderTaskForm(editingTask)]),
+    el('div', { className: 'modal-body' }, [renderTaskForm(editingTask, draft)]),
   ]);
   return createModalOverlay(modalBox, closeTaskFormModal);
 }

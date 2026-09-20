@@ -9,8 +9,9 @@
 // 동작(파일 읽기/쓰기, 프로세스 실행 등)은 이 하네스로 검증되지 않는다.
 //
 // 인자 없이 실행하면 모든 흐름 x 모든 시나리오를 순차 실행한다. 첫 인자로
-// 흐름 id(autonomousTasks/sessions/catalog/settingsMcp/appLinks)를, 두 번째
-// 인자로 시나리오 id(golden/empty/large/error/slow 등)를 주면 그 조합만 돈다.
+// 흐름 id(autonomousTasks/sessions/catalog/settingsMcp/appLinks/
+// formBackgroundRerender)를, 두 번째 인자로 시나리오 id(golden/empty/large/
+// error/slow 등)를 주면 그 조합만 돈다.
 import { chromium } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -24,6 +25,7 @@ import * as sessions from './flows/sessions.mjs';
 import * as catalog from './flows/catalog.mjs';
 import * as settingsMcp from './flows/settingsMcp.mjs';
 import * as appLinks from './flows/appLinks.mjs';
+import * as formBackgroundRerender from './flows/formBackgroundRerender.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_URL = process.env.UI_HARNESS_BASE_URL || 'http://localhost:1420';
@@ -32,7 +34,7 @@ const SHOTS_DIR =
   '/private/tmp/claude-501/-Users-hopegiver-workspace-malgn-vscode/9682b635-b50a-4778-8416-a05a9cb13e8a/scratchpad/shots';
 const REPORT_PATH = path.join(__dirname, 'last-run-report.json');
 
-const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks];
+const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender];
 
 const [, , flowFilter, scenarioFilter] = process.argv;
 

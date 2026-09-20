@@ -2,7 +2,7 @@
 // 이 화면은 이제 목업이 아니다 — Rust 커맨드 list_workspace_projects()가 실제
 // ~/workspace 아래를 스캔한 결과를 그대로 쓴다(workspaceApi.ts, src-tauri/src/lib.rs
 // 주석 참고). "세션목록"에 이은 이 앱의 두 번째 실동작 화면.
-import { el, clickable, showToast, createModalOverlay } from '../dom';
+import { el, clickable, showToast, createModalOverlay, boundField } from '../dom';
 import { state, notifyChange } from '../state';
 import type { ArchiveStatus } from '../state';
 import { fetchWorkspaceProjects, fetchProjectTree, fetchFilePreview } from '../workspaceApi';
@@ -113,9 +113,16 @@ function detachWorkspacesModalEscHandler(): void {
 
 function closeWorkspacesModal(): void {
   state.malgnAgentConfig.editingWorkspaces = false;
+  workspacesDraft = null;
   detachWorkspacesModalEscHandler();
   notifyChange();
 }
+
+// 입력 중 드래프트 — 모달이 열려 있는 동안(editingWorkspaces=true) 한 번만
+// status.workspaces로 초기화되고, 닫힐 때(closeWorkspacesModal) 버려진다.
+// 배경 이벤트로 인한 재렌더는 이 값을 건드리지 않으므로 타이핑 중이던 내용이
+// 보존된다(dom.ts의 boundField 참고).
+let workspacesDraft: string | null = null;
 
 // 프로젝트 화면을 완전히 떠날 때(다른 라우트로 이동) main.ts에서 호출한다 —
 // 모달이 열려 있었다면 window에 남은 ESC 리스너를 정리한다.
@@ -181,11 +188,18 @@ async function handleSaveWorkspaces(workspaces: readonly string[]): Promise<void
 }
 
 function renderWorkspacesEditForm(status: MalgnAgentConfigStatus): HTMLElement {
-  const workspacesInput = document.createElement('textarea');
+  if (workspacesDraft === null) workspacesDraft = status.workspaces.join('\n');
+
+  const workspacesInput = boundField(
+    document.createElement('textarea'),
+    () => workspacesDraft ?? '',
+    (v) => {
+      workspacesDraft = v;
+    }
+  );
   workspacesInput.id = 'malgn-config-workspaces';
   workspacesInput.className = 'settings-input';
   workspacesInput.rows = 4;
-  workspacesInput.value = status.workspaces.join('\n');
   workspacesInput.autocomplete = 'off';
 
   const form = el('form', { className: 'settings-form' }, [

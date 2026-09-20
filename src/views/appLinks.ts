@@ -7,7 +7,7 @@
 // (별도 "저장" 버튼 없음). 낙관적 갱신은 하지 않는다 — 저장이 실패하면
 // state.appLinks.status를 건드리지 않으므로(성공했을 때만 교체) 화면은 저절로
 // 저장 전 상태로 남는다.
-import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, toggleSwitch } from '../dom';
+import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, toggleSwitch, boundField } from '../dom';
 import { state, notifyChange } from '../state';
 import { fetchAppLinks, saveAppLinks, openAppLink } from '../appLinksApi';
 import type { AppLink } from '../appLinksApi';
@@ -82,8 +82,15 @@ async function handleDeleteLink(link: AppLink): Promise<void> {
 
 // ---------------- 추가/수정 겸용 모달 ----------------
 // autonomousTasks.ts의 renderTaskFormModal과 동일한 모듈 로컬 열림상태 +
-// ESC 리스너 패턴.
-let linkFormModal: { readonly editingLink: AppLink | null } | null = null;
+// ESC 리스너 패턴. draft는 모달이 열릴 때(openLinkFormModal) editingLink를
+// 기반으로 한 번만 초기화되고, 닫힐 때 버려진다 — 배경 이벤트로 인한 재렌더가
+// 일어나도 입력 중이던 값이 사라지지 않게 하는 공용 방식이다(dom.ts의
+// boundField 참고, hub 이슈 01m2zwcx7etvk9zh617tk7bayq).
+interface LinkFormDraft {
+  name: string;
+  url: string;
+}
+let linkFormModal: { readonly editingLink: AppLink | null; readonly draft: LinkFormDraft } | null = null;
 let linkFormModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
 
 function detachLinkFormModalEscHandler(): void {
@@ -94,7 +101,7 @@ function detachLinkFormModalEscHandler(): void {
 }
 
 function openLinkFormModal(editingLink: AppLink | null): void {
-  linkFormModal = { editingLink };
+  linkFormModal = { editingLink, draft: { name: editingLink?.name ?? '', url: editingLink?.url ?? '' } };
   notifyChange();
 }
 
@@ -115,7 +122,7 @@ function renderLinkFormModalIfOpen(): HTMLElement | null {
     };
     window.addEventListener('keydown', linkFormModalEscHandler);
   }
-  return renderLinkFormModal(linkFormModal.editingLink);
+  return renderLinkFormModal(linkFormModal.editingLink, linkFormModal.draft);
 }
 
 // 앱링크 설정 탭을 벗어날 때(다른 탭으로 이동하거나 라우트를 완전히 떠날 때)
@@ -130,25 +137,35 @@ export function leaveAppLinksView(): void {
 // 프론트는 UX용 사전 체크만 한다(빈 값 차단 + maxlength 힌트) — 정본 검증은
 // Rust 한 곳(app_links/store.rs)이고, 거부되면 에러 원문을 그대로 보여준다(§4-1).
 // limits는 하드코딩하지 않고 항상 status.limits에서 읽는다(§3-2).
-function renderLinkForm(editingLink: AppLink | null): HTMLElement {
+function renderLinkForm(editingLink: AppLink | null, draft: LinkFormDraft): HTMLElement {
   const limits = state.appLinks.status?.limits;
   const maxNameLength = limits?.maxNameLength ?? 40;
   const maxUrlLength = limits?.maxUrlLength ?? 2048;
 
-  const nameInput = document.createElement('input');
+  const nameInput = boundField(
+    document.createElement('input'),
+    () => draft.name,
+    (v) => {
+      draft.name = v;
+    }
+  );
   nameInput.className = 'settings-input';
   nameInput.type = 'text';
   nameInput.autocomplete = 'off';
   nameInput.maxLength = maxNameLength;
-  nameInput.value = editingLink?.name ?? '';
 
-  const urlInput = document.createElement('input');
+  const urlInput = boundField(
+    document.createElement('input'),
+    () => draft.url,
+    (v) => {
+      draft.url = v;
+    }
+  );
   urlInput.className = 'settings-input';
   urlInput.type = 'text';
   urlInput.autocomplete = 'off';
   urlInput.maxLength = maxUrlLength;
   urlInput.placeholder = 'https://example.internal';
-  urlInput.value = editingLink?.url ?? '';
 
   const form = el('form', { className: 'settings-form' }, [
     el('div', { className: 'settings-form-hint' }, ['https:// 또는 http:// 로 시작하는 주소를 입력하세요.']),
@@ -196,13 +213,13 @@ function renderLinkForm(editingLink: AppLink | null): HTMLElement {
 // sessions.ts/autonomousTasks.ts와 동일한 모달 구조(modal-overlay/modal-box/
 // modal-header+modal-close-btn/modal-body) — 배경 클릭·ESC·닫기 버튼·취소 버튼
 // 4가지 경로로 닫힌다.
-function renderLinkFormModal(editingLink: AppLink | null): HTMLElement {
+function renderLinkFormModal(editingLink: AppLink | null, draft: LinkFormDraft): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
       el('h2', { className: 'modal-title' }, [editingLink ? '앱링크 수정' : '새 앱링크 추가']),
       el('button', { className: 'modal-close-btn', onClick: closeLinkFormModal }, ['✕']),
     ]),
-    el('div', { className: 'modal-body' }, [renderLinkForm(editingLink)]),
+    el('div', { className: 'modal-body' }, [renderLinkForm(editingLink, draft)]),
   ]);
   return createModalOverlay(modalBox, closeLinkFormModal);
 }

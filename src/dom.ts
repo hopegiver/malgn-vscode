@@ -182,6 +182,49 @@ export function confirmDialog(
   });
 }
 
+// 폼 값 바인딩 — 배경 이벤트(파일시스템 워처·폴링·타이머)로 인한 전체 재렌더
+// (main.ts renderApp()의 root.replaceChildren())가 일어나도 입력 중이던 값이
+// 사라지지 않게 하는 공용 헬퍼(hub 이슈 01m2zwcx7etvk9zh617tk7bayq). 이 앱은
+// 매 렌더마다 폼 함수를 처음부터 다시 실행해 <input>/<textarea>/<select>를
+// 새로 만든다 — 값을 그 DOM 노드에만 담으면 노드 자체가 버려지는 순간 값도
+// 함께 사라진다.
+//
+// 해법: 값을 DOM이 아니라 호출부가 준비한 "드래프트 저장소"(get/set)에 둔다.
+// 이벤트가 날 때마다 set()으로 저장소에 쓰고(렌더를 트리거하지 않는다 — 세션
+// 채팅 입력창 views/sessions.ts의 renderChatInputArea가 먼저 쓰던 패턴을
+// 승격했다), 렌더 시점에는 get()으로 그 저장소에서 값을 읽어 채운다. 저장소가
+// 렌더 함수 "안"의 로컬 변수가 아니라 그 바깥(모달 오픈 시 한 번만 초기화되고
+// 닫힐 때 버려지는 모듈 스코프 draft 객체, 또는 앱 생애주기 내내 의미 있는
+// 값이면 전역 state)에 있으면 재렌더가 일어나도 값이 복원된다. 새 폼을 추가할
+// 때는 `document.createElement('input')` 뒤에 `.value = x`를 직접 대입하지
+// 말고 이 함수로 감싸라 — 그래야 다음 폼에서 같은 버그가 재발하지 않는다.
+//
+// 커서 위치(selection)는 복원하지 않는다 — DOM 노드 자체가 매 렌더 교체되는
+// 구조에서 selection까지 복원하려면 매 렌더마다 활성 포커스 노드를 추적해
+// 재렌더 직후 같은 자리에 focus()+setSelectionRange()를 호출해야 하는데, 이
+// 앱은 배경 이벤트가 잦아(세션 파일 감시·자율업무 폴링·devtools 경과시간
+// 타이머) 그 훅을 모든 라우트에 안전하게 얹는 비용이 값 보존이라는 핵심 목표
+// 대비 크다. 값이 보존되면 최소한 실질적 데이터 유실 없이 이어서 타이핑할 수
+// 있다(포커스가 한 번 끊기는 것은 남지만, 지금까지 입력한 내용은 남는다).
+export function boundField<E extends HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+  node: E,
+  get: () => string,
+  set: (value: string) => void,
+  eventName: 'input' | 'change' = 'input'
+): E {
+  node.value = get();
+  node.addEventListener(eventName, () => set(node.value));
+  return node;
+}
+
+// 체크박스/라디오 전용 — boundField와 같은 이유로 checked 상태도 드래프트에
+// 보관한다.
+export function boundChecked(node: HTMLInputElement, get: () => boolean, set: (checked: boolean) => void): HTMLInputElement {
+  node.checked = get();
+  node.addEventListener('change', () => set(node.checked));
+  return node;
+}
+
 // 토스트 — 설정 저장 등 "실제로는 아무것도 안 하지만 사용자에게 반응은 보여줘야 하는"
 // 목업 액션의 피드백 채널. #app 트리 바깥(document.body 직속)에 붙여서 메인
 // render() 사이클(전체 재빌드)의 영향을 받지 않게 한다.

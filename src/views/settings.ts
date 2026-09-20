@@ -1,4 +1,4 @@
-import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay } from '../dom';
+import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, boundField } from '../dom';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
@@ -160,6 +160,14 @@ export async function ensureOtelAutoConfigured(): Promise<void> {
   }
 }
 
+// 입력 중 드래프트 — boundField(dom.ts)가 쓰는 저장소. `forSettings`로 "이
+// 드래프트가 어느 settings 객체를 위해 초기화됐는지"를 기억해뒀다가, 실제로
+// 새로 불러오거나(loadOtelEnv) 저장에 성공했을 때만(state.otel.settings가 새
+// 객체로 교체될 때만) 드래프트를 다시 채운다. 배경 이벤트로 인한 재렌더는
+// state.otel.settings 참조를 바꾸지 않으므로 드래프트가 그대로 남아 입력값이
+// 보존된다.
+let otelDraft: { forSettings: OtelSettings | null; values: Record<string, string> } = { forSettings: null, values: {} };
+
 function renderOtelPanel(): HTMLElement {
   if (state.otel.loading && !state.otel.loaded) {
     return el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]);
@@ -187,6 +195,19 @@ function renderOtelPanel(): HTMLElement {
     ]);
   }
 
+  // settings 객체가 "새로 불러온" 것일 때만(참조가 바뀌었을 때만) 드래프트를
+  // 다시 채운다 — 배경 이벤트로 인한 재렌더는 여기 도달하지 않는다(참조 동일).
+  if (otelDraft.forSettings !== settings) {
+    const values: Record<string, string> = {};
+    for (const key of settings.managedKeys) {
+      if (key === 'OTEL_RESOURCE_ATTRIBUTES') continue;
+      const hasValue = key in settings.values;
+      const hasDefault = key in settings.defaults;
+      values[key] = hasValue ? settings.values[key] : hasDefault ? settings.defaults[key] : '';
+    }
+    otelDraft = { forSettings: settings, values };
+  }
+
   const inputs = new Map<string, HTMLInputElement>();
   const fields: HTMLElement[] = [];
 
@@ -208,15 +229,19 @@ function renderOtelPanel(): HTMLElement {
     const readOnly = settings.readOnlyKeys.includes(key);
     const hasValue = key in settings.values;
     const hasDefault = key in settings.defaults;
-    const initialValue = hasValue ? settings.values[key] : hasDefault ? settings.defaults[key] : '';
     const isDefaultOnly = !hasValue && hasDefault;
     const isEndpoint = key.endsWith('_ENDPOINT');
 
-    const input = document.createElement('input');
+    const input = boundField(
+      document.createElement('input'),
+      () => otelDraft.values[key],
+      (v) => {
+        otelDraft.values[key] = v;
+      }
+    );
     input.id = `otel-${key}`;
     input.name = key;
     input.type = 'text';
-    input.value = initialValue;
     input.className = 'settings-input';
     input.autocomplete = 'off';
     input.disabled = readOnly;
@@ -542,6 +567,7 @@ async function handleAddMarketplace(source: string): Promise<void> {
     const result = await addMarketplace(source);
     if (result.success) {
       showToast(`마켓플레이스를 추가했습니다: ${result.message}`);
+      marketplaceAddDraft = ''; // 성공했을 때만 인라인 입력창을 비운다(실패 시에는 사용자가 다시 타이핑하지 않도록 남긴다)
       await loadMarketplaces();
       await loadCatalog();
     } else {
@@ -587,11 +613,22 @@ async function handleRemoveMarketplace(marketplace: MarketplaceInfo): Promise<vo
   }
 }
 
+// 입력 중 드래프트 — 이 폼은 모달이 아니라 탭 화면에 항상 노출되므로(열림/닫힘
+// 전이가 없다) 소스 코드 로드 시점에 한 번만 초기화하고, 성공적으로 추가됐을
+// 때만(handleAddMarketplace) 명시적으로 비운다. 배경 이벤트로 인한 재렌더는
+// 이 값을 건드리지 않는다.
+let marketplaceAddDraft = '';
+
 // 인라인 추가 폼 — MCP 관리 탭의 "새 MCP 서버" 모달과 달리 필드가 하나뿐이라
-// 모달 없이 카드 상단에 항상 노출한다. 제출 성공 시 loadMarketplaces()로 목록을
-// 다시 읽어오면 이 함수가 통째로 재렌더되어 입력값도 자연히 비워진다.
+// 모달 없이 카드 상단에 항상 노출한다.
 function renderMarketplaceAddForm(): HTMLElement {
-  const input = document.createElement('input');
+  const input = boundField(
+    document.createElement('input'),
+    () => marketplaceAddDraft,
+    (v) => {
+      marketplaceAddDraft = v;
+    }
+  );
   input.className = 'settings-input';
   input.type = 'text';
   input.placeholder = '예: https://github.com/acme/plugins, ./local/marketplace';
@@ -896,8 +933,37 @@ function renderTelegramMcpQuickstartRow(): HTMLElement {
 // GitHub 공식 MCP 빠른시작(renderGithubMcpQuickstartRow)·Telegram 빠른시작
 // (renderTelegramMcpQuickstartRow)이 prefill을 채워 여는 진입점도 함께 옮긴다.
 let mcpAddModalOpen = false;
-let mcpAddPrefill: McpAddPrefill | null = null;
 let mcpAddModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+// 입력 중 드래프트 — 모달이 열릴 때(openMcpAddModal) prefill로 한 번만 초기화되고,
+// 닫힐 때(closeMcpAddModal) 버려진다. 배경 이벤트로 인한 재렌더는 이 값을
+// 건드리지 않으므로 입력 중이던 값이 보존된다(dom.ts의 boundField 참고).
+interface McpAddFormDraft {
+  name: string;
+  transport: McpTransport;
+  target: string;
+  args: string;
+  header: string;
+  oauthClientId: string;
+  oauthClientSecret: string;
+  oauthCallbackPort: string;
+  env: string;
+}
+let mcpAddDraft: McpAddFormDraft | null = null;
+
+function buildInitialMcpAddDraft(prefill: McpAddPrefill | null): McpAddFormDraft {
+  return {
+    name: prefill?.name ?? '',
+    transport: prefill?.transport ?? 'stdio',
+    target: prefill?.target ?? '',
+    args: prefill?.args ?? '',
+    header: '',
+    oauthClientId: '',
+    oauthClientSecret: '',
+    oauthCallbackPort: '',
+    env: prefill?.env ?? '',
+  };
+}
 
 function detachMcpAddModalEscHandler(): void {
   if (mcpAddModalEscHandler) {
@@ -907,14 +973,14 @@ function detachMcpAddModalEscHandler(): void {
 }
 
 function openMcpAddModal(prefill: McpAddPrefill | null): void {
-  mcpAddPrefill = prefill;
+  mcpAddDraft = buildInitialMcpAddDraft(prefill);
   mcpAddModalOpen = true;
   notifyChange();
 }
 
 function closeMcpAddModal(): void {
   mcpAddModalOpen = false;
-  mcpAddPrefill = null;
+  mcpAddDraft = null;
   detachMcpAddModalEscHandler();
   notifyChange();
 }
@@ -930,7 +996,7 @@ function renderMcpAddModalIfOpen(): HTMLElement | null {
     };
     window.addEventListener('keydown', mcpAddModalEscHandler);
   }
-  return renderMcpAddModal(mcpAddPrefill ?? undefined);
+  return renderMcpAddModal();
 }
 
 // 설정 화면에서 MCP 관리 탭을 벗어날 때(다른 탭으로 이동하거나 라우트를 완전히
@@ -939,20 +1005,20 @@ function renderMcpAddModalIfOpen(): HTMLElement | null {
 // leaveAutonomousTasksListView와 동일한 원칙).
 export function leaveMcpSettingsView(): void {
   mcpAddModalOpen = false;
-  mcpAddPrefill = null;
+  mcpAddDraft = null;
   detachMcpAddModalEscHandler();
 }
 
 // createModalOverlay로 배경 클릭·ESC·닫기 버튼 3가지 경로로 닫힌다(다른
 // 화면들과 동일한 modal-overlay/modal-box/modal-header+modal-close-btn/
 // modal-body 구조).
-function renderMcpAddModal(prefill?: McpAddPrefill): HTMLElement {
+function renderMcpAddModal(): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
       el('h2', { className: 'modal-title' }, ['새 MCP 서버 등록']),
       el('button', { className: 'modal-close-btn', onClick: closeMcpAddModal }, ['✕']),
     ]),
-    el('div', { className: 'modal-body' }, [renderMcpAddForm(prefill)]),
+    el('div', { className: 'modal-body' }, [renderMcpAddForm()]),
   ]);
   return createModalOverlay(modalBox, closeMcpAddModal);
 }
@@ -1182,14 +1248,30 @@ interface McpAddPrefill {
   readonly env?: string;
 }
 
-function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
-  const nameInput = document.createElement('input');
+function renderMcpAddForm(): HTMLElement {
+  // 모달이 열려 있을 때만 이 함수가 호출되므로(renderMcpAddModalIfOpen) 항상
+  // 채워져 있다 — 방어적으로 한 번 더 초기화해 타입만 좁힌다.
+  const draft = mcpAddDraft ?? (mcpAddDraft = buildInitialMcpAddDraft(null));
+
+  const nameInput = boundField(
+    document.createElement('input'),
+    () => draft.name,
+    (v) => {
+      draft.name = v;
+    }
+  );
   nameInput.className = 'settings-input';
   nameInput.placeholder = '예: plugin:malgn-agent:malgnai-hub';
   nameInput.autocomplete = 'off';
-  if (prefill) nameInput.value = prefill.name;
 
-  const transportSelect = document.createElement('select');
+  const transportSelect = boundField(
+    document.createElement('select'),
+    () => draft.transport,
+    (v) => {
+      draft.transport = v as McpTransport;
+    },
+    'change'
+  );
   transportSelect.className = 'settings-input';
   for (const t of ['stdio', 'http', 'sse'] as const) {
     const opt = document.createElement('option');
@@ -1197,21 +1279,37 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
     opt.textContent = t;
     transportSelect.appendChild(opt);
   }
-  if (prefill) transportSelect.value = prefill.transport;
+  transportSelect.value = draft.transport;
 
-  const targetInput = document.createElement('input');
+  const targetInput = boundField(
+    document.createElement('input'),
+    () => draft.target,
+    (v) => {
+      draft.target = v;
+    }
+  );
   targetInput.className = 'settings-input';
   targetInput.autocomplete = 'off';
-  if (prefill) targetInput.value = prefill.target;
 
-  const argsInput = document.createElement('input');
+  const argsInput = boundField(
+    document.createElement('input'),
+    () => draft.args,
+    (v) => {
+      draft.args = v;
+    }
+  );
   argsInput.className = 'settings-input';
   argsInput.placeholder = '예: run server.js --port 3000 (공백으로 구분해 args 배열로 변환)';
   argsInput.autocomplete = 'off';
-  if (prefill?.args) argsInput.value = prefill.args;
   const argsField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['실행 인자 (args)']), argsInput]);
 
-  const headerInput = document.createElement('input');
+  const headerInput = boundField(
+    document.createElement('input'),
+    () => draft.header,
+    (v) => {
+      draft.header = v;
+    }
+  );
   headerInput.className = 'settings-input';
   headerInput.placeholder = 'Authorization: Bearer xxx (비워두면 헤더 없음)';
   headerInput.autocomplete = 'off';
@@ -1219,7 +1317,13 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
 
   // 내부(사내) MCP 서버용 OAuth 설정 — http/sse 전용. Client Secret은 실제
   // 인증서버 발급 비밀값이라 반드시 마스킹한다(env textarea와 달리).
-  const oauthClientIdInput = document.createElement('input');
+  const oauthClientIdInput = boundField(
+    document.createElement('input'),
+    () => draft.oauthClientId,
+    (v) => {
+      draft.oauthClientId = v;
+    }
+  );
   oauthClientIdInput.className = 'settings-input';
   oauthClientIdInput.placeholder = '내부 MCP 서버의 OAuth Client ID';
   oauthClientIdInput.autocomplete = 'off';
@@ -1228,7 +1332,13 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
     oauthClientIdInput,
   ]);
 
-  const oauthClientSecretInput = document.createElement('input');
+  const oauthClientSecretInput = boundField(
+    document.createElement('input'),
+    () => draft.oauthClientSecret,
+    (v) => {
+      draft.oauthClientSecret = v;
+    }
+  );
   oauthClientSecretInput.className = 'settings-input';
   oauthClientSecretInput.type = 'password';
   oauthClientSecretInput.placeholder = '내부 MCP 서버의 OAuth Client Secret';
@@ -1238,7 +1348,13 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
     oauthClientSecretInput,
   ]);
 
-  const oauthCallbackPortInput = document.createElement('input');
+  const oauthCallbackPortInput = boundField(
+    document.createElement('input'),
+    () => draft.oauthCallbackPort,
+    (v) => {
+      draft.oauthCallbackPort = v;
+    }
+  );
   oauthCallbackPortInput.className = 'settings-input';
   oauthCallbackPortInput.type = 'number';
   oauthCallbackPortInput.placeholder = '예: 51000';
@@ -1248,12 +1364,17 @@ function renderMcpAddForm(prefill?: McpAddPrefill): HTMLElement {
     oauthCallbackPortInput,
   ]);
 
-  const envInput = document.createElement('textarea');
+  const envInput = boundField(
+    document.createElement('textarea'),
+    () => draft.env,
+    (v) => {
+      draft.env = v;
+    }
+  );
   envInput.className = 'settings-input';
   envInput.rows = 3;
   envInput.placeholder = '한 줄에 KEY=VALUE 하나씩 입력\n예: GRAFANA_URL=http://localhost:3000\nGRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_xxx';
   envInput.autocomplete = 'off';
-  if (prefill?.env) envInput.value = prefill.env;
   const envField = el('label', { className: 'settings-field' }, [el('span', { className: 'settings-field-label' }, ['환경변수 (선택)']), envInput]);
 
   // stdio/http/sse에 따라 target placeholder와 args/header/env 필드 노출 여부가
