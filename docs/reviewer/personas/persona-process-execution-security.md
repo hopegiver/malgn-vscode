@@ -69,3 +69,6 @@
 - 2026-09-15 / target_id `devtools-windows-parity` / 2차(증분 — 새 리스크 표면 1개 `-EncodedCommand`, 신규 페르소나 0) / `docs/reviewer/review-devtools-windows-parity-2026-09-15-r2.md`
   — 재사용 사유: 역할개념("이 앱이 실행하는 명령의 argv·셸·env·프로세스 수명이 안전한가")이 그대로 과녁이다. 이번 라운드의 새 실행경로(`powershell.exe -Command` → `-EncodedCommand` UTF-16LE+base64)는 전달 형식의 변경이라 이 페르소나의 관심사 1(동적 값의 출처와 인용 책임 위치)에 정확히 들어온다. 6대 요소 무수정.
   — 이번 라운드 집중: `-Command` 프로덕션 잔존 여부 전수(`git grep`), `spawn_terminal_window`가 3개 공개 진입점의 유일한 스폰 지점인지, `quote_token`→`build_terminal_command_line`→`encode_powershell_command` 3층의 책임 경계가 주석과 실제 코드에서 일치하는지, 고정 리터럴 표(`''''`)의 손 재계산, base64 인자가 Rust argv 재인용·PowerShell 파라미터 파서에서 특수 처리될 여지, 다운로드 폴더 포터블 exe가 `-EncodedCommand`를 스폰할 때의 EDR 표면.
+- 2026-09-21 / target_id `malgn-vscode-v025-idle-review` / 1차(최초, 풀패널) / `docs/reviewer/review-v0.2.5-whole-app-2026-09-21.md`
+  — 재사용 사유: 역할개념 4요소 중 **"프로세스 수명"** 과 **IPC 커맨드 표면**이 이번 라운드의 과녁이다. 이전 라운드들은 argv·셸 인용을 봤고, 이번은 앱이 스스로 띄운 장수 스레드(자율업무 스케줄러)가 조용히 죽을 수 있는지와, 호출부 0인 커맨드가 IPC 표면에 남아 있는지를 본다. 6대 요소 무수정.
+  — 이번 라운드 집중: `autonomy/mod.rs:347-352`의 무방비 `loop { tick(); sleep(); }`가 패닉/뮤텍스 poisoning 시 영구 정지하는 경로(`lock().unwrap()` 54곳, 같은 크레이트에 `catch_unwind` 선례 존재), 그리고 `lib.rs:27-30,71`의 템플릿 잔재 `greet` 커맨드가 "권한 표면을 의도적으로 좁게 유지한다"는 CLAUDE.md 원칙과 어긋나는지.

@@ -55,3 +55,6 @@
 - 2026-09-14 / target_id `malgn-vscode-uiux-round1` / 3차(축소 모드 — 신규 페르소나 0) / `docs/reviewer/round3-uiux-review.md`
   — 재사용 사유: 라운드2가 남긴 미판정 항목(V-08 라벨 한/영 혼용, V-13 상태별 폭 널뛰기)이 전부 이 페르소나의 V4/V5 기준이고, R-01′로 새로 들어온 breakdown 문구의 일관성도 같은 잣대다. 6대 요소 무수정.
   — 이번 라운드 집중: V-08·V-13 실물 재확인 후 최종 채택/기각, R-01′ 조치 신호 3종(⚠ 형식 오류 / Wrangler 미설치 / ⚠ 미연결 MCP)의 표기 일관성, 라운드2가 추가한 `.sidebar :focus-visible` 규칙이 실제로 적용될 대상을 갖는지.
+- 2026-09-21 / target_id `malgn-vscode-v025-idle-review` / 1차(최초, 풀패널) / `docs/reviewer/review-v0.2.5-whole-app-2026-09-21.md`
+  — 재사용 사유: 역할개념("같은 것이 같아 보이는가, 두 번 이상 반복된 값이 하드코딩돼 있는가")이 그대로 과녁이다. 이전 3라운드는 토큰 값(대비·radius·shadow)을 봤고, 이번은 **토큰이 아니라 규칙 자체의 부재**(TS가 붙이는 클래스에 대응 CSS 규칙이 없음)를 본다. 6대 요소 무수정.
+  — 이번 라운드 집중: `styles.css` 276개 클래스와 TS 참조의 양방향 대조(고아 규칙 10개 / 규칙 없는 클래스 9개), 그 결과 형제 관계인 `.project-card-desc`(12px muted)와 `.plugin-card-desc`(규칙 없음 → 14px 본문색)가 실측으로 달라 보이는지 확인.
