@@ -49,6 +49,35 @@ async function ensureDir(dir) {
   await mkdir(dir, { recursive: true });
 }
 
+// 개발서버(Vite) 미기동을 "제품 버그"로 오집계하지 않기 위한 사전 점검.
+// bugs=113 consoleErrors=3 처럼 나왔던 실제 사고 원인이 서버 다운(net::ERR_CONNECTION_REFUSED)이었음.
+const DEV_SERVER_HINT = `개발서버(${BASE_URL})에 연결할 수 없습니다. \`pnpm dev\`로 띄운 뒤 다시 실행하세요.`;
+
+async function isDevServerReachable() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      await fetch(BASE_URL, { signal: controller.signal });
+      return true; // 상태코드 무관 — 응답이 왔다는 것 자체가 서버 기동 신호.
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
+  }
+}
+
+// 사전 점검은 "시작 시점" 미기동만 잡는다. 시나리오 도중 서버가 죽는 경우(별도
+// 확인 사항)는 page.goto가 던지는 net::ERR_CONNECTION_REFUSED를 여기서 식별해
+// "제품 버그"가 아니라 "환경 실패"로 구분하고, 나머지 시나리오를 계속 돌려봐야
+// 전부 같은 이유로 오염되므로 전체 실행을 즉시 중단한다(부분 분류까지는 하지
+// 않음 — 과설계 방지, 아래 반환 텍스트에 한계 명시).
+class EnvironmentFailureError extends Error {}
+function isConnectionRefusedError(err) {
+  return /ERR_CONNECTION_REFUSED/.test(String(err?.message ?? err));
+}
+
 async function runScenario(browser, flow, scenario, baseFixtures) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 820 } });
   const page = await context.newPage();
@@ -87,6 +116,14 @@ async function runScenario(browser, flow, scenario, baseFixtures) {
     // 각자 추가로 기다린다).
     await page.waitForTimeout(500);
   } catch (err) {
+    if (isConnectionRefusedError(err)) {
+      // 시작 시점엔 떠 있다가 시나리오 도중 개발서버가 죽은 경우. "제품 버그"로
+      // 잘못 집계하지 않도록 별도 에러 타입으로 올려 전체 실행을 중단시킨다.
+      await context.close();
+      throw new EnvironmentFailureError(
+        `${flow.flowId}/${scenario.id} 진행 중 개발서버 연결이 끊겼습니다(${err.message}). ${DEV_SERVER_HINT}`,
+      );
+    }
     bugs.push({ severity: 'Critical', symptom: `페이지 로드 실패: ${err.message}`, file: 'harness', repro: `${BASE_URL}/${hash} 접속` });
   }
 
@@ -121,6 +158,18 @@ async function runScenario(browser, flow, scenario, baseFixtures) {
 }
 
 async function main() {
+  // 시나리오 루프 진입 전 필수 전제조건 확인: 개발서버 미기동을 "bugs"로
+  // 오집계했던 실제 사고(bugs=113) 재발 방지. 여기서 실패하면 시나리오를 하나도
+  // 돌리지 않고 즉시 비정상 종료한다 — last-run-report.json은 건드리지 않는다
+  // (직전의 유효한 결과를 지우지 않기 위해 writeFile 이전에 종료).
+  log(`[harness] 개발서버(${BASE_URL}) 도달 가능 여부 확인 중...`);
+  if (!(await isDevServerReachable())) {
+    log(`[harness] 중단: ${DEV_SERVER_HINT}`);
+    process.exitCode = 1;
+    return;
+  }
+  log('[harness] 개발서버 응답 확인됨.');
+
   await ensureDir(SHOTS_DIR);
   log('[harness] 베이스 픽스처(실 로컬 데이터) 조립 중...');
   const base = await buildBaseFixtures();
@@ -129,18 +178,30 @@ async function main() {
   const browser = await chromium.launch();
   const results = [];
 
-  for (const flow of FLOWS) {
-    if (flowFilter && flow.flowId !== flowFilter) continue;
-    const scenarioList = flow.scenarios(base);
-    for (const scenario of scenarioList) {
-      if (scenarioFilter && scenario.id !== scenarioFilter) continue;
-      log(`[harness] ▶ ${flow.flowId} / ${scenario.id}`);
-      const result = await runScenario(browser, flow, scenario, base);
-      const bugCount = result.bugs.length;
-      const errCount = result.consoleErrors.length;
-      log(`[harness]   완료 — bugs=${bugCount} consoleErrors=${errCount} shots=${result.screenshots.length}`);
-      results.push(result);
+  try {
+    for (const flow of FLOWS) {
+      if (flowFilter && flow.flowId !== flowFilter) continue;
+      const scenarioList = flow.scenarios(base);
+      for (const scenario of scenarioList) {
+        if (scenarioFilter && scenario.id !== scenarioFilter) continue;
+        log(`[harness] ▶ ${flow.flowId} / ${scenario.id}`);
+        const result = await runScenario(browser, flow, scenario, base);
+        const bugCount = result.bugs.length;
+        const errCount = result.consoleErrors.length;
+        log(`[harness]   완료 — bugs=${bugCount} consoleErrors=${errCount} shots=${result.screenshots.length}`);
+        results.push(result);
+      }
     }
+  } catch (err) {
+    await browser.close();
+    if (err instanceof EnvironmentFailureError) {
+      // 시나리오 도중 서버가 죽은 경우 — 이미 실행한 결과가 있어도 리포트를
+      // 쓰지 않는다(부분 결과가 "정상 실행" 리포트로 오독될 수 있음).
+      log(`[harness] 중단(환경 실패): ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
   }
 
   await browser.close();
