@@ -158,6 +158,11 @@
     fn default_path_dirs_win_includes_system_and_npm_pnpm_winget_dirs() {
         let roots = win_roots();
         let dirs = default_path_dirs(Platform::Win, &roots);
+        // 갱신(2026-09-21, hub 이슈 01m30vamyw8z58b9pk8h5epmgh): git 3개 후보
+        // 디렉터리(ProgramFiles/ProgramFiles(x86)/LOCALAPPDATA\Programs)가
+        // 추가됐다 — `claude`가 내부에서 bare `git`을 호출할 때 이 PATH로
+        // 찾는데 git 디렉터리가 전혀 없어 "Command 'git' not found or is in
+        // an unsafe location"으로 카탈로그 업데이트가 실패했다.
         assert_eq!(
             dirs,
             vec![
@@ -165,12 +170,84 @@
                 r"C:\Windows".to_string(),
                 r"C:\Windows\System32\Wbem".to_string(),
                 r"C:\Program Files\nodejs".to_string(),
+                r"C:\Program Files\Git\cmd".to_string(),
+                r"C:\Program Files (x86)\Git\cmd".to_string(),
                 r"C:\Users\hopegiver\AppData\Roaming\npm".to_string(),
                 r"C:\Users\hopegiver\AppData\Local\pnpm".to_string(),
                 r"C:\Users\hopegiver\AppData\Local\Programs\nodejs".to_string(),
+                r"C:\Users\hopegiver\AppData\Local\Programs\Git\cmd".to_string(),
                 r"C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps".to_string(),
             ]
         );
+    }
+
+    // 실사용자 재현 회귀 테스트(2026-09-21, hub 이슈
+    // 01m30vamyw8z58b9pk8h5epmgh, 원문 재현): 카탈로그 "업데이트" 버튼 →
+    // `claude plugin marketplace update` → 내부 `git clone`이 "Command 'git'
+    // not found or is in an unsafe location (current directory)"로 실패했다.
+    // `default_path_dirs_win_includes_both_known_node_install_dirs_for_cmd_shim_execution`
+    // 이 Node에 대해 하는 것과 같은 형태 — git 설치 디렉터리 셋 중 최소
+    // 하나가 아니라 **셋 다**(ProgramFiles/ProgramFiles(x86)/사용자 스코프)
+    // 있어야 한다는 사실을 이름으로 못박는다.
+    #[test]
+    fn default_path_dirs_win_includes_all_three_known_git_install_dirs_for_claude_internal_git_calls() {
+        let roots = win_roots();
+        let dirs = default_path_dirs(Platform::Win, &roots);
+        assert!(
+            dirs.contains(&r"C:\Program Files\Git\cmd".to_string()),
+            "Git for Windows 64비트 기본 설치 위치가 없습니다 — claude 내부의 \
+             bare `git` 호출이 이 디렉터리 없이는 실패합니다"
+        );
+        assert!(
+            dirs.contains(&r"C:\Program Files (x86)\Git\cmd".to_string()),
+            "Git for Windows 32비트 설치 위치가 없습니다"
+        );
+        assert!(
+            dirs.contains(&r"C:\Users\hopegiver\AppData\Local\Programs\Git\cmd".to_string()),
+            "사용자 스코프(PortableGit류) Git 설치 위치가 없습니다"
+        );
+    }
+
+    // 구조 연결 대안(2026-09-21, hub 이슈 01m30vamyw8z58b9pk8h5epmgh, (b)
+    // 판단): default_path_dirs가 DEV_TOOLS::windows_path_candidates에서
+    // 디렉터리를 실행 시점에 자동 유도하도록 만들지 **않았다** — 두 목록은
+    // 같은 개념이 아니기 때문이다. DEV_TOOLS.windows_path_candidates는
+    // "그 도구 자신의 바이너리가 있을 만한 모든 자리"(탐지용, 넓게 잡아도
+    // 안전 — resolve_tool_path가 exists 확인 후에만 쓴다)이고,
+    // default_path_dirs는 "다른 스폰된 프로세스(claude.exe, npm .cmd shim
+    // 등)가 내부에서 bare-name으로 의존하는 도구를 찾을 최소 PATH
+    // 백본"(자식 프로세스에 그대로 주입되는 제어된 좁은 표면, G-1/G-3)이다.
+    // 전량 자동 유도는 GitHub CLI 자기 설치 경로나 WinGet\Links(앱 실행
+    // 별칭, claude/gh/node 자기 탐지용)처럼 "다른 도구가 의존하지 않는"
+    // 위치까지 child PATH에 얹어 탐색 표면을 근거 없이 넓힌다(아래 (c)
+    // 대조 결과 참고) — 게다가 mod.rs가 platform.rs를 쓰는 현재의 단방향
+    // 참조를 역전시켜야 해서(순환은 cli_launcher.rs 선례처럼 컴파일은
+    // 되지만) 이득 대비 불필요한 결합을 늘린다. 대신 이 테스트가 "정본
+    // 어긋남 감지" 역할을 한다: DEV_TOOLS의 git 후보에서 유도한 디렉터리가
+    // default_path_dirs에 전부 들어있는지 매 테스트 실행마다 대조한다 —
+    // git 후보를 늘리거나 바꾸고 default_path_dirs를 갱신하지 않으면 이
+    // 테스트가 즉시 실패한다.
+    #[test]
+    fn default_path_dirs_win_contains_every_dir_derived_from_git_windows_path_candidates() {
+        let roots = win_roots();
+        let git_def = crate::dev_tools::DEV_TOOLS
+            .iter()
+            .find(|d| d.key == "git")
+            .expect("DEV_TOOLS에 git 항목이 있어야 합니다");
+        let dirs = default_path_dirs(Platform::Win, &roots);
+        for candidate in git_def.windows_path_candidates {
+            let expanded = expand_path_tokens(Platform::Win, candidate, &roots)
+                .expect("win_roots()는 모든 토큰의 뿌리를 채워야 합니다");
+            let parent = windows_parent_dir(&expanded)
+                .expect("git 후보는 항상 '디렉터리\\파일명' 형태여야 합니다");
+            assert!(
+                dirs.contains(&parent),
+                "DEV_TOOLS의 git 후보 '{candidate}'(전개: {expanded})의 디렉터리 \
+                 '{parent}'가 default_path_dirs(Windows)에 없습니다 — DEV_TOOLS \
+                 쪽 git 후보를 늘리거나 바꿨다면 default_path_dirs도 함께 \
+                 갱신해야 합니다(이슈 01m30vamyw8z58b9pk8h5epmgh)."
+            );
+        }
     }
 
     // 실사용자 재현 회귀 테스트(2026-09-18): npm 전역 설치 wrangler.cmd는
@@ -250,7 +327,7 @@
         // 실제 회귀(런너 자신이 node.exe와 다른 디렉터리에 있는 경우)를 잡는다.
         assert_eq!(
             path,
-            r"C:\Program Files\nodejs;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Users\hopegiver\AppData\Roaming\npm;C:\Users\hopegiver\AppData\Local\pnpm;C:\Users\hopegiver\AppData\Local\Programs\nodejs;C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps"
+            r"C:\Program Files\nodejs;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Program Files\Git\cmd;C:\Program Files (x86)\Git\cmd;C:\Users\hopegiver\AppData\Roaming\npm;C:\Users\hopegiver\AppData\Local\pnpm;C:\Users\hopegiver\AppData\Local\Programs\nodejs;C:\Users\hopegiver\AppData\Local\Programs\Git\cmd;C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps"
         );
     }
 

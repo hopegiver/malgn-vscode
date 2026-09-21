@@ -47,6 +47,9 @@ macOS 개발 환경과 CI(`windows-latest`)로는 검증할 수 없는 항목만
   - 버튼을 누르면 PowerShell 창이 열리고 `claude login`이 실행되는가
 - [ ] 오류 메시지가 뜬 뒤 **사라지지 않고 남아 있다**
 - [ ] 마켓플레이스 설정에 **"맑은소프트 마켓플레이스 추가"** 안내가 뜨고, 버튼 한 번으로 추가·제거된다
+- [ ] **카탈로그의 "업데이트" 버튼이 성공한다**
+  - 실패 시 `git ... not found or is in an unsafe location`이 뜨면 Git이 비표준 위치에 설치된 것이다 — `where git` 결과를 알려주세요
+  - 앱이 찾는 곳: `C:\Program Files\Git\cmd`, `C:\Program Files (x86)\Git\cmd`, `%LOCALAPPDATA%\Programs\Git\cmd`
 
 ## 4. v0.2.6~v0.2.7에서 고친 것 — 재발하지 않는지
 

@@ -40,10 +40,9 @@ pub(crate) struct EnvRoots {
     pub(crate) appdata: Option<PathBuf>,
     pub(crate) local_appdata: Option<PathBuf>,
     pub(crate) program_files: Option<PathBuf>,
-    #[allow(dead_code)] // %ProgramFiles(x86)% 토큰 확장에서 쓰지만, git 후보는
-    // 리터럴 절대경로로 고정돼 있어(B.5) 이 필드가 실제 소비되는 곳은
-    // expand_path_tokens 하나뿐이다 — 죽은 필드가 아니라 아직 후보 하나만
-    // 쓰는 필드.
+    // `%ProgramFiles(x86)%` 토큰 확장(expand_path_tokens)과 Windows 기본 PATH의
+    // git 32비트 설치 디렉터리 유도(default_path_dirs, 이슈
+    // 01m30vamyw8z58b9pk8h5epmgh)에서 쓴다.
     pub(crate) program_files_x86: Option<PathBuf>,
     #[allow(dead_code)] // Runner::Pnpm 해석은 기존 pnpm DevTool 정의를 재사용해
     // pnpm_home을 직접 쓰지 않는다(중복 방지, install_resolver.rs 기존 주석) —
@@ -176,6 +175,22 @@ fn win_join(base: &str, suffix: &str) -> String {
 /// node.exe`)와 디렉터리 부분이 동일하다 — 새 값을 지어낸 게 아니라 이미
 /// 이 코드베이스가 "Node가 있을 만한 자리"로 신뢰하는 두 곳을 그대로
 /// 재사용한 것이다.
+///
+/// 실사용자 재현 버그(2026-09-21, hub 이슈 01m30vamyw8z58b9pk8h5epmgh):
+/// 카탈로그 "업데이트" 버튼이 `Command 'git' not found or is in an unsafe
+/// location (current directory)`로 실패했다. `refresh_marketplaces` →
+/// `run_claude_command`(plugins/mod.rs)이 `claude`를 스폰할 때 이 함수가
+/// 만든 PATH를 그대로 주입하는데, 그 PATH에 git 설치 디렉터리가 전혀 없어
+/// `claude` 내부의 `git clone` 호출이 PATH에서 git을 못 찾았다 — 메시지의
+/// "unsafe location(현재 디렉터리)"은 git의 dubious-ownership 경고가 아니라
+/// `claude`가 CWD 폴백을 안전상 거부했다는 뜻이다(이 크레이트 `cli_launcher.rs`가
+/// Windows bare-name 스폰을 피하는 것과 같은 방어). 아래 세 경로는 mod.rs
+/// DEV_TOOLS의 Git windows_path_candidates
+/// (`C:\Program Files\Git\cmd\git.exe`, `C:\Program Files (x86)\Git\cmd\
+/// git.exe`, `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`)와 디렉터리 부분이
+/// 동일하다 — Node 때와 같은 재사용, 새 값을 지어내지 않았다.
+/// `default_path_dirs_win_contains_every_dir_derived_from_git_windows_path_candidates`
+/// (platform_tests.rs)가 두 목록의 어긋남을 잡는다.
 pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String> {
     match plat {
         Platform::Mac => [
@@ -197,7 +212,15 @@ pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String>
                 win_join(&win_join(&sys_root, "System32"), "Wbem"),
             ];
             if let Some(program_files) = &roots.program_files {
-                dirs.push(win_join(&program_files.to_string_lossy(), "nodejs"));
+                let pf = program_files.to_string_lossy();
+                dirs.push(win_join(&pf, "nodejs"));
+                dirs.push(win_join(&win_join(&pf, "Git"), "cmd"));
+            }
+            if let Some(program_files_x86) = &roots.program_files_x86 {
+                dirs.push(win_join(
+                    &win_join(&program_files_x86.to_string_lossy(), "Git"),
+                    "cmd",
+                ));
             }
             if let Some(appdata) = &roots.appdata {
                 dirs.push(win_join(&appdata.to_string_lossy(), "npm"));
@@ -206,6 +229,10 @@ pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String>
                 let local = local_appdata.to_string_lossy();
                 dirs.push(win_join(&local, "pnpm"));
                 dirs.push(win_join(&win_join(&local, "Programs"), "nodejs"));
+                dirs.push(win_join(
+                    &win_join(&win_join(&local, "Programs"), "Git"),
+                    "cmd",
+                ));
                 dirs.push(win_join(&win_join(&local, "Microsoft"), "WindowsApps"));
             }
             dirs
