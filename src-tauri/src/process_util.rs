@@ -75,6 +75,44 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
+// ---------------- 프로세스 그룹 종료(SIGTERM → 3초 유예 → SIGKILL) ----------------
+// `session_chat::turn`(채팅 턴 취소·앱 종료 정리)이 원래 갖고 있던 구현을
+// 그대로 옮긴 것이다(로직 무변경). `claude_auth`(로그인 프로세스 취소·앱
+// 자체 타임아웃·앱 종료 정리)가 같은 종료 정책을 필요로 하게 되면서,
+// `pid_alive`와 같은 이유로 두 번째 사본을 복붙하지 않고 이 한 곳으로
+// 모았다 — 이 함수를 다시 복붙하지 말 것.
+#[cfg(unix)]
+pub fn kill_process_group_with_grace(pid: u32) {
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if pid_alive(pid) {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    });
+}
+
+/// Windows에는 POSIX 프로세스 그룹이 없다. `taskkill /T /F`는 셸을 거치지
+/// 않는 직접 프로세스 실행(S1 불변식 유지)이며 대상 트리를 강제 종료하므로
+/// 별도의 유예 폴링이 필요 없다. `taskkill`을 bare-name으로 스폰하지
+/// 않는다 — 이 앱의 Windows 배포물은 단일 포터블 exe라 보통 다운로드
+/// 폴더에 놓이고, 거기 동명의 악성 실행파일이 있으면 bare-name spawn이
+/// 그것을 대신 실행할 수 있다. 대신 `dev_tools::platform::windows_system_tool`로
+/// `%SystemRoot%\System32\taskkill.exe` 절대경로를 조립해 실행한다.
+#[cfg(windows)]
+pub fn kill_process_group_with_grace(pid: u32) {
+    let roots = crate::dev_tools::platform::EnvRoots::from_env();
+    let taskkill = crate::dev_tools::platform::windows_system_tool(&roots, r"System32\taskkill.exe");
+    let _ = std::process::Command::new(taskkill)
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .silent()
+        .output();
+}
+
 // ---------------- Windows 콘솔 창 억제 ----------------
 // GUI(콘솔 없는) 부모 프로세스가 콘솔 서브프로세스(claude/gh/wrangler 등)를
 // spawn하면 Windows는 그 자식을 위해 새 콘솔 창을 자동으로 띄운다(부모에게

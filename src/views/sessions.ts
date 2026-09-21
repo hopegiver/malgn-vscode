@@ -16,9 +16,12 @@ import {
   onSessionChatDelta,
   onSessionChatDone,
   openClaudeLoginTerminal,
+  startClaudeAuthLogin,
+  cancelClaudeAuthLogin,
 } from '../sessionsApi';
 import type { ClaudeSessionRecord, ChatMessageKind, SessionTranscript } from '../sessionsApi';
 import type { UnlistenFn } from '@tauri-apps/api/event';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { navigate } from '../route';
 import { loadProjects, sortedProjectsByRecency } from './projects';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
@@ -663,24 +666,91 @@ async function handleClaudeLogin(): Promise<void> {
   }
 }
 
+// hub 이슈 01m2wm4e9k822fk73yahrrnnce 후속: 터미널을 여는 대신 앱 안에서
+// `claude auth login --claudeai`를 시작한다(claude_auth.rs). 여기서는 spawn
+// 성공만 반영하고, 그 다음 진행 상황(로그인 URL·완료/실패/취소)은
+// main.ts가 앱 시작 시 구독한 이벤트가 state.claudeAuthLogin을 갱신하며
+// 채운다 — 이 화면은 그 상태를 읽기만 한다(아래 renderChatErrorBlock).
+async function handleClaudeAuthLoginStart(): Promise<void> {
+  state.claudeAuthLogin.active = true;
+  state.claudeAuthLogin.url = null;
+  state.claudeAuthLogin.error = null;
+  notifyChange();
+  try {
+    await startClaudeAuthLogin();
+  } catch (err) {
+    state.claudeAuthLogin.active = false;
+    state.claudeAuthLogin.error = err instanceof Error ? err.message : String(err);
+    notifyChange();
+  }
+}
+
+// 진행 중인 로그인이 없어도(이미 끝난 뒤 늦게 눌렀다 등) 백엔드가 no-op으로
+// 처리한다 — 여기서 별도 방어 분기를 두지 않는다.
+async function handleClaudeAuthLoginCancel(): Promise<void> {
+  try {
+    await cancelClaudeAuthLogin();
+  } catch (err) {
+    showToast(`취소 요청에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// CLI가 스스로 여는 브라우저 창과 별개로, 그게 조용히 실패했을 때(패키징된
+// 앱의 다른 PATH/환경 등) 쓰는 수동 폴백 — 자동 오픈이 이미 성공한
+// 경우에는 사용자가 이 버튼을 누르지 않으므로 탭이 중복되지 않는다.
+function handleOpenClaudeAuthLoginUrl(url: string): void {
+  void openUrl(url).catch(() => {
+    showToast('브라우저를 여는 데 실패했습니다. 주소를 직접 복사해 열어주세요.');
+  });
+}
+
 // 세션 상세/draft 화면이 공유하는 하단 에러 표시. 일반 에러는 기존 그대로
 // "⚠ {원문}" 한 줄이지만, 인증 실패(chat.authError)일 때는 원문 에러를 버리지
-// 않으면서(home.ts widgetErrorShell 선례) 무엇을 해야 하는지(터미널에서 로그인)
-// 를 버튼으로 함께 보여준다 — 이 갭이 실사용자 보고(claude CLI 인증 체크/처리
-// 로직도 화면도 없다)의 핵심이었다.
+// 않으면서(home.ts widgetErrorShell 선례) 무엇을 해야 하는지를 버튼으로 함께
+// 보여준다 — 이 갭이 실사용자 보고(claude CLI 인증 체크/처리 로직도 화면도
+// 없다)의 핵심이었다. "앱에서 로그인"(새 경로)이 실패하거나 이 환경에서
+// 아예 쓸 수 없을 때 막다른 길에 몰리지 않도록 "터미널 열기"(기존 경로)를
+// 항상 나란히 남겨둔다.
 function renderChatErrorBlock(): HTMLElement[] {
   const chat = state.sessionChat;
   if (!chat.error) return [];
   if (chat.authError) {
-    return [
-      el('div', { className: 'alert' }, [
-        el('div', {}, [
-          el('div', {}, ['claude CLI에 로그인이 필요합니다. 터미널에서 로그인한 뒤 다시 시도해주세요.']),
-          el('div', { className: 'chat-sample-note' }, [`원본 에러: ${chat.error}`]),
-        ]),
-        el('button', { className: 'btn btn-primary', onClick: () => void handleClaudeLogin() }, ['터미널 열기 (claude login)']),
+    const login = state.claudeAuthLogin;
+    const children: HTMLElement[] = [
+      el('div', {}, [
+        el('div', {}, ['claude CLI에 로그인이 필요합니다.']),
+        el('div', { className: 'chat-sample-note' }, [`원본 에러: ${chat.error}`]),
       ]),
     ];
+
+    if (login.active) {
+      children.push(
+        el('div', { className: 'chat-sample-note' }, [
+          login.url
+            ? '브라우저에서 로그인을 진행해주세요. 자동으로 열리지 않았다면 아래 링크를 클릭하세요.'
+            : '로그인을 시작하는 중…',
+        ])
+      );
+      if (login.url) {
+        const url = login.url;
+        children.push(
+          el('button', { className: 'btn', onClick: () => handleOpenClaudeAuthLoginUrl(url) }, ['로그인 링크 열기'])
+        );
+      }
+      children.push(
+        el('button', { className: 'btn', onClick: () => void handleClaudeAuthLoginCancel() }, ['로그인 취소'])
+      );
+    } else {
+      if (login.error) {
+        children.push(el('div', { className: 'chat-sample-note' }, [`⚠ ${login.error}`]));
+      }
+      children.push(
+        el('button', { className: 'btn btn-primary', onClick: () => void handleClaudeAuthLoginStart() }, ['앱에서 로그인']),
+        el('button', { className: 'btn', onClick: () => void handleClaudeLogin() }, ['터미널 열기 (claude login)'])
+      );
+    }
+
+    return [el('div', { className: 'alert' }, children)];
   }
   return [el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${chat.error}`])])];
 }

@@ -125,6 +125,21 @@ export interface AppState {
     streamingTools: string[];
     input: string;
   };
+  // 앱 안 claude CLI 로그인(claude_auth.rs) — 세션 채팅의 인증 실패 배너
+  // "앱에서 로그인" 버튼이 시작한다. 백엔드가 세션에 묶이지 않는 전역 단일
+  // 슬롯으로 관리하므로 이 상태도 sessionChat이 아니라 최상위에 별도로
+  // 둔다 — 사용자가 로그인 진행 중 다른 화면으로 이동해도 완료 이벤트를
+  // 놓치지 않는다(main.ts가 앱 시작 시 한 번만 구독, sessionChat처럼 화면
+  // 진입/이탈마다 구독을 걸고 떼지 않는다).
+  claudeAuthLogin: {
+    /** true인 동안만 취소 버튼을 보여준다. */
+    active: boolean;
+    /** 자식 프로세스 stdout에서 뽑은 로그인 URL. 자동으로 브라우저가 안
+     * 열렸을 때 수동으로 열 수 있는 링크로 보여준다. */
+    url: string | null;
+    /** 직전 시도가 실패로 끝났을 때의 원문 메시지. */
+    error: string | null;
+  };
   // 사용량 통계의 "일별 사용량" — 실제 ~/.claude/projects/**/*.jsonl 집계(최근
   // 30일). 로그인 직후 한 번 미리 불러오고(main.ts), 이후 "사용량 통계" 메뉴
   // 진입 시점마다 다시 불러온다(sidebar.ts). 실시간 파일 감시는 하지 않는다.
@@ -352,6 +367,7 @@ function createInitialState(): AppState {
     streamingTools: [],
     input: '',
   },
+  claudeAuthLogin: { active: false, url: null, error: null },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
   autonomousTasks: { items: [], loading: false, error: null, loaded: false },

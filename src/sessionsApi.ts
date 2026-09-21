@@ -114,3 +114,55 @@ export async function onSessionChatDelta(cb: (d: SessionChatDelta) => void): Pro
 export async function onSessionChatDone(cb: (d: SessionChatDone) => void): Promise<UnlistenFn> {
   return listen<SessionChatDone>('session-chat-done', (e) => cb(e.payload));
 }
+
+// ---------------- 앱 안 claude CLI 로그인(src-tauri/src/claude_auth.rs) ----------------
+// hub 이슈 01m2wm4e9k822fk73yahrrnnce의 후속 — 지금까지는 "터미널 열기"만
+// 있었다(openClaudeLoginTerminal, 위). 이 그룹은 그 옆에 나란히 두는 새
+// 경로다: 앱이 `claude auth login --claudeai`를 자식 프로세스로 띄우고,
+// 진행 상황을 이벤트로 스트리밍한다. 완료 판정은 종료코드가 아니라
+// `claude auth status --json`을 다시 물어본 결과다(ClaudeAuthStatus).
+
+export interface ClaudeAuthStatus {
+  readonly loggedIn: boolean;
+  readonly authMethod: string | null;
+  readonly email: string | null;
+  readonly orgName: string | null;
+  readonly subscriptionType: string | null;
+}
+
+/** 보너스 커맨드(작업 지시) — 지금은 이 화면 어디서도 호출하지 않는다.
+ * 대시보드 인증 상태 표시는 별도 작업으로 남겨둔다. */
+export async function checkClaudeAuthStatus(): Promise<ClaudeAuthStatus> {
+  return invoke<ClaudeAuthStatus>('check_claude_auth_status');
+}
+
+/** 즉시 반환한다(spawn 확인까지만) — 실제 진행 상황은
+ * onClaudeAuthLoginUrl/onClaudeAuthLoginFinished 이벤트로 온다. */
+export async function startClaudeAuthLogin(): Promise<void> {
+  return invoke<void>('start_claude_auth_login');
+}
+
+/** 진행 중인 로그인이 없으면 아무 일도 하지 않는다(정상 케이스, 백엔드가
+ * no-op으로 처리). */
+export async function cancelClaudeAuthLogin(): Promise<void> {
+  return invoke<void>('cancel_claude_auth_login');
+}
+
+export interface ClaudeAuthLoginUrlEvent {
+  readonly url: string;
+}
+
+export interface ClaudeAuthLoginFinishedEvent {
+  readonly ok: boolean;
+  readonly canceled: boolean;
+  readonly error: string | null;
+  readonly status: ClaudeAuthStatus | null;
+}
+
+export async function onClaudeAuthLoginUrl(cb: (d: ClaudeAuthLoginUrlEvent) => void): Promise<UnlistenFn> {
+  return listen<ClaudeAuthLoginUrlEvent>('claude-auth-login-url', (e) => cb(e.payload));
+}
+
+export async function onClaudeAuthLoginFinished(cb: (d: ClaudeAuthLoginFinishedEvent) => void): Promise<UnlistenFn> {
+  return listen<ClaudeAuthLoginFinishedEvent>('claude-auth-login-finished', (e) => cb(e.payload));
+}

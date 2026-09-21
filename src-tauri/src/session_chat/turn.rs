@@ -10,7 +10,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 
 use super::transcript::representative_arg;
 use crate::process_util::SilentCommand;
@@ -47,9 +46,12 @@ struct SessionChatDonePayload {
     auth_error: bool,
 }
 
-// pid 생존 확인은 `crate::process_util::pid_alive`(공유 모듈)를 쓴다 —
-// `kill_process_group_with_grace`(SIGTERM 유예 종료 확인)가 계속 사용한다.
-use crate::process_util::pid_alive;
+// 프로세스 그룹 종료는 `crate::process_util`(공유 모듈)를 쓴다 —
+// `kill_process_group_with_grace`는 2026-09-21 `claude_auth` 모듈 신설과
+// 함께 그쪽으로 옮겨졌다(로직 무변경, 이 파일의 호출부는 그대로다). 그
+// 이동으로 `pid_alive`를 이 파일이 직접 쓸 일이 없어져 더 이상 import하지
+// 않는다(유예 종료 확인은 옮겨진 함수 내부에서만 필요).
+use crate::process_util::kill_process_group_with_grace;
 
 // ==================== S8: 세션당 1개 / 전역 3개 동시 실행 ====================
 
@@ -146,41 +148,6 @@ pub fn request_shutdown() {
     for pid in pids {
         kill_process_group_with_grace(pid);
     }
-}
-
-// ==================== 프로세스 그룹 kill(S9, 패턴만 dev_tools.rs 승계) ====================
-
-#[cfg(unix)]
-pub(crate) fn kill_process_group_with_grace(pid: u32) {
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGTERM);
-    }
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(3));
-        if pid_alive(pid) {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-        }
-    });
-}
-
-/// Windows에는 POSIX 프로세스 그룹이 없다. `taskkill /T /F`는 셸을 거치지
-/// 않는 직접 프로세스 실행(S1 불변식 유지)이며 대상 트리를 강제 종료하므로
-/// 별도의 유예 폴링이 필요 없다. B2(2라운드 차단): `taskkill`을 bare-name으로
-/// 스폰하지 않는다 — `dev_tools::platform::windows_system_tool`로
-/// `%SystemRoot%\System32\taskkill.exe` 절대경로를 조립해 실행한다(이 앱의
-/// Windows 배포물은 단일 포터블 exe라 보통 다운로드 폴더에 놓이고, 거기
-/// 동명의 악성 실행파일이 있으면 bare-name spawn이 그것을 대신 실행할 수
-/// 있다).
-#[cfg(windows)]
-pub(crate) fn kill_process_group_with_grace(pid: u32) {
-    let roots = crate::dev_tools::platform::EnvRoots::from_env();
-    let taskkill = crate::dev_tools::platform::windows_system_tool(&roots, r"System32\taskkill.exe");
-    let _ = Command::new(taskkill)
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .silent()
-        .output();
 }
 
 fn tail_bytes(text: &str, max_bytes: usize) -> String {

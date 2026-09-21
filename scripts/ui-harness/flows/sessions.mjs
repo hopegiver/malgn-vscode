@@ -252,6 +252,146 @@ export function scenarios(base) {
       },
     },
     {
+      // 앱 안 claude CLI 로그인(claude_auth.rs) — 인증 실패 배너의 "앱에서
+      // 로그인" 버튼. 터미널을 여는 기존 경로(위 auth-error 시나리오)와
+      // 나란히 검증한다: 시작 → URL 이벤트(링크 열기 폴백) → 완료(배너가
+      // 닫히고 같은 화면에서 이어갈 수 있어야 한다) → 재현 후 취소(진행
+      // 컨트롤이 idle로 돌아와야 한다).
+      id: 'app-login',
+      fixtures: {
+        ...base,
+        start_new_session_message: { sessionId: 'harness-app-login-session-1', turnId: 'harness-app-login-turn-1' },
+        read_session_transcript: {
+          sessionId: 'harness-app-login-session-1',
+          cwd: '/Users/hopegiver/workspace/malgn-vscode',
+          transcriptPath: '/dev/null',
+          messages: [],
+          truncated: false,
+          activeTurnId: null,
+        },
+      },
+      async run(page, { shot, bugs, emitEvent }) {
+        if (base.list_workspace_projects.projects.length === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.waitForSelector('.modal-overlay');
+        const projectRow = page.locator('.modal-body .session-row').first();
+        if ((await projectRow.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login 시나리오: 새 세션 모달에 선택 가능한 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await projectRow.click();
+        await page.waitForSelector('.chat-page');
+        await page.locator('.chat-input-textarea').fill('인증 실패 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-app-login-session-1',
+          turnId: 'harness-app-login-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'success: Not logged in · Please run /login',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+
+        // ---- 1) "앱에서 로그인" 버튼이 "터미널 열기"와 나란히 뜬다 ----
+        const appLoginBtn = page.getByRole('button', { name: '앱에서 로그인' });
+        const terminalBtn = page.getByRole('button', { name: /claude login/ });
+        if ((await appLoginBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '인증 실패 안내에 "앱에서 로그인" 버튼이 없음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+          return;
+        }
+        if ((await terminalBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '"앱에서 로그인" 버튼이 추가되며 기존 "터미널 열기" 폴백이 사라짐(막다른 길 위험)', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        await shot('01-both-login-buttons');
+
+        // ---- 2) 시작 → start_claude_auth_login 호출 확인 ----
+        await appLoginBtn.click();
+        await page.waitForTimeout(150);
+        const startInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'start_claude_auth_login'));
+        if (!startInvoked) {
+          bugs.push({ severity: 'Critical', symptom: '"앱에서 로그인" 버튼을 눌러도 start_claude_auth_login 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeAuthLoginStart' });
+        }
+        const progressText = await page.locator('.alert').first().textContent().catch(() => null);
+        if (!progressText || !progressText.includes('시작하는 중')) {
+          bugs.push({ severity: 'Major', symptom: `로그인 시작 직후 진행 중 표시가 뜨지 않음(실제: ${progressText})`, file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        await shot('02-login-starting');
+
+        // ---- 3) URL 이벤트 → 링크 열기 버튼 노출(자동 오픈 실패 폴백) ----
+        await emitEvent('claude-auth-login-url', { url: 'https://claude.com/cai/oauth/authorize?state=harness-test' });
+        await page.waitForTimeout(150);
+        const openLinkBtn = page.getByRole('button', { name: '로그인 링크 열기' });
+        if ((await openLinkBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'URL 이벤트 수신 후 "로그인 링크 열기" 버튼이 뜨지 않음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        } else {
+          await openLinkBtn.click();
+          await page.waitForTimeout(100);
+          const openUrlInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'plugin:opener|open_url'));
+          if (!openUrlInvoked) {
+            bugs.push({ severity: 'Major', symptom: '"로그인 링크 열기" 버튼을 눌러도 opener 플러그인이 호출되지 않음', file: 'src/views/sessions.ts:handleOpenClaudeAuthLoginUrl' });
+          }
+        }
+        await shot('03-login-url-ready');
+
+        // ---- 4) 완료(ok) → 배너 자체가 닫히고 같은 화면에서 이어갈 수 있다 ----
+        await emitEvent('claude-auth-login-finished', {
+          ok: true,
+          canceled: false,
+          error: null,
+          status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        });
+        await page.waitForTimeout(150);
+        const alertGone = await page.locator('.alert').count();
+        if (alertGone > 0) {
+          bugs.push({ severity: 'Critical', symptom: '로그인 완료 후에도 인증 실패 배너가 그대로 남아 있음(또 실패로 오인함)', file: 'src/views/sessions.ts / src/main.ts:initClaudeAuthLoginWatcher' });
+        }
+        const doneToast = await page.locator('.toast').first().textContent().catch(() => null);
+        if (!doneToast || !doneToast.includes('완료')) {
+          bugs.push({ severity: 'Minor', symptom: `로그인 완료 토스트가 뜨지 않음(실제: ${doneToast})`, file: 'src/main.ts:initClaudeAuthLoginWatcher' });
+        }
+        await shot('04-login-finished-banner-cleared');
+
+        // ---- 5) 재현 후 취소 → 진행 컨트롤이 idle로 돌아온다 ----
+        await page.locator('.chat-input-textarea').fill('두 번째 인증 실패 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-app-login-session-1',
+          turnId: 'harness-app-login-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'success: Not logged in · Please run /login',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+        await page.getByRole('button', { name: '앱에서 로그인' }).click();
+        await page.waitForTimeout(150);
+        const cancelBtn = page.getByRole('button', { name: '로그인 취소' });
+        if ((await cancelBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '로그인 진행 중에 "로그인 취소" 버튼이 뜨지 않음(영구 대기처럼 보일 위험)', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        } else {
+          await cancelBtn.click();
+          await page.waitForTimeout(100);
+          const cancelInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'cancel_claude_auth_login'));
+          if (!cancelInvoked) {
+            bugs.push({ severity: 'Critical', symptom: '"로그인 취소" 버튼을 눌러도 cancel_claude_auth_login 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeAuthLoginCancel' });
+          }
+          await emitEvent('claude-auth-login-finished', { ok: false, canceled: true, error: null, status: null });
+          await page.waitForTimeout(150);
+          const idleAppLoginBtn = await page.getByRole('button', { name: '앱에서 로그인' }).count();
+          if (idleAppLoginBtn === 0) {
+            bugs.push({ severity: 'Major', symptom: '로그인 취소 후 "앱에서 로그인" 버튼이 돌아오지 않음(재시도 불가)', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+          }
+        }
+        await shot('05-login-canceled-idle-again');
+      },
+    },
+    {
       id: 'slow',
       fixtures: { ...base, list_claude_sessions: { __delay: 2500, value: base.list_claude_sessions } },
       async run(page, { shot, bugs }) {

@@ -1,5 +1,6 @@
 mod app_links;
 mod autonomy;
+mod claude_auth;
 mod cli_launcher;
 mod cloudflare_integration;
 mod config;
@@ -123,7 +124,10 @@ pub fn run() {
             session_chat::send_session_message,
             session_chat::start_new_session_message,
             session_chat::cancel_session_turn,
-            session_chat::open_claude_login_terminal
+            session_chat::open_claude_login_terminal,
+            claude_auth::check_claude_auth_status,
+            claude_auth::start_claude_auth_login,
+            claude_auth::cancel_claude_auth_login
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -133,6 +137,7 @@ pub fn run() {
             // 최대 2초만 대기하며 정리한다(그 이상 앱 종료를 붙잡지 않는다).
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 session_chat::request_shutdown();
+                claude_auth::request_shutdown();
                 autonomy::request_shutdown_and_wait(std::time::Duration::from_secs(2));
             }
         });
