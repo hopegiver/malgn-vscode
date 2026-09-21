@@ -101,14 +101,102 @@ fn claude_path_candidates() -> &'static [&'static str] {
     claude_path_candidates_for(platform::platform_now())
 }
 
+/// 이슈 01m30vamyw8z58b9pk8h5epmgh 2단계: `run_claude_command`가 실패했을 때
+/// "우리가 실제로 조립한 값"을 사용자가 보는 실패 메시지에 그대로 덧붙인다.
+/// v0.2.8에 git PATH 보강(cdea6eb)과 WinGet\Links 보강(487cda8)이 둘 다
+/// 들어갔는데도 같은 오류가 실기에서 재현되는데, 코드 정적 분석만으로는 더
+/// 좁혀지지 않는다(위임서 1단계 기록 참고) — 다음 실패 재현에서 사용자가 이
+/// 블록 하나만 붙여줘도 "PATH에 git 디렉터리가 실제로 없었는지" vs "PATH엔
+/// 있는데 claude가 못 찾았는지" vs "CWD가 원인인지"를 코드를 더 안 읽고도
+/// 구분할 수 있게 한다.
+///
+/// `resolved`/`path_env`는 자식에게 실제로 전달한 값 그대로(재계산·추정
+/// 없음). `EnvRoots::from_env()`를 여기서 별도로 다시 읽는 것은 PATH 조립에
+/// 쓰인 개별 환경변수 원본값(예: `ProgramFiles`가 아예 비어있었는지, 다른
+/// 값이었는지)을 조립된 PATH 문자열과 나란히 보여주기 위해서다 — 조립된
+/// 문자열만으로는 "어느 뿌리가 비어서 그 디렉터리가 빠졌는지"를 역산하기
+/// 어렵다.
+///
+/// CWD는 `.current_dir()`을 호출하지 않아 이 프로세스(앱)의 CWD를 그대로
+/// 물려받는다(`dev_tools::run_process_with_timeout`의 `child_current_dir`
+/// 고정과 달리 이 호출부는 그 고정을 쓰지 않는다 — 의도적 설계인지 누락인지
+/// 이번 라운드에서 확정하지 않았다, 진단 항목으로만 노출한다).
+///
+/// ⚠ PATH·환경변수 값에는 사용자명이 포함될 수 있다 — devTools.ts 로그
+/// 패널의 기존 경고와 같은 문구를 여기서도 그대로 붙인다.
+fn diagnostic_block(resolved: &str, path_env: &str) -> String {
+    let roots = platform::EnvRoots::from_env();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|e| format!("(읽기 실패: {e})"));
+    let show = |v: &Option<std::path::PathBuf>| -> String {
+        v.as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "(미설정)".to_string())
+    };
+    format!(
+        "\n\n[진단 정보 — 사용자명·사내 경로가 포함될 수 있습니다. 외부(예: GitHub 이슈)에 붙여넣기 전 확인하세요]\n\
+         - claude 실행 파일(해석됨): {resolved}\n\
+         - 자식 프로세스에 주입한 PATH: {path_env}\n\
+         - 자식 프로세스 CWD(별도 고정 안 함, 앱의 현재 작업 디렉터리 상속): {cwd}\n\
+         - ProgramFiles: {}\n\
+         - ProgramFiles(x86): {}\n\
+         - LOCALAPPDATA: {}\n\
+         - APPDATA: {}\n\
+         - SystemRoot: {}",
+        show(&roots.program_files),
+        show(&roots.program_files_x86),
+        show(&roots.local_appdata),
+        show(&roots.appdata),
+        show(&roots.system_root),
+    )
+}
+
+/// claude 실행 파일 자체를 못 찾은 경우(절대경로 후보 + PATH 스캔 모두
+/// 실패)의 진단 — `resolved`/`path_env`가 아직 없으므로 `diagnostic_block`과
+/// 별도로 CWD + 환경변수 원본만 보여준다. `claude_path_candidates()`가 이
+/// 실행에서 실제로 어떤 후보 목록을 썼는지(플랫폼 분기가 제대로 먹었는지)도
+/// 함께 보여준다.
+fn diagnostic_block_unresolved() -> String {
+    let roots = platform::EnvRoots::from_env();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|e| format!("(읽기 실패: {e})"));
+    let candidates = claude_path_candidates().join(", ");
+    let show = |v: &Option<std::path::PathBuf>| -> String {
+        v.as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "(미설정)".to_string())
+    };
+    format!(
+        "\n\n[진단 정보 — 사용자명·사내 경로가 포함될 수 있습니다. 외부(예: GitHub 이슈)에 붙여넣기 전 확인하세요]\n\
+         - 시도한 절대경로 후보: {candidates}\n\
+         - 프로세스 CWD: {cwd}\n\
+         - ProgramFiles: {}\n\
+         - ProgramFiles(x86): {}\n\
+         - LOCALAPPDATA: {}\n\
+         - APPDATA: {}\n\
+         - SystemRoot: {}\n\
+         - PATH(원본, 스캔에 쓰인 값): {}",
+        show(&roots.program_files),
+        show(&roots.program_files_x86),
+        show(&roots.local_appdata),
+        show(&roots.appdata),
+        show(&roots.system_root),
+        std::env::var("PATH").unwrap_or_else(|_| "(미설정)".to_string()),
+    )
+}
+
 fn run_claude_command(args: &[&str]) -> CommandResult {
     let Some(resolved) =
         crate::cli_launcher::resolve_binary_expand_home(claude_path_candidates(), "claude")
     else {
         return CommandResult {
             success: false,
-            message: "claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패)."
-                .to_string(),
+            message: format!(
+                "claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패).{}",
+                diagnostic_block_unresolved()
+            ),
         };
     };
     let path_env = crate::dev_tools::build_child_path_env(Some(&resolved));
@@ -141,13 +229,16 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
                 };
                 CommandResult {
                     success: false,
-                    message: msg,
+                    message: format!("{msg}{}", diagnostic_block(&resolved, &path_env)),
                 }
             }
         }
         Err(e) => CommandResult {
             success: false,
-            message: format!("claude 명령을 실행할 수 없습니다: {e}"),
+            message: format!(
+                "claude 명령을 실행할 수 없습니다: {e}{}",
+                diagnostic_block(&resolved, &path_env)
+            ),
         },
     }
 }
@@ -307,5 +398,51 @@ mod claude_path_candidates_tests {
                 "토큰 확장 결과가 기대와 다릅니다: {candidate}"
             );
         }
+    }
+}
+
+// 이슈 01m30vamyw8z58b9pk8h5epmgh 2단계 검증: 진단 블록에 기대 항목이 실제로
+// 들어가는지만 확인한다(값 자체는 이 머신의 실제 환경변수를 읽으므로 문자열
+// 일치가 아니라 "라벨이 등장하는지"만 검증 — CI 머신마다 ProgramFiles 등의
+// 실제 값은 다르다).
+#[cfg(test)]
+mod diagnostic_block_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_block_contains_resolved_path_env_and_cwd_note() {
+        let block = diagnostic_block("/opt/homebrew/bin/claude", "/opt/homebrew/bin:/usr/bin");
+        assert!(block.contains("claude 실행 파일(해석됨): /opt/homebrew/bin/claude"));
+        assert!(block.contains("자식 프로세스에 주입한 PATH: /opt/homebrew/bin:/usr/bin"));
+        assert!(block.contains("자식 프로세스 CWD"));
+        assert!(block.contains("ProgramFiles:"));
+        assert!(block.contains("ProgramFiles(x86):"));
+        assert!(block.contains("LOCALAPPDATA:"));
+        assert!(block.contains("APPDATA:"));
+        assert!(block.contains("SystemRoot:"));
+        // 사용자명/경로 유출 경고 문구 자체도 빠지면 안 된다.
+        assert!(block.contains("사용자명·사내 경로가 포함될 수 있습니다"));
+    }
+
+    #[test]
+    fn diagnostic_block_unresolved_contains_tried_candidates_and_raw_path() {
+        let block = diagnostic_block_unresolved();
+        assert!(block.contains("시도한 절대경로 후보:"));
+        assert!(block.contains("프로세스 CWD:"));
+        assert!(block.contains("PATH(원본, 스캔에 쓰인 값):"));
+        assert!(block.contains("사용자명·사내 경로가 포함될 수 있습니다"));
+    }
+
+    /// 실패 메시지 조립 지점(`run_claude_command`)이 실제로 이 블록을 이어
+    /// 붙이는지는 여기서 직접 부르지 않는다(파일 상단 경고대로 실제 claude
+    /// 프로세스를 스폰하는 테스트는 의도적으로 두지 않는다) — 대신 `format!`
+    /// 조립 자체가 패닉 없이 동작하고 원본 메시지가 앞부분에 그대로 남는지는
+    /// 문자열 조립 계약으로 고정한다.
+    #[test]
+    fn diagnostic_block_appends_after_original_message_without_losing_it() {
+        let original = "Failed to refresh marketplace 'malgnsoft-plugins': some git error";
+        let combined = format!("{original}{}", diagnostic_block("claude", "PATH"));
+        assert!(combined.starts_with(original));
+        assert!(combined.len() > original.len());
     }
 }
