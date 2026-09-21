@@ -12,12 +12,27 @@ import { loadProjects } from './projects';
 import { loadDevTools } from './devTools';
 import { loadAutonomousTasks } from './autonomousTasks';
 import { loadMcp } from './settings';
+import { ensureAppVersionLoaded, getAppVersion } from '../sidebar';
 
 const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
 
+// 앱 버전 표시 — sidebar.ts가 이미 갖고 있는 모듈 스코프 캐시(getVersion()을
+// 앱 수명 동안 딱 한 번만 호출)를 그대로 재사용한다. 대시보드는 사이드바와 항상
+// 함께 렌더되므로(main.ts renderApp) 여기서 다시 getVersion()을 부르면 앱 전체
+// 기준 중복 호출이 된다 — ensureAppVersionLoaded()는 이미 요청했으면 즉시
+// return하는 가드가 있어 어느 쪽이 먼저 불러도 실제 IPC 호출은 1회로 유지된다.
 export function renderHomeView(): HTMLElement {
+  ensureAppVersionLoaded();
+  const appVersion = getAppVersion();
+
   const header = el('div', { className: 'page-header' }, [
-    el('div', {}, [el('h1', { className: 'page-title' }, ['대시보드']), el('div', { className: 'page-subtitle' }, ['전체 요약'])]),
+    el('div', {}, [
+      el('h1', { className: 'page-title' }, ['대시보드']),
+      el('div', { className: 'page-subtitle-row' }, [
+        el('div', { className: 'page-subtitle' }, ['전체 요약']),
+        ...(appVersion ? [el('div', { className: 'page-subtitle' }, [`v${appVersion}`])] : []),
+      ]),
+    ]),
   ]);
 
   const grid = el('div', { className: 'home-widget-grid' }, [

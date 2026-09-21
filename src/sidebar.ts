@@ -20,7 +20,12 @@ import { applyUpdateFromButton, checkForUpdateFromButton } from './updateApi';
 let appVersion: string | null = null;
 let appVersionRequested = false;
 
-function ensureAppVersionLoaded(): void {
+// 대시보드(views/home.ts)도 같은 버전을 표시해야 하지만 별도로 getVersion()을
+// 다시 호출하지 않는다 — main.ts의 renderApp()이 매 렌더마다 renderHomeView()
+// (있다면) 다음 renderSidebar()를 호출하므로, 어느 쪽이 먼저 ensureAppVersionLoaded()를
+// 불러도 이 모듈 스코프 캐시 하나(appVersionRequested 플래그)만 실제 IPC 호출을
+// 낸다. getAppVersion()으로 현재 캐시된 값만 읽어간다.
+export function ensureAppVersionLoaded(): void {
   if (appVersionRequested) return;
   appVersionRequested = true;
   getVersion()
@@ -31,6 +36,10 @@ function ensureAppVersionLoaded(): void {
     .catch((e) => {
       console.debug('getVersion failed (no Tauri bridge?), hiding sidebar version', e);
     });
+}
+
+export function getAppVersion(): string | null {
+  return appVersion;
 }
 
 const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: string }[] = [
@@ -107,30 +116,37 @@ export function renderSidebar(route: Route): HTMLElement {
     settingsGroup,
   ];
 
-  const logoutItem = clickable(
-    el('div', { className: 'sidebar-nav-item sidebar-logout' }, ['로그아웃']),
+  // 별도 "로그아웃" 항목(구 sidebar-nav-item)을 없애고 이메일 옆에 붙여 한 줄로
+  // 합친다. 클래스명 sidebar-logout은 그대로 유지한다 — ui-harness
+  // (majorReview20260921.mjs)가 document.querySelector('.sidebar-logout')로
+  // 이 요소를 직접 찾아 클릭하므로, 여기서 클래스를 바꾸면 harness 시나리오가
+  // 깨진다. 핸들러 본문은 기존과 완전히 동일하게 유지한다(G1, 리뷰 v0.2.5 —
+  // sessionChat을 제외한 상태 초기화 + 해시 리셋으로 leaveSessionChatView() 등
+  // 실제 리스너 해제까지 이어진다).
+  const logoutButton = clickable(
+    el('span', { className: 'sidebar-logout sidebar-logout-btn' }, ['로그아웃']),
     () => {
-      // G1(리뷰 v0.2.5) — 인증 필드만 지우던 이전 구현은 채팅 스트리밍
-      // 리스너를 해제하지 않고(unlisten 0건 실측) 이전 사용자의 대화 전문을
-      // 메모리에 남겼다. resetStateForLogout()이 sessionChat을 제외한 모든
-      // 데이터 슬라이스를 초기값으로 되돌리고(다음 사용자에게 이전 데이터가
-      // 보이지 않도록), 해시를 리셋해 발생하는 hashchange가
-      // main.ts의 handleNavigation()을 거쳐 실제 리스너 해제
-      // (leaveSessionChatView() 등)까지 수행한다(main.ts 참고).
       resetStateForLogout();
       window.location.hash = '';
       notifyChange();
     }
   );
 
+  // 이메일이 없어도(state.auth.userEmail이 falsy) 로그아웃 버튼은 항상 렌더한다
+  // — 이메일 유무와 무관하게 로그아웃 가능해야 한다는 요구를 지키기 위해, 조건부인
+  // 것은 이메일 span 쪽뿐이고 logoutButton은 이 배열 바깥(항상 push)에 둔다.
+  const userRow = el('div', { className: 'sidebar-user-row' }, [
+    ...(state.auth.userEmail ? [el('span', { className: 'sidebar-user-email' }, [state.auth.userEmail])] : []),
+    logoutButton,
+  ]);
+
   return el('aside', { className: 'sidebar' }, [
     el('div', { className: 'sidebar-brand' }, [brandMark(), '맑은에이전트']),
     el('nav', { className: 'sidebar-nav' }, mainItems),
     el('div', { className: 'sidebar-footer' }, [
       ...renderUpdateItem(),
-      ...(state.auth.userEmail ? [el('div', { className: 'sidebar-user-email' }, [state.auth.userEmail])] : []),
+      userRow,
       ...(appVersion ? [renderVersionRow(appVersion)] : []),
-      logoutItem,
     ]),
   ]);
 }
