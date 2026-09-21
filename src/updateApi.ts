@@ -205,7 +205,35 @@ export async function applyUpdateFromButton(): Promise<void> {
   }
 }
 
-async function tryCheckAndOfferUpdate(): Promise<void> {
+// 사이드바 "업데이트 확인" 버튼 — 유일한 사용자 트리거 수동 체크 경로.
+// tryCheckAndOfferUpdate(manual: true)를 그대로 재사용한다(24시간 임계값은
+// 애초에 이 함수에 없으므로 강제 체크가 된다 — 새 파이프라인을 만들지 않는다).
+// state.update.checking만 이 함수가 소유한다(자동 배경 체크는 절대 건드리지
+// 않음 — 그래야 배경 체크 중에 사이드바가 "확인 중…"으로 깜빡이지 않는다).
+export async function checkForUpdateFromButton(): Promise<void> {
+  if (isChecking) {
+    // 부팅 직후 1회 자동 체크 또는 1시간 주기 배경 체크와 정확히 겹친 극히
+    // 드문 경우 — 재진입 가드(isChecking) 때문에 tryCheckAndOfferUpdate가
+    // 아무 일도 안 하고 조용히 return해버리면 버튼을 눌렀는데 반응이 없는
+    // 것처럼 보인다. 최소한의 안내만 준다.
+    showToast('이미 업데이트를 확인하고 있습니다. 잠시 후 다시 시도해주세요.');
+    return;
+  }
+  state.update.checking = true;
+  notifyChange();
+  try {
+    await tryCheckAndOfferUpdate(true);
+  } finally {
+    state.update.checking = false;
+    notifyChange();
+  }
+}
+
+// manual=true(위 checkForUpdateFromButton)일 때만 결과를 showToast로 알린다.
+// manual=false(기본값, 부팅 1회 + 1시간 주기 배경 체크)는 기존 그대로 모든
+// 실패/최신 경로에서 침묵한다 — 이 매개변수를 추가한 것 외에 자동 호출부
+// (initUpdateCheck 등)는 한 글자도 바뀌지 않았다(기본 인자라 그대로 manual=false).
+async function tryCheckAndOfferUpdate(manual = false): Promise<void> {
   if (isChecking) return;
   isChecking = true;
   try {
@@ -213,18 +241,30 @@ async function tryCheckAndOfferUpdate(): Promise<void> {
     try {
       update = await check({ timeout: CHECK_TIMEOUT_MS });
     } catch {
-      // 엔드포인트 미게시(404)·네트워크 오류 등 — 조용히 무시. 에러 배너/토스트/
-      // 모달 금지(정상 사용 중 업데이트 서버 문제로 방해받으면 안 된다).
+      // 엔드포인트 미게시(404)·네트워크 오류 등 — 자동 체크는 조용히 무시(에러
+      // 배너/토스트/모달 금지, 정상 사용 중 업데이트 서버 문제로 방해받으면
+      // 안 된다). 수동 버튼 클릭이면 사용자가 결과를 기다리고 있으므로 최소
+      // 안내만 준다 — 원인을 캐묻지 않고 담백하게(사용자가 할 수 있는 조치가
+      // 없다).
+      if (manual) showToast('업데이트를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.');
       return;
     } finally {
       writeLastCheckedAt(Date.now());
     }
-    if (!update) return; // 이미 최신 버전 — 화면에 어떤 변화도 없다.
+    if (!update) {
+      // 이미 최신 버전 — 자동 체크는 화면에 어떤 변화도 없다. 수동 클릭이면
+      // "눌렀는데 아무 일도 안 일어났다"로 오인하지 않도록 알려준다.
+      if (manual) showToast('현재 최신 버전입니다.');
+      return;
+    }
 
     try {
       await update.download();
     } catch {
-      // 서명 검증 실패(pubkey 미설정 과도기 등) — 조용히 무시, 버튼도 띄우지 않는다.
+      // 서명 검증 실패(pubkey 미설정 과도기 등) — 자동 체크는 조용히 무시,
+      // 버튼도 띄우지 않는다. 수동 클릭이면 위 check() 실패와 동일하게 담백한
+      // 실패 안내만 준다.
+      if (manual) showToast('업데이트를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.');
       return;
     }
 

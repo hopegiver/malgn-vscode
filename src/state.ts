@@ -305,6 +305,11 @@ export interface AppState {
     available: boolean;
     version: string | null;
     installing: boolean;
+    // 사이드바 "업데이트 확인" 버튼 전용 — 사용자가 직접 트리거한 수동 체크가
+    // 진행 중인 동안만 true(연타 방지 + "확인 중…" 표시). 자동 배경 체크(부팅
+    // 1회·1시간 주기)는 이 필드를 건드리지 않는다 — 배경 체크는 조용해야
+    // 하므로 이 필드가 자동 경로에서 깜빡이면 안 된다(updateApi.ts 참고).
+    checking: boolean;
   };
 }
 
@@ -384,7 +389,7 @@ function createInitialState(): AppState {
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },
   mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
   appLinks: { status: null, loading: false, error: null, loaded: false, saving: false },
-    update: { available: false, version: null, installing: false },
+    update: { available: false, version: null, installing: false, checking: false },
   };
 }
 

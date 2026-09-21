@@ -127,6 +127,11 @@ export async function buildBaseFixtures() {
   return {
     dev_auto_login: { email: 'dev@malgnsoft.com', name: '개발자' },
     'plugin:updater|check': null,
+    // sidebar.ts가 렌더 시점에 @tauri-apps/api/app의 getVersion()을 한 번
+    // 호출해 사이드바 하단에 앱 버전을 표시한다(내부적으로
+    // invoke('plugin:app|version')) — 실제 tauri.conf.json 값과 무관하게
+    // 픽스처 문자열이면 충분하다(하네스는 TS/DOM 층만 검증).
+    'plugin:app|version': '0.2.8',
     // Rust list_workspace_projects()가 { projects, skipped } 구조로 바뀌었다
     // (제외 사유를 프런트까지 올리는 변경, hub 이슈 01m2wm499xmh3046rnvx4cyn8n) —
     // 베이스 픽스처는 실 데이터라 skipped를 알 수 없어 빈 배열로 둔다. 빈

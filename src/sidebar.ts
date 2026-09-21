@@ -1,3 +1,4 @@
+import { getVersion } from '@tauri-apps/api/app';
 import { el, clickable } from './dom';
 import { state, notifyChange, resetStateForLogout } from './state';
 import type { SettingsTab, CatalogTab } from './state';
@@ -8,7 +9,29 @@ import { sortedProjectsByRecency } from './views/projects';
 import { loadDailyUsage } from './views/usage';
 import { enabledAppLinks, openLink } from './views/appLinks';
 import { brandMark } from './brand';
-import { applyUpdateFromButton } from './updateApi';
+import { applyUpdateFromButton, checkForUpdateFromButton } from './updateApi';
+
+// 앱 버전 표시 — Tauri가 tauri.conf.json의 version을 읽어주는 getVersion()을
+// 그대로 쓴다(런타임 내내 바뀌지 않으므로 한 번만 읽어 모듈 스코프에 캐싱).
+// Tauri IPC 브리지가 없는 환경(하네스의 순수 브라우저 + __TAURI_INTERNALS__
+// 스텁 등)에서는 invoke 자체가 실패할 수 있으므로, authApi.tryDevAutoLogin()과
+// 동일하게 실패를 조용히 흡수하고(console.debug만 남김) 그 경우 버전 영역
+// 자체를 렌더하지 않는다 — 나머지 화면 동작에는 영향을 주지 않는다.
+let appVersion: string | null = null;
+let appVersionRequested = false;
+
+function ensureAppVersionLoaded(): void {
+  if (appVersionRequested) return;
+  appVersionRequested = true;
+  getVersion()
+    .then((v) => {
+      appVersion = v;
+      notifyChange();
+    })
+    .catch((e) => {
+      console.debug('getVersion failed (no Tauri bridge?), hiding sidebar version', e);
+    });
+}
 
 const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
@@ -33,6 +56,8 @@ const SIDEBAR_SUBLIST_LIMIT = 6;
 // 미리 불러온 state.dashboard.projects/state.sessions.items)를 서브 목록으로
 // 바로 보여준다 — 화면 전환은 항목 본문 클릭, 펼침/접힘은 화살표 클릭으로 분리한다.
 export function renderSidebar(route: Route): HTMLElement {
+  ensureAppVersionLoaded();
+
   const settingsGroup = navGroup({
     label: '설정',
     active: route.kind === 'settings',
@@ -104,6 +129,7 @@ export function renderSidebar(route: Route): HTMLElement {
     el('div', { className: 'sidebar-footer' }, [
       ...renderUpdateItem(),
       ...(state.auth.userEmail ? [el('div', { className: 'sidebar-user-email' }, [state.auth.userEmail])] : []),
+      ...(appVersion ? [renderVersionRow(appVersion)] : []),
       logoutItem,
     ]),
   ]);
@@ -236,6 +262,37 @@ function renderUpdateItem(): HTMLElement[] {
       if (!installing) void applyUpdateFromButton();
     }),
   ];
+}
+
+// 앱 버전 옆 "새 버전 확인" 버튼 — 지금까지는 자동(부팅 1회 + 1시간 주기)뿐이라
+// 사용자가 원할 때 직접 확인할 방법이 없었다. updateApi.checkForUpdateFromButton()을
+// 그대로 호출한다(강제 체크·결과 토스트는 그쪽 책임, 여기서는 로컬 UI 상태만
+// 반영). 결과가 "새 버전 있음"이면 renderUpdateItem()이 다음 렌더에서 그 자리에
+// 나타나므로 이 버튼 쪽에서 별도 문구를 더할 필요가 없다.
+//
+// 라벨을 "업데이트 확인"이 아니라 "새 버전 확인"으로 둔 이유(실측 회귀) — 이
+// 사이드바는 모든 화면에서 함께 렌더되는데, 개발 환경 패널(devTools.ts)의 CLI
+// 도구별 "업데이트 확인" 버튼과 카탈로그 플러그인 카드의 "업데이트" 버튼이
+// 이미 같은 화면 트리에 존재한다. Playwright의 getByRole name 매칭은 기본이
+// 부분일치라 "업데이트"를 포함하는 라벨을 쓰면 DOM에서 더 앞서 렌더되는(사이드바가
+// 본문보다 먼저 appendChild됨) 이 버튼이 기존 하네스 시나리오의 `.first()`
+// 선택자를 가로채 버린다(majorReview20260921.mjs 등에서 실제로 재현됨) — 겹치지
+// 않는 라벨을 쓰는 것으로 해결한다.
+function renderVersionRow(version: string): HTMLElement {
+  const checking = state.update.checking;
+  const checkBtn = el(
+    'button',
+    {
+      className: 'btn btn-sm sidebar-version-check-btn',
+      onClick: () => {
+        if (!checking) void checkForUpdateFromButton();
+      },
+      disabled: checking || state.update.installing,
+    },
+    [checking ? '확인 중…' : '새 버전 확인']
+  );
+  checkBtn.type = 'button';
+  return el('div', { className: 'sidebar-version-row' }, [el('span', { className: 'sidebar-version-label' }, [`v${version}`]), checkBtn]);
 }
 
 function navItem(label: string, active: boolean, onClick: () => void): HTMLElement {

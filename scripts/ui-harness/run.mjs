@@ -10,8 +10,8 @@
 //
 // 인자 없이 실행하면 모든 흐름 x 모든 시나리오를 순차 실행한다. 첫 인자로
 // 흐름 id(autonomousTasks/sessions/catalog/settingsMcp/appLinks/
-// formBackgroundRerender/majorReview20260921)를, 두 번째 인자로 시나리오 id
-// (golden/empty/large/error/slow 등)를 주면 그 조합만 돈다.
+// formBackgroundRerender/majorReview20260921/updateCheck)를, 두 번째 인자로
+// 시나리오 id(golden/empty/large/error/slow 등)를 주면 그 조합만 돈다.
 import { chromium } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -27,6 +27,7 @@ import * as settingsMcp from './flows/settingsMcp.mjs';
 import * as appLinks from './flows/appLinks.mjs';
 import * as formBackgroundRerender from './flows/formBackgroundRerender.mjs';
 import * as majorReview20260921 from './flows/majorReview20260921.mjs';
+import * as updateCheck from './flows/updateCheck.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_URL = process.env.UI_HARNESS_BASE_URL || 'http://localhost:1420';
@@ -35,7 +36,7 @@ const SHOTS_DIR =
   '/private/tmp/claude-501/-Users-hopegiver-workspace-malgn-vscode/9682b635-b50a-4778-8416-a05a9cb13e8a/scratchpad/shots';
 const REPORT_PATH = path.join(__dirname, 'last-run-report.json');
 
-const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921];
+const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck];
 
 const [, , flowFilter, scenarioFilter] = process.argv;
 

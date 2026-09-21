@@ -368,6 +368,24 @@ html, body {
   padding: 6px 10px 10px 10px; font-size: 11px; color: var(--color-ink-faint-inverse);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 버전 표시 옆 "업데이트 확인" 버튼 — .btn은 밝은 배경(--color-surface) 기준이라
+   어두운 사이드바에 그대로 쓰면 튀어 보인다. 같은 다크 컨텍스트에서 이미 쓰던
+   .update-countdown-later-btn과 동일한 override 패턴(테두리/배경만 반투명
+   흰색으로 재정의)을 재사용한다 — 새 톤 체계를 만들지 않는다. */
+.sidebar-version-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px 10px 10px;
+}
+.sidebar-version-label {
+  font-size: 11px; color: var(--color-ink-faint-inverse); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar-version-check-btn {
+  padding: 3px 8px; font-size: 11px; flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.16); color: #cbd5e1;
+}
+.sidebar-version-check-btn:hover { background: rgba(255, 255, 255, 0.16); }
+.sidebar-version-check-btn:active { background: rgba(255, 255, 255, 0.24); }
 .sidebar-nav-group-header { display: flex; align-items: center; justify-content: space-between; }
 .sidebar-nav-chevron { font-size: 10px; color: var(--color-ink-faint-inverse); }
 .sidebar-subnav { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 4px 14px; }
