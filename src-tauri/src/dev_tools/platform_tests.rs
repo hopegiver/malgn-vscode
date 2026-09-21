@@ -163,6 +163,11 @@
         // 추가됐다 — `claude`가 내부에서 bare `git`을 호출할 때 이 PATH로
         // 찾는데 git 디렉터리가 전혀 없어 "Command 'git' not found or is in
         // an unsafe location"으로 카탈로그 업데이트가 실패했다.
+        //
+        // 추가 갱신(같은 날, 같은 이슈의 후속 대조): winget이 Node를
+        // portable(zip) 변형으로 설치하면 node.exe가 `WinGet\Links`에만
+        // 놓이고 npm/pnpm `.cmd` shim이 내부에서 bare `node`를 호출하므로,
+        // 이 디렉터리도 같은 이유로 추가했다(WindowsApps와는 다른 디렉터리).
         assert_eq!(
             dirs,
             vec![
@@ -177,6 +182,7 @@
                 r"C:\Users\hopegiver\AppData\Local\Programs\nodejs".to_string(),
                 r"C:\Users\hopegiver\AppData\Local\Programs\Git\cmd".to_string(),
                 r"C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps".to_string(),
+                r"C:\Users\hopegiver\AppData\Local\Microsoft\WinGet\Links".to_string(),
             ]
         );
     }
@@ -245,6 +251,40 @@
                 "DEV_TOOLS의 git 후보 '{candidate}'(전개: {expanded})의 디렉터리 \
                  '{parent}'가 default_path_dirs(Windows)에 없습니다 — DEV_TOOLS \
                  쪽 git 후보를 늘리거나 바꿨다면 default_path_dirs도 함께 \
+                 갱신해야 합니다(이슈 01m30vamyw8z58b9pk8h5epmgh)."
+            );
+        }
+    }
+
+    // git과 대칭(2026-09-21, 같은 이슈의 후속 대조 — PM 판정): "다른 스폰된
+    // 프로세스가 내부에서 bare-name으로 의존한다"는 기준을 WinGet\Links가
+    // Node에 대해서는 충족한다 — DEV_TOOLS Node.windows_path_candidates의
+    // 셋째 항목(winget portable 설치 시 node.exe가 놓이는 유일한 자리)이고,
+    // npm/pnpm `.cmd` shim이 그 node.exe를 bare `node`로 찾는다. 반면
+    // Claude(`%USERPROFILE%\.local\bin`)/GitHub CLI(`Program Files\GitHub
+    // CLI`)는 앱이 항상 절대경로로 spawn해 이 기준을 충족하지 않으므로
+    // default_path_dirs에 추가하지 않았다 — 이 테스트는 Node 쪽만
+    // 검사한다(위 git 테스트와 동일하게, DEV_TOOLS의 Node 후보를 늘리거나
+    // 바꾸고 default_path_dirs를 갱신하지 않으면 즉시 실패해 드리프트를
+    // 잡는다).
+    #[test]
+    fn default_path_dirs_win_contains_every_dir_derived_from_node_windows_path_candidates() {
+        let roots = win_roots();
+        let node_def = crate::dev_tools::DEV_TOOLS
+            .iter()
+            .find(|d| d.key == "node")
+            .expect("DEV_TOOLS에 node 항목이 있어야 합니다");
+        let dirs = default_path_dirs(Platform::Win, &roots);
+        for candidate in node_def.windows_path_candidates {
+            let expanded = expand_path_tokens(Platform::Win, candidate, &roots)
+                .expect("win_roots()는 모든 토큰의 뿌리를 채워야 합니다");
+            let parent = windows_parent_dir(&expanded)
+                .expect("node 후보는 항상 '디렉터리\\파일명' 형태여야 합니다");
+            assert!(
+                dirs.contains(&parent),
+                "DEV_TOOLS의 node 후보 '{candidate}'(전개: {expanded})의 디렉터리 \
+                 '{parent}'가 default_path_dirs(Windows)에 없습니다 — DEV_TOOLS \
+                 쪽 node 후보를 늘리거나 바꿨다면 default_path_dirs도 함께 \
                  갱신해야 합니다(이슈 01m30vamyw8z58b9pk8h5epmgh)."
             );
         }
@@ -327,7 +367,7 @@
         // 실제 회귀(런너 자신이 node.exe와 다른 디렉터리에 있는 경우)를 잡는다.
         assert_eq!(
             path,
-            r"C:\Program Files\nodejs;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Program Files\Git\cmd;C:\Program Files (x86)\Git\cmd;C:\Users\hopegiver\AppData\Roaming\npm;C:\Users\hopegiver\AppData\Local\pnpm;C:\Users\hopegiver\AppData\Local\Programs\nodejs;C:\Users\hopegiver\AppData\Local\Programs\Git\cmd;C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps"
+            r"C:\Program Files\nodejs;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Program Files\Git\cmd;C:\Program Files (x86)\Git\cmd;C:\Users\hopegiver\AppData\Roaming\npm;C:\Users\hopegiver\AppData\Local\pnpm;C:\Users\hopegiver\AppData\Local\Programs\nodejs;C:\Users\hopegiver\AppData\Local\Programs\Git\cmd;C:\Users\hopegiver\AppData\Local\Microsoft\WindowsApps;C:\Users\hopegiver\AppData\Local\Microsoft\WinGet\Links"
         );
     }
 

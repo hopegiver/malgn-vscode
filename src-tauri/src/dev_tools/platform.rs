@@ -191,6 +191,17 @@ fn win_join(base: &str, suffix: &str) -> String {
 /// 동일하다 — Node 때와 같은 재사용, 새 값을 지어내지 않았다.
 /// `default_path_dirs_win_contains_every_dir_derived_from_git_windows_path_candidates`
 /// (platform_tests.rs)가 두 목록의 어긋남을 잡는다.
+///
+/// 후속 대조(2026-09-21, 같은 이슈): 같은 라운드에서 "DEV_TOOLS에는 있는데
+/// 여기엔 없는 위치" 3곳을 더 찾았으나, PM 판정은 그중 `%LOCALAPPDATA%\
+/// Microsoft\WinGet\Links` 하나만 이 함수의 기준("다른 스폰된 프로세스가
+/// 내부에서 bare-name으로 의존")을 충족한다는 것이었다 — Node가 winget
+/// portable(zip)로 설치되면 node.exe가 거기에만 있고, npm/pnpm `.cmd`
+/// shim이 그걸 bare `node`로 호출한다(git 회귀와 동일 실패 양상). 나머지
+/// 둘(Claude `%USERPROFILE%\.local\bin`, GitHub CLI `Program Files\GitHub
+/// CLI`)은 앱이 항상 절대경로로 spawn해 기준을 충족하지 않으므로 추가하지
+/// 않았다. `default_path_dirs_win_contains_every_dir_derived_from_node_windows_path_candidates`
+/// (platform_tests.rs)가 git 테스트와 대칭으로 이 목록의 어긋남을 잡는다.
 pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String> {
     match plat {
         Platform::Mac => [
@@ -234,6 +245,17 @@ pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String>
                     "cmd",
                 ));
                 dirs.push(win_join(&win_join(&local, "Microsoft"), "WindowsApps"));
+                // winget이 Node를 portable(zip) 변형으로 설치하면 node.exe가
+                // Program Files/LOCALAPPDATA\Programs가 아니라 여기(앱 실행
+                // 별칭)에만 놓인다(DEV_TOOLS Node.windows_path_candidates 셋째
+                // 항목, mod.rs 주석 — 2026-09-21, hub 이슈
+                // 01m2wvpx9v548h6yce9jpxpm0w). npm/pnpm의 `.cmd` shim은 내부에서
+                // bare `node`를 호출하므로(platform_tests.rs의
+                // *_node_install_dirs_for_cmd_shim_execution 계열이 문서화한
+                // 실패 양상과 동일) 이 디렉터리가 child PATH에 없으면 git
+                // 회귀(이슈 01m30vamyw8z58b9pk8h5epmgh)와 정확히 같은 방식으로
+                // 실패한다 — WindowsApps와는 다른 디렉터리라 별도로 추가한다.
+                dirs.push(win_join(&win_join(&local, "Microsoft"), r"WinGet\Links"));
             }
             dirs
         }
