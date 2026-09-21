@@ -271,6 +271,42 @@ fn emit_done(
     );
 }
 
+/// 인증 관련 실패인지 판별한다(`parse_result_event`에서 분리 — 단위 테스트
+/// 대상 축소).
+///
+/// hub 이슈 01m31amja2h932bgz7vpttcb80(실사용자 보고: "success: OAuth session
+/// expired and could not be refreshed" 한 줄만 뜨고 끝남) 조사 결과, 화면에
+/// 렌더된 한 줄에서 역산 가능한 정보는 `subtype="success"`와 `result` 텍스트
+/// 뿐이었다 — 이 사고에서 top-level `error` 필드값은 관측되지 않았다. 그래서
+/// 이 값을 가정하는 판정을 추가하지 않고, 대신 claude CLI 바이너리
+/// (`~/.local/share/claude/versions/2.1.276`)를 `strings`로 역추적해 실제
+/// 근거를 확보했다:
+///
+/// 1) `error` 필드가 존재하고 "authentication_failed"면 가장 신뢰도 높은
+///    신호다 — CLI 소스상 OAuth 만료·잘못된 API 키·조직 비활성화 등 "로그인/
+///    자격증명 계열" 실패 전체가 공유하는 카테고리 코드다(기존 실측,
+///    hub 이슈 01m2wm4e9k822fk73yahrrnnce).
+/// 2) `error` 필드가 없거나 다른 값이어도, 비대화형(`-p`) 모드에서는 CLI가
+///    `Ce()`(`!isInteractive()`) 분기를 타는데, OAuth 갱신 실패
+///    (`OAuthRefreshDeadError`)·일반 401/403 폴백 등 "재로그인이 필요한"
+///    분기들이 공통으로 `"Failed to authenticate"`로 시작하는 문구를 낸다
+///    (strings 실측 — "Failed to authenticate: OAuth session expired and
+///    could not be refreshed", "Failed to authenticate. API Error: …" 등
+///    최소 2개 서로 다른 분기에서 동일 접두사 확인). 이 접두사 자체가 CLI의
+///    카테고리 신호이므로, 신고된 문구 하나를 통째로 나열하는 것보다 다음
+///    변형(문구 뒷부분이 달라져도)에도 견딘다. 참고로 같은 조사에서 발견한
+///    `OAuthRefreshLockTimeoutError`("Failed to refresh OAuth token: another
+///    Claude Code process …")는 일시적 잠금 문제라 CLI가 애초에
+///    "authentication_failed"로 분류하지 않고 접두사도 다르다 — 이 판정이
+///    그 구분을 그대로 반영한다(아래 테스트로 고정).
+/// 3) 구버전 CLI·대화형 모드 문구가 흘러들어온 경우를 대비해 기존 "Not
+///    logged in" 패턴도 하위호환으로 유지한다.
+fn is_auth_related_result(error_field: Option<&str>, result_text: &str) -> bool {
+    error_field == Some("authentication_failed")
+        || result_text.starts_with("Failed to authenticate")
+        || result_text.contains("Not logged in")
+}
+
 /// stream-json의 `result` 이벤트 하나를 파싱해 (에러 메시지, 인증 문제 여부)를
 /// 반환하는 순수 함수(`run_turn`에서 값만 뽑아 넘겨 단위 테스트 가능하게 분리).
 ///
@@ -279,11 +315,7 @@ fn emit_done(
 /// stdout 마지막 줄에 다음 모양의 JSON을 낸다 —
 /// `{"type":"result","is_error":true,"error":"authentication_failed",
 ///  "result":"Not logged in · Please run /login","subtype":"success"}`
-/// (stderr는 비어 있다). `subtype`만으로는 구분할 수 없다 — 위 실측 예시에서도
-/// `subtype`은 "success"다. 그래서 top-level `error` 필드값이
-/// "authentication_failed"이거나, `result` 텍스트에 "Not logged in" 패턴이
-/// 있으면(CLI 버전에 따라 `error` 필드가 없을 수 있는 경우까지 대비) 인증
-/// 문제로 분류한다.
+/// (stderr는 비어 있다). 상세 판별 로직은 `is_auth_related_result` 참고.
 fn parse_result_event(value: &Value) -> (Option<String>, bool) {
     let is_error = value.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
     if !is_error {
@@ -292,11 +324,24 @@ fn parse_result_event(value: &Value) -> (Option<String>, bool) {
     let subtype = value.get("subtype").and_then(|v| v.as_str()).unwrap_or("error");
     let result_text = value.get("result").and_then(|v| v.as_str()).unwrap_or("");
     let error_field = value.get("error").and_then(|v| v.as_str());
-    let auth_error = error_field == Some("authentication_failed") || result_text.contains("Not logged in");
+    let auth_error = is_auth_related_result(error_field, result_text);
+
+    // `subtype`은 신뢰할 수 있는 라벨이 아니다 — `is_error:true`인데도 CLI가
+    // `subtype:"success"`를 내는 사례가 실측됐다(위 주석). 그래서 사용자
+    // 문구 맨 앞에 절대 쓰지 않는다 — "success: …"로 보이는 것 자체가
+    // 실사용자 보고(hub 이슈 01m31amja2h932bgz7vpttcb80)의 핵심 신뢰성
+    // 결함이었다. 다만 진단 가치는 있으므로 버리지 않고 문구 끝에 대괄호로
+    // 남긴다 — 다음에 미분류 변형이 나타났을 때, 화면 캡처(또는 hub 이슈
+    // 기록)만으로 subtype/error 원본값을 함께 확보할 수 있게 하기 위함이다
+    // (이번 조사는 그 값이 없어 CLI 바이너리 역추적까지 필요했다).
+    let diagnostic = match error_field {
+        Some(e) => format!(" [진단: subtype={subtype}, error={e}]"),
+        None => format!(" [진단: subtype={subtype}]"),
+    };
     let message = if result_text.is_empty() {
-        subtype.to_string()
+        format!("알 수 없는 오류가 발생했습니다{diagnostic}")
     } else {
-        format!("{subtype}: {result_text}")
+        format!("{result_text}{diagnostic}")
     };
     (Some(message), auth_error)
 }
@@ -533,7 +578,57 @@ mod tests {
         .unwrap();
         let (message, is_auth) = parse_result_event(&value);
         assert!(is_auth, "error 필드가 authentication_failed면 인증 문제로 분류되어야 합니다");
-        assert_eq!(message.as_deref(), Some("success: Not logged in · Please run /login"));
+        // subtype("success")을 사용자 문구 라벨로 쓰지 않는다 — 진단 정보로만
+        // 끝에 남긴다(hub 이슈 01m31amja2h932bgz7vpttcb80).
+        assert_eq!(
+            message.as_deref(),
+            Some("Not logged in · Please run /login [진단: subtype=success, error=authentication_failed]")
+        );
+    }
+
+    // hub 이슈 01m31amja2h932bgz7vpttcb80 — 실사용자가 실제로 본 문구를 그대로
+    // 픽스처로 박는다. `error` 필드는 화면에 렌더된 한 줄만으로는 관측되지
+    // 않았으므로(조사 시 제약) 일부러 넣지 않는다 — 이 테스트가 통과하려면
+    // `error` 필드 없이 `result` 텍스트만으로 인증 문제를 분류할 수 있어야
+    // 한다("Not logged in" 패턴도 없다).
+    #[test]
+    fn parse_result_event_reported_oauth_refresh_expired_is_classified_as_auth_without_error_field() {
+        let value: Value = serde_json::from_str(
+            r#"{"type":"result","is_error":true,"result":"Failed to authenticate: OAuth session expired and could not be refreshed","subtype":"success"}"#,
+        )
+        .unwrap();
+        let (message, is_auth) = parse_result_event(&value);
+        assert!(
+            is_auth,
+            "error 필드 없이도 'Failed to authenticate' 접두사만으로 인증 문제로 분류되어야 합니다"
+        );
+        let message = message.expect("is_error:true면 메시지가 있어야 합니다");
+        assert!(
+            !message.starts_with("success:"),
+            "subtype이 거짓 라벨(\"success:\")로 노출되면 안 됩니다: {message}"
+        );
+        assert_eq!(
+            message,
+            "Failed to authenticate: OAuth session expired and could not be refreshed [진단: subtype=success]"
+        );
+    }
+
+    // CLI의 `OAuthRefreshLockTimeoutError`(다른 Claude Code 프로세스가 갱신
+    // 중이라 일시적으로 실패)는 재로그인이 아니라 재시도가 답이다 — CLI 자신도
+    // 이를 "authentication_failed"로 분류하지 않고 문구도 "Failed to
+    // authenticate"로 시작하지 않는다(strings 실측). 인증 실패로 오분류해
+    // "터미널에서 로그인" 버튼을 잘못 띄우지 않는지 확인한다.
+    #[test]
+    fn parse_result_event_does_not_flag_oauth_refresh_lock_timeout_as_auth() {
+        let value: Value = serde_json::from_str(
+            r#"{"type":"result","is_error":true,"error":"server_error","result":"Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh","subtype":"success"}"#,
+        )
+        .unwrap();
+        let (_, is_auth) = parse_result_event(&value);
+        assert!(
+            !is_auth,
+            "일시적 OAuth 갱신 잠금 타임아웃을 인증 실패로 잘못 분류하면 안 됩니다"
+        );
     }
 
     // error 필드가 없어도(CLI 버전 차이 대비) result 텍스트의 "Not logged in"
@@ -558,7 +653,10 @@ mod tests {
         .unwrap();
         let (message, is_auth) = parse_result_event(&value);
         assert!(!is_auth, "관련 없는 에러를 인증 문제로 잘못 분류하면 안 됩니다");
-        assert_eq!(message.as_deref(), Some("error_max_turns: Rate limit exceeded"));
+        assert_eq!(
+            message.as_deref(),
+            Some("Rate limit exceeded [진단: subtype=error_max_turns, error=rate_limit]")
+        );
     }
 
     // is_error가 false면 애초에 에러 메시지/인증 플래그 모두 없어야 한다.
