@@ -177,6 +177,37 @@ pub(crate) const RUN_BREW_FORMULA: RunPlan = RunPlan {
     env: &BREW_ENV,
     timeout_secs: 600,
 };
+// 보안 리뷰 백로그 재검토(2026-09-21, hub 이슈 01m2wvpx9v548h6yce9jpxpm0w):
+// "npm 경로도 설치 후 `npm audit signatures`를 1회 돌려 winget 경로(매니페스트
+// SHA256 검증)와 검증 수준을 대칭으로 맞추자"는 제안은 **채택하지 않는다**.
+// 비용 문제가 아니라, 이 명령이 우리가 설치하는 패키지를 구조적으로 검사하지
+// 못한다 — npm 10.9.8에서 실측한 근거:
+//  ① `npm audit signatures -g`는 하드 가드로 거부한다(code EAUDITGLOBAL,
+//     exit 1 — npm/lib/commands/audit.js의 `if (this.npm.global) throw`).
+//  ② `--prefix <globalPrefix>/lib`로 우회하면 실행 자체는 되지만, 검사 대상은
+//     트리의 edgesOut(= 선언된 의존성)뿐이다. 전역 prefix에는 루트
+//     package.json이 없어 최상위로 설치된 패키지 자신에게 들어오는 edge가
+//     없다. 실측: 최상위 1개 + 중첩 의존성 26개인 트리에서 "audited 26
+//     packages"(27이 아니다), 의존성이 0개면 "found no dependencies to audit"
+//     로 exit 1. 즉 claude/pnpm/wrangler 자체는 어떤 경우에도 검증되지 않는다.
+//  ③ 이득도 얇다 — @anthropic-ai/claude-code는 attestation이 아예 없다(본체·
+//     플랫폼 바이너리 패키지 모두 레지스트리 attestation 엔드포인트 404).
+//     남는 건 레지스트리 서명뿐인데, 그건 `npm install`이 이미 대조하는
+//     dist.integrity와 같은 출처(레지스트리)를 TUF 배포 키로 한 겹 더 묶는
+//     수준이다(레지스트리 자체가 거짓말하는 경우만 추가로 막는다).
+//  ④ 무엇보다 사후적이다. 이 패키지들은 설치 도중 lifecycle script를 실행하고
+//     (claude: postinstall `node install.cjs`, pnpm: pre/postinstall
+//     `node install.js`), 검증이 말을 꺼낼 시점엔 임의 코드가 이미 돌았다 —
+//     앱에는 설치를 되돌릴 수단이 없으므로 경고가 사용자 행동으로 이어지지
+//     않는다. `--ignore-scripts`도 대안이 아니다(claude의 bin은
+//     `bin/claude.exe`이고 그 파일을 만드는 게 그 postinstall이다).
+//  ⑤ 실패 신호도 쓸 수 없다 — 네트워크 실패(레지스트리 외에 별도 출처인
+//     tuf-repo-cdn.sigstore.dev까지 필요하다)와 변조 발견이 똑같이 exit 1이라
+//     구분하려면 stdout을 파싱해야 하는데, 이 코드베이스는 의도적으로 그러지
+//     않는다(actions.rs run_install_plan — 버전 재조회로만 성공을 판정한다).
+// winget 경로와의 비대칭은 그대로 남는다. 다만 그 비대칭을 실제로 메우지
+// 못하는 검사를 붙여 메운 척하는 쪽이 더 나쁘다 — 같은 제안이 다시 오면
+// 먼저 ②를 반증할 것(전역 트리에서 최상위 패키지가 검증되는 재현 절차).
 const RUN_NPM_GLOBAL: RunPlan = RunPlan {
     runner: Runner::Npm,
     args: &[Arg::Lit("install"), Arg::Lit("-g"), Arg::PackageLatest],
