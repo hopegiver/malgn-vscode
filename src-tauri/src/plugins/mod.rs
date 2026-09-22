@@ -117,18 +117,30 @@ fn claude_path_candidates() -> &'static [&'static str] {
 /// 문자열만으로는 "어느 뿌리가 비어서 그 디렉터리가 빠졌는지"를 역산하기
 /// 어렵다.
 ///
-/// CWD는 `.current_dir()`을 호출하지 않아 이 프로세스(앱)의 CWD를 그대로
-/// 물려받는다(`dev_tools::run_process_with_timeout`의 `child_current_dir`
-/// 고정과 달리 이 호출부는 그 고정을 쓰지 않는다 — 의도적 설계인지 누락인지
-/// 이번 라운드에서 확정하지 않았다, 진단 항목으로만 노출한다).
+/// `child_cwd`는 `run_claude_command`가 실제로 `.current_dir()`에 넘긴 값
+/// 그대로(재계산 없음) — `Some`이면 `crate::global_cwd::default_global_cwd()`가
+/// 고른 경로를 명시적으로 고정했다는 뜻이고, `None`이면 그 함수가 존재하는
+/// 후보를 하나도 찾지 못해 `.current_dir()` 자체를 호출하지 않았다는 뜻이다
+/// (이때는 이 프로세스(앱)의 현재 작업 디렉터리를 자식이 그대로 물려받는다 —
+/// 예전엔 이 호출부가 이 폴백 경로 없이 매번 이 상태였다. Windows 실기에서
+/// 이 값이 `C:\Windows\system32`로 관측됐다, hub decision
+/// 01m33w4pp3gyrjapczh1q7j4wm — 다만 이 값 하나만으로 그 실기에서 난 `claude`
+/// 실행 실패의 인과가 확정되는 것은 아니다, 진단 블록의 나머지 두 값(주입 PATH
+/// 전문, `ProgramFiles`)이 아직 회신되지 않았다).
 ///
 /// ⚠ PATH·환경변수 값에는 사용자명이 포함될 수 있다 — devTools.ts 로그
 /// 패널의 기존 경고와 같은 문구를 여기서도 그대로 붙인다.
-fn diagnostic_block(resolved: &str, path_env: &str) -> String {
+fn diagnostic_block(resolved: &str, path_env: &str, child_cwd: Option<&std::path::Path>) -> String {
     let roots = platform::EnvRoots::from_env();
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|e| format!("(읽기 실패: {e})"));
+    let cwd_line = match child_cwd {
+        Some(dir) => format!("{}(명시적으로 고정됨)", dir.to_string_lossy()),
+        None => {
+            let app_cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|e| format!("(읽기 실패: {e})"));
+            format!("{app_cwd}(고정 후보를 찾지 못해 앱의 현재 작업 디렉터리를 그대로 상속)")
+        }
+    };
     let show = |v: &Option<std::path::PathBuf>| -> String {
         v.as_ref()
             .map(|p| p.to_string_lossy().to_string())
@@ -138,7 +150,7 @@ fn diagnostic_block(resolved: &str, path_env: &str) -> String {
         "\n\n[진단 정보 — 사용자명·사내 경로가 포함될 수 있습니다. 외부(예: GitHub 이슈)에 붙여넣기 전 확인하세요]\n\
          - claude 실행 파일(해석됨): {resolved}\n\
          - 자식 프로세스에 주입한 PATH: {path_env}\n\
-         - 자식 프로세스 CWD(별도 고정 안 함, 앱의 현재 작업 디렉터리 상속): {cwd}\n\
+         - 자식 프로세스 CWD: {cwd_line}\n\
          - ProgramFiles: {}\n\
          - ProgramFiles(x86): {}\n\
          - LOCALAPPDATA: {}\n\
@@ -201,12 +213,23 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
     };
     let path_env = crate::dev_tools::build_child_path_env(Some(&resolved));
 
-    match std::process::Command::new(&resolved)
-        .args(args)
-        .env("PATH", &path_env)
-        .silent()
-        .output()
-    {
+    // 마켓플레이스 갱신/설치·업데이트처럼 특정 프로젝트에 묶이지 않는 전역
+    // 호출이라 `crate::global_cwd::default_global_cwd()`(workspace 루트 →
+    // 홈 디렉터리 순, 존재 확인 후 첫 값)로 CWD를 명시적으로 고정한다 —
+    // 이전엔 이 호출부만 `.current_dir()`을 부르지 않아 앱 프로세스의 CWD를
+    // 그대로 물려받았다(구조적 비대칭, `diagnostic_block` 문서 참고). 후보가
+    // 모두 존재하지 않으면 `None`이 와서 `.current_dir()`을 아예 호출하지
+    // 않는다 — 존재하지 않는 경로를 넘겨 spawn 자체를 실패시키는 사고(포터블
+    // exe·workspace 미설정 사용자 등)를 피하기 위해서다.
+    let cwd = crate::global_cwd::default_global_cwd();
+
+    let mut command = std::process::Command::new(&resolved);
+    command.args(args).env("PATH", &path_env).silent();
+    if let Some(dir) = &cwd {
+        command.current_dir(dir);
+    }
+
+    match command.output() {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -229,7 +252,7 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
                 };
                 CommandResult {
                     success: false,
-                    message: format!("{msg}{}", diagnostic_block(&resolved, &path_env)),
+                    message: format!("{msg}{}", diagnostic_block(&resolved, &path_env, cwd.as_deref())),
                 }
             }
         }
@@ -237,7 +260,7 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
             success: false,
             message: format!(
                 "claude 명령을 실행할 수 없습니다: {e}{}",
-                diagnostic_block(&resolved, &path_env)
+                diagnostic_block(&resolved, &path_env, cwd.as_deref())
             ),
         },
     }
@@ -411,7 +434,7 @@ mod diagnostic_block_tests {
 
     #[test]
     fn diagnostic_block_contains_resolved_path_env_and_cwd_note() {
-        let block = diagnostic_block("/opt/homebrew/bin/claude", "/opt/homebrew/bin:/usr/bin");
+        let block = diagnostic_block("/opt/homebrew/bin/claude", "/opt/homebrew/bin:/usr/bin", None);
         assert!(block.contains("claude 실행 파일(해석됨): /opt/homebrew/bin/claude"));
         assert!(block.contains("자식 프로세스에 주입한 PATH: /opt/homebrew/bin:/usr/bin"));
         assert!(block.contains("자식 프로세스 CWD"));
@@ -422,6 +445,24 @@ mod diagnostic_block_tests {
         assert!(block.contains("SystemRoot:"));
         // 사용자명/경로 유출 경고 문구 자체도 빠지면 안 된다.
         assert!(block.contains("사용자명·사내 경로가 포함될 수 있습니다"));
+    }
+
+    /// `child_cwd`가 `Some`이면(고정 성공) 그 경로가 "명시적으로 고정됨" 표시와
+    /// 함께 그대로 보여야 한다 — 앱 자신의 CWD가 아니라 실제로 자식에게 넘긴
+    /// 값이어야 신뢰할 수 있는 진단이 된다.
+    #[test]
+    fn diagnostic_block_shows_pinned_cwd_when_some() {
+        let dir = std::path::PathBuf::from("/Users/tester/workspace");
+        let block = diagnostic_block("claude", "PATH", Some(&dir));
+        assert!(block.contains("자식 프로세스 CWD: /Users/tester/workspace(명시적으로 고정됨)"));
+    }
+
+    /// `child_cwd`가 `None`이면(존재하는 후보를 찾지 못함) "상속" 문구로
+    /// 정직하게 표시해야 한다 — 이전 동작(항상 상속)을 오인시키지 않는다.
+    #[test]
+    fn diagnostic_block_shows_inherited_note_when_none() {
+        let block = diagnostic_block("claude", "PATH", None);
+        assert!(block.contains("고정 후보를 찾지 못해 앱의 현재 작업 디렉터리를 그대로 상속"));
     }
 
     #[test]
@@ -441,7 +482,7 @@ mod diagnostic_block_tests {
     #[test]
     fn diagnostic_block_appends_after_original_message_without_losing_it() {
         let original = "Failed to refresh marketplace 'malgnsoft-plugins': some git error";
-        let combined = format!("{original}{}", diagnostic_block("claude", "PATH"));
+        let combined = format!("{original}{}", diagnostic_block("claude", "PATH", None));
         assert!(combined.starts_with(original));
         assert!(combined.len() > original.len());
     }

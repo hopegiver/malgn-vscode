@@ -1,7 +1,7 @@
 // 앱 전역 상태 — 단일 상태 객체 + 아주 단순한 구독자 목록(pub/sub)만 제공한다.
 // 순환 import를 피하려고 render() 자체는 여기 두지 않는다: main.ts가 `onStateChange(render)`로
 // 한 번 구독하고, 다른 모듈들은 상태를 바꾼 뒤 `notifyChange()`만 호출해 재렌더를 요청한다.
-import type { ClaudeSessionRecord, SessionTranscript } from './sessionsApi';
+import type { ClaudeSessionRecord, SessionTranscript, ClaudeAuthStatus } from './sessionsApi';
 import type { WorkspaceProject, WorkspaceSkippedEntry, ProjectTreeNode, FilePreview } from './workspaceApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devToolsApi';
 import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } from './catalogApi';
@@ -139,6 +139,19 @@ export interface AppState {
     url: string | null;
     /** 직전 시도가 실패로 끝났을 때의 원문 메시지. */
     error: string | null;
+  };
+  // 대시보드의 claude CLI 로그인 상태 위젯(views/home.ts) 전용 — 위
+  // claudeAuthLogin(끈 헤드리스 로그인 흐름)과 무관하다. `checkClaudeAuthStatus()`
+  // (claude_auth.rs check_claude_auth_status, `claude auth status --json` 위임
+  // 조회)만 재사용하고, 로그인 액션은 기존 "터미널 열기" 경로(openClaudeLoginTerminal)로
+  // 만 연결한다. "loaded && !error && status?.loggedIn === true"일 때만
+  // "로그인됨"을 보여준다 — 조회 실패·미조회 상태를 로그인됨처럼 보이게 하지
+  // 않는다(직전 라운드 회귀의 핵심 교훈).
+  claudeAuth: {
+    status: ClaudeAuthStatus | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
   };
   // 사용량 통계의 "일별 사용량" — 실제 ~/.claude/projects/**/*.jsonl 집계(최근
   // 30일). 로그인 직후 한 번 미리 불러오고(main.ts), 이후 "사용량 통계" 메뉴
@@ -368,6 +381,7 @@ function createInitialState(): AppState {
     input: '',
   },
   claudeAuthLogin: { active: false, url: null, error: null },
+  claudeAuth: { status: null, loading: false, error: null, loaded: false },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
   autonomousTasks: { items: [], loading: false, error: null, loaded: false },

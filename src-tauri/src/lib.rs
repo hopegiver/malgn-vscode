@@ -8,6 +8,7 @@ mod dev_auto_login;
 mod dev_tools;
 mod fs_atomic;
 mod github_integration;
+mod global_cwd;
 mod google_oauth;
 mod mcp_manager;
 mod otel_settings;

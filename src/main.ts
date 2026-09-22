@@ -40,7 +40,7 @@ import { state, onStateChange, notifyChange, applyAuthenticatedIdentity } from '
 import { parseRoute } from './route';
 import { renderSidebar } from './sidebar';
 import { renderLoginView } from './views/login';
-import { renderHomeView } from './views/home';
+import { renderHomeView, loadClaudeAuthStatus } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree, leaveProjectsListView } from './views/projects';
 import { renderCatalogView, loadCatalog, loadGlobalCatalog, loadMarketplaces } from './views/catalog';
 import { loadDevTools } from './views/devTools';
@@ -227,6 +227,7 @@ function handleNavigation(): void {
   if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
   if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
   if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
+  if (!state.claudeAuth.loaded && !state.claudeAuth.loading) void loadClaudeAuthStatus();
   if (!state.mcpCatalog.loaded && !state.mcpCatalog.loading) void loadMcpCatalog();
   // 사이드바가 전 화면에 상시 렌더되므로 탭 진입을 기다리지 않고 미리 불러온다
   // (docs/design-app-links.md §6-3).

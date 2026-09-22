@@ -130,8 +130,8 @@ export interface ClaudeAuthStatus {
   readonly subscriptionType: string | null;
 }
 
-/** 보너스 커맨드(작업 지시) — 지금은 이 화면 어디서도 호출하지 않는다.
- * 대시보드 인증 상태 표시는 별도 작업으로 남겨둔다. */
+/** 대시보드의 claude CLI 로그인 상태 위젯(views/home.ts loadClaudeAuthStatus)이
+ * 부팅 시 미리 호출한다 — 조회 전용, 자격증명을 읽거나 쓰지 않는다. */
 export async function checkClaudeAuthStatus(): Promise<ClaudeAuthStatus> {
   return invoke<ClaudeAuthStatus>('check_claude_auth_status');
 }

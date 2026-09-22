@@ -2,8 +2,8 @@
 // 보여준다. 위젯 클릭 시 해당 상세 화면으로 이동한다. 프로젝트·세션·개발환경·
 // 카탈로그·사용량 통계·자율업무 위젯은 전부 실제 로컬 데이터를 쓴다(main.ts가
 // 로그인 직후 한 번씩 미리 불러온다).
-import { el, clickable } from '../dom';
-import { state } from '../state';
+import { el, clickable, showToast } from '../dom';
+import { state, notifyChange } from '../state';
 import { navigate } from '../route';
 import { computeTodayTokens, formatTokenCount, loadDailyUsage } from './usage';
 import { asBoolean, loadSessions } from './sessions';
@@ -13,6 +13,7 @@ import { loadDevTools } from './devTools';
 import { loadAutonomousTasks } from './autonomousTasks';
 import { loadMcp } from './settings';
 import { ensureAppVersionLoaded, getAppVersion } from '../sidebar';
+import { checkClaudeAuthStatus, openClaudeLoginTerminal } from '../sessionsApi';
 
 const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
 
@@ -36,6 +37,7 @@ export function renderHomeView(): HTMLElement {
   ]);
 
   const grid = el('div', { className: 'home-widget-grid' }, [
+    claudeAuthWidget(),
     usageWidget(),
     catalogWidget(),
     projectsWidget(),
@@ -147,6 +149,85 @@ function mcpHubWidget(): HTMLElement {
     ...disconnectedBreakdown,
     el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
   ]);
+}
+
+// claude CLI 로그인 상태 — `check_claude_auth_status`(claude_auth.rs, `claude
+// auth status --json` 위임 조회)만 재사용한다(새 백엔드 커맨드를 만들지 않는다,
+// 작업 지시). 로그인 액션은 반드시 기존 "터미널 열기" 경로(openClaudeLoginTerminal
+// → views/sessions.ts handleClaudeLogin과 동일한 함수)로만 연결한다 — 되돌린
+// 헤드리스 spawn(start_claude_auth_login)은 절대 호출하지 않는다.
+//
+// 세 상태를 구분해 보여준다(직전 라운드 회귀의 핵심 교훈 — "없음"이 아니라
+// "있음"으로 판정한다):
+//   1) 확인 중  — 아직 한 번도 응답을 못 받은 상태(loaded=false, loading=true).
+//   2) 로그인됨 — `loaded && !error && status.loggedIn === true`일 때만.
+//      즉 "명시적 긍정 신호"가 있어야만 로그인됨으로 표시한다.
+//   3) 로그인 안 됨·확인 실패 — 그 외 전부(조회 실패, loggedIn===false, 또는
+//      아직 loaded===false인데 loading도 아닌 초기 렌더 프레임). "모름"과
+//      "인증됨"을 구분하기 위해 이 버킷을 기본값으로 삼는다 — 근거 없이
+//      "정상"처럼 보이는 표시가 v0.2.11 회귀의 본질이었다. 이 버킷에서만
+//      "터미널 열기 (claude login)" 버튼을 노출한다(기존 세션 채팅 인증
+//      실패 배너와 동일 라벨 — 두 화면이 동시에 렌더되지 않으므로 겹치지
+//      않는다, DOM에 항상 함께 있는 사이드바에는 이 라벨이 없다).
+function claudeAuthWidget(): HTMLElement {
+  const auth = state.claudeAuth;
+  const title = el('div', { className: 'home-widget-title' }, ['claude CLI 로그인']);
+
+  if (!auth.loaded && auth.loading) {
+    return el('div', { className: 'home-widget' }, [title, el('div', { className: 'home-widget-desc' }, ['확인 중…'])]);
+  }
+
+  const confirmedLoggedIn = auth.loaded && !auth.error && auth.status?.loggedIn === true;
+
+  if (confirmedLoggedIn) {
+    const email = auth.status?.email;
+    return el('div', { className: 'home-widget' }, [
+      title,
+      el('span', { className: 'badge badge-active' }, ['로그인됨']),
+      el('div', { className: 'home-widget-desc' }, [email ?? '인증된 상태입니다.']),
+    ]);
+  }
+
+  const reasonText = auth.error
+    ? `로그인 상태를 확인하지 못했습니다: ${auth.error}`
+    : 'claude CLI에 로그인되어 있지 않습니다.';
+
+  return el('div', { className: 'home-widget' }, [
+    title,
+    el('span', { className: 'badge badge-archived' }, ['로그인 필요']),
+    el('div', { className: 'home-widget-desc' }, [reasonText]),
+    el('button', { className: 'btn btn-primary', onClick: () => void handleOpenClaudeLoginTerminalFromHome() }, ['터미널 열기 (claude login)']),
+  ]);
+}
+
+// views/sessions.ts의 handleClaudeLogin과 동일한 로직(openClaudeLoginTerminal
+// + 토스트) — 그 함수는 그 파일 안에서만 쓰는 비공개 함수라 복제 대신 같은
+// sessionsApi 호출을 여기서 독립적으로 감싼다. 앱이 대신 로그인하지 않고
+// 사용자가 직접 보는 터미널 창을 여는 데까지만 관여하는 것도 동일하다.
+async function handleOpenClaudeLoginTerminalFromHome(): Promise<void> {
+  try {
+    const result = await openClaudeLoginTerminal();
+    showToast(result.message);
+  } catch (err) {
+    showToast(`터미널을 여는 데 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** main.ts가 로그인 직후(또는 홈으로 돌아올 때마다, 이전 시도가 에러로 끝나
+ * loaded=false로 남아 있으면) 다른 위젯과 같은 가드 패턴으로 호출한다. */
+export async function loadClaudeAuthStatus(): Promise<void> {
+  state.claudeAuth.loading = true;
+  state.claudeAuth.error = null;
+  notifyChange();
+  try {
+    state.claudeAuth.status = await checkClaudeAuthStatus();
+    state.claudeAuth.loaded = true;
+  } catch (err) {
+    state.claudeAuth.error = err instanceof Error ? err.message : String(err);
+  } finally {
+    state.claudeAuth.loading = false;
+    notifyChange();
+  }
 }
 
 // ---------------- 실제 로컬 데이터 ----------------

@@ -188,6 +188,13 @@ pub fn check_claude_auth_status() -> Result<ClaudeAuthStatus, String> {
     let claude_path = resolve_claude()?;
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
     let args = ["auth".to_string(), "status".to_string(), "--json".to_string()];
+    // 특정 프로젝트와 무관한 전역 호출이라 `global_cwd::default_global_cwd()`
+    // (workspace 루트 → 홈 디렉터리 순, 존재 확인 후 첫 값)로 CWD를 명시적으로
+    // 고정한다(`plugins::run_claude_command`와 동일한 근거 — 작업 지시서
+    // "인증 상태 확인"이 바로 이 호출). `None`이면(후보가 모두 없음)
+    // `run_process_with_timeout_cancellable`이 대신 Windows 전용
+    // `child_current_dir` 보정만 적용한다(Mac은 그마저도 없이 기존 동작 유지).
+    let cwd = crate::global_cwd::default_global_cwd();
     let output = crate::dev_tools::run_process_with_timeout_cancellable(
         &claude_path,
         &args,
@@ -196,7 +203,7 @@ pub fn check_claude_auth_status() -> Result<ClaudeAuthStatus, String> {
         Duration::from_secs(15),
         None,
         None,
-        None,
+        cwd.as_deref(),
     );
     if let Some(err) = output.spawn_error {
         return Err(err);
@@ -277,6 +284,12 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
     // 기대지 않는다.
     command.args(["auth", "login", "--claudeai"]);
     command.env("PATH", &path_env);
+    // check_claude_auth_status와 동일한 근거(전역 호출) — CWD를 명시적으로
+    // 고정한다. 후보가 모두 없으면 `.current_dir()`을 호출하지 않고 기존 동작
+    // (앱 프로세스의 CWD 상속)을 유지한다.
+    if let Some(dir) = crate::global_cwd::default_global_cwd() {
+        command.current_dir(dir);
+    }
     // stdin=null: 위 모듈 주석의 비TTY 실측과 동일한 조건(`< /dev/null`).
     // 정상 경로(폴링 기반 자동완료)는 입력이 필요 없고, 수동 코드 붙여넣기
     // 폴백은 이 앱이 입력 창을 제공하지 않으므로 애초에 지원 범위 밖이다.
