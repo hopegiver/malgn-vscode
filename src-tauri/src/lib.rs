@@ -128,7 +128,8 @@ pub fn run() {
             session_chat::open_claude_login_terminal,
             claude_auth::check_claude_auth_status,
             claude_auth::start_claude_auth_login,
-            claude_auth::cancel_claude_auth_login
+            claude_auth::cancel_claude_auth_login,
+            claude_auth::submit_claude_auth_login_code
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

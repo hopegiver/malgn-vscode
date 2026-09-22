@@ -148,6 +148,14 @@ export async function cancelClaudeAuthLogin(): Promise<void> {
   return invoke<void>('cancel_claude_auth_login');
 }
 
+// 근본 수정(claude_auth.rs 상단 주석): 자식 stdin을 파이프로 바꾸고, 로그인이
+// 진행 중인 동안 이 커맨드로 아무 때나 코드를 전달할 수 있게 했다 — claude가
+// 실제로 코드를 요구하는지는 이 앱이 판단하지 않는다("감지해서 분기"가
+// v0.2.11 사고의 원인이었다).
+export async function submitClaudeAuthLoginCode(code: string): Promise<void> {
+  return invoke<void>('submit_claude_auth_login_code', { code });
+}
+
 export interface ClaudeAuthLoginUrlEvent {
   readonly url: string;
 }
@@ -159,8 +167,20 @@ export interface ClaudeAuthLoginFinishedEvent {
   readonly status: ClaudeAuthStatus | null;
 }
 
+/** 자식 stdout 원문 청크(줄 경계 없음, claude_auth.rs `pump_stdout`이 읽는
+ * 그대로) — 사용자가 코드 입력창 옆에서 claude가 지금 무엇을 묻는지 원문으로
+ * 볼 수 있게 하는 용도다. 이 이벤트를 보고 입력창 노출 여부를 정하지 않는다
+ * (입력창은 로그인이 진행 중인 동안 항상 있다). */
+export interface ClaudeAuthLoginOutputEvent {
+  readonly text: string;
+}
+
 export async function onClaudeAuthLoginUrl(cb: (d: ClaudeAuthLoginUrlEvent) => void): Promise<UnlistenFn> {
   return listen<ClaudeAuthLoginUrlEvent>('claude-auth-login-url', (e) => cb(e.payload));
+}
+
+export async function onClaudeAuthLoginOutput(cb: (d: ClaudeAuthLoginOutputEvent) => void): Promise<UnlistenFn> {
+  return listen<ClaudeAuthLoginOutputEvent>('claude-auth-login-output', (e) => cb(e.payload));
 }
 
 export async function onClaudeAuthLoginFinished(cb: (d: ClaudeAuthLoginFinishedEvent) => void): Promise<UnlistenFn> {

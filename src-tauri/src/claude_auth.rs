@@ -18,29 +18,51 @@
 // 3) 이 앱 자체 OAuth 구현이 아니다 — `claude auth login`을 그대로 위임
 //    실행할 뿐이다.
 //
-// 비TTY 실측(격리 환경, `CLAUDE_CONFIG_DIR`를 스크래치 경로로 돌려 이 머신의
-// 실제 로그인 세션은 건드리지 않았다): `stdin=/dev/null`로
-// `claude auth login --claudeai`를 spawn해도 "Raw mode is not supported"로
-// 죽지 않는다 — 대신 "Opening browser to sign in…" / "If the browser didn't
-// open, visit: https://…" / "Paste code here if prompted >"를 출력한 채
-// 정상 대기했다(실제 로그인은 완료하지 않고 프로세스만 SIGTERM으로 정리).
-// 바이너리 문자열 조사(`strings`)로 "Sign-in timed out while waiting for you
-// to continue"/"Sign-in timed out before the browser flow completed"를
-// 확인했다 — `--claudeai` 경로는 수동 코드 붙여넣기가 아니라 서버 폴링
-// 기반으로 자동 완료되고 자체 타임아웃도 갖는다는 근거다. "추천 로그인
-// 방식을 이 머신에서 쓸 수 없음"(수동 입력 폴백이 필요한 경우)만 코드
-// 붙여넣기를 요구하는데, 이 앱은 그 입력 창을 제공하지 않으므로 그 문구가
-// 보이면 기다리지 않고 즉시 실패로 처리해 "터미널 열기" 폴백으로 안내한다
-// (아래 `run_login`의 `fallback_unavailable` 분기).
+// ---------------- v0.2.11 사고와 근본 수정(이 리비전) ----------------
+// v0.2.11은 자식 stdin을 `Stdio::null()`로 spawn했다. 실사용 환경에서 CLI는
+// 브라우저에 인증 코드 페이지를 띄우고 코드 입력을 기다리는데, stdin이 막혀
+// 있어 그 코드가 영영 들어갈 수 없었다 — 사용자는 멈춘 화면만 봤다. 곁들인
+// 폴백 감지("recommended sign-in isn't available on this machine" 문구
+// 매칭)도 다른 상황의 문구라 못 잡았다. 45명에게 배포된 뒤 `03b8c24`로
+// 프론트 진입점만 끄고 롤백했다(hub 이슈 01m33qe0zhn55mczhcdgec2b61).
 //
-// 미검증으로 남긴 것: 이미 로그인된 상태에서 이 커맨드를 또 실행하면 CLI가
-// "계정을 바꾸시겠습니까" 류의 추가 확인을 요구할 가능성 — 실제 호출부(세션
-// 채팅의 인증 실패 배너)는 애초에 인증이 깨졌을 때만 노출되므로 이 상태가
-// 흔하지는 않지만, 완전히 배제하지는 않는다. 이 경로가 걸리면 앱 자체
-// 타임아웃(`LOGIN_MAX_WAIT`)이 5분 뒤 프로세스를 정리하고 실패로 보고한다
-// (영구 대기는 아니다).
+// 바이너리 문자열 재조사(claude 2.1.276)로 실제 코드를 확인했다:
+// `process.stdout.write("Paste code here if prompted > ")`. 여기서 세
+// 가지가 따라온다.
+// 1) Ink TUI가 아니라 `process.stdout.write`다 → TTY가 없어도(파이프로도)
+//    이 프롬프트는 우리 쪽 stdout에 반드시 도달한다.
+// 2) 문구가 "if prompted"다 → 이 프롬프트는 정상 폴링 경로와 배타적인
+//    "수동 케이스 전용" 분기가 아니라, "브라우저가 코드를 줬다면 여기
+//    붙여넣어라"는 상시 통로로 보인다. 그래서 이 리비전은 "이 문구가
+//    보이면 폴백"류의 감지 분기를 아예 없앴다 — 그 분기가 문구를 잘못
+//    매칭해서 사고가 났었다. 대신 로그인이 진행 중인 동안 코드 입력창을
+//    처음부터 상시 띄워 둔다(감지 실패로 사용자가 갇히는 경로 자체가
+//    존재하지 않는다).
+// 3) `"> "`로 끝나고 줄바꿈이 없다 → **stdout을 줄 단위(`BufReader::lines()`)로
+//    읽으면 이 프롬프트는 다음 개행이 올 때까지 버퍼에 갇혀 영원히 안
+//    나온다.** 지난 사고를 그대로 재현하는 지점이라, 이 리비전은 stdout을
+//    바이트 단위로 읽는다(아래 `pump_stdout`).
+//
+// 구현: 자식 stdin을 `Stdio::piped()`로 바꾸고(`run_login`), 그 쓰기 끝을
+// 로그인 전역 슬롯(`LOGIN_STATE`)에 보관한다. 새 커맨드
+// `submit_claude_auth_login_code`가 그 핸들에 사용자가 제출한 문자열 + LF를
+// 써넣는다 — claude가 실제로 코드를 요구하든 안 하든 이 경로는 항상 존재하고,
+// 요구하지 않으면 그냥 아무도 안 쓸 뿐이다. 취소·타임아웃 시에는 그 핸들을
+// 명시적으로 drop해 쓰기 끝을 닫는다(피워진 stdin을 아무도 안 닫으면 자식이
+// EOF를 못 받아 또 다른 얼굴의 무한 대기에 빠질 수 있다 — `finish_login()`의
+// 정상 종료 경로도 슬롯 전체를 take()하며 같은 효과를 낸다).
+//
+// 정상 폴링 경로(자동 완료·완료 판정·앱 자체 타임아웃)는 이 리비전에서
+// 손대지 않았다 — 실측대로 `--claudeai`는 서버 폴링 기반으로 자동 완료되고
+// 자체 타임아웃도 갖는다(바이너리 문자열 "Sign-in timed out..." 확인됨).
+//
+// 미검증으로 남긴 것: 실제 claude로 로그인 완료까지 가는 end-to-end(이
+// 머신은 이미 로그인돼 있어 깨뜨리면 안 된다 — `docs`/작업 지시 참고).
+// 검증은 ①격리 `CLAUDE_CONFIG_DIR`에서의 정상 폴링 경로(기존에 이미 확인)
+// ②가짜 자식 프로세스로 이 파일 하단 단위 테스트가 확인하는 "개행 없는
+// 프롬프트 감지 + stdin 파이프로 실제 전달"로 나뉜다.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -73,6 +95,10 @@ const LOGIN_MAX_WAIT: Duration = Duration::from_secs(300);
 struct LoginState {
     pid: Option<u32>,
     canceled: bool,
+    /// 자식 stdin의 쓰기 끝 — `submit_claude_auth_login_code`가 여기 쓴다.
+    /// `Option`을 `None`으로 바꾸면(`.take()`) 그 즉시 drop되어 파이프가
+    /// 닫힌다(취소·타임아웃·정상 종료 공통 경로).
+    stdin: Option<std::process::ChildStdin>,
 }
 
 static LOGIN_STATE: OnceLock<Mutex<Option<LoginState>>> = OnceLock::new();
@@ -89,6 +115,7 @@ fn register_login() -> Result<(), String> {
     *guard = Some(LoginState {
         pid: None,
         canceled: false,
+        stdin: None,
     });
     Ok(())
 }
@@ -106,7 +133,29 @@ fn set_login_pid(pid: u32) -> bool {
     }
 }
 
-/// 슬롯을 비우고, 취소된 상태였는지 반환한다.
+/// 자식 stdin의 쓰기 끝을 슬롯에 보관한다 — 슬롯이 이미 비어 있으면(등록 전에
+/// 취소·종료가 끝난 레이스) 인자로 받은 값이 즉시 스코프를 벗어나며
+/// drop되어 그 자체로 닫힌다. 별도 분기가 필요 없다.
+fn set_login_stdin(stdin: std::process::ChildStdin) {
+    let mut guard = login_state().lock().unwrap();
+    if let Some(state) = guard.as_mut() {
+        state.stdin = Some(stdin);
+    }
+}
+
+/// 취소·타임아웃 시 명시적으로 호출해 stdin 쓰기 끝을 닫는다(작업 지시).
+/// 이미 `kill_process_group_with_grace`로 시그널을 보내지만, 그것과 별개로
+/// "아무도 stdin을 닫지 않아 자식이 EOF를 못 받는" 경로 자체를 없앤다.
+fn close_login_stdin() {
+    let mut guard = login_state().lock().unwrap();
+    if let Some(state) = guard.as_mut() {
+        drop(state.stdin.take());
+    }
+}
+
+/// 슬롯을 비우고, 취소된 상태였는지 반환한다. `guard.take()`가 통째로
+/// `LoginState`를 반환·drop하므로 남아있던 stdin도 이 시점에 자동으로
+/// 닫힌다(정상 종료 경로의 stdin 정리).
 fn finish_login() -> bool {
     let mut guard = login_state().lock().unwrap();
     guard.take().map(|s| s.canceled).unwrap_or(false)
@@ -231,9 +280,24 @@ struct ClaudeAuthLoginFinishedPayload {
     status: Option<ClaudeAuthStatus>,
 }
 
+/// 자식 stdout 원문 청크 그대로 프론트에 스트리밍한다(줄 경계 없음 —
+/// `pump_stdout`이 읽는 그대로). 사용자가 코드 입력창 옆에서 "claude가 지금
+/// 뭘 묻고 있는지"를 원문으로 볼 수 있게 하는 용도이지, 이 값을 보고 입력창
+/// 노출 여부를 분기하지 않는다(입력창은 로그인이 진행 중인 동안 항상 있다).
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeAuthLoginOutputPayload {
+    text: String,
+}
+
 fn emit_login_url(app: &tauri::AppHandle, url: &str) {
     use tauri::Emitter;
     let _ = app.emit("claude-auth-login-url", ClaudeAuthLoginUrlPayload { url: url.to_string() });
+}
+
+fn emit_login_output(app: &tauri::AppHandle, text: &str) {
+    use tauri::Emitter;
+    let _ = app.emit("claude-auth-login-output", ClaudeAuthLoginOutputPayload { text: text.to_string() });
 }
 
 fn emit_login_finished(
@@ -276,6 +340,26 @@ pub fn start_claude_auth_login(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 자식 stdout을 바이트 단위로 읽으며 청크가 도착할 때마다 `on_chunk`를
+/// 부른다. EOF(자식이 stdout을 닫음, 보통 프로세스 종료)까지 블로킹으로
+/// 읽고 반환한다.
+///
+/// `BufReader::lines()`(줄 단위)를 쓰지 않는 이유(이 파일 상단 주석 ③):
+/// claude CLI가 찍는 `"Paste code here if prompted > "` 프롬프트는 개행이
+/// 없다 — 줄 단위 리더는 다음 개행이 올 때까지 그 내용을 버퍼에 가둔다.
+/// 멀티바이트 UTF-8 문자가 청크 경계에서 잘리면 `from_utf8_lossy`가 그
+/// 부분을 교체 문자로 바꾸는데, 이 프로세스가 찍는 텍스트(URL·영어 안내문)는
+/// 전부 ASCII라 실사용에서 발생하지 않는다.
+fn pump_stdout(mut stdout: impl Read, mut on_chunk: impl FnMut(&str)) {
+    let mut buf = [0u8; 256];
+    loop {
+        match stdout.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => on_chunk(&String::from_utf8_lossy(&buf[..n])),
+        }
+    }
+}
+
 fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
     let mut command = Command::new(&claude_path);
     // 과금 주체 고정(절대 경계 ②, 이 파일 상단 주석): `--console`(Anthropic
@@ -290,10 +374,10 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
     if let Some(dir) = crate::global_cwd::default_global_cwd() {
         command.current_dir(dir);
     }
-    // stdin=null: 위 모듈 주석의 비TTY 실측과 동일한 조건(`< /dev/null`).
-    // 정상 경로(폴링 기반 자동완료)는 입력이 필요 없고, 수동 코드 붙여넣기
-    // 폴백은 이 앱이 입력 창을 제공하지 않으므로 애초에 지원 범위 밖이다.
-    command.stdin(Stdio::null());
+    // stdin=piped(근본 수정, 이 파일 상단 주석): claude가 브라우저에서 받은
+    // 코드를 요구할 수 있는 통로를 항상 열어둔다. 정상 폴링 경로는 이
+    // 입력을 안 읽을 뿐이라 있어도 해가 없다.
+    command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     command.silent();
@@ -319,6 +403,15 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
     let already_canceled = set_login_pid(pid);
     if already_canceled {
         kill_process_group_with_grace(pid);
+    }
+
+    // stdin 쓰기 끝을 전역 슬롯에 보관해 `submit_claude_auth_login_code`가
+    // 쓸 수 있게 한다. 이미 취소된 레이스라면(위 already_canceled) 굳이
+    // 보관하지 않고 바로 drop해 닫는다 — 어차피 프로세스를 죽이는 중이다.
+    match child.stdin.take() {
+        Some(stdin) if !already_canceled => set_login_stdin(stdin),
+        Some(stdin) => drop(stdin),
+        None => {}
     }
 
     let stderr_reader = child.stderr.take().map(|mut pipe| {
@@ -347,36 +440,40 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
             std::thread::sleep(Duration::from_secs(1));
         }
         if !done_for_watchdog.load(Ordering::Relaxed) {
+            // 취소와 동일한 이유로 kill 전에 stdin을 먼저 닫는다(작업 지시) —
+            // 시그널과 무관하게 "쓰기 끝이 열린 채 아무도 안 닫는" 경로를
+            // 없앤다.
+            close_login_stdin();
             kill_process_group_with_grace(watchdog_pid);
         }
     });
 
+    // 분기 없이 바이트 단위로 읽는다(이 파일 상단 주석 ③) — URL은 누적
+    // 버퍼에서 찾고, 원문 청크는 그대로 프론트에 스트리밍해 사용자가 claude가
+    // 지금 무엇을 묻는지 볼 수 있게 한다. "특정 문구가 보이면 폴백" 같은
+    // 분기는 여기 없다 — 코드 입력창은 로그인이 진행 중인 동안 항상 있다
+    // (views/sessions.ts).
     let mut url_emitted = false;
-    let mut fallback_unavailable = false;
+    let mut accumulated = String::new();
 
     if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let Ok(line) = line else { continue };
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
+        pump_stdout(stdout, |chunk| {
+            emit_login_output(&app, chunk);
+            if url_emitted {
+                return;
             }
-            if !url_emitted {
-                if let Some(idx) = trimmed.find("https://") {
-                    emit_login_url(&app, &trimmed[idx..]);
-                    url_emitted = true;
-                }
+            accumulated.push_str(chunk);
+            let Some(idx) = accumulated.find("https://") else {
+                return;
+            };
+            let rest = &accumulated[idx..];
+            // URL이 아직 다 도착하지 않았을 수 있다(청크 경계) — 공백/개행으로
+            // 끝맺는 걸 찾을 때까지 다음 청크를 기다린다.
+            if let Some(end) = rest.find(char::is_whitespace) {
+                emit_login_url(&app, &rest[..end]);
+                url_emitted = true;
             }
-            // 이 문구가 보이면 정상 폴링 경로가 아니라 수동 코드 붙여넣기
-            // 폴백이 필요하다는 뜻이다 — 이 앱은 그 입력 창을 제공하지
-            // 않으므로 타임아웃까지 기다리지 않고 즉시 실패로 처리한다.
-            if trimmed.contains("recommended sign-in isn't available on this machine") {
-                fallback_unavailable = true;
-                kill_process_group_with_grace(pid);
-                break;
-            }
-        }
+        });
     }
 
     let stderr_bytes = stderr_reader.and_then(|h| h.join().ok()).unwrap_or_default();
@@ -389,20 +486,6 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
 
     if canceled {
         emit_login_finished(&app, false, true, None, None);
-        return;
-    }
-
-    if fallback_unavailable {
-        emit_login_finished(
-            &app,
-            false,
-            false,
-            Some(
-                "이 환경에서는 앱 안 로그인을 쓸 수 없습니다(추천 로그인 방식 사용 불가). 아래 \"터미널 열기\"로 진행해주세요."
-                    .to_string(),
-            ),
-            None,
-        );
         return;
     }
 
@@ -444,11 +527,42 @@ pub fn cancel_claude_auth_login() {
             return;
         };
         state.canceled = true;
+        // 취소 시 stdin을 반드시 닫는다(작업 지시) — piped stdin을 아무도
+        // 안 닫으면 자식이 EOF를 못 받아 또 다른 얼굴의 무한 대기에 빠질 수
+        // 있다. `.take()`가 반환한 값을 곧장 drop해 쓰기 끝을 닫는다.
+        drop(state.stdin.take());
         state.pid
     };
     if let Some(pid) = pid {
         kill_process_group_with_grace(pid);
     }
+}
+
+/// 세션 채팅 화면의 코드 입력창 "코드 제출" 버튼용. 로그인이 진행 중인 동안
+/// 항상 호출 가능하다(claude가 실제로 코드를 요구하는지 이 앱은 판단하지
+/// 않는다 — 이 파일 상단 주석의 "분기를 없앤다" 설계). 제출값 끝에 LF 한
+/// 글자만 붙인다 — 파이프(비TTY) stdin을 읽는 Node 계열 입력은 LF만으로 한
+/// 줄 입력이 완결되고, CRLF를 붙이면 오히려 CR이 코드 문자열에 섞여 들어갈
+/// 위험이 있다.
+#[tauri::command]
+pub fn submit_claude_auth_login_code(code: String) -> Result<(), String> {
+    let trimmed = code.trim();
+    if trimmed.is_empty() {
+        return Err("코드를 입력해주세요.".to_string());
+    }
+    let mut guard = login_state().lock().unwrap();
+    let Some(state) = guard.as_mut() else {
+        return Err("진행 중인 로그인이 없습니다.".to_string());
+    };
+    let Some(stdin) = state.stdin.as_mut() else {
+        return Err("로그인 프로세스가 아직 입력을 받을 준비가 되지 않았습니다. 잠시 후 다시 시도해주세요.".to_string());
+    };
+    let mut payload = trimmed.as_bytes().to_vec();
+    payload.push(b'\n');
+    stdin
+        .write_all(&payload)
+        .and_then(|_| stdin.flush())
+        .map_err(|e| format!("코드를 전달하지 못했습니다: {e}"))
 }
 
 // ==================== 단위 테스트 ====================
@@ -495,7 +609,24 @@ mod tests {
         assert_eq!(tail_chars(text, 3), "hij");
     }
 
-    // ==================== 전역 단일 슬롯(register/set_pid/finish/cancel) ====================
+    // `pump_stdout` 자체를 LOGIN_STATE 없이 순수하게 검증한다(병렬 실행
+    // 안전 — 전역 상태를 건드리지 않는다). `Cursor`는 개행 유무와 무관하게
+    // 읽은 바이트를 그대로 반환하므로, 마지막 청크가 개행으로 끝나지 않아도
+    // (v0.2.11이 놓쳤던 "Paste code here if prompted > " 조건) on_chunk가
+    // 그 내용을 받는다는 것을 이 테스트가 직접 고정한다.
+    #[test]
+    fn pump_stdout_forwards_chunk_even_without_trailing_newline() {
+        let source = std::io::Cursor::new(b"Opening browser...\nPaste code here if prompted > ".to_vec());
+        let mut received = String::new();
+        pump_stdout(source, |chunk| received.push_str(chunk));
+        assert_eq!(received, "Opening browser...\nPaste code here if prompted > ");
+        assert!(
+            received.ends_with("if prompted > "),
+            "개행 없이 끝나는 마지막 텍스트가 on_chunk에 도달해야 합니다(실제: {received:?})"
+        );
+    }
+
+    // ==================== 전역 단일 슬롯(register/set_pid/finish/cancel/stdin) ====================
     // `LOGIN_STATE`는 세션별 키가 없는 프로세스 전역 단일 슬롯이다(session_chat
     // ::turn의 `ACTIVE_TURNS`처럼 세션 id로 나눌 수 없다) — `cargo test`
     // 기본값(스레드 병렬 실행)에서 여러 테스트가 이 슬롯을 동시에 건드리면
@@ -521,5 +652,95 @@ mod tests {
         assert!(register_login().is_ok());
         let canceled = finish_login();
         assert!(!canceled);
+
+        // 4) 로그인이 없을 때 코드를 제출하면 명확한 에러를 반환한다(패닉 아님).
+        let no_login_err = submit_claude_auth_login_code("ABC".to_string());
+        assert!(no_login_err.is_err());
+
+        // 5) 로그인은 등록됐지만 아직 stdin이 준비되지 않았을 때(spawn 직후
+        //    ~ set_login_stdin 호출 사이의 창)도 마찬가지로 명확한 에러여야
+        //    한다 — run_login이 아직 자식을 spawn하지 못한 상태를 흉내낸다.
+        assert!(register_login().is_ok());
+        let not_ready_err = submit_claude_auth_login_code("ABC".to_string());
+        assert!(not_ready_err.is_err());
+        // 슬롯을 비워 다음 단계(6)가 이어서 register_login()할 수 있게 한다.
+        let _ = finish_login();
+
+        // 6) 가짜 자식 프로세스 — stdin 배관 end-to-end. v0.2.11 사고 재현
+        //    조건 그대로: 개행 없는 프롬프트("Paste code here if prompted >
+        //    ")를 찍고 자기 stdin을 한 줄 읽어 파일에 기록하는 가짜 "claude"를
+        //    실제로 spawn한다. `register_login`/`set_login_pid`/
+        //    `set_login_stdin`/`submit_claude_auth_login_code` — run_login이
+        //    쓰는 것과 완전히 같은 함수들을 그대로 거친다. "감지"는
+        //    `pump_stdout`이 개행 없이도 청크를 넘겨주는 것으로, "전달"은
+        //    파일에 그 문자열이 실제로 나타나는 것으로 각각 증명한다(둘 다
+        //    "에러가 안 난다"가 아니라 "있다"로 판정한다 — 이 작업의 완료
+        //    기준). 위 1~5단계와 같은 LOGIN_STATE 슬롯을 계속 쓰므로 같은
+        //    테스트 함수 안에 순차적으로 둔다(병렬 테스트 간 공유 상태 없음
+        //    원칙 — 이 파일을 처음 분리해 별도 테스트 함수로 뒀더니
+        //    `login_slot_lifecycle_*`와 경합해 register_login()이 실제로
+        //    실패했다).
+        #[cfg(unix)]
+        {
+            assert!(register_login().is_ok());
+
+            let out_file = std::env::temp_dir().join(format!("claude_auth_fake_child_{}.txt", std::process::id()));
+            let _ = std::fs::remove_file(&out_file);
+            // printf(개행 없음)로 실측 프롬프트를 그대로 찍고, 자기 stdin을
+            // 한 줄 읽어 OUT_FILE에 그대로 기록한다. 개행을 붙이지 않아
+            // (마지막 printf도 %s) v0.2.11 사고 조건(줄바꿈 없는 stdout)을
+            // 정확히 재현한다.
+            let script = format!(
+                "printf 'Paste code here if prompted > '; IFS= read -r line; printf '%s' \"$line\" > '{}'",
+                out_file.display()
+            );
+
+            let mut child = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("가짜 자식 프로세스(/bin/sh) spawn 실패");
+
+            let pid = child.id();
+            set_login_pid(pid);
+            set_login_stdin(child.stdin.take().expect("가짜 자식의 stdin 파이프가 없음"));
+
+            let stdout = child.stdout.take().expect("가짜 자식의 stdout 파이프가 없음");
+            let chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let chunks_for_reader = chunks.clone();
+            let reader = std::thread::spawn(move || {
+                pump_stdout(stdout, |chunk| chunks_for_reader.lock().unwrap().push(chunk.to_string()));
+            });
+
+            // 개행 없는 프롬프트가 도착할 때까지 폴링(최대 2초) — 여기서
+            // 실패하면 줄 단위 리더(BufReader::lines())로 되돌아간 회귀다.
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let mut prompt_seen = false;
+            while std::time::Instant::now() < deadline {
+                if chunks.lock().unwrap().join("").contains("Paste code here if prompted > ") {
+                    prompt_seen = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(prompt_seen, "개행 없는 프롬프트를 감지하지 못했습니다(바이트 단위 읽기 회귀)");
+
+            // 감지 후 실제 프론트 "코드 제출" 버튼이 부르는 것과 동일한
+            // 커맨드로 코드를 전달한다.
+            submit_claude_auth_login_code("HARNESS-CODE-123".to_string()).expect("코드 제출 실패");
+
+            reader.join().expect("stdout 리더 스레드 조인 실패");
+            child.wait().expect("가짜 자식 프로세스 회수 실패");
+            finish_login();
+
+            let written = std::fs::read_to_string(&out_file).expect("가짜 자식이 출력 파일을 쓰지 않음");
+            let _ = std::fs::remove_file(&out_file);
+            assert_eq!(
+                written, "HARNESS-CODE-123",
+                "submit_claude_auth_login_code로 보낸 코드가 가짜 자식이 기록한 파일에 그대로 나타나야 합니다"
+            );
+        }
     }
 }

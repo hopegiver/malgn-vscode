@@ -215,13 +215,11 @@ export async function buildBaseFixtures() {
     send_session_message: null,
     cancel_session_turn: null,
     open_claude_login_terminal: { opened: true, message: '터미널을 열었습니다(테스트 기본값)' },
-    // claude_auth.rs(앱 안 claude 로그인) — start/cancel은 spawn 확인까지만
-    // 하는 invoke<void>라 위 규약대로 null. check_claude_auth_status는 지금
-    // 어떤 화면도 직접 호출하지 않지만(보너스 커맨드, UI 미연결) 기본값을
-    // 여기 채워둔다 — 향후 대시보드 작업이 호출을 추가해도 이 파일을 먼저
-    // 찾아보지 않고 바로 UNSTUBBED_COMMAND에 부딪히지 않게.
+    // claude_auth.rs(앱 안 claude 로그인) — start/cancel/submit은 spawn·전달
+    // 확인까지만 하는 invoke<void>라 위 규약대로 null.
     start_claude_auth_login: null,
     cancel_claude_auth_login: null,
+    submit_claude_auth_login_code: null,
     check_claude_auth_status: { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null },
     // @tauri-apps/plugin-opener의 openUrl()이 내는 invoke — 기존 브라우저
     // 오픈은 전부 Rust(`app.opener().open_url()`)에서 직접 호출해 JS 쪽

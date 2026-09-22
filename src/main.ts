@@ -35,7 +35,7 @@
 // 컴퓨터처럼 여러 프로젝트에서 계속 쓰고 있으면 재계산이 끝나기도 전에 다음
 // 이벤트가 쌓여 오히려 계속 느려졌다. 대신 메뉴 클릭 시점에만 새로 불러온다
 // (sidebar.ts).
-import { el, captureActiveFocusForRerender, flushPendingFieldFocus } from './dom';
+import { el, captureActiveFocusForRerender, flushPendingFieldFocus, showToast } from './dom';
 import { state, onStateChange, notifyChange, applyAuthenticatedIdentity } from './state';
 import { parseRoute } from './route';
 import { renderSidebar } from './sidebar';
@@ -65,7 +65,7 @@ import {
   leaveSessionChatView,
   leaveSessionsListView,
 } from './views/sessions';
-import { onSessionsChanged } from './sessionsApi';
+import { onSessionsChanged, onClaudeAuthLoginUrl, onClaudeAuthLoginOutput, onClaudeAuthLoginFinished } from './sessionsApi';
 import {
   renderAutonomousTasksListView,
   renderAutonomousTaskBoardView,
@@ -279,11 +279,61 @@ function initLiveWatchers(): void {
     });
 }
 
-// 회귀 수습(hub 이슈 01m33qe0zhn55mczhcdgec2b61, v0.2.11): 앱 안 claude CLI
-// 로그인(claude_auth.rs)의 진행 상황을 스트리밍하던 이벤트 구독은 그 진입점
-// 자체(views/sessions.ts의 "앱에서 로그인" 버튼)를 껐으므로 함께 제거한다 —
-// 아무도 start_claude_auth_login을 호출하지 않으니 이 이벤트도 발생하지
-// 않는다. 되살릴 때는 이 커밋을 되돌리면 된다.
+// 앱 안 claude CLI 로그인(claude_auth.rs) 이벤트 구독 — state.claudeAuthLogin
+// 설명 참고: 세션 채팅 화면의 진입/이탈과 무관하게 앱 시작 시 한 번만
+// 구독한다. 이 흐름은 백엔드가 세션에 묶이지 않는 전역 단일 슬롯으로
+// 관리하므로, sessionChat처럼 화면별로 구독을 걸고 떼면 사용자가 로그인
+// 진행 중 다른 화면으로 이동했을 때 완료 이벤트를 영영 놓친다.
+//
+// v0.2.11(hub 이슈 01m33qe0zhn55mczhcdgec2b61)에서 stdin=/dev/null로 사용자를
+// 멈춘 화면에 가두는 사고를 낸 뒤 `03b8c24`로 이 구독 자체를 껐었다 —
+// claude_auth.rs의 근본 수정(stdin 파이프 + 상시 코드 입력창, 감지 분기
+// 제거)과 함께 되살린다.
+let claudeAuthLoginWatcherInitialized = false;
+function initClaudeAuthLoginWatcher(): void {
+  if (claudeAuthLoginWatcherInitialized) return;
+  claudeAuthLoginWatcherInitialized = true;
+
+  onClaudeAuthLoginUrl((d) => {
+    state.claudeAuthLogin.url = d.url;
+    notifyChange();
+  }).catch(() => {
+    /* Tauri IPC 브리지가 없는 환경(플레인 브라우저) — 조용히 넘어간다 */
+  });
+
+  // 자식 stdout 원문을 누적한다(줄 경계 없음 — claude_auth.rs pump_stdout이
+  // 보내는 그대로). 이 값을 보고 입력창을 띄울지 말지 정하지 않는다 — 입력창
+  // 자체는 views/sessions.ts가 login.active만으로 항상 그린다.
+  onClaudeAuthLoginOutput((d) => {
+    state.claudeAuthLogin.output += d.text;
+    notifyChange();
+  }).catch(() => {
+    /* Tauri IPC 브리지가 없는 환경(플레인 브라우저) — 조용히 넘어간다 */
+  });
+
+  onClaudeAuthLoginFinished((d) => {
+    state.claudeAuthLogin.active = false;
+    state.claudeAuthLogin.url = null;
+    state.claudeAuthLogin.output = '';
+    state.claudeAuthLogin.codeInput = '';
+    if (d.canceled) {
+      state.claudeAuthLogin.error = null;
+      showToast('로그인을 취소했습니다.');
+    } else if (d.ok) {
+      state.claudeAuthLogin.error = null;
+      // 완료 후 같은 화면에서 이어서 작업할 수 있어야 한다 — 인증 실패
+      // 배너(있었다면)를 닫는다. 화면이 그대로면 또 실패로 오인한다.
+      state.sessionChat.authError = false;
+      state.sessionChat.error = null;
+      showToast('claude 로그인이 완료되었습니다.');
+    } else {
+      state.claudeAuthLogin.error = d.error ?? '로그인에 실패했습니다.';
+    }
+    notifyChange();
+  }).catch(() => {
+    /* Tauri IPC 브리지가 없는 환경(플레인 브라우저) — 조용히 넘어간다 */
+  });
+}
 
 // 앱 시작 직후 첫 렌더 전에 로컬 개발 전용 자동 로그인을 한 번 시도한다
 // (authApi.ts/src-tauri/src/dev_auto_login.rs 참고). 이 await가 끝나기 전에는
@@ -307,6 +357,7 @@ async function bootstrap(): Promise<void> {
   }
   handleNavigation();
   initLiveWatchers();
+  initClaudeAuthLoginWatcher();
   // 자동 업데이트 체크는 여기서 직접 부르지 않는다 — handleNavigation() 안의
   // 인증 게이트를 거쳐야 하기 때문이다(위 updateCheckStarted 플래그 분기 참고).
   // dev 자동 로그인이 성공한 경우 바로 위 handleNavigation() 호출 시점에 이미

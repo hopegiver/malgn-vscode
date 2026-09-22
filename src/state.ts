@@ -125,20 +125,25 @@ export interface AppState {
     streamingTools: string[];
     input: string;
   };
-  // 앱 안 claude CLI 로그인(claude_auth.rs) — 회귀 수습(hub 이슈
-  // 01m33qe0zhn55mczhcdgec2b61, v0.2.11)으로 이 상태를 쓰던 "앱에서 로그인"
-  // 버튼과 이벤트 구독(views/sessions.ts, main.ts)을 껐다. 실사용 환경에서
-  // 사용자를 멈춘 화면에 가두는 회귀를 냈기 때문이다 — 지금은 아무도 이
-  // 슬롯을 읽거나 쓰지 않는다(백엔드 claude_auth.rs·이 타입 자체는 나중에
-  // 고쳐 되살릴 것이라 남겨둔다).
+  // 앱 안 claude CLI 로그인(claude_auth.rs) — v0.2.11 사고(hub 이슈
+  // 01m33qe0zhn55mczhcdgec2b61, stdin=/dev/null로 사용자를 멈춘 화면에 가둠)의
+  // 근본 수정판. 자식 stdin이 이제 파이프이고, 로그인이 진행 중인 동안
+  // codeInput/코드 제출 UI를 "감지 분기 없이" 항상 띄운다(views/sessions.ts).
   claudeAuthLogin: {
-    /** true인 동안만 취소 버튼을 보여준다. */
+    /** true인 동안만 취소 버튼·코드 입력창을 보여준다. */
     active: boolean;
     /** 자식 프로세스 stdout에서 뽑은 로그인 URL. 자동으로 브라우저가 안
      * 열렸을 때 수동으로 열 수 있는 링크로 보여준다. */
     url: string | null;
     /** 직전 시도가 실패로 끝났을 때의 원문 메시지. */
     error: string | null;
+    /** 자식 stdout 원문 누적(claude-auth-login-output 이벤트). 줄바꿈 없는
+     * 프롬프트도 그대로 보존된다 — 로그인 시작마다 빈 문자열로 리셋. */
+    output: string;
+    /** 코드 입력창의 현재 값(제어 컴포넌트, boundField가 관리). */
+    codeInput: string;
+    /** 코드 제출 IPC 왕복 중 짧은 로딩 표시(이중 클릭 방지). */
+    submitting: boolean;
   };
   // 대시보드의 claude CLI 로그인 상태 위젯(views/home.ts) 전용 — 위
   // claudeAuthLogin(끈 헤드리스 로그인 흐름)과 무관하다. `checkClaudeAuthStatus()`
@@ -380,7 +385,7 @@ function createInitialState(): AppState {
     streamingTools: [],
     input: '',
   },
-  claudeAuthLogin: { active: false, url: null, error: null },
+  claudeAuthLogin: { active: false, url: null, error: null, output: '', codeInput: '', submitting: false },
   claudeAuth: { status: null, loading: false, error: null, loaded: false },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },

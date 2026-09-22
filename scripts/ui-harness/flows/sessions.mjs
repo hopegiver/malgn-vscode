@@ -251,11 +251,197 @@ export function scenarios(base) {
         }
       },
     },
-    // 회귀 수습(hub 이슈 01m33qe0zhn55mczhcdgec2b61, v0.2.11): "앱에서
-    // 로그인" 시나리오(id: 'app-login')는 그 진입점 자체가 화면에서
-    // 제거되어(src/views/sessions.ts:renderChatErrorBlock) 더 이상 검증할
-    // UI가 없으므로 통째로 뺐다. 위 auth-error 시나리오의 "터미널 열기"
-    // 검증만 남는다. 되살릴 때는 이 커밋을 되돌리면 된다.
+    {
+      // 앱 안 claude CLI 로그인(claude_auth.rs, v0.2.11 사고의 근본 수정판) —
+      // 인증 실패 배너의 "앱에서 로그인" 버튼. 터미널을 여는 기존 경로(위
+      // auth-error 시나리오)와 나란히 검증한다.
+      //
+      // 핵심 회귀 방지 포인트: 코드 입력창은 "특정 문구를 감지해야" 뜨는 게
+      // 아니라 로그인이 진행 중인 동안(login.active) 항상 있어야 한다 —
+      // 그래서 이 시나리오는 URL 이벤트조차 오기 전(start 직후)에 입력창부터
+      // 확인한다. v0.2.11은 감지 분기가 틀려 입력 경로 자체가 없었다 — 이
+      // 시나리오가 그 감지 분기가 되살아나지 않았음을 고정한다.
+      id: 'app-login',
+      fixtures: {
+        ...base,
+        start_new_session_message: { sessionId: 'harness-app-login-session-1', turnId: 'harness-app-login-turn-1' },
+        read_session_transcript: {
+          sessionId: 'harness-app-login-session-1',
+          cwd: '/Users/hopegiver/workspace/malgn-vscode',
+          transcriptPath: '/dev/null',
+          messages: [],
+          truncated: false,
+          activeTurnId: null,
+        },
+      },
+      async run(page, { shot, bugs, emitEvent }) {
+        if (base.list_workspace_projects.projects.length === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.waitForSelector('.modal-overlay');
+        const projectRow = page.locator('.modal-body .session-row').first();
+        if ((await projectRow.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login 시나리오: 새 세션 모달에 선택 가능한 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await projectRow.click();
+        await page.waitForSelector('.chat-page');
+        await page.locator('.chat-input-textarea').fill('인증 실패 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-app-login-session-1',
+          turnId: 'harness-app-login-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'success: Not logged in · Please run /login',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+
+        // ---- 1) "앱에서 로그인" 버튼이 "터미널 열기"와 나란히 뜬다 ----
+        const appLoginBtn = page.getByRole('button', { name: '앱에서 로그인' });
+        const terminalBtn = page.getByRole('button', { name: /claude login/ });
+        if ((await appLoginBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '인증 실패 안내에 "앱에서 로그인" 버튼이 없음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+          return;
+        }
+        if ((await terminalBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '"앱에서 로그인" 버튼이 추가되며 기존 "터미널 열기" 폴백이 사라짐(막다른 길 위험)', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        await shot('01-both-login-buttons');
+
+        // ---- 2) 시작 → start_claude_auth_login 호출 확인, URL 이벤트조차
+        //         오기 전에 코드 입력창이 이미 있어야 한다(분기 없음 설계) ----
+        await appLoginBtn.click();
+        await page.waitForTimeout(150);
+        const startInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'start_claude_auth_login'));
+        if (!startInvoked) {
+          bugs.push({ severity: 'Critical', symptom: '"앱에서 로그인" 버튼을 눌러도 start_claude_auth_login 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeAuthLoginStart' });
+        }
+        const progressText = await page.locator('.alert').first().textContent().catch(() => null);
+        if (!progressText || !progressText.includes('시작하는 중')) {
+          bugs.push({ severity: 'Major', symptom: `로그인 시작 직후 진행 중 표시가 뜨지 않음(실제: ${progressText})`, file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        const codeInputEarly = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
+        if ((await codeInputEarly.count()) === 0) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: 'URL 이벤트가 오기 전인데도 코드 입력창이 없음 — 입력창이 특정 문구 감지에 의존하는 분기로 되돌아간 회귀(v0.2.11과 동일한 함정)',
+            file: 'src/views/sessions.ts:renderClaudeAuthLoginActivePanel',
+          });
+        }
+        const cancelBtnEarly = page.getByRole('button', { name: '로그인 취소' });
+        if ((await cancelBtnEarly.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'URL 이벤트 전에 "로그인 취소" 버튼이 없음(영구 대기처럼 보일 위험)', file: 'src/views/sessions.ts:renderClaudeAuthLoginActivePanel' });
+        }
+        await shot('02-login-starting-code-input-already-present');
+
+        // ---- 3) URL 이벤트 → 링크 열기 버튼 노출(자동 오픈 실패 폴백) ----
+        await emitEvent('claude-auth-login-url', { url: 'https://claude.com/cai/oauth/authorize?state=harness-test' });
+        await page.waitForTimeout(150);
+        const openLinkBtn = page.getByRole('button', { name: '로그인 링크 열기' });
+        if ((await openLinkBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'URL 이벤트 수신 후 "로그인 링크 열기" 버튼이 뜨지 않음', file: 'src/views/sessions.ts:renderClaudeAuthLoginActivePanel' });
+        } else {
+          await openLinkBtn.click();
+          await page.waitForTimeout(100);
+          const openUrlInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'plugin:opener|open_url'));
+          if (!openUrlInvoked) {
+            bugs.push({ severity: 'Major', symptom: '"로그인 링크 열기" 버튼을 눌러도 opener 플러그인이 호출되지 않음', file: 'src/views/sessions.ts:handleOpenClaudeAuthLoginUrl' });
+          }
+        }
+        await shot('03-login-url-ready');
+
+        // ---- 4) 개행 없는 프롬프트 원문이 stdout 이벤트로 오면 출력 로그에
+        //         그대로 나타난다(claude_auth.rs가 바이트 단위로 읽어 보내는
+        //         텍스트 — 이 하네스는 TS/DOM 층만 검증하므로 실제 자식
+        //         프로세스는 없다. 이벤트 자체는 emitEvent로 흉내낸다) ----
+        await emitEvent('claude-auth-login-output', { text: 'Paste code here if prompted > ' });
+        await page.waitForTimeout(100);
+        const outputLog = await page.locator('.chat-auth-login-output').first().textContent().catch(() => null);
+        if (!outputLog || !outputLog.includes('Paste code here if prompted')) {
+          bugs.push({ severity: 'Major', symptom: `claude-auth-login-output 이벤트 원문이 로그 영역에 반영되지 않음(실제: ${outputLog})`, file: 'src/main.ts:initClaudeAuthLoginWatcher' });
+        }
+        await shot('04-raw-output-shown');
+
+        // ---- 5) 코드 입력 → 제출 → submit_claude_auth_login_code 호출,
+        //         입력값이 그대로 전달됐는지 확인 ----
+        const codeInput = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
+        await codeInput.fill('HARNESS-CODE-999');
+        await page.getByRole('button', { name: '코드 제출' }).click();
+        await page.waitForTimeout(150);
+        const submitCall = await page.evaluate(() => (window.__invokeLog ?? []).find((e) => e.cmd === 'submit_claude_auth_login_code'));
+        if (!submitCall) {
+          bugs.push({ severity: 'Critical', symptom: '"코드 제출" 버튼을 눌러도 submit_claude_auth_login_code 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeAuthLoginSubmitCode' });
+        } else if (submitCall.args?.code !== 'HARNESS-CODE-999') {
+          bugs.push({ severity: 'Critical', symptom: `제출된 코드 값이 입력창 내용과 다름(실제: ${JSON.stringify(submitCall.args)})`, file: 'src/views/sessions.ts:handleClaudeAuthLoginSubmitCode' });
+        }
+        const codeInputAfterSubmit = await codeInput.inputValue().catch(() => null);
+        if (codeInputAfterSubmit !== '') {
+          bugs.push({ severity: 'Minor', symptom: `코드 제출 후 입력창이 비워지지 않음(실제: "${codeInputAfterSubmit}")`, file: 'src/views/sessions.ts:handleClaudeAuthLoginSubmitCode' });
+        }
+        await shot('05-code-submitted');
+
+        // ---- 6) 완료(ok) → 배너 자체가 닫히고 같은 화면에서 이어갈 수 있다 ----
+        await emitEvent('claude-auth-login-finished', {
+          ok: true,
+          canceled: false,
+          error: null,
+          status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        });
+        await page.waitForTimeout(150);
+        const alertGone = await page.locator('.alert').count();
+        if (alertGone > 0) {
+          bugs.push({ severity: 'Critical', symptom: '로그인 완료 후에도 인증 실패 배너가 그대로 남아 있음(또 실패로 오인함)', file: 'src/views/sessions.ts / src/main.ts:initClaudeAuthLoginWatcher' });
+        }
+        // 토스트는 스택으로 쌓이고(dom.ts showToast) 2.2초 뒤에야 사라진다 —
+        // 바로 앞 단계(5)의 "코드를 전달했습니다." 토스트가 아직 남아있는
+        // 동안 이 이벤트가 오므로 `.first()`가 아니라 "완료" 문구를 포함하는
+        // 토스트가 하나라도 있는지로 확인한다(스택 순서에 의존하지 않는다).
+        const doneToastCount = await page.locator('.toast', { hasText: '완료' }).count();
+        if (doneToastCount === 0) {
+          bugs.push({ severity: 'Minor', symptom: '로그인 완료 토스트("...완료되었습니다")가 뜨지 않음', file: 'src/main.ts:initClaudeAuthLoginWatcher' });
+        }
+        await shot('06-login-finished-banner-cleared');
+
+        // ---- 7) 재현 후 취소 → 진행 컨트롤이 idle로 돌아온다 ----
+        await page.locator('.chat-input-textarea').fill('두 번째 인증 실패 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-app-login-session-1',
+          turnId: 'harness-app-login-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'success: Not logged in · Please run /login',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+        await page.getByRole('button', { name: '앱에서 로그인' }).click();
+        await page.waitForTimeout(150);
+        const cancelBtn = page.getByRole('button', { name: '로그인 취소' });
+        if ((await cancelBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '로그인 진행 중에 "로그인 취소" 버튼이 뜨지 않음(영구 대기처럼 보일 위험)', file: 'src/views/sessions.ts:renderClaudeAuthLoginActivePanel' });
+        } else {
+          await cancelBtn.click();
+          await page.waitForTimeout(100);
+          const cancelInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'cancel_claude_auth_login'));
+          if (!cancelInvoked) {
+            bugs.push({ severity: 'Critical', symptom: '"로그인 취소" 버튼을 눌러도 cancel_claude_auth_login 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeAuthLoginCancel' });
+          }
+          await emitEvent('claude-auth-login-finished', { ok: false, canceled: true, error: null, status: null });
+          await page.waitForTimeout(150);
+          const idleAppLoginBtn = await page.getByRole('button', { name: '앱에서 로그인' }).count();
+          if (idleAppLoginBtn === 0) {
+            bugs.push({ severity: 'Major', symptom: '로그인 취소 후 "앱에서 로그인" 버튼이 돌아오지 않음(재시도 불가)', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+          }
+        }
+        await shot('07-login-canceled-idle-again');
+      },
+    },
     {
       id: 'slow',
       fixtures: { ...base, list_claude_sessions: { __delay: 2500, value: base.list_claude_sessions } },
