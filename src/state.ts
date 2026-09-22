@@ -125,12 +125,12 @@ export interface AppState {
     streamingTools: string[];
     input: string;
   };
-  // 앱 안 claude CLI 로그인(claude_auth.rs) — 세션 채팅의 인증 실패 배너
-  // "앱에서 로그인" 버튼이 시작한다. 백엔드가 세션에 묶이지 않는 전역 단일
-  // 슬롯으로 관리하므로 이 상태도 sessionChat이 아니라 최상위에 별도로
-  // 둔다 — 사용자가 로그인 진행 중 다른 화면으로 이동해도 완료 이벤트를
-  // 놓치지 않는다(main.ts가 앱 시작 시 한 번만 구독, sessionChat처럼 화면
-  // 진입/이탈마다 구독을 걸고 떼지 않는다).
+  // 앱 안 claude CLI 로그인(claude_auth.rs) — 회귀 수습(hub 이슈
+  // 01m33qe0zhn55mczhcdgec2b61, v0.2.11)으로 이 상태를 쓰던 "앱에서 로그인"
+  // 버튼과 이벤트 구독(views/sessions.ts, main.ts)을 껐다. 실사용 환경에서
+  // 사용자를 멈춘 화면에 가두는 회귀를 냈기 때문이다 — 지금은 아무도 이
+  // 슬롯을 읽거나 쓰지 않는다(백엔드 claude_auth.rs·이 타입 자체는 나중에
+  // 고쳐 되살릴 것이라 남겨둔다).
   claudeAuthLogin: {
     /** true인 동안만 취소 버튼을 보여준다. */
     active: boolean;
