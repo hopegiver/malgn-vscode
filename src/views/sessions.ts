@@ -784,13 +784,30 @@ function renderClaudeAuthLoginActivePanel(login: typeof state.claudeAuthLogin): 
   return children;
 }
 
+// 로그인 진행 패널 — chat.error/authError와 무관하게 state.claudeAuthLogin.active
+// 하나만으로 그린다(hub 이슈, v0.2.11류 회귀 재발 방지). leaveSessionChatView가
+// 화면을 뜰 때마다 state.sessionChat(error·authError 포함)을 통째로 비우므로,
+// 로그인 패널을 authError에 얹어두면 로그인을 시작한 뒤 다른 화면에 갔다
+// 돌아왔을 때(그 사이에도 백엔드 자식 프로세스는 계속 코드를 기다린다) 입력창이
+// 통째로 사라진다 — active 하나만 보고 그리면 화면 이동과 무관하게 항상 뜬다.
+// 세션 상세/draft 두 화면에서만 로그인을 시작할 수 있어(handleClaudeAuthLoginStart
+// 호출부가 이 파일뿐) 두 화면의 bottomFixed에만 이 블록을 얹는다 — 다른 화면
+// (홈·세션목록 등)까지 전역으로 넓히는 건 이번 범위를 넘는다.
+function renderClaudeAuthLoginBlock(): HTMLElement[] {
+  const login = state.claudeAuthLogin;
+  if (!login.active) return [];
+  return [el('div', { className: 'alert chat-auth-login-panel' }, renderClaudeAuthLoginActivePanel(login))];
+}
+
 // 세션 상세/draft 화면이 공유하는 하단 에러 표시. 일반 에러는 기존 그대로
 // "⚠ {원문}" 한 줄이지만, 인증 실패(chat.authError)일 때는 원문 에러를 버리지
 // 않으면서(home.ts widgetErrorShell 선례) 무엇을 해야 하는지를 버튼으로 함께
 // 보여준다 — 이 갭이 실사용자 보고(claude CLI 인증 체크/처리 로직도 화면도
 // 없다)의 핵심이었다. "앱에서 로그인"(새 경로)이 실패하거나 이 환경에서
 // 아예 쓸 수 없을 때 막다른 길에 몰리지 않도록 "터미널 열기"(기존 경로)를
-// 항상 나란히 남겨둔다.
+// 항상 나란히 남겨둔다. 로그인이 진행 중일 때의 입력창·취소 버튼 자체는
+// renderClaudeAuthLoginBlock()이 authError와 무관하게 따로 그리므로, 여기서는
+// 중복 렌더하지 않도록 login.active가 아닐 때만 시작 버튼들을 붙인다.
 function renderChatErrorBlock(): HTMLElement[] {
   const chat = state.sessionChat;
   if (!chat.error) return [];
@@ -803,9 +820,7 @@ function renderChatErrorBlock(): HTMLElement[] {
       ]),
     ];
 
-    if (login.active) {
-      children.push(el('div', { className: 'chat-auth-login-panel' }, renderClaudeAuthLoginActivePanel(login)));
-    } else {
+    if (!login.active) {
       if (login.error) {
         children.push(el('div', { className: 'chat-sample-note' }, [`⚠ ${login.error}`]));
       }
@@ -942,7 +957,7 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     // (이 판단 로직 자체는 건드리지 않았다).
     scheduleChatAutoScroll();
 
-    const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
+    const bottomFixed: HTMLElement[] = [...renderChatErrorBlock(), ...renderClaudeAuthLoginBlock()];
     bottomFixed.push(renderChatInputArea(cwd, (text) => void sendChatMessage(sessionId, text)));
     body.push(el('div', { className: 'chat-bottom-fixed' }, bottomFixed));
   }
@@ -996,7 +1011,7 @@ export function renderSessionDraftView(projectPath: string): HTMLElement {
   }
   scheduleChatAutoScroll();
 
-  const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
+  const bottomFixed: HTMLElement[] = [...renderChatErrorBlock(), ...renderClaudeAuthLoginBlock()];
   bottomFixed.push(renderChatInputArea(projectPath, (text) => void sendDraftMessage(projectPath, text), draftSending));
 
   return el('div', { className: 'chat-page' }, [

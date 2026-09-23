@@ -321,9 +321,13 @@ export function scenarios(base) {
         if (!startInvoked) {
           bugs.push({ severity: 'Critical', symptom: '"앱에서 로그인" 버튼을 눌러도 start_claude_auth_login 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeAuthLoginStart' });
         }
-        const progressText = await page.locator('.alert').first().textContent().catch(() => null);
+        // 로그인 패널은 이제 인증 실패 안내와 별도의 .alert(.chat-auth-login-panel)로
+        // 그려진다(renderClaudeAuthLoginBlock — chat.error/authError와 무관하게
+        // login.active만 본다) — 그래서 전체 .alert 중 첫 번째가 아니라 이 클래스로
+        // 콕 집어 확인한다.
+        const progressText = await page.locator('.chat-auth-login-panel').first().textContent().catch(() => null);
         if (!progressText || !progressText.includes('시작하는 중')) {
-          bugs.push({ severity: 'Major', symptom: `로그인 시작 직후 진행 중 표시가 뜨지 않음(실제: ${progressText})`, file: 'src/views/sessions.ts:renderChatErrorBlock' });
+          bugs.push({ severity: 'Major', symptom: `로그인 시작 직후 진행 중 표시가 뜨지 않음(실제: ${progressText})`, file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
         }
         const codeInputEarly = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
         if ((await codeInputEarly.count()) === 0) {
@@ -440,6 +444,116 @@ export function scenarios(base) {
           }
         }
         await shot('07-login-canceled-idle-again');
+      },
+    },
+    {
+      // 이번 수정(hub 이슈 01m33qe0zhn55mczhcdgec2b61 후속) 핵심 가드 — 로그인
+      // 진행 중 다른 화면에 갔다 돌아와도 코드 입력창이 남아있는지 확인한다.
+      // leaveSessionChatView()는 state.sessionChat(error/authError 포함)을
+      // 화면을 뜰 때마다 통째로 비우지만, 그 사이에도 claude_auth.rs 자식
+      // 프로세스는 계속 코드를 기다린다(state.claudeAuthLogin.active는 그대로
+      // true). 코드 입력창/취소 버튼이 chat.authError에 얹혀 있으면 화면
+      // 이동만으로 사라진다 — v0.2.11과 같은 종류의 결함이라 별도 시나리오로
+      // 고정한다.
+      id: 'app-login-nav-away',
+      fixtures: {
+        ...base,
+        start_new_session_message: { sessionId: 'harness-nav-login-session-1', turnId: 'harness-nav-login-turn-1' },
+        read_session_transcript: {
+          sessionId: 'harness-nav-login-session-1',
+          cwd: '/Users/hopegiver/workspace/malgn-vscode',
+          transcriptPath: '/dev/null',
+          messages: [],
+          truncated: false,
+          activeTurnId: null,
+        },
+      },
+      async run(page, { shot, bugs, emitEvent }) {
+        if (base.list_workspace_projects.projects.length === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login-nav-away 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.waitForSelector('.modal-overlay');
+        const projectRow = page.locator('.modal-body .session-row').first();
+        if ((await projectRow.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login-nav-away 시나리오: 새 세션 모달에 선택 가능한 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await projectRow.click();
+        await page.waitForSelector('.chat-page');
+        await page.locator('.chat-input-textarea').fill('로그인 후 화면 이동 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-nav-login-session-1',
+          turnId: 'harness-nav-login-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'success: Not logged in · Please run /login',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+
+        // ---- 1) 로그인 시작 → URL 이벤트조차 오기 전에 코드 입력창부터 뜬다 ----
+        const appLoginBtn = page.getByRole('button', { name: '앱에서 로그인' });
+        if ((await appLoginBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: 'app-login-nav-away 시나리오: 인증 실패 안내에 "앱에서 로그인" 버튼이 없음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+          return;
+        }
+        await appLoginBtn.click();
+        await page.waitForTimeout(150);
+        const codeInputBefore = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
+        if ((await codeInputBefore.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '로그인 시작 직후 코드 입력창이 뜨지 않음', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+        }
+        await shot('01-login-active-before-nav');
+
+        // ---- 2) 핵심 회귀 확인: 세션목록으로 이동(leaveSessionChatView 발동) ----
+        await page.evaluate(() => { window.location.hash = '#/sessions'; });
+        await page.waitForTimeout(200);
+        await shot('02-navigated-away-to-list');
+        const codeInputOnListScreen = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
+        if ((await codeInputOnListScreen.count()) > 0) {
+          bugs.push({ severity: 'Minor', symptom: '세션목록 화면에도 로그인 코드 입력창이 새어나옴(범위는 세션 상세/draft 화면으로 한정돼야 함)', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+        }
+
+        // ---- 3) 같은 세션 화면으로 복귀 → 코드 입력창/취소 버튼이 다시 있어야 한다 ----
+        await page.evaluate(() => { window.location.hash = '#/sessions/harness-nav-login-session-1'; });
+        await page.waitForSelector('.chat-page');
+        await page.waitForTimeout(250);
+        await shot('03-returned-to-chat-code-input-present');
+
+        const codeInputAfterReturn = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
+        if ((await codeInputAfterReturn.count()) === 0) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: '로그인 진행 중 다른 화면에 갔다 돌아오면 코드 입력창이 사라짐(leaveSessionChatView가 chat.error/authError를 비우면서 로그인 패널까지 함께 지워지는 v0.2.11류 회귀)',
+            file: 'src/views/sessions.ts:leaveSessionChatView / renderChatErrorBlock',
+          });
+        }
+        const cancelBtnAfterReturn = page.getByRole('button', { name: '로그인 취소' });
+        if ((await cancelBtnAfterReturn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '화면 이동 후 복귀 시 "로그인 취소" 버튼이 사라짐', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+        }
+
+        // ---- 4) 중복 렌더/빈 껍데기 방지: 이미 리셋된 인증 실패 안내 문구가
+        //         되살아나지 않아야 하고, 내용 없는 alert가 남지 않아야 한다 ----
+        const alertTexts = await page.locator('.alert').allTextContents();
+        if (alertTexts.some((t) => t.includes('claude CLI에 로그인이 필요합니다'))) {
+          bugs.push({ severity: 'Minor', symptom: '화면 복귀 후 이미 리셋된 인증 실패 안내 문구가 다시 나타남(중복 렌더 의심)', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        if (alertTexts.some((t) => t.trim() === '')) {
+          bugs.push({ severity: 'Major', symptom: '빈 alert 껍데기가 렌더됨', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+        }
+
+        // ---- 5) 마무리: 취소로 idle 복귀(다른 시나리오 오염 방지) ----
+        if ((await cancelBtnAfterReturn.count()) > 0) {
+          await cancelBtnAfterReturn.click();
+          await page.waitForTimeout(100);
+          await emitEvent('claude-auth-login-finished', { ok: false, canceled: true, error: null, status: null });
+          await page.waitForTimeout(150);
+        }
       },
     },
     {
