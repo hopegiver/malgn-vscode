@@ -1,201 +1,377 @@
 # Terminus 셸 IA — 라우트/데이터 매핑
 
-목적: 확정 목업(`docs/design/terminus-mockup.html`, 홈 화면 1장)의 새 셸 구조(상단 탭스트립 + 좌측
-워크스페이스 사이드바 + 하단 상태줄)에 `src/route.ts`의 실제 라우트와 `src/sidebar.ts`가 제공하던
-모든 진입점, 그리고 각 화면이 표시하는 실 데이터를 빠짐없이 매핑한다.
+목적: Terminus 셸(상단 탭스트립 + 좌측 사이드바 + 하단 상태줄)의 라우트·데이터 매핑을 정의한다.
+`src/route.ts`의 실제 라우트, `src/sidebar.ts`/`src/main.ts`가 구현해야 할 진입점, 각 화면이 표시하는
+실 데이터를 빠짐없이 연결한다.
+
+**핵심 결정(확정)**: **탭스트립 = 최상위 내비게이션(어떤 화면인가), 사이드바 = 선택된 탭의 맥락별
+보조 내비게이션/필터**. 두 레벨은 연동된다 — 사이드바 내용은 `route.kind`(및 `settings`/`catalog`
+탭에서는 `route.tab`)에 따라 완전히 바뀐다. VS Code의 액티비티바→사이드바 패널 전환과 같은 패턴이다
+(참고 시안: 스크래치패드 `design-ide-vscode.html` — 색·타이포는 참고하지 않는다, 이 프로젝트는
+`terminus-design-system.md`가 정본이다. 이 참고 시안이 보여준 것은 오직 "상단/좌측 아이콘 클릭 →
+사이드바 패널 전환"이라는 상호작용 패턴 하나뿐이다).
+
+**폐기된 이전 결정**: "사이드바는 모든 탭에서 고정된 워크스페이스 목록"이라는 이전 설계는 폐기한다.
+워크스페이스 목록은 이제 9개 탭 중 2개(홈·프로젝트)에서만 쓰이는 사이드바 콘텐츠 종류의 하나일
+뿐이다.
 
 범위 밖: 색·폰트·정확한 px 치수(→ `docs/design/terminus-design-system.md`, visual-designer 담당),
-기능 추가/삭제. 이 문서는 "지금 있는 것을 어디로 옮기는가"만 다룬다.
+새 데이터 조회·새 API·Rust 변경(아래 "신규 동작"으로 명시한 항목 제외 — 전부 클라이언트 전용이며
+작다). 이 문서는 "지금 있는 것을 어디로 옮기는가"만 다룬다.
 
-`visual-designer 필요:` **필요** — 셸 전체를 새 시각 언어(다크 터미널 테마)로 교체하는 신규
-레이아웃 리팩터이고, 기존 `docs/design/terminus-design-system.md`가 이 셸 전용으로 별도 작성
-중이다(진행 중 작업과 직결).
+`visual-designer 필요:` **필요** — 셸 전체가 새 시각 언어(다크 터미널 테마)로 진행 중인 신규
+레이아웃 리팩터이고, 사이드바가 탭마다 다른 콘텐츠를 담게 되며 아래 §7이 지적하는 새 행/그룹 헤더
+컴포넌트가 `terminus-design-system.md`에 아직 없다.
 
 ---
 
 ## 0. 전제
 
-- 가짜 타이틀바(`titlebar`, `traffic` 신호등)는 구현하지 않는다. OS 네이티브 타이틀바(`tauri.conf.json`
-  `title: "맑은에이전트"`, `decorations` 미지정 = 기본 네이티브)가 이미 있고, **탭스트립이 웹뷰
-  최상단**이다.
-- 로그인 화면(`src/views/login.ts`)은 셸(탭스트립/사이드바/상태줄) 없이 지금처럼 전체 화면 카드만
-  보여준다 — 근거는 §7-1.
-- 목업의 사이드바 "conn" 항목(SSH 커넥션 리스트풍)은 실제로는 `~/workspace` 스캔 결과인
-  `WorkspaceProject` 목록이다(워크스페이스=프로젝트, 별도 개념 아님).
+- 가짜 타이틀바는 구현하지 않는다. OS 네이티브 타이틀바가 이미 있고, 탭스트립이 웹뷰 최상단이다.
+- 로그인 화면은 셸 없이 전체 화면 카드만 보여준다(§6-1).
+- `renderSidebar(route: Route)`(`src/sidebar.ts:223`)의 기존 시그니처는 그대로 유지 가능하다 —
+  `route.kind`와 `settings`/`catalog` 탭에서는 `route.tab`까지 이미 인자로 들어오므로 사이드바
+  콘텐츠 분기에 필요한 정보가 이미 충분하다.
+- 탭스트립 계정 칩(`renderAccountChip`, `sidebar.ts:102-133`)과 상태줄의 버전/업데이트 배지
+  (`sidebar.ts:254-343`)는 이번 변경의 영향을 받지 않는다 — 이미 탭스트립/상태줄에 자리 잡은 구
+  진입점이고, 사이드바 콘텐츠 재설계와 독립적이다.
 
 ---
 
-## 1. 탭스트립 매핑 (9탭 + 계정 슬롯)
+## 1. 탭스트립 매핑 (9탭 + 계정 슬롯) — 변경 없음
 
 `Route.kind`는 `src/route.ts:19-30` 12종. 탭 활성 판정은 `route.kind` 단독이 아니라 `settings`처럼
-`route.tab`까지 함께 봐야 하는 탭이 있다(아래 "활성 조건" 열).
+`route.tab`까지 함께 봐야 하는 탭이 있다.
 
-| # | 탭 라벨 | 대응 Route kind / tab | 활성 조건 | 현재 진입점(비교) |
-|---|---|---|---|---|
-| 1 | 홈 | `home` | `route.kind === 'home'` | sidebar.ts:103 `navItem('대시보드', …)` |
-| 2 | 프로젝트 | `projects-list`, `projects-detail` | `kind==='projects-list' \|\| kind==='projects-detail'` | sidebar.ts:154-187 `renderProjectsGroup` |
-| 3 | 세션 | `sessions-list`, `sessions-detail`, `sessions-draft` | 위 3종 kind 포함 | sidebar.ts:189-222 `renderSessionsGroup` |
-| 4 | 사용량 | `usage` | `kind==='usage'` | sidebar.ts:107-113 `navItem('사용량 통계', …)` |
-| 5 | 개발 도구 | `settings` (tab=`devtools`) | `kind==='settings' && tab==='devtools'` | sidebar.ts:52 SETTINGS_TABS 중 `devtools` 서브항목(설정 하위) — **탭스트립에서 최상위로 승격** |
-| 6 | 자율 작업 | `tasks-list`, `tasks-board`, `tasks-detail` | 위 3종 kind 포함 | sidebar.ts:106 `navItem('자율업무', …)` |
-| 7 | 카탈로그 | `catalog` (tab=`plugins`\|`global`) | `kind==='catalog'` | sidebar.ts:86-100 `catalogGroup` |
-| 8 | 앱 링크 | `settings` (tab=`applinks`) | `kind==='settings' && tab==='applinks'` | sidebar.ts:230-259 `renderAppLinksGroup` — **탭스트립에서 최상위로 승격**, 단 "링크 클릭=외부 브라우저 열기" 목록 자체는 탭 안 콘텐츠로 이동(§4 참고) |
-| 9 | 설정 | `settings` (tab=`otel`\|`github`\|`cloudflare`\|`marketplace`\|`mcp`) | `kind==='settings' && !['devtools','applinks'].includes(tab)` | sidebar.ts:70-84 `settingsGroup` |
-| — | 계정 칩(우측) | 해당 라우트 없음 | 클릭 시 로그아웃 드롭다운(§4-2) | sidebar.ts:138-141 `userRow` |
+| # | 탭 라벨 | 대응 Route kind / tab | 활성 조건 |
+|---|---|---|---|
+| 1 | 홈 | `home` | `route.kind === 'home'` |
+| 2 | 프로젝트 | `projects-list`, `projects-detail` | 두 kind 포함 |
+| 3 | 세션 | `sessions-list`, `sessions-detail`, `sessions-draft` | 세 kind 포함 |
+| 4 | 사용량 | `usage` | `kind==='usage'` |
+| 5 | 개발 도구 | `settings` (tab=`devtools`) | `kind==='settings' && tab==='devtools'` |
+| 6 | 자율 작업 | `tasks-list`, `tasks-board`, `tasks-detail` | 세 kind 포함 |
+| 7 | 카탈로그 | `catalog` (tab=`plugins`\|`global`) | `kind==='catalog'` |
+| 8 | 앱 링크 | `settings` (tab=`applinks`) | `kind==='settings' && tab==='applinks'` |
+| 9 | 설정 | `settings` (tab=`otel`\|`github`\|`cloudflare`\|`marketplace`\|`mcp`) | `kind==='settings' && !['devtools','applinks'].includes(tab)` |
+| — | 계정 칩(우측) | 해당 라우트 없음 | 클릭 시 로그아웃 드롭다운 |
 
-**주의**: 5번·8번 탭은 여전히 `#/settings/devtools`, `#/settings/applinks` 해시로 이동한다
-(`route.ts`를 건드리지 않으므로 URL 구조는 그대로 — 단지 사이드바 아코디언 대신 탭스트립 버튼이
-같은 `navigate()` 호출을 한다). "설정" 탭은 나머지 5개 서브탭(otel/github/cloudflare/marketplace/mcp)
-만 대표한다.
+5번·8번 탭은 `#/settings/devtools`, `#/settings/applinks` 해시를 그대로 쓴다(URL 구조 불변) —
+라우트상으로는 "설정"의 서브탭이면서 탭스트립에서는 최상위로 승격되어 있다. 이 승격은 §4-9에서
+"설정" 탭 사이드바가 이 둘을 다시 넣지 않는 근거가 된다.
 
-## 2. 설정/카탈로그/자율업무 하위탭 처리 — IA 대안과 선택
+---
 
-**문제**: 기존 사이드바는 설정 7종·카탈로그 2종의 탭 전환 UI 자체를 사이드바 아코디언이 전담했다
-(`catalog.ts:175-177` 주석 "탭 전환 자체는 사이드바 하위메뉴가 담당한다… 여기서는 페이지 상단에
-별도 탭 칩을 다시 그리지 않는다"). 새 셸에서 사이드바는 워크스페이스 목록 전용이 되므로, 5번·8번을
-탭스트립으로 승격한 뒤 남는 **설정 5종·카탈로그 2종의 탭 전환 UI가 갈 자리가 없다.**
+## 2. 사이드바 총론
 
-- **대안 A — 사이드바 콘텐츠를 라우트별로 교체**(설정/카탈로그 진입 시에만 워크스페이스 목록
-  대신 서브탭 목록을 보여줌): 목업의 "사이드바 = 워크스페이스 목록"이라는 고정 정체성이 화면마다
-  깨진다. 사용자가 "지금 사이드바가 뭘 보여주는 화면인지" 매번 다시 파악해야 한다.
-- **대안 B(채택) — 본문 상단 보조 탭 스트립**: 자율업무 화면이 이미 이 패턴을 쓰고 있다
-  (`src/views/autonomousTasks.ts:848` `filter-btn` — 목록/진행상황판 전환). 카탈로그·설정도 같은
-  `filter-btn` 스타일 보조 탭을 본문(`.main` 영역) 헤더 바로 아래에 추가한다. 사이드바는 모든
-  라우트에서 항상 워크스페이스 목록으로 고정된다.
+### 2-1. 연동 원칙
+사이드바는 `route.kind`(그리고 `settings`/`catalog`에서는 `route.tab`)가 바뀔 때마다 완전히 다른
+콘텐츠를 그린다. 탭스트립 클릭 한 번으로 최상위 화면과 그 화면의 보조 내비게이션이 함께 바뀐다 —
+사용자가 "지금 사이드바가 뭘 보여주는 화면인지"를 탭 라벨만 보고 알 수 있다(탭이 이미 그 답이므로).
 
-**선택 근거**: B는 이미 코드베이스에 있는 패턴을 재사용해 새 컴포넌트를 만들지 않고, 목업의
-사이드바 정체성(워크스페이스 리스트)을 어떤 탭에서도 흔들지 않는다. 3개 화면(설정·카탈로그·
-자율업무)이 동일한 보조 탭 관례를 공유하게 되어 학습 비용도 낮다.
+### 2-2. 하위탭 전환 UI 배치 — 사이드바로 통합
+**결정**: 설정 5종(otel/github/cloudflare/marketplace/mcp)·카탈로그 2종(plugins/global)·자율
+작업 2뷰(목록/진행상황판)의 전환 UI는 전부 **사이드바**로 옮긴다. 본문(main) 쪽에 같은 전환 UI를
+중복해서 그리지 않는다.
 
-| 화면 | 보조 탭 | 대응 |
+**근거**: 사이드바가 이제 "선택된 탭의 맥락별 보조 내비게이션"이라는 정체성을 가지므로, 하위탭
+전환은 정확히 그 정체성에 속하는 기능이다. 예전 IA는 사이드바가 전 탭 공통 워크스페이스 목록이라는
+별개 정체성을 지켜야 했기 때문에 하위탭 전환을 본문으로 밀어냈지만, 그 제약이 이번 변경으로
+사라졌다.
+
+**중복 제거 조치(문서 지시 — 코드 미변경)**: `src/views/autonomousTasks.ts:847-848`의 본문
+`filter-btn`(목록/진행상황판)은 사이드바로 이관되며 본문에서는 제거되어야 한다. 카탈로그·설정은
+현재 코드에 본문 전환 UI가 없으므로(설정은 `TAB_META`를 부제 텍스트로만 쓰고 있음, `settings.ts:36-39`)
+중복 제거 대상이 없다 — 향후 추가하지 않는다.
+
+### 2-3. 폭 / 최소창 / 빈 패널
+- 사이드바 폭은 `terminus-design-system.md` §2 그대로: 190px(760px 이하 컨테이너 쿼리에서 150px).
+  이번 IA 변경은 폭 자체를 바꾸지 않는다.
+- 900px 최소 창에서도 사이드바는 항상 렌더된다 — 9개 탭 모두 아래 §4에서 사이드바 콘텐츠가 정의돼
+  있어(홈 포함) "빈 사이드바"가 발생하는 탭이 없다.
+- **원칙(향후 대비)**: 만약 어떤 탭이 정말로 보조 내비게이션이 없다면(현재는 해당 탭 없음) 빈
+  `.sidebar` 박스를 그리지 않고 `<aside>` 자체를 생략한다 — 빈 패널을 보여주는 것보다 본문이
+  전체 폭을 쓰는 편이 낫다.
+
+---
+
+## 3. 사이드바 공용 원자 컴포넌트 (탭별 표에서 재사용)
+
+아래 행 종류는 여러 탭에서 반복된다 — 각 탭 표는 이 이름만 참조한다.
+
+- **워크스페이스 행**(`ws-row`): 기존 `src/sidebar.ts:196-208 wsRow()` 그대로 재사용. 상태
+  dot(`dotClassFor`, `sidebar.ts:176-178`) + 이름 + 상대시간(`formatDaysAgo`, `sidebar.ts:184-194`).
+  홈(§4-1)·프로젝트(§4-2) 두 탭에서 동일하게 쓴다 — 새 컴포넌트 아님.
+- **좁은 폭 목록 행**(신규, 시각 스펙 없음 — §7-1): 세션/자율작업 큐/개발도구/앱링크 사이드바가
+  공통으로 필요로 하는 2줄 스택형 행(아이콘·dot 1개 + 제목 1줄 + 보조메타 1줄). 기존
+  `.blist-row--sessions`(52/96/1fr/74/56px 5열 그리드, `terminus-design-system.md` §3.2)는 본문
+  폭(600px+) 전제라 190px 사이드바에 그대로 쓸 수 없다 — 새 좁은 폭 변형이 필요하다(§7-1).
+- **정적 nav 행**(신규, 시각 스펙 없음 — §7-3): 라벨 텍스트 하나 + 활성 강조만 있는 행(설정 5종,
+  카탈로그 2종, 자율작업 뷰 전환 2종). `.filter-btn`(§3.11)은 가로 배치 전제라 세로 사이드바 목록에
+  그대로 쓰려면 레이아웃 방향만 바꾸면 되지만(새 클래스 불요), 활성 강조가 배경 채움
+  (`filter-btn.active`)이라 촘촘한 세로 목록에서 과할 수 있어 재검토 필요(§7-3).
+
+---
+
+## 4. 탭별 사이드바 명세
+
+### 4-1. 홈 (`route.kind === 'home'`)
+
+사이드바 = 워크스페이스 요약 리스트. 빈 화면 대신 실제 콘텐츠를 채운다 — 홈이 진입 화면이라
+"지금 워크스페이스가 몇 개고 무엇인지"를 바로 보여주는 것이 첫 화면 가치가 크고, 프로젝트 탭과
+동일한 `ws-row`를 재사용해 새 컴포넌트 비용이 0이다(§3).
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| 헤더 "workspace ~ (N)" | `state.dashboard.projects.length`(`state.ts:66-76`) | — | — |
+| 워크스페이스 행(`ws-row`) × N | `sortedProjectsByRecency()`(`views/projects.ts:43-45`) | `navigate('#/project/<path>')` | 홈 탭에서는 항상 비활성(현재 상세 화면이 아니므로 `.current` 없음) |
+| 하단 CTA "워크스페이스 경로 관리" | — | `openWorkspacesManager()`(`sidebar.ts:217-221`, `#/projects`로 이동 후 편집 모달 오픈) | — |
+
+**로딩/0건/에러**: `!state.dashboard.loaded` → "불러오는 중…" 1행. `loaded && projects.length===0`
+→ "워크스페이스가 없습니다" + CTA 강조. `state.dashboard.error` → 에러 메시지 1행 + 클릭 시
+`loadProjects()` 재시도(모두 기존 `sidebar.ts:230-236` 로직 그대로).
+
+우선순위: 워크스페이스 행의 상태 dot(활성/보관 여부가 최우선 시선) / 밀도: 중 / 동선: 행 클릭 →
+프로젝트 상세(탭이 "프로젝트"로 전환됨, §4-2).
+
+### 4-2. 프로젝트 (`route.kind === 'projects-list' | 'projects-detail'`)
+
+사이드바 = 홈과 동일한 워크스페이스 리스트(§3 `ws-row` 재사용, 별도 컴포넌트 아님). 사용자가 제시한
+"프로젝트 트리/리스트" 중 **리스트**를 채택한다 — **트리는 채택하지 않는다**: 프로젝트 상세 화면은
+이미 본문에 실제 폴더 트리 + 파일 미리보기 패널을 갖고 있다(`renderProjectTreeSection`,
+`views/projects.ts:405`, `loadProjectTree`/`ProjectTreeNode`, `state.ts:78-88`). 사이드바에 같은
+트리를 또 그리면 좁은 폭(190px)에서 파일 트리 깊이가 감당 안 되고 본문과 중복된다.
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| 헤더 "workspace ~ (N)" | 4-1과 동일 | — | — |
+| 워크스페이스 행 × N | 4-1과 동일 | `navigate('#/project/<path>')` | `route.kind==='projects-detail' && route.path===p.path` → `.current` 강조(기존 `sidebar.ts:197` 로직 그대로) |
+| 하단 CTA | 4-1과 동일 | 동일 | — |
+
+**로딩/0건/에러**: 4-1과 동일.
+
+우선순위: 1순위 — 현재 프로젝트 강조(`.current`) / 2순위 — 상태 dot / 3순위 — 이름. 밀도: 중.
+동선: 행 클릭 → 상세(본문에 트리/파일 미리보기가 이어짐, 사이드바는 그대로 리스트 유지).
+
+### 4-3. 세션 (`route.kind === 'sessions-list' | 'sessions-detail' | 'sessions-draft'`)
+
+사이드바 = 세션 목록(요청대로 상태 점 포함). `sortedSessions()`(`views/sessions.ts:83-86`)를 그대로
+쓴다 — 새 조회 없음.
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| 헤더 "sessions (N)" | `state.sessions.items.length`(`state.ts:100-106`) | — | — |
+| 세션 행 × N(좁은 폭 목록 행, §3) | `sortedSessions()` 각 항목: 제목=`sessionTitle(s)`(`sessions.ts:51-53`), 프로젝트=`projectNameFromCwd(asString(s.cwd))`(`sessions.ts:42-46`), 상태 dot=`asBoolean(s.running)`(`sessions.ts:38-40`), 시간=`updatedAt`을 `home.ts`의 `formatCompactElapsed`류 상대시간으로(재사용, 신규 계산 아님) | `navigate('#/sessions/<sessionId>')` | `route.kind==='sessions-detail' && route.sessionId===s.sessionId` |
+| 하단 CTA "+ 새 세션" | — | `openNewSessionModal()`(현재 `views/sessions.ts:273`에 정의되어 있으나 미export — 사이드바 재사용을 위해 export 필요, **코드 변경은 frontend-dev 몫**) | — |
+
+**로딩/0건/에러**: `!state.sessions.loaded` → "불러오는 중…". `loaded && items.length===0` →
+"세션이 없습니다" + CTA 강조. `state.sessions.error` → 에러 1행 + `loadSessions()` 재시도.
+`sessions-draft` 라우트에서는 아직 세션이 존재하지 않으므로 목록 내 활성 행이 없다(정상 —
+본문 자체 헤더가 "새 세션 작성 중"임을 이미 표시).
+
+우선순위: 1순위 — 실행중 dot(펄스, 시간 민감) / 2순위 — 제목 / 3순위 — 프로젝트명/시간. 밀도: 고
+(4개 정보가 좁은 폭에 들어가야 함). 동선: 행 클릭 → 세션 상세(대화 이어보기).
+
+### 4-4. 사용량 (`route.kind === 'usage'`)
+
+**요청("기간·프로젝트 필터")과 실제 데이터의 간극**: `DailyUsage`(`usageApi.ts:9-15`)는 날짜별
+합계만 있고 **프로젝트 차원이 없다** — 30일 집계 자체가 프로젝트를 구분하지 않고 전체 jsonl을
+합산한다(`get_daily_usage`). 날짜 상세(`dailyDetailApi.ts` `SessionDetail.projectKey`)는 있지만,
+그건 이미 선택한 "하루"에 한해서만 세션 단위로 나온다 — 사이드바가 상시 보여줄 수 있는 "프로젝트
+목록"이 아니다.
+
+- ⓐ **기간 필터는 순수 클라이언트로 가능** — `state.dailyUsage.items`가 이미 30일 전체를 담고
+  있으므로(`usage.ts:70-83`), "최근 7일/최근 30일" 토글은 이미 로드된 배열을 `slice`하는 문제다.
+  **신규 동작(클라이언트 전용, API 불필요)**으로 채택한다.
+- ⓑ **프로젝트 필터는 대체가 필요** — 위 이유로 채택 불가. 대신 사이드바에 **"최근 활동일"
+  퀵점프 목록**(날짜 + 그날 토큰량, `state.dailyUsage.items`를 날짜 내림차순 정렬만 해서 재사용)을
+  둔다. 클릭하면 본문의 해당 날짜 행을 펼친다 — 기존 `toggleDailyDetail()`(`usage.ts:116-128`,
+  현재 미export)을 그대로 호출하는 것과 동일 동작이라 **신규 API 없음**, export만 필요(코드 변경은
+  frontend-dev 몫). 프로젝트 단위 사용량 필터 자체는 이번 범위에서 제공하지 않는다 — 필요하면
+  `get_daily_usage`가 프로젝트 축을 반환하도록 Rust를 바꾸는 별도 작업이다(이 문서 범위 밖).
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| 기간 토글 "최근 7일" / "최근 30일" (신규) | `state.dailyUsage.items`(클라이언트 슬라이스) | 본문의 일별 사용량 리스트·통계 카드를 그 범위로 재계산(`computeUsageTotals`, `usage.ts:51-66` 재사용) | 선택된 기간(신규 모듈 로컬 상태, 비영속) |
+| 최근 활동일 목록(좁은 폭 목록 행, §3) | `state.dailyUsage.items`를 날짜 내림차순(`usage.ts:206` 정렬 로직 재사용) | `toggleDailyDetail(date)`(export 필요) → 본문 해당 날짜 행이 펼쳐짐(스크롤 포함) | `state.dailyDetail.selectedDate === date` |
+
+**로딩/0건/에러**: `dailyUsage.loading && !loaded` → "불러오는 중…". `loaded && items.length===0` →
+"최근 30일 이내 사용 기록이 없습니다"(기존 본문 문구 재사용, `usage.ts:208`). `dailyUsage.error` →
+에러 1행 + `loadDailyUsage()` 재시도.
+
+우선순위: 1순위 — 기간 토글(현재 보고 있는 범위) / 2순위 — 최근 활동일 중 선택된 날짜. 밀도: 중.
+동선: 날짜 클릭 → 본문 상세 펼침(같은 화면 내 스크롤, 라우트 전환 없음).
+
+### 4-5. 개발 도구 (`route.kind === 'settings' && route.tab === 'devtools'`)
+
+**요청("도구 카테고리 목록")과 실제 데이터의 간극**: `DevToolStatus`(`devToolsApi.ts:26-39`)에
+카테고리 필드가 없다(claude/node/gh/git/pnpm/wrangler 6종, 플랫 목록). 대신 이미 있는
+`required: boolean` 필드로 **"필수 도구" / "선택 도구"** 2개 그룹으로 묶는다 — 실제 데이터에 근거한
+대체이지 임의 분류가 아니다.
+
+| 항목 | 데이터 출처 | 클릭 시 동작(신규, 클라이언트 전용) | 활성 판정 |
+|---|---|---|---|
+| 그룹 헤더 "필수 도구" / "선택 도구" | `state.devTools.items.filter(t => t.required)` / `.filter(t => !t.required)`(`state.ts:247-260`) | — | — |
+| 도구 행 × 6(좁은 폭 목록 행, §3) | 각 `DevToolStatus`: 이름 + 설치 여부(`installed`) + 버전 | 본문 `.devtool-list`(`devTools.ts:391`)의 해당 행으로 스크롤 + 일시 하이라이트(신규 클라이언트 전용 동작, 새 라우트·API 없음) | 마지막으로 클릭한 항목만 일시 강조(영속 상태 아님) |
+
+**로딩/0건/에러**: `devTools.loading && !loaded` → "불러오는 중…". 0건은 발생하지 않는다(6개
+고정 도구 목록이라 항상 존재). `devTools.error` → 에러 1행 + `loadDevTools()` 재시도.
+
+우선순위: 1순위 — "필수 도구" 그룹(미설치 시 위험도 높음) / 2순위 — "선택 도구" 그룹. 밀도: 고
+(6항목이 2그룹으로 나뉘어도 좁은 폭에 촘촘). 동선: 클릭 → 스크롤 이동(라우트 전환 없음, 같은 화면
+내 앵커).
+
+### 4-6. 자율 작업 (`route.kind === 'tasks-list' | 'tasks-board' | 'tasks-detail'`)
+
+사이드바는 2블록: (a) 상단 뷰 전환(목록/진행상황판, §2-2가 본문에서 이관), (b) 하단 작업 큐
+목록(요청대로).
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| 뷰 전환 "목록" / "진행상황판"(정적 nav 행, §3) | — | `navigate('#/tasks')` / `navigate('#/tasks/board')` | `route.kind==='tasks-list'` / `'tasks-board'`(§2-2 이관 — 본문 `autonomousTasks.ts:847-848`의 동일 버튼은 제거) |
+| 작업 큐 행 × N(좁은 폭 목록 행, §3) | `state.autonomousTasks.items.filter(t => t.running \|\| (t.enabled && !t.running))`(`home.ts:195`의 필터 그대로 재사용 — 신규 계산 아님), 표시: `t.projectName`·`t.name`·상태 배지(`home.ts:176-182` `taskQueueRow` 패턴) | `navigate('#/tasks/item/<id>')` | `route.kind==='tasks-detail' && route.taskId===t.id` |
+
+**로딩/0건/에러**: `autonomousTasks.loading && !loaded` → "불러오는 중…". `loaded && queued.length===0`
+→ "대기 중인 자율 작업이 없습니다"(`home.ts:197` 문구 재사용) — CTA 버튼은 두지 않는다(추가는 본문
+"+ 새 작업"에서, 사이드바-본문 중복 방지). `autonomousTasks.error` → 에러 1행 + 재시도.
+`tasks-detail`에서는 뷰 전환 두 항목 모두 비활성(목록도 보드도 아닌 제3의 화면), 작업 큐 행 중
+해당 작업만 `.current`.
+
+우선순위: 1순위 — 뷰 전환(지금 보고 있는 화면 형태) / 2순위 — 실행중(`running`) 작업 / 3순위 —
+대기중 작업. 밀도: 고. 동선: 뷰 전환 → 본문 전체 교체 / 큐 행 클릭 → 작업 상세.
+
+### 4-7. 카탈로그 (`route.kind === 'catalog'`)
+
+`CATALOG_TABS`(`route.ts:33`, `'plugins' | 'global'`) 2종을 사이드바 nav 행으로 올린다(§2-2).
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| "플러그인 카탈로그"(정적 nav 행, §3) | `state.catalog.plugins.length`(`state.ts:264-274`)를 옆에 카운트로 표시 가능(선택, §8) | `navigate('#/catalog/plugins')` | `route.tab==='plugins'` |
+| "전역 카탈로그" | `state.globalCatalog.data`의 `agents.length + skills.length`(`state.ts:279-284`) | `navigate('#/catalog/global')` | `route.tab==='global'` |
+
+**로딩/0건/에러**: nav 행 자체는 정적 라벨이라 로딩/에러가 없다(각 탭 본문이 독립적으로
+로딩/에러/빈 상태를 처리 — 기존 `catalog.ts:222-291` 그대로, 변경 없음).
+
+우선순위: 단일 위계(두 항목 중 활성 표시가 전부). 밀도: 저. 동선: 클릭 → 본문 전체 교체(라우트
+전환).
+
+### 4-8. 앱 링크 (`route.kind === 'settings' && route.tab === 'applinks'`)
+
+**요청("링크 그룹")과 실제 데이터의 간극**: `AppLink`(`appLinksApi.ts:10-15`)에 그룹 필드가 없다
+(id/name/url/enabled뿐). 그룹 대신 **플랫 퀵오픈 목록**으로 대체한다 — 이전 IA에서 "본문 CRUD와
+중복"이라는 이유로 사이드바에서 제외했던 결정을 이번에 뒤집는다: 사이드바가 이제 탭 전용 콘텐츠라
+"고정 워크스페이스 목록과의 정체성 충돌"이라는 제외 사유 자체가 사라졌고, 사이드바 행의 동작(클릭
+= 외부 브라우저로 즉시 열기)과 본문 행의 동작(클릭 = 이름/URL 수정)이 서로 다른 목적이라 중복이
+아니다.
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| 링크 행 × N(좁은 폭 목록 행, §3) | `enabledAppLinks()`(`appLinks.ts:36-38`, 활성화된 링크만) | `openLink(link)`(`appLinks.ts:41-47`, 외부 브라우저로 즉시 열기 — 라우트 전환 없음) | 없음(외부 액션이라 지속 상태 없음) |
+
+**로딩/0건/에러**: `appLinks.loading && !loaded` → "불러오는 중…". `loaded && enabledAppLinks().length===0`
+→ "등록된 앱링크가 없습니다"(추가는 본문에서, CTA 중복 없음). `appLinks.error` → 에러 1행 +
+`loadAppLinks()` 재시도.
+
+우선순위: 단일 위계(이름만). 밀도: 저(목록이 보통 소수). 동선: 없음(클릭 = 즉시 외부로 나감,
+화면 전환 없음 — 실패 시 토스트만, `appLinks.ts:44-45` 기존 동작 그대로).
+
+### 4-9. 설정 (`route.kind === 'settings' && tab ∈ {otel, github, cloudflare, marketplace, mcp}`)
+
+`TAB_META`(`settings.ts:23-31`)에서 `devtools`·`applinks`를 뺀 5개를 사이드바 nav 행으로 올린다
+(§2-2). **개발 도구·앱 링크는 이 사이드바에 다시 넣지 않는다** — 둘 다 이미 탭스트립에서 독립
+최상위 탭(#5·#8, §1)으로 별도 진입점을 갖고 있어, 설정 사이드바에도 넣으면 같은 화면으로 가는
+경로가 3개(탭스트립 직접 진입 + 설정 사이드바에서 재진입 + 해시 직접 입력)로 늘어나 혼란만
+커진다.
+
+| 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
+|---|---|---|---|
+| "OTel 설정"(정적 nav 행, §3) | `TAB_META[0].label` | `navigate('#/settings/otel')` | `route.tab==='otel'` |
+| "GitHub 설정" | `TAB_META[1].label` | `navigate('#/settings/github')` | `route.tab==='github'` |
+| "Cloudflare 설정" | `TAB_META[2].label` | `navigate('#/settings/cloudflare')` | `route.tab==='cloudflare'` |
+| "마켓플레이스 설정" | `TAB_META[3].label` | `navigate('#/settings/marketplace')` | `route.tab==='marketplace'` |
+| "MCP 관리" | `TAB_META[4].label` | `navigate('#/settings/mcp')` | `route.tab==='mcp'` |
+
+**로딩/0건/에러**: nav 행은 정적 라벨(로딩/에러 없음) — 각 패널이 독립적으로 처리(변경 없음,
+`settings.ts`의 기존 `loadOtelEnv`/`loadGithubStatus`/`loadCloudflareStatus`/`loadMcp`/
+`loadMarketplaces` 그대로).
+
+우선순위: 단일 위계. 밀도: 저(5항목, 라벨만). 동선: 클릭 → 본문 전체 교체.
+
+---
+
+## 5. 하위 라우트에서 사이드바 상태
+
+| 하위 라우트 | 사이드바가 보여주는 탭 콘텐츠 | 활성 항목 |
 |---|---|---|
-| 설정(탭 9) | OTel 설정 / GitHub 설정 / Cloudflare 설정 / 마켓플레이스 설정 / MCP 관리 | `route.tab` 5종, sidebar.ts:46-53 SETTINGS_TABS 라벨 그대로 이동 |
-| 카탈로그(탭 7) | 플러그인 카탈로그 / 전역 카탈로그 | `route.tab` 2종, sidebar.ts:56-58 CATALOG_TABS 라벨 그대로 이동 |
-| 자율 작업(탭 6) | 목록 / 진행상황판 | 기존 `autonomousTasks.ts:848` 그대로 유지(이미 본문 보조 탭) |
+| `projects-detail`(프로젝트 상세) | §4-2 워크스페이스 리스트 그대로 유지 | 해당 프로젝트 행 `.current` |
+| `sessions-detail`(세션 상세) | §4-3 세션 리스트 그대로 유지 | 해당 세션 행 활성 |
+| `sessions-draft`(새 세션 작성) | §4-3 세션 리스트 그대로 유지 | 없음(아직 세션이 존재하지 않음 — 정상) |
+| `tasks-detail`(자율업무 상세) | §4-6 그대로 유지 | 뷰 전환 2항목 모두 비활성, 작업 큐에서 해당 작업만 활성 |
 
-## 3. 앱링크 목록의 이동
+공통 원칙: 상세/초안 라우트에 들어가도 사이드바는 "탭이 바뀌었다"고 취급하지 않는다 — 같은 탭
+안의 하위 화면이므로 사이드바 콘텐츠 종류는 유지되고, 그 안에서 어떤 항목이 "지금 보고 있는 것"인지
+만 강조가 바뀐다. 별도의 "뒤로가기" 사이드바 상태를 만들지 않는다 — 본문 자체의 뒤로가기 링크가
+그 역할을 한다(기존 각 상세 화면이 이미 갖고 있다고 가정, 이 문서가 신설하는 요구사항 아님).
 
-기존 사이드바의 "앱링크" 그룹은 펼치면 링크 목록이 바로 클릭 가능한 서브아이템으로 보였다
-(sidebar.ts:230-259, 클릭 시 `openLink(l)`로 외부 브라우저를 연다 — 화면 전환 없음). 탭스트립
-"앱 링크" 탭은 라우트만 있고(`#/settings/applinks`) 클릭 즉시 외부로 나가는 목록이 아니므로, 그
-목록은 "앱 링크" 탭의 **본문**(카드/리스트)으로 옮긴다 — `views/appLinks.ts`가 이미 그 설정 패널을
-그리고 있어(관리 CRUD 화면) 링크 목록도 같은 패널 안에 있다. 순수 바로가기 목적(전환 없이 빠르게
-열기)은 잃지만, 사이드바가 워크스페이스 전용이 되는 구조 변경의 직접 결과이며 대체 경로(탭 진입 후
-클릭)가 존재하므로 Dead End는 아니다.
+---
 
-## 4. 사이드바 매핑 (구 사이드바 전체 → 새 사이드바)
+## 6. 상태줄·탭스트립 부가 사항 (변경 없음 — 참고용 재확인)
 
-새 사이드바는 워크스페이스(=프로젝트) 목록 전용이다. `sortedProjectsByRecency()`
-(`src/views/projects.ts:43-45`, `state.dashboard.projects`)를 그대로 재사용한다.
+- 상태줄 세그먼트(워크스페이스 수·세션 실행 상태·claude/node 버전·앱 버전·업데이트 배지·시계)는
+  이번 사이드바 재설계와 무관하다. 정의는 `sidebar.ts:254-343`(구현 기존 그대로).
+- ### 6-1. 로그인 화면: 셸(탭스트립/사이드바/상태줄)을 보이지 않는다 — `main.ts:93-97`이
+  `!state.authenticated`일 때 `renderLoginView()`만 반환하는 구조 그대로.
+- ### 6-2. 900px 오버플로: 탭스트립은 `overflow-x: auto` + 계정 칩만 우측 고정 — 변경 없음.
 
-| 목업 요소 | 실 데이터/기존 기능 | 새 위치 |
-|---|---|---|
-| `sidebar-head` "workspace ~ (5)" | `state.dashboard.projects.length` (`workspaceApi.ts:44-46` → `views/projects.ts:47-61 loadProjects()`) | 사이드바 헤더 그대로 |
-| `.conn` 행 이름(`conn-name`) | `WorkspaceProject.name` (`workspaceApi.ts:19`) | 사이드바 행 |
-| `.conn` 상태 점(dot good/warn/idle) | **git 브랜치/dirty 아님 — 데이터 없음.** 대체: `WorkspaceProject.archiveStatus`(`workspaceApi.ts:21`, `'active'\|'archived'\|'unknown'`)를 `active→good, unknown→warn, archived→idle`로 매핑 | 사이드바 행 |
-| `.conn-meta` "main · clean" / "fix/batch-timeout" | **데이터 없음 — 프로젝트별 git 브랜치/워킹트리 상태를 조회하는 코드가 없다**(`devTools`의 "git"은 `git --version`만 조회, 저장소별 상태 아님, `devToolsApi.ts:1-3` 주석·`dev_tools/mod.rs:161` `ToolId::Git` 정의 참고). 대체안: `WorkspaceProject.updatedAt`(`workspaceApi.ts:24`, epoch ms)을 상대시간("3일 전" 등)으로 표시 | 사이드바 행 |
-| `.conn.current` 강조 | `route.kind==='projects-detail' && route.path===p.path` (sidebar.ts:167과 동일 로직) | 사이드바 행 |
-| `sidebar-foot` "+ 새 워크스페이스 연결" | 정확히 대응하는 "1클릭 연결" 기능은 없음. 가장 가까운 기존 기능은 `views/projects.ts`의 "워크스페이스 경로 관리" 토글(`projects.ts:158` `editingWorkspaces=true`, `configApi.ts` `malgn_agent_config_get/save`의 `workspaces: string[]` 편집 모달) | 사이드바 하단 CTA — 라벨은 "워크스페이스 경로 관리"로 조정 권장(1클릭 연결이 아니라 경로 목록 편집이므로) |
-| `sidebar-brand`(로고+"맑은에이전트") | 상수 텍스트, OS 네이티브 타이틀바가 이미 앱 이름을 보여줌(`tauri.conf.json:17`) | **자리 애매(§8-③) — 탭스트립 좌측 고정 아이콘 슬롯 신설 권장** |
-| `sidebar-user-row`(이메일+로그아웃) | `state.auth.userEmail`(`state.ts:62`, `applyAuthenticatedIdentity` `state.ts:494-498`) + 로그아웃(`resetStateForLogout`, `state.ts:514-520`) | 탭스트립 계정 칩(§1 표 "계정 칩") 클릭 → 드롭다운에 로그아웃 배치 |
-| `sidebar-footer` 업데이트 배지(`renderUpdateItem`, sidebar.ts:268-281) | `state.update.available/version/installing`(`state.ts:371-380`) | **자리 애매(§8-④) — 상태줄 세그먼트 권장** |
-| `renderVersionRow`(앱 버전 + "새 버전 확인", sidebar.ts:297-311) | `getAppVersion()`(sidebar.ts:41-43, Tauri `getVersion()`) | **자리 애매(§8-④) — 상태줄 세그먼트 권장** |
-| 프로젝트 그룹 펼침(`renderProjectsGroup`) | 위 새 사이드바 자체가 대체(펼침/접힘 없이 항상 노출) | — |
-| 세션목록 그룹 펼침(`renderSessionsGroup`, 개별 세션 제목 퀵링크) | 사이드바에서는 삭제, 대신 홈의 "최근 세션" 패널(§6)과 "세션" 탭 전체 목록이 같은 접근을 제공 — 의도적 통합(누락 아님) | 홈 패널 / 세션 탭 |
-| 카탈로그 그룹 펼침 | §2 대안 B로 대체(본문 보조 탭) | 카탈로그 탭 본문 |
-| 앱링크 그룹 펼침 | §3으로 대체 | 앱 링크 탭 본문 |
-| 설정 그룹 펼침 | §2 대안 B로 대체(본문 보조 탭) | 설정 탭 본문 |
+---
 
-## 5. 상태줄(statusline) 매핑
+## 7. 시각 스펙 보강이 필요한 사이드바 요소 (목록만 — 스펙 자체는 visual-designer 작성)
 
-| 목업 세그먼트 | 실 데이터 소스 | 비고 |
-|---|---|---|
-| "5 workspaces" | `state.dashboard.projects.length` (동일 §4) | 그대로 |
-| "session: 1 running, 3 idle" | `state.sessions.items.filter(s => asBoolean(s.running))`(`views/sessions.ts:38` `asBoolean`, `views/home.ts:441` 이미 동일 계산) | **부분 데이터 없음** — 실 데이터는 `running: boolean` 하나뿐이라 "실행중/완료/대기(idle)" 3단계 구분이 불가능하다. "idle"은 `items.length - runningCount`(=미실행 전체)로만 표시 가능, 목업처럼 "완료"와 "대기"를 나눠 셀 수 없다 |
-| "claude 2.1.4 · node v22.9.0" | `state.devTools.items.find(t => t.id==='claude'\|'node').version`(`devToolsApi.ts:26-39` `DevToolStatus.version`, `views/devTools.ts:38 loadDevTools()`) | 그대로 |
-| "main ✓ clean" | **데이터 없음**(§4의 `.conn-meta`와 동일 사유) | 표시 안 함. 대체안: 현재 라우트가 `projects-detail`일 때만 그 프로젝트명을 표시, 그 외에는 세그먼트 생략 |
-| "pnpm/gh 업데이트 2건" | **데이터 없음(현재는 온디맨드만)** — `DevToolStatus`에는 "최신 버전"/"업데이트 가능" 필드가 없다. 업데이트 가능 여부는 사용자가 개발 도구 화면에서 도구별로 미리보기를 눌러야만 채워지는 `state.devTools.preview[id]`(`state.ts:255` `DevToolPreview`)뿐이라 로그인 시점에 일괄 알 수 없다 | 상태줄에서 생략. 대체안: "개발 도구 확인 →" 같은 정적 링크로 대체(신규 API 호출 없이 탭 이동만) |
-| "dev@malgnsoft.com" | 탭스트립 계정 칩과 중복 — 상태줄에서는 생략 | §1 표 참고 |
-| 시계 "09:14:52" | 앱 데이터 아님(순수 클라이언트 `new Date()`) — 신규 API 불필요, 프론트 전용 구현 사항 | 유지 가능 |
-| (신설) 앱 버전 + 업데이트 배지 | §4 "자리 애매(§8-④)" 항목 이관 | 상태줄 우측 |
+1. **사이드바 전용 좁은 폭 목록 행**(2줄 스택형: 아이콘/dot + 제목 1줄 + 보조메타 1줄) — 세션·
+   자율작업 큐·개발도구·앱링크 사이드바 공통 필요. 기존 `.blist-row--sessions` 등(본문 폭 전제,
+   5열 그리드)은 190px 사이드바에 그대로 쓸 수 없다.
+2. **사이드바 그룹 헤더**(예: 개발 도구의 "필수 도구"/"선택 도구") 라벨 타이포/간격.
+3. **사이드바 정적 nav 행의 활성 강조**(설정 5종·카탈로그 2종·자율작업 뷰 전환 2종) — 기존
+   `.filter-btn.active`(배경 전체 채움)를 세로 촘촘한 목록에 그대로 쓸지, 좌측 강조선 등 더 가벼운
+   방식을 쓸지 결정 필요.
+4. **사이드바 카운트 배지**(예: 카탈로그 nav 행 옆 설치 개수) — `.box-head .count`는 있으나 사이드바
+   nav 행 전용 위치/크기 미정.
+5. **개발 도구 사이드바 행의 압축 상태 표시**(설치 여부를 좁은 폭에서 아이콘 1개로 표현) —
+   `.blist-devtool-flag`(본문용, 텍스트 포함)를 그대로 줄이면 잘릴 수 있음.
+6. **사이드바 일시 강조**(개발 도구 항목 클릭 시 본문 스크롤 대상 하이라이트) — 애니메이션/지속
+   시간 미정.
 
-## 6. 홈 화면 통계 타일·패널 매핑
+---
 
-| 목업 요소 | 실 데이터 소스 |
-|---|---|
-| "활성 프로젝트 5/5" | `state.dashboard.projects` 전체 vs `archiveStatus==='active'` 필터(`views/home.ts:407-408` `projectsWidget` 로직 재사용) |
-| "실행 중 세션 1" | `views/home.ts:441 sessionsWidget` `runningCount` |
-| "오늘 토큰 사용량 812K" | `computeTodayTokens(state.dailyUsage.items)`(`views/usage.ts:94`, `views/home.ts:350` 재사용) |
-| "대기 중 자율 작업 2" | `state.autonomousTasks.items.filter(t => t.enabled && !t.running)` — `AutonomousTask`(`state.ts:28-54`), 정확한 "대기" 정의(스케줄 대기 vs 단순 미실행)는 프론트 구현 시 확정 필요(신규 API 아님, 순수 필터 로직) |
-| "최근 세션" 패널 행 | `sortedSessions()`(`views/sessions.ts:83-90`) 상위 N건. 열 매핑: ID→`asString(s.sessionId)`(길면 축약), 프로젝트→`projectNameFromCwd(asString(s.cwd))`(`sessions.ts:42-46`), 작업→`sessionTitle(s)`(`sessions.ts:51-53`), 상태→`asBoolean(s.running)`(2단계만, §5와 동일 제약), 시간→`asNumber(s.updatedAt)`(`sessions.ts:84`)을 상대시간으로 변환(신규 계산, 기존 `formatTimestamp`는 절대시각이라 별도 포맷 함수 필요 — API 아님) |
-| "자율 작업 큐" 패널 행 | `state.autonomousTasks.items`. ID는 목업의 "WBS-114" 같은 형식이 아니라 `AutonomousTask.id`(`autonomyApi.ts:22`) 원문 문자열 — 표시 형식 그대로 노출 권장(가짜 채번 금지) |
-| "개발 도구" 패널 | `state.devTools.items`(6종: claude/node/gh/git/pnpm/wrangler, `dev_tools/mod.rs:93,118,146,161,187,206`). "✓ 최신"/"↑ 새버전" 플래그는 §5와 동일한 이유로 **데이터 없음** — 버전 숫자만 표시하고 플래그는 생략하거나 "확인" 링크로 대체 |
-| "이번 주 토큰 사용량" 스파크라인 | `state.dailyUsage.items`(`usageApi.ts:9-15`) 최근 7건, 합계는 `computeUsageTotals`의 `dailyUsageTotal` 방식(`views/usage.ts:51-66`) 재사용, 캐시 히트율은 `computeUsageTotals().cacheHitRate`(`views/usage.ts:63-64`) |
+## 8. 사람 판단이 필요한 지점
 
-## 7. 비정상/경계 상황
+1. §4-7 카탈로그·§4-9 설정 사이드바 nav 행에 카운트 배지(설치 플러그인 수, MCP 서버 수 등)를
+   추가할지 — 정보 밀도는 올라가지만 설정 5종 중 otel/github/cloudflare는 해당 탭에 들어가기
+   전까지 데이터가 로드되지 않아(`main.ts:262-270` 지연 로드) 배지가 한동안 빈 값/로딩으로 보일 수
+   있다.
+2. §4-4 사용량 사이드바의 기간 토글 상태(7일/30일)를 세션 간 기억할지(영속화) 아니면 매번
+   기본값(30일)으로 리셋할지.
+3. §4-6 자율 작업 사이드바 큐 목록의 정렬 기준(현재 `home.ts`와 동일하게 "실행중 우선, 그다음
+   활성 대기중"만 보여주고 완료/비활성은 숨김) — 완료된 작업도 사이드바에서 바로 열람하고 싶은
+   수요가 있는지.
 
-### 7-1. 로그인 화면
-셸(탭스트립/사이드바/상태줄)을 보이지 않는다. 근거: `main.ts:93-97`이 `!state.authenticated`일 때
-`renderLoginView()`만 반환하고 사이드바·메인을 아예 append하지 않는 구조가 이미 그렇다 — 인증
-전에는 워크스페이스 목록도, 탭 전환도 의미가 없고(빈 사이드바만 보여 혼란), 미인증 상태에서 다른
-탭으로 이동할 수 있는 것처럼 보이는 UI를 만들 이유가 없다.
-
-### 7-2. 최소폭 900px에서 9탭 오버플로
-목업 CSS(`terminus-mockup.html:119` `.window { width: clamp(900px, 78vw, 1180px) }`)가 이미 900px를
-하한으로 규정한다. 9개 탭 + 계정 칩이 900px에서 물리적으로 다 안 들어갈 수 있다.
-- 채택안: 탭스트립을 `overflow-x: auto`로 가로 스크롤시키고, 계정 칩(`tabstrip-account`)만
-  `flex:none; margin-left:auto`로 항상 우측 고정(목업 CSS에 이미 이 속성이 있음 — 스크롤 유무와
-  무관하게 유지). 탭을 줄이거나(예: "더보기" 메뉴) 라벨을 숨기는 방식은 채택하지 않는다 — 9개는
-  이미 확정 목업 수이고 "더보기" 메뉴는 클릭 2회를 요구해 탭 이동 비용이 늘어난다.
-- 정확한 스크롤 어포던스(그림자/화살표 표시 여부 등 시각 디테일)는 visual-designer 몫이다.
-
-### 7-3. 워크스페이스 0개 / 로딩 / 에러 사이드바
-기존 사이드바의 "B1(리뷰 v0.2.5)" 교훈(sidebar.ts:171-175, "0건"과 "로딩 중"을 구분해야 함)을
-그대로 승계한다.
-- 로딩(`!state.dashboard.loaded`): "불러오는 중…" 1행.
-- 0개(`state.dashboard.loaded && projects.length===0`): "워크스페이스가 없습니다" + 하단 CTA
-  ("워크스페이스 경로 관리")를 강조.
-- 에러(`state.dashboard.error`): 에러 메시지 1행 + 클릭 시 `loadProjects()` 재시도(홈 위젯의
-  `widgetErrorShell` 패턴, `views/home.ts:62-67`과 동일 원칙).
-
-### 7-4. 탭 활성 표시와 하위 라우트의 관계
-- 탭 활성 판정은 §1 표의 "활성 조건" 그대로 — `route.kind`뿐 아니라 `settings`는 `route.tab`까지
-  본다.
-- `projects-detail`(프로젝트 상세)·`sessions-detail`/`sessions-draft`(세션 상세/초안)·`tasks-detail`
-  (자율업무 상세)에서도 상위 탭(프로젝트/세션/자율 작업)은 계속 활성 상태를 유지한다 — 별도의
-  "뒤로가기" 탭을 만들지 않고, 사이드바의 `.conn.current` 강조(§4)와 본문 헤더의 뒤로가기 링크로
-  "지금 상세 화면에 있다"는 것을 표시한다(기존 각 상세 화면이 이미 자체 뒤로가기 링크를 가지고
-  있다고 가정 — 이 문서가 신설하는 요구사항은 아님).
-
-## 8. 사람 판단이 필요한 지점 (요약)
-
-1. §2 — 설정/카탈로그 보조 탭을 본문 상단(대안 B)에 둘지, 다른 배치를 원하는지.
-2. §4 사이드바 풋터 CTA 라벨 — "+ 새 워크스페이스 연결"(목업 원문, 1클릭 연결처럼 읽힘) vs
-   "워크스페이스 경로 관리"(실제 동작, 경로 목록 편집) 중 택1.
-3. §4 브랜드 마크(로고+앱이름) — 탭스트립 좌측에 고정 슬롯을 신설할지, OS 네이티브 타이틀바만으로
-   충분하다고 보고 생략할지.
-4. §4·§5 앱 버전 표시 + 업데이트 배지("새 버전 확인" 버튼 포함) — 상태줄 세그먼트로 이관을
-   권장하지만, 클릭 인터랙션(버튼)이 있는 요소를 얇은 상태줄에 넣는 것이 목업의 "정보 전용 상태줄"
-   컨셉과 맞는지 확인 필요.
+---
 
 ## 9. visual-designer 필요 여부
 
-**필요.** 기존 스타일가이드/디자인시스템이 커버하지 못하는 새 다크 터미널 테마 전면 교체이며,
-`docs/design/terminus-design-system.md`가 이 셸 전용으로 별도 진행 중이다(관리자단 여부와 무관하게
-신규 모듈 개발 기준으로 필요 판정).
+**필요.** 사이드바가 탭마다 다른 콘텐츠(좁은 폭 목록 행, 그룹 헤더, 정적 nav 행, 카운트 배지 등
+§7의 6개 요소)를 새로 갖게 되며, 이는 기존 스타일가이드/디자인시스템(`terminus-design-system.md`)이
+아직 커버하지 못하는 신규 컴포넌트다. 관리자단 여부와 무관하게 "신규 모듈 개발" 기준으로 필요
+판정한다.
 
 ---
 
-## 화면별 3필드 (우선순위/밀도/동선)
+## 화면별 3필드 (우선순위/밀도/동선) — 셸 컨테이너 단위
 
-이 문서는 개별 화면 와이어프레임이 아니라 셸 구조 IA이므로, 셸을 구성하는 3개 레이아웃 단위에만
-표기한다(신규 화면 자체가 아니라 기존 라우트의 진입 경로 재배치이므로 상세 화면별 우선순위는
-각 화면 기존 설계를 승계).
-
-- **탭스트립**: 우선순위 — 활성 탭 라벨(현재 위치 인지가 최우선). 밀도 — 저(가로 1줄, 9탭+계정
-  칩만). 동선 — 탭 클릭 → 해당 라우트 즉시 전환(중간 확인 없음).
-- **사이드바**: 우선순위 — 1순위: 현재 프로젝트 강조(`.conn.current`) / 2순위: 상태 점(활성 여부)
-  / 3순위: 워크스페이스명. 밀도 — 중(행마다 이름+메타 2줄). 동선 — 행 클릭 → 프로젝트 상세 →
-  (상세 화면 내 기존 세션/파일 탐색으로 이어짐, 이 문서 범위 밖).
-- **상태줄**: 우선순위 — 세션 실행 상태(가장 시간 민감). 밀도 — 저(한 줄, 세그먼트 나열). 동선 —
-  없음(정보 전용, §8-4의 업데이트 배지만 예외적으로 클릭 가능).
+- **탭스트립**: 우선순위 — 활성 탭 라벨. 밀도 — 저. 동선 — 탭 클릭 → 해당 라우트 즉시 전환(사이드바
+  콘텐츠도 함께 전환됨, §2-1).
+- **사이드바**: 탭별 세부 우선순위/밀도/동선은 §4-1~§4-9 각 절 끝에 개별 기재했다(탭마다 성격이
+  달라 단일 값으로 일반화하지 않는다). 공통 원칙만 여기 남긴다 — 동선은 항상 "행 클릭 → 본문 갱신
+  또는 라우트 전환" 둘 중 하나이며, 좁은 폭 탓에 밀도는 대부분 중~고에 수렴한다.
+- **상태줄**: 우선순위 — 세션 실행 상태. 밀도 — 저. 동선 — 없음(정보 전용, 업데이트 배지만 예외적
+  클릭 가능).
