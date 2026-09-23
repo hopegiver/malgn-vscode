@@ -16,8 +16,14 @@ export const AUTH_ROUTES = [
     hash: '#/',
     label: '홈 대시보드',
     verify: async (page, scenario) => {
+      // Terminus 셸 전환(2026-09) 후 갱신: 홈 화면이 목업 구조(통계 타일+박스
+      // 4개)로 바뀌며 구 .home-widget 8개 중 5개(프로젝트/세션목록/개발환경/
+      // 사용량통계/자율업무 진행상황)는 새 통계 타일·박스가 같은 데이터를
+      // 대신 보여줘 제거됐다. 남은 3개(claude 로그인/malgnai-hub 연동/카탈로그)는
+      // 목업에 대응 요소가 없는 기존 기능이라 .home-widget 그대로 유지했다
+      // (기대 개수 7→3).
       const widgets = await count(page, '.home-widget');
-      if (widgets !== 7) return verdict(false, `home-widget 개수가 7이 아님 (${widgets})`);
+      if (widgets !== 3) return verdict(false, `home-widget 개수가 3이 아님 (${widgets})`);
       const text = await bodyText(page);
       if (scenario === 'loading') return verdict(text.includes('불러오는 중'), '로딩 마커(불러오는 중) 미검출');
       if (scenario === 'error') return verdict(text.includes('상태를 불러오지 못했습니다'), 'malgnai-hub 위젯 에러 문구 미검출');

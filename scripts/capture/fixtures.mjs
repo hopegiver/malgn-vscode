@@ -466,7 +466,14 @@ const APP_LINKS_EMPTY = {
 export const READ_FIXTURES = {
   normal: {
     google_oauth_login: USER,
-    list_workspace_projects: PROJECTS_NORMAL,
+    // 실제 Rust 커맨드는 배열이 아니라 { projects, skipped } 객체를 반환한다
+    // (src-tauri/src/workspace/mod.rs list_workspace_projects → WorkspaceScanResult,
+    // src/workspaceApi.ts WorkspaceScanResult와 동일 계약) — 이 픽스처가 배열
+    // 그대로였던 것은 그 계약과 어긋난 기존 결함이다(2026-09 Terminus 셸
+    // before/after 캡처 중 renderGreeting()의 state.dashboard.projects.length가
+    // undefined.length로 죽는 것을 보고 실측). 배열 자체(PROJECTS_NORMAL)는
+    // 값 변경 없이 그대로 재사용하고 감싸기만 한다.
+    list_workspace_projects: { projects: PROJECTS_NORMAL, skipped: [] },
     list_project_tree: PROJECT_TREE_NORMAL,
     read_project_file: FILE_PREVIEW_NORMAL,
     list_claude_sessions: SESSIONS_NORMAL,
@@ -491,7 +498,7 @@ export const READ_FIXTURES = {
   },
   empty: {
     google_oauth_login: USER,
-    list_workspace_projects: [],
+    list_workspace_projects: { projects: [], skipped: [] },
     list_project_tree: [],
     read_project_file: { kind: 'notFound' },
     list_claude_sessions: [],

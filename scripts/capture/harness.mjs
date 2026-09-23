@@ -14,15 +14,16 @@ import { LOGIN_ERROR_MESSAGE } from './fixtures.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..', '..');
-const VIEWPORT = { width: 1440, height: 900 };
+let VIEWPORT = { width: 1440, height: 900 };
 
 function parseArgs(argv) {
-  const out = { round: 'r1', label: null, baseUrl: 'http://localhost:5173' };
+  const out = { round: 'r1', label: null, baseUrl: 'http://localhost:5173', viewport: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--round') out.round = argv[++i];
     else if (a === '--label') out.label = argv[++i];
     else if (a === '--base-url') out.baseUrl = argv[++i];
+    else if (a === '--viewport') out.viewport = argv[++i]; // "WxH", 예: 900x600(창 최소 크기 검증용)
   }
   return out;
 }
@@ -75,7 +76,11 @@ function fileFor(outDir, round, routeId, scenarioLabel) {
 }
 
 async function main() {
-  const { round, label, baseUrl } = parseArgs(process.argv.slice(2));
+  const { round, label, baseUrl, viewport } = parseArgs(process.argv.slice(2));
+  if (viewport) {
+    const [w, h] = viewport.split('x').map(Number);
+    if (Number.isFinite(w) && Number.isFinite(h)) VIEWPORT = { width: w, height: h };
+  }
   const outDir = join(__dirname, 'output', round);
   mkdirSync(outDir, { recursive: true });
 

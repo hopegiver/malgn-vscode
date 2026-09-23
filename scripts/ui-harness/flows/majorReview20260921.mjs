@@ -215,7 +215,14 @@ export function scenarios(base) {
       },
     },
 
-    // ---------------- B1: 사이드바 "불러오는 중…" vs 빈 상태 ----------------
+    // ---------------- B1: 사이드바/홈 "불러오는 중…" vs 빈 상태 ----------------
+    // Terminus 셸 전환(2026-09) 후 셀렉터 갱신: 구 사이드바는 프로젝트/세션목록을
+    // 펼침 아코디언 서브목록으로 보여줬지만, 새 셸은 (1) 사이드바=워크스페이스
+    // 목록 전용(펼침 없이 항상 노출)이고 (2) 세션 서브목록 자체가 사이드바에서
+    // 사라지고 홈의 "최근 세션" 박스가 같은 역할을 대신한다(IA §4). 펼침 클릭
+    // 단계는 더 이상 필요 없어 제거했고, "0건과 로딩 중을 구분해야 한다"는
+    // 검증 원칙 자체는 두 위치(사이드바 자체 / 홈 최근 세션 박스)에 그대로
+    // 적용해 약화 없이 옮긴다.
     {
       id: 'b1-sidebar-empty-state-after-load',
       startHash: '#/',
@@ -223,32 +230,38 @@ export function scenarios(base) {
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400); // 로드 완료 대기(loaded:true로 전이할 시간)
 
-        const projectsGroup = page.locator('.sidebar-nav-group', { hasText: '프로젝트' }).first();
-        await projectsGroup.locator('.sidebar-nav-chevron-btn').click();
-        await page.waitForTimeout(100);
-        const projectsEmptyText = await page.locator('.sidebar-nav-group', { hasText: '프로젝트' }).first().locator('.sidebar-subnav-empty').textContent().catch(() => null);
+        const sidebarText = await page.locator('.sidebar').first().textContent().catch(() => null);
+        const recentSessionsBox = page.locator('.box', { hasText: '최근 세션' }).first();
+        const sessionsBoxText = await recentSessionsBox.textContent().catch(() => null);
 
-        const sessionsGroup = page.locator('.sidebar-nav-group', { hasText: '세션목록' }).first();
-        await sessionsGroup.locator('.sidebar-nav-chevron-btn').click();
-        await page.waitForTimeout(100);
-        const sessionsEmptyText = await page.locator('.sidebar-nav-group', { hasText: '세션목록' }).first().locator('.sidebar-subnav-empty').textContent().catch(() => null);
+        await shot('01-sidebar-and-home-empty');
 
-        await shot('01-sidebar-expanded-empty');
-
-        if (projectsEmptyText && projectsEmptyText.includes('불러오는 중')) {
+        if (sidebarText && sidebarText.includes('불러오는 중')) {
           bugs.push({
             severity: 'Major',
-            symptom: `프로젝트 0건 + 로드 완료 상태인데 사이드바가 "불러오는 중…"을 영구 표시함(실제: ${projectsEmptyText})`,
-            file: 'src/sidebar.ts:renderProjectsGroup',
-            repro: 'list_workspace_projects=[] → 로드 완료 대기 → 사이드바 "프로젝트" 펼침 → 문구 확인',
+            symptom: `워크스페이스 0건 + 로드 완료 상태인데 사이드바가 "불러오는 중…"을 영구 표시함(실제: ${sidebarText})`,
+            file: 'src/sidebar.ts:renderSidebar',
+            repro: 'list_workspace_projects=[] → 로드 완료 대기 → 사이드바 텍스트 확인',
+          });
+        } else if (!sidebarText || !sidebarText.includes('워크스페이스가 없습니다')) {
+          bugs.push({
+            severity: 'Minor',
+            symptom: `워크스페이스 0건 + 로드 완료 상태인데 빈 상태 문구가 보이지 않음(실제: ${sidebarText})`,
+            file: 'src/sidebar.ts:renderSidebar',
           });
         }
-        if (sessionsEmptyText && sessionsEmptyText.includes('불러오는 중')) {
+        if (sessionsBoxText && sessionsBoxText.includes('불러오는 중')) {
           bugs.push({
             severity: 'Major',
-            symptom: `세션 0건 + 로드 완료 상태인데 사이드바가 "불러오는 중…"을 영구 표시함(실제: ${sessionsEmptyText})`,
-            file: 'src/sidebar.ts:renderSessionsGroup',
-            repro: 'list_claude_sessions=[] → 로드 완료 대기 → 사이드바 "세션목록" 펼침 → 문구 확인',
+            symptom: `세션 0건 + 로드 완료 상태인데 홈 "최근 세션" 박스가 "불러오는 중…"을 영구 표시함(실제: ${sessionsBoxText})`,
+            file: 'src/views/home.ts:recentSessionsBox',
+            repro: 'list_claude_sessions=[] → 로드 완료 대기 → 홈 "최근 세션" 박스 텍스트 확인',
+          });
+        } else if (!sessionsBoxText || !sessionsBoxText.includes('최근 세션이 없습니다')) {
+          bugs.push({
+            severity: 'Minor',
+            symptom: `세션 0건 + 로드 완료 상태인데 빈 상태 문구가 보이지 않음(실제: ${sessionsBoxText})`,
+            file: 'src/views/home.ts:recentSessionsBox',
           });
         }
       },
@@ -354,6 +367,16 @@ export function scenarios(base) {
         // 호출해 addEventListener('click', ...) 핸들러를 호출한다. 이 시나리오가
         // 검증하려는 것은 "떠날 때 정리가 항상 도는가"라는 핸들러 계약 자체이지
         // 오버레이의 시각적 클릭 차단(별개 UX 사안)이 아니다.
+        // Terminus 셸 전환(2026-09) 후 갱신: 로그아웃 버튼이 이제 탭스트립
+        // 계정 칩을 먼저 열어야 나오는 드롭다운 안에 있다(사이드바가 아니라
+        // 탭스트립에, 클래스명 .sidebar-logout은 유지). 계정 칩도 모달
+        // 오버레이 아래 깔리므로 같은 이유(위 주석)로 DOM .click() 직접
+        // 호출로 연다.
+        await page.evaluate(() => {
+          const chip = document.querySelector('.tabstrip-account');
+          if (chip instanceof HTMLElement) chip.click();
+        });
+        await page.waitForSelector('.sidebar-logout');
         await page.evaluate(() => {
           const btn = document.querySelector('.sidebar-logout');
           if (btn instanceof HTMLElement) btn.click();
