@@ -842,14 +842,9 @@ function validateCronLight(expr: string): string | null {
   return null;
 }
 
-function tabsRow(active: 'list' | 'board'): HTMLElement {
-  return el('div', { className: 'filter-group' }, [
-    el('button', { className: `filter-btn${active === 'list' ? ' active' : ''}`, onClick: () => navigate('#/tasks') }, ['목록']),
-    el('button', { className: `filter-btn${active === 'board' ? ' active' : ''}`, onClick: () => navigate('#/tasks/board') }, ['진행상황판']),
-  ]);
-}
-
 // ---------------- 목록 탭 ----------------
+// 목록/진행상황판 전환 UI는 사이드바로 이관됐다(terminus-shell-ia.md §2-2,
+// §4-6) — 본문에서 같은 전환을 중복으로 그리지 않는다.
 
 export function renderAutonomousTasksListView(): HTMLElement {
   const addBtn = el('button', { className: 'btn btn-primary', onClick: () => openTaskFormModal(null) }, ['+ 새 자율업무']);
@@ -868,7 +863,6 @@ export function renderAutonomousTasksListView(): HTMLElement {
   if (stallBanner) body.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
   if (configBanner) body.push(configBanner);
-  body.push(tabsRow('list'));
 
   if (state.autonomousTasks.loading && state.autonomousTasks.items.length === 0) {
     body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]));
@@ -1486,7 +1480,6 @@ export function renderAutonomousTaskBoardView(): HTMLElement {
   if (stallBanner) body.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
   if (configBanner) body.push(configBanner);
-  body.push(tabsRow('board'));
 
   if (state.autonomousTasks.loading && state.autonomousTasks.items.length === 0) {
     body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]));

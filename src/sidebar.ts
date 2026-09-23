@@ -1,20 +1,31 @@
-// Terminus 셸 — 탭스트립(상단) + 사이드바(워크스페이스 목록) + 상태줄(하단).
-// docs/design/terminus-shell-ia.md가 정본이다. main.ts가 이 세 렌더 함수를
-// #app 안에 세로로 쌓는다(탭스트립 → shell-body{사이드바+본문} → 상태줄).
+// Terminus 셸 — 탭스트립(상단) + 사이드바(선택된 탭의 맥락 보조 내비게이션) +
+// 상태줄(하단). docs/design/terminus-shell-ia.md가 정본이다. main.ts가 이 세
+// 렌더 함수를 #app 안에 세로로 쌓는다(탭스트립 → shell-body{사이드바+본문} →
+// 상태줄).
 //
-// 구 버전(아코디언 사이드바)과 달리 이 사이드바는 워크스페이스(=프로젝트)
-// 목록 전용이고, 설정/카탈로그/자율업무 하위탭 전환·프로젝트/세션 서브목록·
-// 앱링크 바로가기 목록은 전부 본문(탭 콘텐츠) 쪽으로 옮겨졌다(IA §2~4) —
-// 이 화면들 자체는 다음 단계(9개 화면 마이그레이션) 범위라 여기서는 탭
-// 전환(navigate)만 담당한다.
+// 사이드바 = "선택된 탭의 맥락별 보조 내비게이션/필터"(IA §2-1, 2026-09-23
+// 개정). route.kind(그리고 settings/catalog에서는 route.tab)가 바뀔 때마다
+// renderSidebar()가 완전히 다른 콘텐츠 종류로 분기한다 — 예전의 "사이드바=
+// 전 탭 공통 워크스페이스 목록"이라는 정체성은 폐기됐다(IA §0 "폐기된 이전
+// 결정"). 홈·프로젝트 두 탭만 여전히 워크스페이스 목록을 보여주지만, 이는
+// "사이드바의 기본값"이 아니라 그 두 탭이 우연히 같은 콘텐츠 종류를 공유하는
+// 것뿐이다(IA §4-1/§4-2).
 import { getVersion } from '@tauri-apps/api/app';
 import { el, clickable } from './dom';
 import { state, notifyChange, resetStateForLogout } from './state';
 import { navigate } from './route';
 import type { Route } from './route';
-import { asBoolean } from './views/sessions';
+import { asBoolean, asString, asNumber, sortedSessions, sessionTitle, projectNameFromCwd, openNewSessionModal, loadSessions } from './views/sessions';
+import type { ClaudeSessionRecord } from './sessionsApi';
 import { sortedProjectsByRecency } from './views/projects';
-import { loadDailyUsage } from './views/usage';
+import { loadDailyUsage, getUsagePeriodDays, setUsagePeriodDays, toggleDailyDetail, dailyUsageTotal, formatTokenCount } from './views/usage';
+import type { DailyUsage } from './usageApi';
+import { highlightDevTool } from './views/devTools';
+import type { DevToolStatus } from './devToolsApi';
+import type { AutonomousTask } from './state';
+import { enabledAppLinks, openLink } from './views/appLinks';
+import type { AppLink } from './appLinksApi';
+import { TAB_META } from './views/settings';
 import { applyUpdateFromButton, checkForUpdateFromButton } from './updateApi';
 import type { WorkspaceProject } from './workspaceApi';
 
@@ -170,17 +181,12 @@ export function renderTabstrip(route: Route): HTMLElement {
   return el('div', { className: 'tabstrip' }, [...tabs.map(tabEl), renderAccountChip()]);
 }
 
-// ---------------- 사이드바(워크스페이스 목록 전용) ----------------
-// 상태 점: active→good(초록), unknown·archived→idle(무채색) — PM 확정(IA §8-①
-// 관련, 노랑(warn)은 실제 경고 전용이라 여기서는 쓰지 않는다).
-function dotClassFor(p: WorkspaceProject): 'good' | 'idle' {
-  return p.archiveStatus === 'active' ? 'good' : 'idle';
-}
+// =====================================================================
+// 사이드바 공용 원자 컴포넌트(IA §3) — 탭별 렌더 함수가 재사용한다.
+// =====================================================================
 
-// "3일 전"/"1주 전" 류 — 구 git 브랜치/워킹트리 상태 대신 IA §4가 지정한
-// 대체 데이터(WorkspaceProject.updatedAt, epoch ms)를 상대시간으로 표시한다.
-// 신규 API 호출 없는 순수 프론트 계산(views/autonomousTasks.ts의 유사 패턴
-// 재사용 — export되어 있지 않아 이 파일 전용으로 다시 작성).
+// "3일 전"/"1주 전" 류 — 신규 API 호출 없는 순수 프론트 계산. 워크스페이스
+// (기존)·세션·사용량 사이드바가 공통으로 쓴다(IA §4 "재사용, 신규 계산 아님").
 function formatDaysAgo(updatedAtMs: number): string {
   const diffMs = Date.now() - updatedAtMs;
   const diffMin = Math.round(diffMs / 60000);
@@ -193,34 +199,79 @@ function formatDaysAgo(updatedAtMs: number): string {
   return `${Math.round(diffDay / 7)}주 전`;
 }
 
-function wsRow(p: WorkspaceProject, route: Route): HTMLElement {
-  const current = route.kind === 'projects-detail' && route.path === p.path;
-  return clickable(
-    el('div', { className: `ws-row${current ? ' current' : ''}` }, [
-      el('span', { className: `dot ${dotClassFor(p)}` }, []),
+// 좁은 폭 목록 행(IA §7-1) — 목업의 `.conn`/`.conn.current` 어휘를 그대로
+// 재사용한다(styles.css `.ws-row`). 구조가 "dot 1개 + 제목 1줄 + 보조메타
+// 1줄"로 정확히 일치해 새 클래스를 만들지 않고 그대로 파생했다 — 결정 근거는
+// terminus-design-system.md 신규 절 참고. dotClass 'bad'/'accent'만 이번에
+// 새로 추가했다(기존은 good/warn/idle 3종).
+type DotClass = 'good' | 'warn' | 'bad' | 'accent' | 'idle';
+
+function narrowRow(opts: {
+  readonly dotClass: DotClass;
+  readonly name: string;
+  readonly meta: string;
+  readonly current?: boolean;
+  readonly dim?: boolean;
+  readonly onClick: () => void;
+}): HTMLElement {
+  const row = clickable(
+    el('div', { className: `ws-row${opts.current ? ' current' : ''}${opts.dim ? ' sidebar-row-dim' : ''}` }, [
+      el('span', { className: `dot ${opts.dotClass}` }, []),
       el('div', { className: 'ws-row-text' }, [
-        el('div', { className: 'ws-row-name' }, [p.name]),
-        el('div', { className: 'ws-row-meta' }, [formatDaysAgo(p.updatedAt)]),
+        el('div', { className: 'ws-row-name' }, [opts.name]),
+        el('div', { className: 'ws-row-meta' }, [opts.meta]),
       ]),
     ]),
-    () => navigate(`#/project/${encodeURIComponent(p.path)}`)
+    opts.onClick
   );
+  return row;
 }
 
-// 워크스페이스 경로 편집 진입 — 정확히 대응하는 "1클릭 연결" 기능은 없다.
-// 가장 가까운 기존 기능인 views/projects.ts의 "workspace 설정" 토글
-// (state.malgnAgentConfig.editingWorkspaces)을 그대로 재사용한다(IA §4).
-// 그 모달은 프로젝트 목록 화면에서만 그려지므로 먼저 그 라우트로 이동한 뒤
-// 플래그를 켠다 — 아직 malgnAgentConfig가 로드되지 않았어도, 로드가 끝나는
-// 대로(loadProjects()이 이미 로그인 직후 트리거해둔 로딩이 이어짐) 다음
-// 렌더에서 모달이 자동으로 뜬다.
+// 사이드바 그룹 헤더(IA §7-2, 예: 개발 도구의 "필수 도구"/"선택 도구") — 최상단
+// 섹션 헤더(`.sidebar-head`)와 같은 타이포지만, 목록 중간에 다시 나올 때는
+// 위 여백이 더 필요해 `.group` 수정자만 새로 추가했다(값은 CSS 참고).
+function groupHead(label: string): HTMLElement {
+  return el('div', { className: 'sidebar-head group' }, [label]);
+}
+
+// 정적 nav 행(IA §7-3, 설정 5종·카탈로그 2종·자율작업 뷰 전환 2종) — 라벨
+// 텍스트 하나 + 활성 강조만 있는 행. `.filter-btn.active`(배경 전체 채움)는
+// 세로 촘촘한 목록에서 과하다고 판단해(IA §3 3항목) 대신 `.ws-row.current`와
+// 같은 "좌측 강조선 + 배경 한 단 밝게" 어휘를 재사용했다 — 새 색 도입 없음.
+function navRow(label: string, active: boolean, onClick: () => void): HTMLElement {
+  return clickable(el('div', { className: `sidebar-nav-row${active ? ' current' : ''}` }, [label]), onClick);
+}
+
+function sidebarEmpty(text: string): HTMLElement {
+  return el('div', { className: 'sidebar-empty' }, [text]);
+}
+
+// =====================================================================
+// §4-1/§4-2 — 홈·프로젝트: 워크스페이스 목록(기존 컴포넌트 그대로 재사용)
+// =====================================================================
+function dotClassFor(p: WorkspaceProject): 'good' | 'idle' {
+  return p.archiveStatus === 'active' ? 'good' : 'idle';
+}
+
+function wsRow(p: WorkspaceProject, route: Route): HTMLElement {
+  const current = route.kind === 'projects-detail' && route.path === p.path;
+  return narrowRow({
+    dotClass: dotClassFor(p),
+    name: p.name,
+    meta: formatDaysAgo(p.updatedAt),
+    current,
+    onClick: () => navigate(`#/project/${encodeURIComponent(p.path)}`),
+  });
+}
+
+// 워크스페이스 경로 편집 진입 — 홈·프로젝트 사이드바 공통 하단 CTA(IA §4-1/§4-2).
 function openWorkspacesManager(): void {
   navigate('#/projects');
   state.malgnAgentConfig.editingWorkspaces = true;
   notifyChange();
 }
 
-export function renderSidebar(route: Route): HTMLElement {
+function renderWorkspaceSidebar(route: Route): HTMLElement {
   const dash = state.dashboard;
   const projects = sortedProjectsByRecency();
 
@@ -228,11 +279,11 @@ export function renderSidebar(route: Route): HTMLElement {
 
   let body: HTMLElement;
   if (dash.error) {
-    body = el('div', { className: 'sidebar-empty' }, [`⚠ ${dash.error}`]);
+    body = sidebarEmpty(`⚠ ${dash.error}`);
   } else if (!dash.loaded) {
-    body = el('div', { className: 'sidebar-empty' }, ['불러오는 중…']);
+    body = sidebarEmpty('불러오는 중…');
   } else if (projects.length === 0) {
-    body = el('div', { className: 'sidebar-empty' }, ['워크스페이스가 없습니다']);
+    body = sidebarEmpty('워크스페이스가 없습니다');
   } else {
     body = el('div', {}, projects.map((p) => wsRow(p, route)));
   }
@@ -240,6 +291,282 @@ export function renderSidebar(route: Route): HTMLElement {
   const foot = clickable(el('div', { className: 'sidebar-foot' }, ['워크스페이스 경로 관리']), openWorkspacesManager);
 
   return el('aside', { className: 'sidebar' }, [head, body, foot]);
+}
+
+// =====================================================================
+// §4-3 — 세션: 세션 목록(좁은 폭 목록 행)
+// =====================================================================
+function sessionNarrowRow(s: ClaudeSessionRecord, route: Route): HTMLElement {
+  const sessionId = asString(s.sessionId);
+  const current = route.kind === 'sessions-detail' && route.sessionId === sessionId;
+  const running = asBoolean(s.running);
+  const updatedAt = asNumber(s.updatedAt) ?? asNumber(s.startedAt);
+  return narrowRow({
+    dotClass: running ? 'good' : 'idle',
+    name: sessionTitle(s),
+    meta: `${projectNameFromCwd(asString(s.cwd))} · ${updatedAt !== null ? formatDaysAgo(updatedAt) : '-'}`,
+    current,
+    onClick: () => navigate(`#/sessions/${encodeURIComponent(sessionId)}`),
+  });
+}
+
+// 세션목록 화면 밖(세션 상세/draft)에서도 CTA를 눌러 모달을 열 수 있어야
+// 한다 — projects.ts의 openWorkspacesManager와 같은 "먼저 목록 라우트로
+// 이동 후 모듈 상태를 연다" 패턴을 그대로 따른다.
+function openNewSessionFromSidebar(): void {
+  navigate('#/sessions');
+  openNewSessionModal();
+}
+
+function renderSessionsSidebar(route: Route): HTMLElement {
+  const sessions = state.sessions;
+  const head = el('div', { className: 'sidebar-head' }, [`sessions (${sessions.loaded ? sessions.items.length : '…'})`]);
+
+  let body: HTMLElement;
+  if (sessions.error) {
+    body = sidebarEmpty(`⚠ ${sessions.error}`);
+  } else if (!sessions.loaded) {
+    body = sidebarEmpty('불러오는 중…');
+  } else if (sessions.items.length === 0) {
+    body = sidebarEmpty('세션이 없습니다');
+  } else {
+    body = el('div', {}, sortedSessions().map((s) => sessionNarrowRow(s, route)));
+  }
+
+  const foot = clickable(el('div', { className: 'sidebar-foot' }, ['+ 새 세션']), openNewSessionFromSidebar);
+  // 조회 실패 시에도 재시도 동선을 준다(홈/프로젝트 사이드바에는 없던 것이지만
+  // 세션은 이 사이드바가 유일한 "다시 시도" 진입점일 수 있다 — 본문도 동일
+  // 조회를 다시 트리거하는 버튼을 갖고 있어 중복이 아니라 보조 동선이다).
+  if (sessions.error) {
+    return el('aside', { className: 'sidebar' }, [
+      head,
+      body,
+      clickable(el('div', { className: 'sidebar-foot' }, ['다시 시도']), () => void loadSessions()),
+      foot,
+    ]);
+  }
+  return el('aside', { className: 'sidebar' }, [head, body, foot]);
+}
+
+// =====================================================================
+// §4-4 — 사용량: 기간 토글(클라이언트 전용) + 최근 활동일 퀵점프
+// =====================================================================
+function usagePeriodToggle(): HTMLElement {
+  const days = getUsagePeriodDays();
+  return el('div', { className: 'sidebar-nav-group' }, [
+    navRow('최근 7일', days === 7, () => setUsagePeriodDays(7)),
+    navRow('최근 30일', days === 30, () => setUsagePeriodDays(30)),
+  ]);
+}
+
+function recentActivityRow(d: DailyUsage): HTMLElement {
+  const selected = state.dailyDetail.selectedDate === d.date;
+  return narrowRow({
+    dotClass: selected ? 'accent' : 'idle',
+    name: d.date,
+    meta: `${formatTokenCount(dailyUsageTotal(d))} 토큰`,
+    current: selected,
+    onClick: () => toggleDailyDetail(d.date),
+  });
+}
+
+function renderUsageSidebar(): HTMLElement {
+  const usage = state.dailyUsage;
+  const head = el('div', { className: 'sidebar-head' }, ['usage']);
+  const body: HTMLElement[] = [usagePeriodToggle()];
+
+  if (usage.error) {
+    body.push(sidebarEmpty(`⚠ ${usage.error}`));
+  } else if (usage.loading && !usage.loaded) {
+    body.push(sidebarEmpty('불러오는 중…'));
+  } else if (usage.items.length === 0) {
+    body.push(sidebarEmpty('최근 30일 이내 사용 기록이 없습니다'));
+  } else {
+    const days = [...usage.items].sort((a, b) => b.date.localeCompare(a.date));
+    body.push(groupHead('최근 활동일'));
+    body.push(el('div', {}, days.map(recentActivityRow)));
+  }
+
+  return el('aside', { className: 'sidebar' }, [head, ...body]);
+}
+
+// =====================================================================
+// §4-5 — 개발 도구: 그룹 헤더(필수/선택) + 압축 상태 표시 + 일시 강조
+// =====================================================================
+function devToolNarrowRow(t: DevToolStatus): HTMLElement {
+  // 압축 상태 표시(IA §7-5) — 좁은 폭에서 텍스트 플래그(`.blist-devtool-flag`)
+  // 대신 행의 dot 색으로 설치 여부를 표현한다: 설치됨=good, 필수인데 미설치=bad,
+  // 선택인데 미설치=idle. 별도 아이콘 요소를 추가하지 않고 이미 있는 dot
+  // 채널을 재사용한 것이 이번 결정이다.
+  const dotClass: DotClass = t.installed ? 'good' : t.required ? 'bad' : 'idle';
+  return narrowRow({
+    dotClass,
+    name: t.name,
+    meta: t.installed ? (t.version ?? '설치됨') : '미설치',
+    onClick: () => highlightDevTool(t.id),
+  });
+}
+
+function renderDevToolsSidebar(): HTMLElement {
+  const dt = state.devTools;
+  const head = el('div', { className: 'sidebar-head' }, ['dev tools']);
+  const body: HTMLElement[] = [];
+
+  if (dt.error) {
+    body.push(sidebarEmpty(`⚠ ${dt.error}`));
+  } else if (!dt.loaded) {
+    body.push(sidebarEmpty('불러오는 중…'));
+  } else {
+    const required = dt.items.filter((t) => t.required);
+    const optional = dt.items.filter((t) => !t.required);
+    if (required.length > 0) {
+      body.push(groupHead('필수 도구'));
+      body.push(el('div', {}, required.map(devToolNarrowRow)));
+    }
+    if (optional.length > 0) {
+      body.push(groupHead('선택 도구'));
+      body.push(el('div', {}, optional.map(devToolNarrowRow)));
+    }
+  }
+
+  return el('aside', { className: 'sidebar' }, [head, ...body]);
+}
+
+// =====================================================================
+// §4-6 — 자율 작업: 뷰 전환(정적 nav) + 작업 큐(전체, 실행중→활성→비활성 순,
+// 비활성은 흐리게 — PM 확정, IA §8-③ 대체)
+// =====================================================================
+function taskGroupOf(t: AutonomousTask): 0 | 1 | 2 {
+  if (t.running) return 0;
+  if (t.enabled) return 1;
+  return 2;
+}
+
+function taskNarrowRow(t: AutonomousTask, route: Route): HTMLElement {
+  const current = route.kind === 'tasks-detail' && route.taskId === t.id;
+  // running=accent(cyan)는 home.ts taskQueueRow(.blist-badge.run)와 동일한
+  // 색 의미(진행중=accent)를 사이드바에서도 그대로 따른다 — 세션의
+  // "running=green"과는 다른 기존 관례이지만, 각 탭이 원래 쓰던 의미를
+  // 유지하는 편이 새 규칙을 만드는 것보다 일관적이다.
+  const dotClass: DotClass = t.running ? 'accent' : 'idle';
+  return narrowRow({
+    dotClass,
+    name: t.name,
+    meta: `${t.projectName} · ${t.running ? '실행 중' : t.enabled ? '대기' : '중지됨'}`,
+    current,
+    dim: !t.enabled,
+    onClick: () => navigate(`#/tasks/item/${encodeURIComponent(t.id)}`),
+  });
+}
+
+function renderTasksSidebar(route: Route): HTMLElement {
+  const tasks = state.autonomousTasks;
+  const head = el('div', { className: 'sidebar-head' }, ['autonomy']);
+  const viewToggle = el('div', { className: 'sidebar-nav-group' }, [
+    navRow('목록', route.kind === 'tasks-list', () => navigate('#/tasks')),
+    navRow('진행상황판', route.kind === 'tasks-board', () => navigate('#/tasks/board')),
+  ]);
+
+  const body: HTMLElement[] = [viewToggle];
+  if (tasks.error) {
+    body.push(sidebarEmpty(`⚠ ${tasks.error}`));
+  } else if (!tasks.loaded) {
+    body.push(sidebarEmpty('불러오는 중…'));
+  } else if (tasks.items.length === 0) {
+    body.push(sidebarEmpty('대기 중인 자율 작업이 없습니다'));
+  } else {
+    const sorted = [...tasks.items].sort((a, b) => taskGroupOf(a) - taskGroupOf(b));
+    body.push(groupHead('작업 큐'));
+    body.push(el('div', {}, sorted.map((t) => taskNarrowRow(t, route))));
+  }
+
+  return el('aside', { className: 'sidebar' }, [head, ...body]);
+}
+
+// =====================================================================
+// §4-7 — 카탈로그: 정적 nav 행 2종(카운트 배지 없음 — PM 결정, IA §8-①)
+// =====================================================================
+type CatalogRoute = Extract<Route, { kind: 'catalog' }>;
+
+function renderCatalogSidebar(route: CatalogRoute): HTMLElement {
+  return el('aside', { className: 'sidebar' }, [
+    el('div', { className: 'sidebar-head' }, ['catalog']),
+    navRow('플러그인 카탈로그', route.tab === 'plugins', () => navigate('#/catalog/plugins')),
+    navRow('전역 카탈로그', route.tab === 'global', () => navigate('#/catalog/global')),
+  ]);
+}
+
+// =====================================================================
+// §4-8 — 앱 링크: 플랫 퀵오픈 목록(클릭 = 외부 브라우저로 즉시 열기)
+// =====================================================================
+function appLinkNarrowRow(link: AppLink): HTMLElement {
+  return narrowRow({
+    dotClass: 'idle',
+    name: link.name,
+    meta: link.url,
+    onClick: () => void openLink(link),
+  });
+}
+
+function renderAppLinksSidebar(): HTMLElement {
+  const links = state.appLinks;
+  const head = el('div', { className: 'sidebar-head' }, ['app links']);
+
+  let body: HTMLElement;
+  if (links.error) {
+    body = sidebarEmpty(`⚠ ${links.error}`);
+  } else if (!links.loaded) {
+    body = sidebarEmpty('불러오는 중…');
+  } else {
+    const enabled = enabledAppLinks();
+    body = enabled.length === 0 ? sidebarEmpty('등록된 앱링크가 없습니다') : el('div', {}, enabled.map(appLinkNarrowRow));
+  }
+
+  return el('aside', { className: 'sidebar' }, [head, body]);
+}
+
+// =====================================================================
+// §4-9 — 설정: 정적 nav 행 5종(devtools/applinks는 독립 탭으로 승격돼 있어
+// 여기서 걸러낸다 — 넣으면 같은 화면 진입 경로가 3개로 늘어난다, IA §4-9)
+// =====================================================================
+type SettingsRoute = Extract<Route, { kind: 'settings' }>;
+
+function renderSettingsSidebar(route: SettingsRoute): HTMLElement {
+  const items = TAB_META.filter((t) => t.key !== 'devtools' && t.key !== 'applinks');
+  return el('aside', { className: 'sidebar' }, [
+    el('div', { className: 'sidebar-head' }, ['settings']),
+    ...items.map((t) => navRow(t.label, route.tab === t.key, () => navigate(`#/settings/${t.key}`))),
+  ]);
+}
+
+// ---------------- 사이드바 진입점 ----------------
+// route.kind(그리고 settings/catalog에서는 route.tab)로 콘텐츠 종류를
+// 분기한다(IA §2-1). 9개 탭 전부 실제 콘텐츠를 가지므로 "빈 사이드바"가
+// 발생하는 탭이 없다(IA §2-3) — 이 switch는 Route의 12개 kind를 모두
+// 다루는 exhaustive 분기다.
+export function renderSidebar(route: Route): HTMLElement {
+  switch (route.kind) {
+    case 'home':
+    case 'projects-list':
+    case 'projects-detail':
+      return renderWorkspaceSidebar(route);
+    case 'sessions-list':
+    case 'sessions-detail':
+    case 'sessions-draft':
+      return renderSessionsSidebar(route);
+    case 'usage':
+      return renderUsageSidebar();
+    case 'settings':
+      if (route.tab === 'devtools') return renderDevToolsSidebar();
+      if (route.tab === 'applinks') return renderAppLinksSidebar();
+      return renderSettingsSidebar(route);
+    case 'tasks-list':
+    case 'tasks-board':
+    case 'tasks-detail':
+      return renderTasksSidebar(route);
+    case 'catalog':
+      return renderCatalogSidebar(route);
+  }
 }
 
 // ---------------- 상태줄 ----------------

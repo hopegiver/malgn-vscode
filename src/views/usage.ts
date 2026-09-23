@@ -113,7 +113,32 @@ export async function loadDailyDetail(date: string): Promise<void> {
   }
 }
 
-function toggleDailyDetail(date: string): void {
+// IA §4-4ⓐ: 사용량 사이드바의 "최근 7일/최근 30일" 토글 — 순수 클라이언트
+// 상태(비영속, PM 결정 IA §8-②)다. state.dailyUsage.items는 이미 30일 전체를
+// 담고 있으므로 이 값은 그 배열을 얼마나 슬라이스할지만 결정한다. 세션 간
+// 기억하지 않는다 — 앱을 새로 열면 항상 기본값(30일)으로 되돌아간다.
+let usagePeriodDays: 7 | 30 = 30;
+
+export function getUsagePeriodDays(): 7 | 30 {
+  return usagePeriodDays;
+}
+
+export function setUsagePeriodDays(days: 7 | 30): void {
+  if (usagePeriodDays === days) return;
+  usagePeriodDays = days;
+  notifyChange();
+}
+
+// 선택된 기간으로 자른 목록 — 날짜 내림차순(최신 우선)이 이미 정본 정렬이라
+// 그 순서에서 앞의 N개만 취한다.
+function periodFilteredItems(): DailyUsage[] {
+  const days = [...state.dailyUsage.items].sort((a, b) => b.date.localeCompare(a.date));
+  return days.slice(0, usagePeriodDays);
+}
+
+// IA §4-4: 사이드바 "최근 활동일" 퀵점프가 호출한다 — 본문의 해당 날짜 행을
+// 펼치는 것과 완전히 같은 동작이라 별도 로직 없이 export만 한다.
+export function toggleDailyDetail(date: string): void {
   if (state.dailyDetail.selectedDate === date) {
     state.dailyDetail.selectedDate = null;
     state.dailyDetail.report = null;
@@ -191,7 +216,7 @@ function renderDailyDetailPanel(date: string): HTMLElement {
 
 function renderDailyUsageSection(): HTMLElement {
   const labelRow = el('div', { className: 'overview-label-row' }, [
-    el('div', { className: 'overview-label' }, ['일별 사용량 (최근 30일)']),
+    el('div', { className: 'overview-label' }, [`일별 사용량 (최근 ${usagePeriodDays}일)`]),
   ]);
 
   let body: HTMLElement;
@@ -203,9 +228,9 @@ function renderDailyUsageSection(): HTMLElement {
       el('button', { className: 'btn', onClick: () => void loadDailyUsage() }, ['다시 시도']),
     ]);
   } else {
-    const days = [...state.dailyUsage.items].sort((a, b) => b.date.localeCompare(a.date));
+    const days = periodFilteredItems();
     if (days.length === 0) {
-      body = el('div', { className: 'state-block-desc' }, ['최근 30일 이내 사용 기록이 없습니다.']);
+      body = el('div', { className: 'state-block-desc' }, [`최근 ${usagePeriodDays}일 이내 사용 기록이 없습니다.`]);
     } else {
       const maxTotal = Math.max(...days.map(dailyUsageTotal));
       const rows: HTMLElement[] = [];
@@ -242,10 +267,10 @@ function renderUsageStatCards(): HTMLElement {
   if (state.dailyUsage.error || state.dailyUsage.items.length === 0) {
     return el('div', {}, []);
   }
-  const t = computeUsageTotals(state.dailyUsage.items);
+  const t = computeUsageTotals(periodFilteredItems());
   const stats: UsageStat[] = [
-    { label: '최근 30일 총 토큰', value: formatTokenCount(t.totalTokens) },
-    { label: '최근 30일 활동일수', value: `${t.activeDays}일` },
+    { label: `최근 ${usagePeriodDays}일 총 토큰`, value: formatTokenCount(t.totalTokens) },
+    { label: `최근 ${usagePeriodDays}일 활동일수`, value: `${t.activeDays}일` },
     { label: '일평균 토큰', value: formatTokenCount(t.avgPerDay) },
     { label: '캐시 히트율', value: t.cacheHitRate !== null ? `${t.cacheHitRate}%` : '—' },
   ];

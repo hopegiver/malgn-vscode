@@ -270,7 +270,10 @@ function detachNewSessionModalEscHandler(): void {
   }
 }
 
-function openNewSessionModal(): void {
+// IA §4-3: 사이드바 "+ 새 세션" CTA가 세션목록 화면 밖(다른 탭)에서도 이 모달을
+// 열 수 있어야 해서 export한다(sidebar.ts). 동작 자체는 기존 그대로 — 프로젝트
+// 목록이 아직 없으면 여기서 처음 불러온다.
+export function openNewSessionModal(): void {
   newSessionModalOpen = true;
   notifyChange();
   // 세션목록 화면만 먼저 열었을 수도 있어 프로젝트 목록이 비어 있을 수 있다 —

@@ -35,6 +35,30 @@ import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, ope
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 import { parseRoute } from '../route';
 
+// IA §4-5(§7-6): 개발 도구 사이드바 행을 클릭하면 본문의 해당 행으로 스크롤 +
+// 일시 강조한다(새 라우트·API 없음, 순수 클라이언트 동작). 강조는 영속 상태가
+// 아니라 "마지막으로 클릭한 항목"만 잠깐 표시하는 로컬 UI 상태다 — 이 값이
+// 곧 §7-6 "사이드바 일시 강조" 요소의 정본이다.
+let highlightedToolId: string | null = null;
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+// sidebar.ts가 도구 행 클릭 시 호출한다 — 본문이 이미 렌더돼 있다는 전제로
+// (개발 도구 탭 사이드바는 그 탭에서만 보이므로 본문도 항상 같은 화면) DOM
+// 스크롤 + 하이라이트 플래그 세팅을 함께 한다.
+export function highlightDevTool(toolId: string): void {
+  highlightedToolId = toolId;
+  notifyChange();
+  requestAnimationFrame(() => {
+    document.getElementById(`devtool-row-${toolId}`)?.scrollIntoView({ block: 'center' });
+  });
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    highlightedToolId = null;
+    highlightTimer = null;
+    notifyChange();
+  }, 1300);
+}
+
 export async function loadDevTools(): Promise<void> {
   state.devTools.loading = true;
   state.devTools.error = null;
@@ -417,11 +441,12 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
     badges.push(requiredBadge);
   }
 
-  const row = el('div', { className: 'devtool-row' }, [
+  const row = el('div', { className: `devtool-row${tool.id === highlightedToolId ? ' flash-highlight' : ''}` }, [
     el('div', { className: 'devtool-main' }, [el('div', { className: 'devtool-name' }, [tool.name]), metaLine]),
     ...badges,
     renderActionArea(tool, updating, previewLoading, !!pendingPreview),
   ]);
+  row.id = `devtool-row-${tool.id}`;
 
   const panels: HTMLElement[] = [];
   if (updating) panels.push(renderRunningPanel(tool));

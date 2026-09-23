@@ -20,7 +20,10 @@ import type { McpTransport, McpServerSummary, McpCatalogEntry } from '../mcpApi'
 import { navigate } from '../route';
 import { renderDevToolsView } from './devTools';
 
-const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[] = [
+// export: sidebar.ts §4-9가 "설정" 사이드바 nav 행 5종(otel/github/cloudflare/
+// marketplace/mcp)의 라벨을 이 정본에서 그대로 가져다 쓴다(devtools/applinks는
+// 이미 독립 탭으로 승격되어 있어 sidebar.ts가 걸러낸다, IA §4-9).
+export const TAB_META: readonly { readonly key: SettingsTab; readonly label: string }[] = [
   { key: 'otel', label: 'OTel 설정' },
   { key: 'github', label: 'GitHub 설정' },
   { key: 'cloudflare', label: 'Cloudflare 설정' },
