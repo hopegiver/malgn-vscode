@@ -366,6 +366,12 @@ async function handleUpdateAll(): Promise<void> {
 
 // ---------------- 렌더 ----------------
 
+// design-system.md §3.1 — 박스 공용 헤더(home.ts boxHead()와 동일 패턴, 이
+// 화면은 우측 부가 콘텐츠가 없어 제목만 받는 단순 버전).
+function boxHead(title: string): HTMLElement {
+  return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title])]);
+}
+
 export function renderDevToolsView(): HTMLElement {
   const runnableCount = state.devTools.items.filter((t) => t.actionKind === 'run').length;
 
@@ -390,32 +396,31 @@ export function renderDevToolsView(): HTMLElement {
     ]),
   ]);
 
-  const body: HTMLElement[] = [];
+  let body: HTMLElement;
 
   if (state.devTools.loading && !state.devTools.loaded) {
-    body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['확인 중…'])]));
+    body = el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['확인 중…'])]);
   } else if (state.devTools.error) {
-    body.push(
-      el('div', { className: 'alert' }, [
-        el('span', {}, [`⚠ ${state.devTools.error}`]),
-        el('button', { className: 'btn', onClick: () => void loadDevTools() }, ['다시 시도']),
-      ])
-    );
+    body = el('div', { className: 'alert' }, [
+      el('span', {}, [`⚠ ${state.devTools.error}`]),
+      el('button', { className: 'btn', onClick: () => void loadDevTools() }, ['다시 시도']),
+    ]);
   } else if (state.devTools.items.length === 0) {
     // 백엔드는 고정 6종을 항상 돌려주므로(check_dev_tools) 빈 목록은 정상 상태가
     // 아니라 조회 자체가 이상했다는 신호다 — "0/7" 같은 값을 사실처럼 보여주지
     // 않는다.
-    body.push(
-      el('div', { className: 'state-block' }, [
-        el('div', { className: 'state-block-title' }, ['도구 상태를 확인하지 못했습니다']),
-        el('div', { className: 'state-block-desc' }, ['"↻ 다시 확인"을 눌러 주세요.']),
-      ])
-    );
+    body = el('div', { className: 'state-block' }, [
+      el('div', { className: 'state-block-title' }, ['도구 상태를 확인하지 못했습니다']),
+      el('div', { className: 'state-block-desc' }, ['"↻ 다시 확인"을 눌러 주세요.']),
+    ]);
   } else {
-    body.push(el('div', { className: 'devtool-list' }, state.devTools.items.map(renderDevToolItem)));
+    body = el('div', { className: 'devtool-list' }, state.devTools.items.map(renderDevToolItem));
   }
 
-  return el('div', {}, [header, ...body]);
+  // design-system.md §3.1 .box — 전체 도구 목록을 "┌─" 헤더가 있는 패널 하나로
+  // 감싼다(home.ts devToolsBox()의 축약 미리보기와 같은 어휘, 여기서는 전체
+  // 상세 화면이라 devtool-row/devtool-panel* 등 기존 클래스는 그대로 유지한다).
+  return el('div', {}, [header, el('div', { className: 'box' }, [boxHead('설치된 도구'), el('div', { className: 'box-body' }, [body])])]);
 }
 
 function renderDevToolItem(tool: DevToolStatus): HTMLElement {

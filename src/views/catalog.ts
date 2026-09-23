@@ -254,8 +254,16 @@ function renderPluginsTabBody(): HTMLElement[] {
   return body;
 }
 
+// design-system.md §3.1 — 박스 공용 헤더(home.ts boxHead()와 동일 패턴, 이
+// 화면은 우측 부가 콘텐츠가 없어 제목만 받는 단순 버전).
+function boxHead(title: string): HTMLElement {
+  return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title])]);
+}
+
 // 페이지 헤더 부제가 이미 이 섹션의 설명을 보여주므로(global 탭 진입 시) 여기서
-// 같은 문구를 중복해 다시 그리지 않는다.
+// 같은 문구를 중복해 다시 그리지 않는다. "플러그인" 탭은 카드 하나하나가 이미
+// ┌─ 헤더를 가진 패널이라(plugin-card-head, styles.css) 별도 박스가 필요
+// 없지만, 이 탭은 카드가 없어 전체를 박스 하나로 감싼다(§3.1).
 function renderGlobalCatalogSection(): HTMLElement {
   const gc = state.globalCatalog;
   const contentChildren: HTMLElement[] = [];
@@ -287,7 +295,7 @@ function renderGlobalCatalogSection(): HTMLElement {
     );
   }
 
-  return el('div', { className: 'global-catalog-section' }, contentChildren);
+  return el('div', { className: 'box' }, [boxHead('전역 카탈로그'), el('div', { className: 'box-body' }, contentChildren)]);
 }
 
 function globalEntrySection(label: string, items: readonly GlobalEntry[]): HTMLElement {

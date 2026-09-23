@@ -259,6 +259,12 @@ function renderAppLinkRow(link: AppLink): HTMLElement {
 
 // ---------------- 패널 본체 ----------------
 
+// design-system.md §3.1 — 박스 공용 헤더(home.ts boxHead()와 동일 패턴). 이
+// 화면은 헤더 우측에 "+ 링크 추가" 버튼을 둔다.
+function boxHead(title: string, right: Node | string): HTMLElement {
+  return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title]), right]);
+}
+
 export function renderAppLinksPanel(): HTMLElement {
   if (state.appLinks.loading && !state.appLinks.loaded) return loadingBlock();
   if (state.appLinks.error) return errorBlock(state.appLinks.error, () => void loadAppLinks());
@@ -266,18 +272,18 @@ export function renderAppLinksPanel(): HTMLElement {
   const status = state.appLinks.status;
   if (!status) return loadingBlock();
 
-  const body: HTMLElement[] = [];
+  const notices: HTMLElement[] = [];
 
   // 손으로 편집된 파일에서 거른 항목이 있으면 경고 배너로 알린다(§2-2) —
   // 이 상태에서 저장하면 화면에 안 보이는 항목은 파일에서 사라진다(알려진 귀결).
   if (status.warnings.length > 0) {
-    body.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${status.warnings.join(' / ')}`])]));
+    notices.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${status.warnings.join(' / ')}`])]));
   }
 
   // 설정 파일 자체가 손상된 경우 — 목록·추가 버튼을 모두 비활성화한다(§5-2).
   const blocked = !status.ok;
   if (blocked) {
-    body.push(
+    notices.push(
       el('div', { className: 'alert' }, [
         el('span', {}, [`⚠ ${status.error ?? '앱링크 설정 파일을 읽지 못했습니다.'}`]),
         el('button', { className: 'btn', onClick: () => void loadAppLinks() }, ['다시 시도']),
@@ -292,16 +298,17 @@ export function renderAppLinksPanel(): HTMLElement {
   // style.color 지정과 동일한 패턴, --color-danger 재사용).
   const atCapacity = status.links.length >= status.limits.maxLinks;
   const disabled = blocked || state.appLinks.saving || atCapacity;
-  const addBtn = el('button', { className: 'btn btn-primary', disabled, onClick: () => openLinkFormModal(null) }, ['+ 링크 추가']);
+  const addBtn = el('button', { className: 'btn btn-primary btn-sm', disabled, onClick: () => openLinkFormModal(null) }, ['+ 링크 추가']);
   if (atCapacity) addBtn.title = `링크 개수 한도(${status.limits.maxLinks}개)에 도달했습니다. 추가하려면 기존 링크를 먼저 삭제하세요.`;
   const countLabel = el('span', { className: 'applink-count-label' }, [
     `사이드바에 노출할 링크를 켜세요. (${status.links.length} / ${status.limits.maxLinks})`,
   ]);
   if (atCapacity) countLabel.style.color = 'var(--color-danger)';
-  body.push(el('div', { className: 'filter-row' }, [countLabel, addBtn]));
+
+  const boxBody: HTMLElement[] = [countLabel];
 
   if (status.links.length === 0) {
-    body.push(
+    boxBody.push(
       el('div', { className: 'state-block' }, [
         el('div', { className: 'state-block-title' }, ['아직 등록된 앱링크가 없습니다']),
         el('div', { className: 'state-block-desc' }, [
@@ -310,11 +317,14 @@ export function renderAppLinksPanel(): HTMLElement {
       ])
     );
   } else {
-    body.push(el('div', { className: 'mcp-list' }, status.links.map(renderAppLinkRow)));
+    boxBody.push(el('div', { className: 'mcp-list' }, status.links.map(renderAppLinkRow)));
   }
 
-  body.push(el('div', { className: 'applink-filepath' }, [`저장 위치: ${status.filePath}`]));
+  boxBody.push(el('div', { className: 'applink-filepath' }, [`저장 위치: ${status.filePath}`]));
+
+  const box = el('div', { className: 'box' }, [boxHead('앱 링크', addBtn), el('div', { className: 'box-body' }, boxBody)]);
 
   const modalEl = renderLinkFormModalIfOpen();
+  const body = [...notices, box];
   return el('div', {}, modalEl ? [...body, modalEl] : body);
 }
