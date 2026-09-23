@@ -588,3 +588,62 @@ export const ERROR_MESSAGES = {
   jira_status: '키체인에서 Jira 자격 증명을 읽지 못했습니다.',
   app_links_get: '앱링크 설정 파일(malgn-agent-apps.json)을 파싱하지 못했습니다 (JSON 문법 오류).',
 };
+
+// ---------------- Tauri 플러그인 API(‘plugin:app|version’, ‘plugin:updater|check’ 등) ----------------
+// 위 READ_FIXTURES/ACTION_DEFAULTS는 전부 이 앱이 직접 만든 Rust 커스텀 커맨드
+// (스네이크케이스, src-tauri/src/lib.rs)다. sidebar.ts의 상태줄은 그와 별개로
+// @tauri-apps/api·plugin-updater가 제공하는 공식 플러그인 커맨드(getVersion()→
+// invoke('plugin:app|version'), check()→invoke('plugin:updater|check'))를 직접
+// 호출한다 — 이 스텁이 그 두 커맨드를 정의하지 않아 항상 reject되고
+// (ensureAppVersionLoaded의 .catch가 조용히 흡수), 상태줄 우측에 버전/업데이트
+// 세그먼트가 영구히 비어 보이던 근본 원인이었다(코드 결함이 아니라 스텁 결함 —
+// src-tauri/tauri.conf.json의 현재 버전과 동일한 값을 반환하도록 맞춘다).
+export const APP_VERSION = '0.2.14';
+
+// 업데이트 배지 캡처용 — check()가 새 버전을 찾았을 때 Update 리소스 생성자가
+// 기대하는 필드 형태(@tauri-apps/plugin-updater dist-js/index.js Update 클래스
+// 참고: rid/currentVersion/version/date/body/rawJson).
+export const UPDATER_METADATA_AVAILABLE = {
+  rid: 1,
+  currentVersion: APP_VERSION,
+  version: '0.2.15',
+  date: new Date().toISOString(),
+  body: '- 버그 수정 및 안정성 개선',
+  rawJson: {},
+};
+
+// 업데이트 없음(기본) — check()가 null을 resolve하면 update.ts는 아무 UI도
+// 띄우지 않는다(정상 상태, 배지 없음).
+export const PLUGIN_COMMAND_DEFAULTS = {
+  'plugin:app|version': { value: APP_VERSION },
+  'plugin:updater|check': { value: null },
+  'plugin:updater|download': { value: 1 },
+  'plugin:updater|install': { value: null },
+  'plugin:process|restart': { value: null },
+};
+
+// 업데이트 감지/설치 상태 캡처 프리셋 — buildScenarioConfig(kind, preset)의
+// 2번째 인자로 넘긴다. delayMs를 일부러 길게 잡은 항목은 그 커맨드가 아직
+// 응답하지 않은 "확인 중…"/"설치 중…" 과도 상태를 캡처 스크립트가 붙잡을 수
+// 있게 하기 위함이다(캡처 스크립트가 클릭 직후 짧게 대기했다가 스크린샷).
+export const UPDATER_PRESETS = {
+  // 업데이트가 있고 이미 다운로드까지 끝난 상태 — 상태줄에 "업데이트 적용
+  // (v0.2.15)" 배지가 뜬다.
+  available: {
+    'plugin:updater|check': { value: UPDATER_METADATA_AVAILABLE },
+    'plugin:updater|download': { value: 1 },
+  },
+  // "새 버전 확인" 버튼을 누른 직후 — check() 응답을 일부러 늦춰 "확인 중…"
+  // 라벨을 붙잡는다.
+  checking: {
+    'plugin:updater|check': { value: UPDATER_METADATA_AVAILABLE, delayMs: 4000 },
+    'plugin:updater|download': { value: 1 },
+  },
+  // 배지의 "업데이트 적용" 버튼을 누른 직후 — install() 응답을 늦춰 "업데이트
+  // 적용 중…" 라벨을 붙잡는다.
+  installing: {
+    'plugin:updater|check': { value: UPDATER_METADATA_AVAILABLE },
+    'plugin:updater|download': { value: 1 },
+    'plugin:updater|install': { value: null, delayMs: 4000 },
+  },
+};

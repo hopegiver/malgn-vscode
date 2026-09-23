@@ -1,7 +1,7 @@
 // window.__TAURI_INTERNALS__ 스텁 빌더. capture.mjs와 달리 이 앱은 Tauri
 // invoke가 없으면 아무 화면도 데이터를 못 채우므로, 플레인 브라우저에 이
 // 객체를 통째로 주입해야 한다(과제 지시사항 "이미 확인된 사실" 참고).
-import { READ_FIXTURES, ACTION_DEFAULTS, ERROR_MESSAGES, USER, LOGIN_ERROR_MESSAGE } from './fixtures.mjs';
+import { READ_FIXTURES, ACTION_DEFAULTS, ERROR_MESSAGES, USER, LOGIN_ERROR_MESSAGE, PLUGIN_COMMAND_DEFAULTS, UPDATER_PRESETS } from './fixtures.mjs';
 
 const NORMAL_DELAY_MS = 80; // 실제 IPC 왕복을 흉내낸 최소 지연
 export const LOADING_DELAY_MS = 20000; // "로딩 상태" 캡처 동안 응답을 보류하는 지연(로그인 직후 일괄 로드되는 커맨드들과 공유 기준시각이라 넉넉히 잡는다)
@@ -13,17 +13,34 @@ function actionEntries() {
   return out;
 }
 
+// Tauri 플러그인 API 커맨드(‘plugin:app|version’/‘plugin:updater|check’ 등,
+// ACTION_DEFAULTS와 이름공간이 다른 콜론/파이프 포함 문자열) — 상태줄이
+// 시나리오와 무관하게 항상 호출하므로 모든 커맨드형 시나리오에 공통으로 깐다.
+// updaterPreset(UPDATER_PRESETS의 키)을 넘기면 업데이트 감지/설치 과도 상태를
+// 재현하도록 일부 커맨드의 delay/응답을 덮어쓴다(기본은 "업데이트 없음").
+function pluginCommandEntries(updaterPreset) {
+  const out = {};
+  for (const [cmd, entry] of Object.entries(PLUGIN_COMMAND_DEFAULTS)) out[cmd] = { delayMs: NORMAL_DELAY_MS, ...entry };
+  const preset = updaterPreset ? UPDATER_PRESETS[updaterPreset] : null;
+  if (preset) {
+    for (const [cmd, entry] of Object.entries(preset)) out[cmd] = { delayMs: NORMAL_DELAY_MS, ...entry };
+  }
+  return out;
+}
+
 // kind: 'normal' | 'empty' | 'error' | 'app-loading' | 'login-normal' | 'login-error' | 'login-loading'
-export function buildScenarioConfig(kind) {
+// updaterPreset(선택): UPDATER_PRESETS 키('available'|'checking'|'installing') —
+// 상태줄 업데이트 배지 과도 상태 캡처 전용, 생략하면 "업데이트 없음"(기본값).
+export function buildScenarioConfig(kind, updaterPreset) {
   switch (kind) {
     case 'normal':
     case 'empty': {
-      const commands = actionEntries();
+      const commands = { ...actionEntries(), ...pluginCommandEntries(updaterPreset) };
       for (const [cmd, value] of Object.entries(READ_FIXTURES[kind])) commands[cmd] = { value, delayMs: NORMAL_DELAY_MS };
       return { commands, defaultDelayMs: NORMAL_DELAY_MS };
     }
     case 'error': {
-      const commands = actionEntries();
+      const commands = { ...actionEntries(), ...pluginCommandEntries(updaterPreset) };
       for (const cmd of Object.keys(READ_FIXTURES.normal)) {
         commands[cmd] = { error: ERROR_MESSAGES[cmd] ?? `${cmd} 호출이 실패했습니다 (캡처 하네스 에러 시나리오).`, delayMs: NORMAL_DELAY_MS };
       }
@@ -34,23 +51,23 @@ export function buildScenarioConfig(kind) {
     case 'app-loading': {
       // 로그인만 즉시 통과시키고, 이후 모든 데이터 커맨드는 캡처 구간 내내 응답하지
       // 않아 각 화면이 "불러오는 중…" 상태에 머물게 한다.
-      const commands = actionEntries();
+      const commands = { ...actionEntries(), ...pluginCommandEntries(updaterPreset) };
       for (const [cmd, value] of Object.entries(READ_FIXTURES.normal)) commands[cmd] = { value, delayMs: LOADING_DELAY_MS };
       commands.google_oauth_login = { value: USER, delayMs: NORMAL_DELAY_MS };
       return { commands, defaultDelayMs: LOADING_DELAY_MS };
     }
     case 'login-normal': {
-      const commands = actionEntries();
+      const commands = { ...actionEntries(), ...pluginCommandEntries(updaterPreset) };
       for (const [cmd, value] of Object.entries(READ_FIXTURES.normal)) commands[cmd] = { value, delayMs: NORMAL_DELAY_MS };
       return { commands, defaultDelayMs: NORMAL_DELAY_MS };
     }
     case 'login-error': {
-      const commands = actionEntries();
+      const commands = { ...actionEntries(), ...pluginCommandEntries(updaterPreset) };
       commands.google_oauth_login = { error: LOGIN_ERROR_MESSAGE, delayMs: NORMAL_DELAY_MS };
       return { commands, defaultDelayMs: NORMAL_DELAY_MS };
     }
     case 'login-loading': {
-      const commands = actionEntries();
+      const commands = { ...actionEntries(), ...pluginCommandEntries(updaterPreset) };
       commands.google_oauth_login = { value: USER, delayMs: NEVER_MS };
       return { commands, defaultDelayMs: NEVER_MS };
     }

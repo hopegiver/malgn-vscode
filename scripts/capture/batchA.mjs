@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const enc = encodeURIComponent;
 
 function parseArgs(argv) {
-  const out = { round: 'batchA', baseUrl: 'http://localhost:5173', viewport: '1440x900' };
+  const out = { round: 'batchA', baseUrl: 'http://localhost:1420', viewport: '1440x900' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--round') out.round = argv[++i];

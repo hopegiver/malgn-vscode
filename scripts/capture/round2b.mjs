@@ -11,7 +11,7 @@ import { buildScenarioConfig, installTauriStub } from './stub.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROUND = 'r2b';
-const BASE = process.env.CAPTURE_BASE_URL ?? 'http://localhost:5173';
+const BASE = process.env.CAPTURE_BASE_URL ?? 'http://localhost:1420';
 
 function cfgWith(overrides) {
   const cfg = buildScenarioConfig('normal');

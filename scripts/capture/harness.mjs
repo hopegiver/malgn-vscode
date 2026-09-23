@@ -2,7 +2,7 @@
 // 재사용 캡처 하네스 — 앱의 모든 라우트 x 시나리오(정상/빈 상태/에러/로딩)
 // 조합을 PNG로 남기고 매니페스트를 생성한다. 사용법은 scripts/capture/README.md.
 //
-// 실행: node scripts/capture/harness.mjs [--round r1] [--label before] [--base-url http://localhost:5173]
+// 실행: node scripts/capture/harness.mjs [--round r1] [--label before] [--base-url http://localhost:1420]
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -17,7 +17,7 @@ const PROJECT_ROOT = join(__dirname, '..', '..');
 let VIEWPORT = { width: 1440, height: 900 };
 
 function parseArgs(argv) {
-  const out = { round: 'r1', label: null, baseUrl: 'http://localhost:5173', viewport: null };
+  const out = { round: 'r1', label: null, baseUrl: 'http://localhost:1420', viewport: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--round') out.round = argv[++i];
@@ -44,7 +44,7 @@ async function ensureDevServer(baseUrl) {
   }
   console.log(`[capture] ${baseUrl} 응답 없음 — vite dev 서버를 새로 띄웁니다…`);
   const { spawn } = await import('node:child_process');
-  const port = new URL(baseUrl).port || '5173';
+  const port = new URL(baseUrl).port || '1420';
   const proc = spawn('pnpm', ['exec', 'vite', '--port', port, '--strictPort'], {
     cwd: PROJECT_ROOT,
     stdio: 'ignore',

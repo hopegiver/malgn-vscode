@@ -5,7 +5,7 @@
 //   (2) 상호작용 이후 상태: 버튼을 누른 뒤 열리는 패널/폼/모달/토스트.
 // harness.mjs의 stub/fixtures를 그대로 재사용하고 src/는 건드리지 않는다.
 //
-// 실행: node scripts/capture/round2.mjs [--round r2] [--base-url http://localhost:5173]
+// 실행: node scripts/capture/round2.mjs [--round r2] [--base-url http://localhost:1420]
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const enc = encodeURIComponent;
 
 function parseArgs(argv) {
-  const out = { round: 'r2', baseUrl: 'http://localhost:5173' };
+  const out = { round: 'r2', baseUrl: 'http://localhost:1420' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--round') out.round = argv[++i];
     else if (argv[i] === '--base-url') out.baseUrl = argv[++i];

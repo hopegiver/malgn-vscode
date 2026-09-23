@@ -5,7 +5,7 @@
 // 이번 라운드가 요구하는 것은 홈/프로젝트/세션 3화면의 normal 시나리오
 // 시각 대조뿐이다 — stub.mjs/fixtures.mjs/routes.mjs를 그대로 재사용해 그
 // 범위만 빠르게 캡처한다.
-// 실행: node scripts/capture/shell-before-after.mjs --round before-1440x900 --viewport 1440x900 [--base-url http://localhost:5173]
+// 실행: node scripts/capture/shell-before-after.mjs --round before-1440x900 --viewport 1440x900 [--base-url http://localhost:1420]
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const enc = encodeURIComponent;
 
 function parseArgs(argv) {
-  const out = { round: 'shell-r1', baseUrl: 'http://localhost:5173', viewport: '1440x900' };
+  const out = { round: 'shell-r1', baseUrl: 'http://localhost:1420', viewport: '1440x900' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--round') out.round = argv[++i];
