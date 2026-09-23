@@ -4,6 +4,11 @@
    갱신한다. */
 
 :root {
+  /* design-system.md §3.8이 "이미 선언돼 있다"고 전제한 것과 달리 실제로는
+     빠져 있던 선언(배치 D에서 발견) — 네이티브 select/checkbox/radio/
+     스크롤바가 다크로 렌더링되게 하는 전제조건이다. */
+  color-scheme: dark;
+
   /* ---- §1.1 색상 ---- */
   --win-bg: #0d0e12;
   --panel-bg: #121319;
@@ -40,15 +45,23 @@
   --font-body: -apple-system, BlinkMacSystemFont, 'Noto Sans KR', 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
   --font-numeric: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 
-  --font-size-hero: 16px;
-  --font-size-h1: 18px;
-  --font-size-h2: 15px;
-  --font-size-body: 13px;
-  --font-size-body-lg: 14px;
-  --font-size-label: 11px;
-  --font-size-small: 11px;
-  --font-size-caption: 10px;
-  --font-size-micro: 9px;
+  /* 배치 D(가독성 조정, 2026-09-24) — 한글은 획이 복잡해 같은 px에서 더
+     읽기 힘들다는 사용자 피드백으로 전 계층을 올렸다. body는 최소 14px,
+     label/small/caption/micro는 각 지정 구간(12~13/11~12/10~11px)의 상단
+     값을 택해 1px 간격의 선명한 위계(14/13/12/11)를 유지한다. h1/h2/hero는
+     구 body(13px) 대비 배율을 새 body(14px)에도 그대로 적용해 비율만
+     유지한 채 올렸다(h1은 여전히 구 라이트 테마 22px보다 작아 "절제된
+     터미널 스케일" 의도는 유지). 상세: docs/design/terminus-design-system.md
+     §1.3. */
+  --font-size-hero: 17px;
+  --font-size-h1: 19px;
+  --font-size-h2: 16px;
+  --font-size-body: 14px;
+  --font-size-body-lg: 15px;
+  --font-size-label: 13px;
+  --font-size-small: 13px;
+  --font-size-caption: 12px;
+  --font-size-micro: 11px;
 
   --line-height-tight: 1.3;
   --line-height-base: 1.6;
@@ -90,7 +103,10 @@
   /* ---- §1.7 포커스 링 ---- */
   --focus-ring: 0 0 0 2px var(--win-bg), 0 0 0 4px var(--accent);
 
-  --sidebar-width: 190px;
+  /* 배치 D — 사이드바가 좁아 긴 프로젝트명/세션 제목/경로가 과도하게
+     잘린다는 피드백으로 220px(190px 대비 +30px)로 넓혔다. 900px 하한용
+     축소값(아래 @container 760px 규칙)도 150→175px로 함께 조정. */
+  --sidebar-width: 220px;
 
   /* ---- 구 토큰(라이트 인디고 테마) → 새 팔레트 호환 별칭 ----
      이번 라운드는 홈+셸만 새 컴포넌트 클래스(.box/.blist/.stat/... §3)로
@@ -218,7 +234,7 @@ html, body {
   gap: var(--space-1-5);
   padding: 0 var(--space-3);
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: var(--font-size-small); /* 배치 D — 구 12px 하드코딩을 스케일에 편입 */
   color: var(--text-secondary);
   border-right: var(--border-width) solid var(--border-soft);
   white-space: nowrap;
@@ -302,7 +318,7 @@ html, body {
 .ws-row .dot.bad { background: var(--status-bad); box-shadow: 0 0 0 2px rgba(242, 95, 108, .12); }
 .ws-row .dot.accent { background: var(--accent); box-shadow: 0 0 0 2px rgba(95, 208, 220, .12); }
 .ws-row-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.ws-row-name { font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-row-name { font-size: var(--font-size-small); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* 배치 D — 구 12px 하드코딩 편입, 사이드바에서 자주 읽는 프로젝트/세션명이라 small로 */
 .ws-row-meta { font-size: var(--font-size-caption); color: var(--text-muted-aa); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-numeric); }
 /* IA §4-6 — 비활성 자율업무 큐 행을 "흐리게"(PM 확정, §8-③ 대체). 별도 색 없이
    opacity만 낮춘다(.is-refreshing과 같은 어법). */
@@ -327,7 +343,7 @@ html, body {
 .sidebar-nav-group { display: flex; flex-direction: column; margin-bottom: var(--space-1); }
 .sidebar-nav-row {
   padding: var(--space-1-5) var(--space-3-5);
-  font-size: 12px;
+  font-size: var(--font-size-small); /* 배치 D — 구 12px 하드코딩 편입 */
   color: var(--text-secondary);
   cursor: pointer;
   border-left: var(--border-width-accent) solid transparent;
@@ -370,7 +386,7 @@ html, body {
 .sidebar-version-check-btn:disabled { opacity: 0.55; cursor: default; }
 
 @container (max-width: 760px) {
-  .sidebar { width: 150px; }
+  .sidebar { width: 175px; }
 }
 
 /* ---------------- 메인 콘텐츠 ---------------- */
@@ -463,7 +479,7 @@ html, body {
 .project-card-link:hover { text-decoration: underline; }
 .project-card-link:active { opacity: 0.75; }
 .btn-sm { padding: var(--space-1) var(--space-2-5); font-size: var(--font-size-caption); }
-.btn-large { padding: 12px 28px; font-size: 15px; font-weight: 600; border-radius: var(--radius-0); }
+.btn-large { padding: 12px 28px; font-size: var(--font-size-body-lg); font-weight: 600; border-radius: var(--radius-0); } /* 배치 D — 구 15px 하드코딩이 새 body-lg와 정확히 일치, 토큰으로 정리 */
 
 /* design-system.md §3.5 — currentColor 테두리 배지(배경 채움 없음). active(진행
    중 상태)=good, archived/unknown=muted로 매핑한다(home.ts 위젯 "연결됨"/
@@ -541,11 +557,11 @@ html, body {
 .badge-run-timeout { background: var(--color-warn-bg); color: var(--status-warn); border: var(--border-width) solid var(--color-warn-border); }
 .badge-run-aborted { background: var(--panel-bg-alt); color: var(--text-secondary); }
 
-.raw-fallback-note { font-size: 12px; color: var(--color-ink-faint); margin-bottom: 10px; }
+.raw-fallback-note { font-size: var(--font-size-caption); color: var(--color-ink-faint); margin-bottom: 10px; } /* 배치 D — 구 12px 하드코딩 편입 */
 .raw-fallback-pre {
   white-space: pre-wrap; word-break: break-word; background: var(--color-surface);
   border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 16px;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; line-height: 1.6;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--font-size-caption); line-height: 1.6;
   max-height: 60vh; overflow: auto;
 }
 
@@ -693,6 +709,20 @@ html, body {
 .applink-count-label { font-size: var(--font-size-small); color: var(--text-secondary); }
 .applink-filepath { margin-top: var(--space-4); font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); overflow-wrap: anywhere; }
 
+/* 네이티브 체크박스/라디오 — design-system.md §3.9 스펙(문서에는 이미 있었으나
+   styles.css에 실제로 옮겨진 적이 없던 결함, 배치 D에서 발견·수정). 자율업무
+   폼의 실행 방식 라디오(views/autonomousTasks.ts)가 이 규칙이 없어 OS 기본
+   파란색으로 렌더되고 있었다 — accent-color만 지정해 네이티브 렌더링은
+   그대로 두고 브랜드 색·다크모드만 맞춘다(커스텀 아이콘을 새로 만들지
+   않는다, §7 select 팝업과 동일한 판단). */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
 /* 토글 스위치 — design-system.md §3.9 스펙 그대로(폭/높이는 목업과 이미 같은
    값이라 치수는 유지, 색·라운드만 신규 팔레트로 교체). 이 컴포넌트도 설정/
    자율업무 화면과 공유되어(배치 C 범위) 값 변경이 파급된다 — 캡처로 확인. */
@@ -779,13 +809,16 @@ textarea.settings-input { resize: vertical; }
 /* 카드 전체가 클릭 타깃(cursor:pointer)이라 project-card와 달리 :active를 둔다 — 배경을
    살짝 눌러(canvas 톤) press를 표현. */
 .home-widget:active { background: var(--color-canvas); }
-.home-widget-title { font-size: 13px; font-weight: 700; margin-bottom: 12px; }
+.home-widget-title { font-size: var(--font-size-body); font-weight: 700; margin-bottom: 12px; } /* 배치 D — 구 13px 하드코딩 편입 */
 .home-widget-big-number { font-size: 30px; font-weight: 700; }
-.home-widget-desc { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 10px; }
-.home-widget-breakdown { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--color-ink-muted); margin-bottom: 4px; }
+.home-widget-desc { font-size: var(--font-size-caption); color: var(--color-ink-muted); margin-bottom: 10px; } /* 배치 D — 구 12px 하드코딩 편입 */
+/* 배치 D — 구 11px(구 스케일에서 caption급)이었으나 홈 대시보드에서 사용자가
+   자주 읽는 통계 내역(카탈로그 스킬/지식 개수 등)이라 micro 대신 caption으로
+   승격했다(사용자 피드백 "자주 읽는 텍스트는 caption/micro에 두지 말 것"). */
+.home-widget-breakdown { display: flex; gap: 10px; flex-wrap: wrap; font-size: var(--font-size-caption); color: var(--color-ink-muted); margin-bottom: 4px; }
 /* .home-widget-list/-list-item(구 목록형 위젯 본문)도 같은 이유로 사용처가
    없어져 제거했다 — 남은 위젯 3종은 전부 desc/breakdown/btn-row만 쓴다. */
-.home-widget-link { margin-top: auto; padding-top: 10px; font-size: 12px; color: var(--color-brand); font-weight: 600; }
+.home-widget-link { margin-top: auto; padding-top: 10px; font-size: var(--font-size-caption); color: var(--color-brand); font-weight: 600; } /* 배치 D — 구 12px 하드코딩 편입 */
 /* .home-widget는 column flex라 자식 .badge(inline-flex)가 교차축 stretch로
    카드 전체 폭까지 늘어난다 — 배지만 자기 너비로 되돌린다(부모 align-items는
    다른 자식 블록 폭에 영향이 있어 건드리지 않는다). */
@@ -815,7 +848,7 @@ textarea.settings-input { resize: vertical; }
 .session-detail-fields { display: flex; flex-direction: column; }
 .session-field-row {
   display: grid; grid-template-columns: 180px 1fr; gap: 12px; padding: 8px 0;
-  border-bottom: 1px solid var(--color-hairline); font-size: 12px;
+  border-bottom: 1px solid var(--color-hairline); font-size: var(--font-size-small); /* 배치 D — 구 12px 하드코딩 편입, 세션 상세 필드값은 자주 읽는 정보라 small로 */
 }
 .session-field-row:last-child { border-bottom: none; }
 .session-field-key { color: var(--color-ink-muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
@@ -1028,7 +1061,7 @@ textarea.settings-input { resize: vertical; }
 }
 .chat-message.assistant .chat-message-text { width: 100%; color: var(--text-primary); }
 .chat-message-text { font-size: var(--font-size-body-lg); line-height: var(--line-height-loose); white-space: pre-wrap; word-break: break-word; }
-.chat-sample-note { font-size: 11px; color: var(--color-ink-faint); text-align: center; padding: 10px 0 0 0; }
+.chat-sample-note { font-size: var(--font-size-micro); color: var(--color-ink-faint); text-align: center; padding: 10px 0 0 0; } /* 배치 D — 구 11px 하드코딩 편입, 예시 안내 각주는 진짜 부가정보라 micro 유지 */
 .chat-bottom-fixed { flex-shrink: 0; padding-top: 4px; }
 /* 입력창 자체만 두는 단순한 형태(claude.ai 스타일) — 전송 버튼은 없다. 취소
    버튼은 전송 중일 때만 곁에 붙는다(별도 "전송" 버튼과는 다른, 진행 중 제어). */
@@ -1047,7 +1080,7 @@ textarea.settings-input { resize: vertical; }
 .chat-auth-log-block { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .chat-auth-login-output {
   max-width: 100%; max-height: 160px; overflow: auto; text-align: left;
-  font-size: 11px; white-space: pre-wrap; word-break: break-word;
+  font-size: var(--font-size-caption); white-space: pre-wrap; word-break: break-word; /* 배치 D — 구 11px 하드코딩 편입, 로그인 진단용 원문 로그라 caption(진짜 읽어야 하는 정보) */
   background: var(--color-neutral-100); border-radius: var(--radius-xs);
   padding: 8px; margin: 0; width: 100%;
 }
@@ -1092,7 +1125,7 @@ textarea.settings-input { resize: vertical; }
 /* ---------------- 실시간 감시 인디케이터 ---------------- */
 .overview-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .overview-label-row .overview-label { margin-bottom: 0; }
-.live-indicator { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; color: var(--color-success-text); }
+.live-indicator { display: inline-flex; align-items: center; gap: 5px; font-size: var(--font-size-micro); font-weight: 700; color: var(--color-success-text); } /* 배치 D — 구 11px 하드코딩 편입, 장식적 LIVE 표시라 micro 유지 */
 .live-dot { width: 7px; height: 7px; border-radius: var(--radius-circle); background: var(--color-success-text); animation: live-pulse 1.6s ease-in-out infinite; }
 @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
@@ -1105,7 +1138,7 @@ textarea.settings-input { resize: vertical; }
 }
 
 /* ---------------- 토큰 도둑 (세션/서브에이전트/프로젝트 비용 랭킹) ---------------- */
-.thief-table { display: flex; flex-direction: column; font-size: 12px; }
+.thief-table { display: flex; flex-direction: column; font-size: var(--font-size-small); } /* 배치 D — 구 12px 하드코딩 편입, 비용/토큰 랭킹은 주의 깊게 읽는 데이터라 small로 */
 .thief-table-row {
   display: grid; grid-template-columns: 2fr 0.7fr 0.7fr 0.8fr 0.9fr 0.9fr;
   gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--color-hairline);
@@ -1115,7 +1148,7 @@ textarea.settings-input { resize: vertical; }
 .thief-table-row-3 { grid-template-columns: 2fr 0.8fr 0.9fr 0.9fr; }
 .thief-table-row > span:first-child { text-align: left; }
 .thief-table-row:last-child { border-bottom: none; }
-.thief-table-head { font-weight: 700; color: var(--color-ink-muted); font-size: 11px; border-bottom: 2px solid var(--color-hairline); }
+.thief-table-head { font-weight: 700; color: var(--color-ink-muted); font-size: var(--font-size-caption); border-bottom: 2px solid var(--color-hairline); } /* 배치 D — 구 11px 하드코딩 편입 */
 .thief-table-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------- 토스트 ---------------- */
@@ -1124,7 +1157,7 @@ textarea.settings-input { resize: vertical; }
   display: flex; flex-direction: column; gap: 8px; z-index: 1000; align-items: center;
 }
 .toast {
-  background: var(--color-surface-inverse); color: #fff; font-size: 13px; padding: 10px 18px;
+  background: var(--color-surface-inverse); color: #fff; font-size: var(--font-size-small); padding: 10px 18px; /* 배치 D — 구 13px 하드코딩 편입 */
   border-radius: var(--radius-md); box-shadow: var(--shadow-toast);
   opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease;
 }
@@ -1134,7 +1167,7 @@ textarea.settings-input { resize: vertical; }
 .update-countdown-banner {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 14px; z-index: 1000;
-  background: var(--color-surface-inverse); color: #fff; font-size: 13px; padding: 10px 14px 10px 18px;
+  background: var(--color-surface-inverse); color: #fff; font-size: var(--font-size-small); padding: 10px 14px 10px 18px; /* 배치 D — 구 13px 하드코딩 편입 */
   border-radius: var(--radius-md); box-shadow: var(--shadow-toast);
 }
 .update-countdown-later-btn { background: rgba(255, 255, 255, 0.12); color: #fff; border-color: rgba(255, 255, 255, 0.24); }
@@ -1142,7 +1175,7 @@ textarea.settings-input { resize: vertical; }
 .update-countdown-later-btn:active { background: rgba(255, 255, 255, 0.28); }
 
 /* ---------------- 세션 상세 — 도구 호출 한 줄(§8, docs/design/session-chat.md) ---------------- */
-.chat-tool-line { padding: 4px 6px 4px 18px; font-size: 12px; color: var(--color-ink-faint); }
+.chat-tool-line { padding: 4px 6px 4px 18px; font-size: var(--font-size-caption); color: var(--color-ink-faint); } /* 배치 D — 구 12px 하드코딩 편입 */
 
 /* =====================================================================
    Terminus 홈 화면 — docs/design/terminus-design-system.md §2~3 신규
@@ -1177,7 +1210,7 @@ textarea.settings-input { resize: vertical; }
   font-family: var(--font-numeric); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;
   color: var(--text-primary); display: flex; align-items: baseline; gap: var(--space-1-5);
 }
-.stat-value small { font-size: 11px; font-weight: 500; color: var(--text-muted-aa); }
+.stat-value small { font-size: var(--font-size-micro); font-weight: 500; color: var(--text-muted-aa); } /* 배치 D — 구 11px 하드코딩 편입, 통계 값 옆 단위 라벨이라 micro 유지 */
 .stat-trend { font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; }
 .stat-trend.up { color: var(--status-good); }
 .stat-trend.warn { color: var(--status-warn); }
@@ -1215,7 +1248,7 @@ textarea.settings-input { resize: vertical; }
 .blist-row--tasks { grid-template-columns: 62px 1fr 60px; }
 .blist-row--devtools { grid-template-columns: 20px 60px 1fr auto; }
 .blist-id { color: var(--text-muted-aa); font-variant-numeric: tabular-nums; font-family: var(--font-numeric); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.blist-accent { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.blist-accent { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-small); } /* 배치 D — 구 11px 하드코딩 편입, 강조 표시된 프로젝트/작업명이라 small로 */
 .blist-body { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .blist-time { color: var(--text-muted-aa); text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-numeric); white-space: nowrap; }
 .blist-status { display: flex; align-items: center; gap: 5px; font-size: var(--font-size-caption); white-space: nowrap; }

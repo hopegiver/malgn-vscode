@@ -94,21 +94,23 @@
 
 **크기 계층 — `:root`에 토큰화**(목업은 `:root`에 크기 토큰이 없고 클래스마다 리터럴로 흩어져 있었다 — 여기서 새로 정리). 목업 자체에 있던 `10.5px`/`11.5px`/`9.5px` 같은 반픽셀 값은 기존 `src/styles.css`가 이미 확립한 규칙(내림 반올림 — 말줄임/줄바꿈 회귀 위험이 낮은 쪽)을 그대로 따라 정수로 내렸다.
 
+**배치 D 갱신(2026-09-24, 가독성 조정)**: 10개 화면 이관 완료 후 "한글이 작아 눈이 아프다"는 사용자 피드백을 받아 아래 값을 전면 상향했다. 한글은 라틴 문자보다 획이 복잡해 같은 px에서도 더 읽기 힘들다는 것이 근거다. body는 최소 14px, label/small/caption/micro는 각각 지정된 구간(12~13px/11~12px/10~11px)의 상단 값을 택해 14/13/12/11px의 1px 간격 위계를 유지했다. h1/h2/hero는 구 body(13px) 대비 배율을 새 body(14px)에도 그대로 적용해 비율만 유지한 채 올렸다(h1=19px은 여전히 구 라이트 테마 22px보다 작아 "절제된 터미널 스케일" 의도는 유지된다). 아래 표/코드블록은 전부 새 값으로 갱신했다.
+
 ```css
 :root {
   /* 표시 전용 — h1보다 큰 특수 1회성 스타일(홈 인사말), 일반 계층에 포함하지 않음 */
-  --font-size-hero: 16px;      /* .greet-line, weight 700 */
+  --font-size-hero: 17px;      /* .greet-line, weight 700 */
 
-  --font-size-h1: 18px;        /* 페이지 제목(다른 9개 화면 헤더) — 목업엔 없어 절제된 값으로 신규 정의,
-                                   §7 참고. 구 시스템의 22px보다 작다 — "일반 SaaS 헤더"로 보이지 않게
+  --font-size-h1: 19px;        /* 페이지 제목(다른 9개 화면 헤더) — 목업엔 없어 절제된 값으로 신규 정의,
+                                   §7 참고. 구 라이트 테마의 22px보다 작다 — "일반 SaaS 헤더"로 보이지 않게
                                    터미널 특유의 절제된 스케일을 의도적으로 유지한다. */
-  --font-size-h2: 15px;        /* 모달/상세 섹션 제목 */
-  --font-size-body: 13px;      /* 기본 본문 */
-  --font-size-body-lg: 14px;   /* 채팅 본문 전용 예외 — 장문 가독성 우선(줄간격도 1.7로 별도) */
-  --font-size-label: 11px;     /* .panel-title류 — uppercase, tracked */
-  --font-size-small: 11px;     /* 보조 텍스트(.proc-task 등), 구 11.5px 내림 */
-  --font-size-caption: 10px;   /* 메타/타임스탬프/카운트, 구 10.5px 내림 */
-  --font-size-micro: 9px;      /* 최소 단위(spark-days 등), 구 9.5px 내림 */
+  --font-size-h2: 16px;        /* 모달/상세 섹션 제목 */
+  --font-size-body: 14px;      /* 기본 본문 */
+  --font-size-body-lg: 15px;   /* 채팅 본문 전용 예외 — 장문 가독성 우선(줄간격도 1.7로 별도) */
+  --font-size-label: 13px;     /* .panel-title류 — uppercase, tracked */
+  --font-size-small: 13px;     /* 보조 텍스트(.proc-task 등) */
+  --font-size-caption: 12px;   /* 메타/타임스탬프/카운트 */
+  --font-size-micro: 11px;     /* 최소 단위(spark-days 등) — 진짜 부가정보 전용, 자주 읽는 텍스트는 small/caption으로 승격 */
 
   --line-height-tight: 1.3;    /* 제목 */
   --line-height-base: 1.6;     /* 본문 */
@@ -206,7 +208,7 @@
 |---|---|---|---|
 | 앱 최상위 | `--win-bg` | — | 네이티브 타이틀바 아래 전체 |
 | 탭스트립 | `--tabstrip-bg` | 하단 `1px solid var(--border)` | 높이 32px(목업 값), 활성 탭은 `--win-bg` 배경 + 하단 `2px solid var(--accent)` |
-| 사이드바 | `--sidebar-bg` | 우측 `1px solid var(--border)` | 너비 190px(목업 값), 760px 이하 컨테이너 쿼리에서 150px로 축소(목업 값 유지) |
+| 사이드바 | `--sidebar-bg` | 우측 `1px solid var(--border)` | 너비 220px(배치 D 갱신, 구 190px — 긴 프로젝트명/세션 제목/경로가 과도하게 잘린다는 피드백), 760px 이하 컨테이너 쿼리에서 175px로 축소(구 150px) |
 | 메인 콘텐츠 | `--win-bg` | — | 패딩 `var(--space-6) var(--space-7) var(--space-5)`(20/22/18px, 목업 값) |
 | 상태줄 | `--statusline-bg` | 상단 `1px solid var(--border-soft)` | 높이 24px(목업 값), 텍스트는 `--text-muted-aa`/`--text-secondary` |
 
@@ -568,7 +570,8 @@ IA §7이 "시각 스펙 없음"으로 남겨둔 6종을 여기서 확정한다.
    된다 — 별도 새 클래스를 미리 정의하지 않았다(쓰이지 않는 CSS를 남기지
    않기 위함).
 5. **개발 도구 행의 압축 상태 표시** — `.blist-devtool-flag`(본문용, "✓
-   설치됨"/"미설치" 텍스트 포함)는 190px 사이드바에서 잘린다. 별도 아이콘
+   설치됨"/"미설치" 텍스트 포함)는 좁은 사이드바 폭(배치 D 갱신 후 220px)에서도
+   잘린다. 별도 아이콘
    요소를 추가하는 대신 행이 이미 갖고 있는 dot 채널의 색으로 설치 여부를
    표현한다: 설치됨=`good`(초록), 필수인데 미설치=`bad`(빨강, 신규 추가),
    선택인데 미설치=`idle`(무채색). 새 아이콘 자산 없이 기존 semantic 색

@@ -439,6 +439,27 @@ const JIRA_NORMAL = {
 };
 const JIRA_EMPTY = { connected: false };
 
+// ---------------- check_claude_auth_status ----------------
+// 실제 Rust 반환 형태(claude_auth.rs ClaudeAuthStatus, `#[serde(rename_all =
+// "camelCase")]`): { loggedIn, authMethod, email, orgName, subscriptionType }.
+// 이 커맨드가 fixtures에서 통째로 빠져 있던 것이 홈 "claude CLI 로그인" 위젯을
+// 스텁 캡처에서 항상 에러로 보이게 한 원인이었다(stub.mjs가 정의 안 된 커맨드는
+// reject한다) — 실물 계약대로 채운다.
+const CLAUDE_AUTH_STATUS_NORMAL = {
+  loggedIn: true,
+  authMethod: 'claude.ai',
+  email: USER.email,
+  orgName: 'malgnsoft',
+  subscriptionType: 'max',
+};
+const CLAUDE_AUTH_STATUS_EMPTY = {
+  loggedIn: false,
+  authMethod: null,
+  email: null,
+  orgName: null,
+  subscriptionType: null,
+};
+
 // ---------------- app_links_get / app_links_save / app_links_open ----------------
 const APP_LINKS_LIMITS = { maxLinks: 20, maxNameLength: 40, maxUrlLength: 2048, allowedSchemes: ['https', 'http'] };
 
@@ -501,6 +522,7 @@ export const READ_FIXTURES = {
     cloudflare_status: CLOUDFLARE_NORMAL,
     jira_status: JIRA_NORMAL,
     app_links_get: APP_LINKS_NORMAL,
+    check_claude_auth_status: CLAUDE_AUTH_STATUS_NORMAL,
   },
   empty: {
     google_oauth_login: USER,
@@ -526,6 +548,7 @@ export const READ_FIXTURES = {
     cloudflare_status: CLOUDFLARE_EMPTY,
     jira_status: JIRA_EMPTY,
     app_links_get: APP_LINKS_EMPTY,
+    check_claude_auth_status: CLAUDE_AUTH_STATUS_EMPTY,
   },
 };
 
@@ -587,6 +610,7 @@ export const ERROR_MESSAGES = {
   cloudflare_status: '`wrangler whoami` 실행에 실패했습니다.',
   jira_status: '키체인에서 Jira 자격 증명을 읽지 못했습니다.',
   app_links_get: '앱링크 설정 파일(malgn-agent-apps.json)을 파싱하지 못했습니다 (JSON 문법 오류).',
+  check_claude_auth_status: 'claude 실행 파일을 찾을 수 없습니다(알려진 설치 경로와 PATH 모두 실패).',
 };
 
 // ---------------- Tauri 플러그인 API(‘plugin:app|version’, ‘plugin:updater|check’ 등) ----------------
