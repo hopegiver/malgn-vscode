@@ -152,10 +152,14 @@ const TRANSCRIPT_EMPTY = {
 };
 
 // ---------------- check_dev_tools ----------------
+// required: true는 devToolsApi.ts DevToolStatus.required의 실제 정본 값(Node.js/Git,
+// src-tauri/src/dev_tools/mod.rs DEV_TOOLS 테이블)과 맞춘다 — 이 픽스처가 그동안
+// 이 필드를 빠뜨리고 있었던 것을 배치 A(사이드바 "필수 도구"/"선택 도구" 그룹
+// 캡처) 검증 중 실측으로 발견해 바로잡았다.
 const DEV_TOOLS_NORMAL = [
-  { id: 'claude', name: 'Claude Code', installed: true, version: '2.0.68', path: '/opt/homebrew/bin/claude', installMethod: 'homebrew', actionKind: 'run' },
-  { id: 'node', name: 'Node.js', installed: true, version: '22.11.0', path: '/opt/homebrew/bin/node', installMethod: 'homebrew', actionKind: 'run' },
-  { id: 'gh', name: 'GitHub CLI', installed: true, version: '2.63.2', path: '/opt/homebrew/bin/gh', installMethod: 'homebrew', actionKind: 'run' },
+  { id: 'claude', name: 'Claude Code', installed: true, version: '2.0.68', path: '/opt/homebrew/bin/claude', installMethod: 'homebrew', actionKind: 'run', required: false },
+  { id: 'node', name: 'Node.js', installed: true, version: '22.11.0', path: '/opt/homebrew/bin/node', installMethod: 'homebrew', actionKind: 'run', required: true },
+  { id: 'gh', name: 'GitHub CLI', installed: true, version: '2.63.2', path: '/opt/homebrew/bin/gh', installMethod: 'homebrew', actionKind: 'run', required: false },
   {
     id: 'git',
     name: 'Git',
@@ -165,8 +169,9 @@ const DEV_TOOLS_NORMAL = [
     installMethod: 'system',
     actionKind: 'manual',
     manualHint: 'macOS 시스템 git은 이 앱이 대신 업데이트할 수 없습니다. Xcode Command Line Tools를 업데이트하세요.',
+    required: true,
   },
-  { id: 'pnpm', name: 'pnpm', installed: true, version: '9.12.3', path: '/opt/homebrew/bin/pnpm', installMethod: 'homebrew', actionKind: 'run' },
+  { id: 'pnpm', name: 'pnpm', installed: true, version: '9.12.3', path: '/opt/homebrew/bin/pnpm', installMethod: 'homebrew', actionKind: 'run', required: false },
   {
     id: 'wrangler',
     name: 'Wrangler',
@@ -176,6 +181,7 @@ const DEV_TOOLS_NORMAL = [
     installMethod: null,
     actionKind: 'manual',
     manualHint: 'wrangler는 프로젝트별 devDependency로 설치하세요 (pnpm add -D wrangler).',
+    required: false,
   },
 ];
 

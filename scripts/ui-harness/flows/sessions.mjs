@@ -1,4 +1,12 @@
 // 흐름 (2) 세션목록 "새세션" → 프로젝트 선택 모달 → 새세션 — src/views/sessions.ts
+//
+// terminus-shell-ia.md §4-3(배치 A, 2026-09) 이후 "+ 새 세션" 라벨이 화면에
+// 두 곳(본문 헤더 버튼 + 세션 사이드바 하단 CTA, src/sidebar.ts)에 존재한다 —
+// 동일한 openNewSessionModal() 하나를 부르는 동등한 진입점이라 중복이 아니라
+// 의도된 것이지만, Playwright strict mode에서 `getByRole('button', {name})`이
+// 더 이상 유일하지 않아 이 파일의 모든 클릭을 `getByRole('main')`으로 좁혀
+// 원래 의도(본문 헤더 버튼)만 정확히 겨냥하게 했다 — 검증 대상 자체는 이관
+// 전과 동일(본문 버튼 클릭 → 모달 열림)하고 약화되지 않았다.
 import { manySessions } from '../lib/fixtures.mjs';
 
 export const flowId = 'sessions';
@@ -22,7 +30,7 @@ export function scenarios(base) {
 
         // ---- 새 세션 모달: 열기 → ESC ----
         const before = await getListenerCount('keydown');
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         await shot('02-new-session-modal');
         await page.keyboard.press('Escape');
@@ -36,7 +44,7 @@ export function scenarios(base) {
         }
 
         // ---- 모달 연 채로 라우트 이탈 → leaveSessionsListView 리스너 정리 확인 ----
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         const beforeLeave = await getListenerCount('keydown');
         await page.evaluate(() => { window.location.hash = '#/'; });
@@ -49,7 +57,7 @@ export function scenarios(base) {
         await page.waitForTimeout(150);
 
         // ---- 새 세션 모달: 프로젝트 선택 → draft 화면 → 메시지 전송 ----
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         const projectRow = page.locator('.modal-body .session-row').first();
         if ((await projectRow.count()) === 0) {
@@ -104,7 +112,7 @@ export function scenarios(base) {
         if (!emptyTitle || !emptyTitle.includes('없습니다')) {
           bugs.push({ severity: 'Major', symptom: `세션 0건인데 "세션이 없습니다" 안내가 없음(실제: ${emptyTitle})`, file: 'src/views/sessions.ts:renderSessionsListView' });
         }
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         await shot('02-empty-new-session-modal-no-projects');
         const noProjectHint = await page.locator('.modal-body .state-block-title').first().textContent().catch(() => null);
@@ -174,7 +182,7 @@ export function scenarios(base) {
           bugs.push({ severity: 'Major', symptom: 'auth-error 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
           return;
         }
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         const projectRow = page.locator('.modal-body .session-row').first();
         if ((await projectRow.count()) === 0) {
@@ -279,7 +287,7 @@ export function scenarios(base) {
           bugs.push({ severity: 'Major', symptom: 'app-login 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
           return;
         }
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         const projectRow = page.locator('.modal-body .session-row').first();
         if ((await projectRow.count()) === 0) {
@@ -501,7 +509,7 @@ export function scenarios(base) {
           bugs.push({ severity: 'Major', symptom: 'app-login-nav-away 시나리오에 쓸 프로젝트가 없음(list_workspace_projects 비어있음)', file: 'scripts/ui-harness/flows/sessions.mjs' });
           return;
         }
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         const projectRow = page.locator('.modal-body .session-row').first();
         if ((await projectRow.count()) === 0) {
@@ -621,7 +629,7 @@ export function scenarios(base) {
           bugs.push({ severity: 'Major', symptom: 'app-login-ok-flag-untrusted 시나리오에 쓸 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
           return;
         }
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         const projectRow = page.locator('.modal-body .session-row').first();
         if ((await projectRow.count()) === 0) {
@@ -703,7 +711,7 @@ export function scenarios(base) {
           bugs.push({ severity: 'Major', symptom: 'app-login-modal-close-policy 시나리오에 쓸 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
           return;
         }
-        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.getByRole('main').getByRole('button', { name: '+ 새 세션' }).click();
         await page.waitForSelector('.modal-overlay');
         const projectRow = page.locator('.modal-body .session-row').first();
         if ((await projectRow.count()) === 0) {
