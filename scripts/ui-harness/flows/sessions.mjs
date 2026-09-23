@@ -509,13 +509,22 @@ export function scenarios(base) {
         }
         await shot('01-login-active-before-nav');
 
-        // ---- 2) 핵심 회귀 확인: 세션목록으로 이동(leaveSessionChatView 발동) ----
+        // ---- 2) 세션목록으로 이동(leaveSessionChatView 발동) ----
+        // 사양이 바뀌었다(malgn-vscode 로그인 버튼 통일 작업) — 이 단언은 원래
+        // "세션목록 화면에는 입력창이 새지 않는다"(범위는 세션 상세/draft로
+        // 한정)였는데, 그 경계 자체가 v0.2.11류 결함의 축소판이었다: 로그인을
+        // 시작할 수 있는 진입점이 대시보드 위젯으로 넓어지자, bottomFixed 자리
+        // 자체가 없는 대시보드·세션목록으로 이동하면 코드 입력창을 볼 방법이
+        // 없었다. main.ts가 이제 라우트와 무관하게 앱 셸 최상위에 전역
+        // (position:fixed)으로 패널을 그리므로, 세션목록 화면에도 입력창이
+        // "있는" 것이 맞는 사양이다 — 아래는 조용히 지운 게 아니라 기대값을
+        // 반대로 뒤집은 것이다.
         await page.evaluate(() => { window.location.hash = '#/sessions'; });
         await page.waitForTimeout(200);
         await shot('02-navigated-away-to-list');
         const codeInputOnListScreen = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
-        if ((await codeInputOnListScreen.count()) > 0) {
-          bugs.push({ severity: 'Minor', symptom: '세션목록 화면에도 로그인 코드 입력창이 새어나옴(범위는 세션 상세/draft 화면으로 한정돼야 함)', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+        if ((await codeInputOnListScreen.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '세션목록 화면으로 이동하면 로그인 코드 입력창이 사라짐(전역 패널이 아니라 화면별로 다시 갇힘)', file: 'src/main.ts:renderApp' });
         }
 
         // ---- 3) 같은 세션 화면으로 복귀 → 코드 입력창/취소 버튼이 다시 있어야 한다 ----

@@ -64,6 +64,7 @@ import {
   enterSessionDraftView,
   leaveSessionChatView,
   leaveSessionsListView,
+  renderClaudeAuthLoginBlock,
 } from './views/sessions';
 import { onSessionsChanged, onClaudeAuthLoginUrl, onClaudeAuthLoginOutput, onClaudeAuthLoginFinished } from './sessionsApi';
 import {
@@ -143,6 +144,15 @@ function renderApp(): void {
   const main = el('main', { className: contentClassName }, [content]);
   root.appendChild(renderSidebar(route));
   root.appendChild(main);
+  // 앱 안 claude 로그인 진행 패널(코드 입력창·취소 버튼) — 라우트와 무관하게
+  // state.claudeAuthLogin.active 하나만으로 앱 셸(#app) 최상위에 한 번만 그린다.
+  // 이전엔 세션 상세/draft 화면의 bottomFixed 안에만 있어서, 로그인을 시작할 수
+  // 있는 진입점이 대시보드 위젯으로 넓어지자 대시보드·세션목록처럼 그 자리
+  // 자체가 없는 화면으로 이동하면 입력창이 사라지는 갇힘이 재현됐다(937fde9와
+  // 같은 종류, 범위만 좁아짐). CSS(`.app-login-panel-global`, position:fixed)로
+  // 화면을 넘나들어도 항상 보이게 한다 — views/sessions.ts는 더 이상 이 블록을
+  // 자기 bottomFixed에 중복 렌더하지 않는다.
+  for (const panel of renderClaudeAuthLoginBlock()) root.appendChild(panel);
   // 새 트리가 문서에 완전히 붙은 뒤에만 focus()가 먹는다(dom.ts 참고).
   flushPendingFieldFocus();
 }

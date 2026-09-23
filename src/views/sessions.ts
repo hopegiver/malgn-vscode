@@ -673,7 +673,7 @@ async function handleClaudeLogin(): Promise<void> {
 // 성공만 반영하고, 그 다음 진행 상황(로그인 URL·원문 출력·완료/실패/취소)은
 // main.ts가 앱 시작 시 구독한 이벤트가 state.claudeAuthLogin을 갱신하며
 // 채운다 — 이 화면은 그 상태를 읽기만 한다(아래 renderChatErrorBlock).
-async function handleClaudeAuthLoginStart(): Promise<void> {
+export async function handleClaudeAuthLoginStart(): Promise<void> {
   state.claudeAuthLogin.active = true;
   state.claudeAuthLogin.url = null;
   state.claudeAuthLogin.error = null;
@@ -790,13 +790,22 @@ function renderClaudeAuthLoginActivePanel(login: typeof state.claudeAuthLogin): 
 // 로그인 패널을 authError에 얹어두면 로그인을 시작한 뒤 다른 화면에 갔다
 // 돌아왔을 때(그 사이에도 백엔드 자식 프로세스는 계속 코드를 기다린다) 입력창이
 // 통째로 사라진다 — active 하나만 보고 그리면 화면 이동과 무관하게 항상 뜬다.
-// 세션 상세/draft 두 화면에서만 로그인을 시작할 수 있어(handleClaudeAuthLoginStart
-// 호출부가 이 파일뿐) 두 화면의 bottomFixed에만 이 블록을 얹는다 — 다른 화면
-// (홈·세션목록 등)까지 전역으로 넓히는 건 이번 범위를 넘는다.
-function renderClaudeAuthLoginBlock(): HTMLElement[] {
+//
+// 이전엔 세션 상세/draft 두 화면에서만 로그인을 시작할 수 있어 두 화면의
+// bottomFixed에만 이 블록을 얹었다(937fde9). 그런데 대시보드 위젯에서도
+// 로그인을 시작할 수 있게 되며(views/home.ts claudeAuthWidget이 아래
+// handleClaudeAuthLoginStart를 재사용) 같은 갇힘이 범위만 좁아진 채
+// 재현됐다 — 대시보드·세션목록에는 애초에 bottomFixed 자리 자체가 없다.
+// 그래서 이 함수는 더 이상 이 파일 안에서 직접 렌더하지 않고 export만 하며,
+// 실제 렌더는 main.ts의 renderApp()이 라우트와 무관하게 앱 셸(#app) 최상위에서
+// 한 번만 호출한다(styles.css `.app-login-panel-global` — position:fixed로
+// 화면 어디서든 보인다). 세션 상세/draft 화면은 이제 이 블록을 자기
+// bottomFixed에 중복으로 넣지 않는다(아래 renderChatErrorBlock의 authError
+// 안내만 남는다).
+export function renderClaudeAuthLoginBlock(): HTMLElement[] {
   const login = state.claudeAuthLogin;
   if (!login.active) return [];
-  return [el('div', { className: 'alert chat-auth-login-panel' }, renderClaudeAuthLoginActivePanel(login))];
+  return [el('div', { className: 'alert chat-auth-login-panel app-login-panel-global' }, renderClaudeAuthLoginActivePanel(login))];
 }
 
 // 세션 상세/draft 화면이 공유하는 하단 에러 표시. 일반 에러는 기존 그대로
@@ -806,7 +815,7 @@ function renderClaudeAuthLoginBlock(): HTMLElement[] {
 // 없다)의 핵심이었다. "앱에서 로그인"(새 경로)이 실패하거나 이 환경에서
 // 아예 쓸 수 없을 때 막다른 길에 몰리지 않도록 "터미널 열기"(기존 경로)를
 // 항상 나란히 남겨둔다. 로그인이 진행 중일 때의 입력창·취소 버튼 자체는
-// renderClaudeAuthLoginBlock()이 authError와 무관하게 따로 그리므로, 여기서는
+// main.ts가 renderClaudeAuthLoginBlock()으로 전역에 따로 그리므로, 여기서는
 // 중복 렌더하지 않도록 login.active가 아닐 때만 시작 버튼들을 붙인다.
 function renderChatErrorBlock(): HTMLElement[] {
   const chat = state.sessionChat;
@@ -957,7 +966,9 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     // (이 판단 로직 자체는 건드리지 않았다).
     scheduleChatAutoScroll();
 
-    const bottomFixed: HTMLElement[] = [...renderChatErrorBlock(), ...renderClaudeAuthLoginBlock()];
+    // 로그인 진행 패널(코드 입력창·취소 버튼)은 여기서 렌더하지 않는다 — main.ts가
+    // 앱 셸 최상위에서 전역으로 한 번만 그린다(renderClaudeAuthLoginBlock 주석 참고).
+    const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
     bottomFixed.push(renderChatInputArea(cwd, (text) => void sendChatMessage(sessionId, text)));
     body.push(el('div', { className: 'chat-bottom-fixed' }, bottomFixed));
   }
@@ -1011,7 +1022,9 @@ export function renderSessionDraftView(projectPath: string): HTMLElement {
   }
   scheduleChatAutoScroll();
 
-  const bottomFixed: HTMLElement[] = [...renderChatErrorBlock(), ...renderClaudeAuthLoginBlock()];
+  // 로그인 진행 패널(코드 입력창·취소 버튼)은 여기서 렌더하지 않는다 — main.ts가
+  // 앱 셸 최상위에서 전역으로 한 번만 그린다(renderClaudeAuthLoginBlock 주석 참고).
+  const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
   bottomFixed.push(renderChatInputArea(projectPath, (text) => void sendDraftMessage(projectPath, text), draftSending));
 
   return el('div', { className: 'chat-page' }, [

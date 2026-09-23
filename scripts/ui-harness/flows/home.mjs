@@ -82,11 +82,14 @@ export function scenarios(base) {
         if (calls.length === 0) {
           bugs.push({ severity: 'Critical', symptom: '"터미널 열기" 클릭이 open_claude_login_terminal IPC를 호출하지 않음', file: 'src/views/home.ts:handleOpenClaudeLoginTerminalFromHome' });
         }
-        // 절대 금지 경로: 되돌린 헤드리스 로그인(start_claude_auth_login)을
-        // 호출하면 안 된다 — 이번 클릭으로 그 커맨드가 불렸는지도 함께 확인한다.
+        // "터미널 열기" 버튼 클릭 단독으로는 헤드리스 로그인(start_claude_auth_login)이
+        // 호출되면 안 된다 — 그 경로는 이제 별도의 "앱에서 로그인" 버튼에서만
+        // 열린다(요구사항 2, home.mjs 'app-login-global-panel' 시나리오가 그
+        // 버튼 쪽을 검증한다). 두 버튼이 서로의 커맨드를 침범하지 않는지 여기서
+        // 함께 확인한다.
         const forbiddenCalls = await page.evaluate(() => window.__invokeLog?.filter((e) => e.cmd === 'start_claude_auth_login') ?? []);
         if (forbiddenCalls.length > 0) {
-          bugs.push({ severity: 'Critical', symptom: '금지된 헤드리스 로그인 경로(start_claude_auth_login)가 호출됨', file: 'src/views/home.ts:handleOpenClaudeLoginTerminalFromHome' });
+          bugs.push({ severity: 'Critical', symptom: '"터미널 열기" 버튼 클릭만으로 start_claude_auth_login이 호출됨(두 버튼의 동작이 뒤섞임)', file: 'src/views/home.ts:handleOpenClaudeLoginTerminalFromHome' });
         }
       },
     },
@@ -109,6 +112,67 @@ export function scenarios(base) {
         const loginBtn = widget.getByRole('button', { name: /claude login/ });
         if ((await loginBtn.count()) === 0) {
           bugs.push({ severity: 'Major', symptom: '조회 실패 상태에서도 "터미널 열기" 버튼이 보여야 하는데 없음(안전한 기본 액션 제공 실패)', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+      },
+    },
+    // ⑤ 대시보드에서 시작한 "앱에서 로그인"이 화면 이동과 무관하게 항상 보인다
+    // (malgn-vscode 로그인 버튼 통일 작업 요구사항 1·2·4) — 이전엔 로그인 진행
+    // 패널(코드 입력창·취소 버튼)이 세션 상세/draft 화면의 bottomFixed에만
+    // 있어서, 그 자리 자체가 없는 대시보드에서 로그인을 시작하면 입력창을 볼
+    // 방법이 없었다(대시보드는 이전엔 터미널 열기 경로만 썼다). main.ts가
+    // 이제 앱 셸(#app) 최상위에 라우트와 무관하게 전역(position:fixed)으로
+    // 한 번만 그리는지 대시보드→세션목록→대시보드 왕복으로 확인한다.
+    {
+      id: 'app-login-global-panel',
+      fixtures: { ...base, check_claude_auth_status: { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null } },
+      async run(page, { shot, bugs, emitEvent }) {
+        const codeInputPlaceholder = 'claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)';
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        const appLoginBtn = widget.getByRole('button', { name: '앱에서 로그인' });
+        if ((await appLoginBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '대시보드 로그인 위젯에 "앱에서 로그인" 버튼이 없음(요구사항 2 미구현)', file: 'src/views/home.ts:claudeAuthWidget' });
+          return;
+        }
+        await appLoginBtn.click();
+        await page.waitForTimeout(150);
+
+        const startInvoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'start_claude_auth_login'));
+        if (!startInvoked) {
+          bugs.push({ severity: 'Critical', symptom: '대시보드 "앱에서 로그인" 버튼을 눌러도 start_claude_auth_login 커맨드가 호출되지 않음', file: 'src/views/home.ts:claudeAuthWidget / src/views/sessions.ts:handleClaudeAuthLoginStart' });
+        }
+
+        // ---- 1) 대시보드에서 코드 입력창이 보인다 ----
+        const codeInputOnDashboard = page.getByPlaceholder(codeInputPlaceholder);
+        if ((await codeInputOnDashboard.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '대시보드에서 로그인을 시작해도 코드 입력창이 화면에 없음(bottomFixed가 없는 화면이라 갇힘)', file: 'src/main.ts:renderApp' });
+        }
+        await shot('01-login-active-on-dashboard');
+
+        // ---- 2) 세션목록으로 이동해도 입력창이 그대로 있다 ----
+        await page.evaluate(() => { window.location.hash = '#/sessions'; });
+        await page.waitForTimeout(200);
+        await shot('02-login-active-on-sessions-list');
+        const codeInputOnList = page.getByPlaceholder(codeInputPlaceholder);
+        if ((await codeInputOnList.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '세션목록 화면으로 이동하면 로그인 코드 입력창이 사라짐', file: 'src/main.ts:renderApp' });
+        }
+
+        // ---- 3) 대시보드로 복귀해도 입력창이 다시 있다 ----
+        await page.evaluate(() => { window.location.hash = '#/'; });
+        await page.waitForTimeout(200);
+        await shot('03-login-active-back-on-dashboard');
+        const codeInputBack = page.getByPlaceholder(codeInputPlaceholder);
+        if ((await codeInputBack.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '대시보드로 복귀해도 로그인 코드 입력창이 다시 보이지 않음', file: 'src/main.ts:renderApp' });
+        }
+
+        // ---- 정리: 취소로 idle 복귀(다른 시나리오 오염 방지) ----
+        const cancelBtn = page.getByRole('button', { name: '로그인 취소' });
+        if ((await cancelBtn.count()) > 0) {
+          await cancelBtn.click();
+          await page.waitForTimeout(100);
+          await emitEvent('claude-auth-login-finished', { ok: false, canceled: true, error: null, status: null });
+          await page.waitForTimeout(150);
         }
       },
     },

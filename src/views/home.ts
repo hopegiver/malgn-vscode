@@ -6,7 +6,7 @@ import { el, clickable, showToast } from '../dom';
 import { state, notifyChange } from '../state';
 import { navigate } from '../route';
 import { computeTodayTokens, formatTokenCount, loadDailyUsage } from './usage';
-import { asBoolean, loadSessions } from './sessions';
+import { asBoolean, loadSessions, handleClaudeAuthLoginStart } from './sessions';
 import { loadCatalog } from './catalog';
 import { loadProjects } from './projects';
 import { loadDevTools } from './devTools';
@@ -153,9 +153,18 @@ function mcpHubWidget(): HTMLElement {
 
 // claude CLI 로그인 상태 — `check_claude_auth_status`(claude_auth.rs, `claude
 // auth status --json` 위임 조회)만 재사용한다(새 백엔드 커맨드를 만들지 않는다,
-// 작업 지시). 로그인 액션은 반드시 기존 "터미널 열기" 경로(openClaudeLoginTerminal
-// → views/sessions.ts handleClaudeLogin과 동일한 함수)로만 연결한다 — 되돌린
-// 헤드리스 spawn(start_claude_auth_login)은 절대 호출하지 않는다.
+// 작업 지시). 로그인 시작 버튼은 세션 화면(views/sessions.ts)의 검증된
+// "앱에서 로그인" 흐름을 그대로 재사용한다(handleClaudeAuthLoginStart →
+// start_claude_auth_login) — 로직을 이 파일에 복제하지 않는다.
+//
+// 예전엔 이 위젯이 "되돌린 헤드리스 spawn(start_claude_auth_login)은 절대
+// 호출하지 않는다"고 못박았었다(a7cc71a) — 그 시점엔 로그인 진행 패널(코드
+// 입력창)이 세션 상세/draft 화면의 bottomFixed에만 있어서, 대시보드에서
+// 로그인을 시작하면 붙여넣을 자리 자체가 없는 화면에 사용자가 갇혔기
+// 때문이다. 이제 그 패널은 main.ts renderApp()이 라우트와 무관하게 앱 셸
+// 최상위에 전역(position:fixed)으로 그리므로 그 제약이 풀렸다 — "터미널
+// 열기"는 이 환경에서 앱 로그인이 아예 안 될 때의 폴백으로 여전히 나란히
+// 남겨둔다.
 //
 // 세 상태를 구분해 보여준다(직전 라운드 회귀의 핵심 교훈 — "없음"이 아니라
 // "있음"으로 판정한다):
@@ -165,12 +174,15 @@ function mcpHubWidget(): HTMLElement {
 //   3) 로그인 안 됨·확인 실패 — 그 외 전부(조회 실패, loggedIn===false, 또는
 //      아직 loaded===false인데 loading도 아닌 초기 렌더 프레임). "모름"과
 //      "인증됨"을 구분하기 위해 이 버킷을 기본값으로 삼는다 — 근거 없이
-//      "정상"처럼 보이는 표시가 v0.2.11 회귀의 본질이었다. 이 버킷에서만
-//      "터미널 열기 (claude login)" 버튼을 노출한다(기존 세션 채팅 인증
-//      실패 배너와 동일 라벨 — 두 화면이 동시에 렌더되지 않으므로 겹치지
-//      않는다, DOM에 항상 함께 있는 사이드바에는 이 라벨이 없다).
+//      "정상"처럼 보이는 표시가 v0.2.11 회귀의 본질이었다. 이 버킷에서 로그인이
+//      진행 중이 아니면 "앱에서 로그인"/"터미널 열기 (claude login)" 두
+//      버튼을 나란히 노출한다(sessions.ts renderChatErrorBlock과 동일 패턴).
+//      이미 진행 중이면(state.claudeAuthLogin.active) 버튼 대신 안내만
+//      보여준다 — 시작 버튼을 다시 눌러 중복 시작할 이유가 없고, 진행 상황은
+//      전역 패널이 이미 화면 어딘가에 떠 있다.
 function claudeAuthWidget(): HTMLElement {
   const auth = state.claudeAuth;
+  const login = state.claudeAuthLogin;
   const title = el('div', { className: 'home-widget-title' }, ['claude CLI 로그인']);
 
   if (!auth.loaded && auth.loading) {
@@ -192,12 +204,27 @@ function claudeAuthWidget(): HTMLElement {
     ? `로그인 상태를 확인하지 못했습니다: ${auth.error}`
     : 'claude CLI에 로그인되어 있지 않습니다.';
 
-  return el('div', { className: 'home-widget' }, [
+  const children: HTMLElement[] = [
     title,
     el('span', { className: 'badge badge-archived' }, ['로그인 필요']),
     el('div', { className: 'home-widget-desc' }, [reasonText]),
-    el('button', { className: 'btn btn-primary', onClick: () => void handleOpenClaudeLoginTerminalFromHome() }, ['터미널 열기 (claude login)']),
-  ]);
+  ];
+
+  if (login.active) {
+    children.push(el('div', { className: 'home-widget-desc' }, ['로그인이 진행 중입니다 — 화면에 뜬 로그인 패널에서 계속하세요.']));
+  } else {
+    if (login.error) {
+      children.push(el('div', { className: 'home-widget-desc' }, [`⚠ ${login.error}`]));
+    }
+    children.push(
+      el('div', { className: 'home-widget-btn-row' }, [
+        el('button', { className: 'btn btn-primary', onClick: () => void handleClaudeAuthLoginStart() }, ['앱에서 로그인']),
+        el('button', { className: 'btn', onClick: () => void handleOpenClaudeLoginTerminalFromHome() }, ['터미널 열기 (claude login)']),
+      ])
+    );
+  }
+
+  return el('div', { className: 'home-widget' }, children);
 }
 
 // views/sessions.ts의 handleClaudeLogin과 동일한 로직(openClaudeLoginTerminal

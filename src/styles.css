@@ -555,6 +555,9 @@ textarea.settings-input { resize: vertical; }
    카드 전체 폭까지 늘어난다 — 배지만 자기 너비로 되돌린다(부모 align-items는
    다른 자식 블록 폭에 영향이 있어 건드리지 않는다). */
 .home-widget .badge { align-self: flex-start; }
+/* claude CLI 로그인 위젯의 "앱에서 로그인"/"터미널 열기" 두 버튼을 나란히
+   두는 행(sessions.ts chat-auth-code-row와 같은 gap:8 패턴). */
+.home-widget-btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ---------------- 세션목록 (실제 fs 읽기) ---------------- */
 .session-list { display: flex; flex-direction: column; gap: 8px; }
@@ -783,6 +786,16 @@ textarea.settings-input { resize: vertical; }
   font-size: 11px; white-space: pre-wrap; word-break: break-word;
   background: var(--color-neutral-100); border-radius: var(--radius-xs);
   padding: 8px; margin: 0;
+}
+/* main.ts renderApp()이 앱 셸(#app) 최상위에 라우트와 무관하게 한 번만 그리는
+   전역 로그인 진행 패널 — 토스트(.toast-root, 하단중앙)·업데이트 배너
+   (.update-countdown-banner, 하단중앙)와 겹치지 않도록 하단우측에 둔다.
+   .alert의 margin-bottom(16px)은 여기서는 의미가 없어(다음 형제 요소가 없다)
+   0으로 되돌린다. */
+.app-login-panel-global {
+  position: fixed; bottom: 24px; right: 24px; z-index: 999;
+  max-width: min(360px, calc(100vw - 48px)); width: 100%;
+  margin-bottom: 0; box-shadow: var(--shadow-toast);
 }
 
 /* ---------------- 세션 상세: 메타데이터 모달 (배경 클릭/ESC/닫기 버튼) ---------------- */
