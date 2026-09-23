@@ -64,7 +64,8 @@ import {
   enterSessionDraftView,
   leaveSessionChatView,
   leaveSessionsListView,
-  renderClaudeAuthLoginBlock,
+  renderClaudeAuthLoginModal,
+  renderClaudeAuthLoginReopenBanner,
 } from './views/sessions';
 import { onSessionsChanged, onClaudeAuthLoginUrl, onClaudeAuthLoginOutput, onClaudeAuthLoginFinished } from './sessionsApi';
 import {
@@ -144,15 +145,20 @@ function renderApp(): void {
   const main = el('main', { className: contentClassName }, [content]);
   root.appendChild(renderSidebar(route));
   root.appendChild(main);
-  // 앱 안 claude 로그인 진행 패널(코드 입력창·취소 버튼) — 라우트와 무관하게
-  // state.claudeAuthLogin.active 하나만으로 앱 셸(#app) 최상위에 한 번만 그린다.
-  // 이전엔 세션 상세/draft 화면의 bottomFixed 안에만 있어서, 로그인을 시작할 수
-  // 있는 진입점이 대시보드 위젯으로 넓어지자 대시보드·세션목록처럼 그 자리
-  // 자체가 없는 화면으로 이동하면 입력창이 사라지는 갇힘이 재현됐다(937fde9와
-  // 같은 종류, 범위만 좁아짐). CSS(`.app-login-panel-global`, position:fixed)로
-  // 화면을 넘나들어도 항상 보이게 한다 — views/sessions.ts는 더 이상 이 블록을
-  // 자기 bottomFixed에 중복 렌더하지 않는다.
-  for (const panel of renderClaudeAuthLoginBlock()) root.appendChild(panel);
+  // 앱 안 claude 로그인 — 라우트와 무관하게 state.claudeAuthLogin(modalOpen/
+  // active/error) 하나만으로 앱 셸(#app) 최상위에 한 번만 그린다. 이전엔
+  // 전역 고정 패널(position:fixed)이었지만, v0.2.13 후속 작업(요구사항 2)에서
+  // 이 저장소의 기존 모달 관례(dom.ts createModalOverlay)를 쓰는 모달로
+  // 바꿨다 — 닫아도(모달만 숨김) 백엔드 로그인은 계속 진행되고, 화면 어디서나
+  // 보이는 작은 재진입 배너(renderClaudeAuthLoginReopenBanner)가 "계속하기"
+  // 통로를 남긴다. 이전엔 세션 상세/draft 화면의 bottomFixed 안에만 있어서,
+  // 로그인을 시작할 수 있는 진입점이 대시보드 위젯으로 넓어지자 대시보드·
+  // 세션목록처럼 그 자리 자체가 없는 화면으로 이동하면 입력창이 사라지는
+  // 갇힘이 재현됐다(937fde9와 같은 종류, 범위만 좁아짐) — 라우트와 무관하게
+  // 여기서 그리는 것으로 그 갇힘을 다시 만들지 않는다. views/sessions.ts는
+  // 더 이상 이 블록을 자기 bottomFixed에 중복 렌더하지 않는다.
+  for (const panel of renderClaudeAuthLoginModal()) root.appendChild(panel);
+  for (const panel of renderClaudeAuthLoginReopenBanner()) root.appendChild(panel);
   // 새 트리가 문서에 완전히 붙은 뒤에만 focus()가 먹는다(dom.ts 참고).
   flushPendingFieldFocus();
 }
@@ -321,23 +327,77 @@ function initClaudeAuthLoginWatcher(): void {
     /* Tauri IPC 브리지가 없는 환경(플레인 브라우저) — 조용히 넘어간다 */
   });
 
+  // v0.2.13 실사용자 보고 후속(2026-09-23) — 이 핸들러가 그 버그(보고 1번)의
+  // 진원지였다: 인증은 완전히 성공했는데 대시보드는 "연결 안 됨"으로 남고
+  // 채팅 화면엔 옛 에러가 그대로 있었다. 원인 둘:
+  // (a) 이 핸들러가 대시보드 위젯이 읽는 state.claudeAuth를 전혀 갱신하지
+  //     않았다 — main.ts:handleNavigation()의 `!state.claudeAuth.loaded` 가드는
+  //     이미 loaded===true인 이후로는 다시 불리지 않으므로, 로그인이 끝나도
+  //     대시보드는 앱을 재시작하기 전까지 예전 값을 계속 보여줬다.
+  // (b) 채팅의 authError/error를 지우는 조건이 백엔드가 보낸 `d.ok` 불리언
+  //     하나뿐이었다. `d.ok`는 claude_auth.rs의 run_login이 로그인 직후
+  //     `claude auth status --json`을 다시 물어본 결과로 정해지는데, 그
+  //     재확인 조회 자체가 실패("확인 불가")해도 run_login은 그 경우를
+  //     `ok:false`로 뭉뚱그려 보냈다(parse_claude_auth_status가 파싱 실패를
+  //     "로그인 안 됨"과 같은 값으로 떨어뜨렸던 것과 같은 종류의 문제,
+  //     claude_auth.rs 주석 참고). 그 결과 실제로는 성공한 로그인이 화면에는
+  //     실패로 보였다.
+  //
+  // 수정: `d.ok`를 신뢰하지 않는다 — 대신 이 이벤트가 함께 실어 보내는 최신
+  // 조회 결과(`d.status`)만 근거로 삼는다. 이 판단은 백엔드의 ok 산정 로직이
+  // 앞으로 바뀌어도 항상 "지금 실제로 로그인됐는가" 하나만 본다는 점에서
+  // 구조적으로 더 안전하다.
   onClaudeAuthLoginFinished((d) => {
     state.claudeAuthLogin.active = false;
     state.claudeAuthLogin.url = null;
-    state.claudeAuthLogin.output = '';
     state.claudeAuthLogin.codeInput = '';
+
     if (d.canceled) {
+      state.claudeAuthLogin.modalOpen = false;
       state.claudeAuthLogin.error = null;
+      state.claudeAuthLogin.outcome = null;
+      state.claudeAuthLogin.output = '';
+      state.claudeAuthLogin.outputExpanded = false;
       showToast('로그인을 취소했습니다.');
-    } else if (d.ok) {
+      notifyChange();
+      return;
+    }
+
+    // 대시보드 위젯(claudeAuth)을 즉시 갱신한다(요구사항: "로그인이 끝나면
+    // 대시보드 인증 상태가 즉시 갱신돼야 한다") — status가 함께 왔으면(백엔드
+    // 재확인 성공) 그 값을 바로 반영해 다음 렌더에서 곧장 보이게 하고, 없으면
+    // (재확인 자체가 실패한 "확인 불가" 케이스) 별도로 한 번 더 조회한다 —
+    // 읽기 전용 조회라 재시도해도 부작용이 없다.
+    if (d.status) {
+      state.claudeAuth.status = d.status;
+      state.claudeAuth.loaded = true;
+      state.claudeAuth.error = null;
+    } else {
+      void loadClaudeAuthStatus();
+    }
+
+    const confirmedLoggedIn = d.status?.loggedIn === true;
+
+    if (confirmedLoggedIn) {
+      state.claudeAuthLogin.modalOpen = false;
       state.claudeAuthLogin.error = null;
+      state.claudeAuthLogin.outcome = null;
+      state.claudeAuthLogin.output = '';
+      state.claudeAuthLogin.outputExpanded = false;
       // 완료 후 같은 화면에서 이어서 작업할 수 있어야 한다 — 인증 실패
-      // 배너(있었다면)를 닫는다. 화면이 그대로면 또 실패로 오인한다.
+      // 배너(있었다면)를 닫는다. 화면이 그대로면 또 실패로 오인한다. 이
+      // 판단은 위에서 구한 confirmedLoggedIn(=최신 조회 결과) 근거다.
       state.sessionChat.authError = false;
       state.sessionChat.error = null;
       showToast('claude 로그인이 완료되었습니다.');
     } else {
-      state.claudeAuthLogin.error = d.error ?? '로그인에 실패했습니다.';
+      // 실패(status 확인됨, loggedIn:false) 또는 확인 불가(status 없음) —
+      // "없음"을 "실패"로 단정하지 않고 문구를 구분한다(outcome). 모달은
+      // 자동으로 닫지 않는다 — 방금 쌓인 원문 로그가 원인 추적의 유일한
+      // 단서일 수 있다(요구사항 3, sessions.ts renderClaudeAuthLoginOutputToggle).
+      state.claudeAuthLogin.outcome = d.status ? 'failed' : 'unknown';
+      state.claudeAuthLogin.error = d.error ?? (d.status ? '로그인에 실패했습니다.' : '로그인 결과를 확인하지 못했습니다.');
+      state.claudeAuthLogin.outputExpanded = true;
     }
     notifyChange();
   }).catch(() => {

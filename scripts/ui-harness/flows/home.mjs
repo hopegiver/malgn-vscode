@@ -120,8 +120,8 @@ export function scenarios(base) {
     // 패널(코드 입력창·취소 버튼)이 세션 상세/draft 화면의 bottomFixed에만
     // 있어서, 그 자리 자체가 없는 대시보드에서 로그인을 시작하면 입력창을 볼
     // 방법이 없었다(대시보드는 이전엔 터미널 열기 경로만 썼다). main.ts가
-    // 이제 앱 셸(#app) 최상위에 라우트와 무관하게 전역(position:fixed)으로
-    // 한 번만 그리는지 대시보드→세션목록→대시보드 왕복으로 확인한다.
+    // 이제 앱 셸(#app) 최상위에 라우트와 무관하게 모달로 그리는지(v0.2.13
+    // 후속, 요구사항 2) 대시보드→세션목록→대시보드 왕복으로 확인한다.
     {
       id: 'app-login-global-panel',
       fixtures: { ...base, check_claude_auth_status: { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null } },
@@ -173,6 +173,54 @@ export function scenarios(base) {
           await page.waitForTimeout(100);
           await emitEvent('claude-auth-login-finished', { ok: false, canceled: true, error: null, status: null });
           await page.waitForTimeout(150);
+        }
+      },
+    },
+    // ⑥ 실사용자 보고 1번(v0.2.13) 핵심 회귀 고정 — "인증은 성공했는데 대시보드는
+    // 계속 '연결 안 됨'". 원인은 main.ts:handleNavigation()의
+    // `!state.claudeAuth.loaded` 가드가 이미 loaded===true인 뒤로는 다시 불리지
+    // 않아, 로그인 완료 후에도 앱을 재시작하기 전까지 예전 값이 남아있던 것이다
+    // (claude_auth.rs 확인 불가/실패 판정 회귀와는 별개 지점). check_claude_auth_status
+    // 픽스처를 의도적으로 "미로그인"(오래된 값)으로 고정해두고, 로그인 완료
+    // 이벤트가 최신 status를 직접 실어 보내면 그 낡은 픽스처를 다시 조회하지
+    // 않고도(재확인 호출 없이) 위젯이 즉시 "로그인됨"으로 바뀌는지 확인한다 —
+    // 재조회에 의존했다면 이 시나리오는 여전히 "로그인 필요"로 남아 실패한다.
+    {
+      id: 'login-finished-updates-dashboard-badge-immediately',
+      fixtures: { ...base, check_claude_auth_status: { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null } },
+      async run(page, { shot, bugs, emitEvent }) {
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        const appLoginBtn = widget.getByRole('button', { name: '앱에서 로그인' });
+        if ((await appLoginBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '대시보드 로그인 위젯에 "앱에서 로그인" 버튼이 없음', file: 'src/views/home.ts:claudeAuthWidget' });
+          return;
+        }
+        await appLoginBtn.click();
+        await page.waitForTimeout(150);
+        await shot('01-login-started-from-dashboard');
+
+        // check_claude_auth_status 픽스처는 여전히 loggedIn:false(낡은 값) —
+        // 이 이벤트가 실어 보내는 status만으로 갱신되는지가 이 시나리오의 핵심.
+        await emitEvent('claude-auth-login-finished', {
+          ok: true,
+          canceled: false,
+          error: null,
+          status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        });
+        await page.waitForTimeout(200);
+        await shot('02-badge-after-finished-event');
+
+        const text = await widget.textContent().catch(() => null);
+        if (!text || !text.includes('로그인됨')) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: `로그인 완료 이벤트 직후에도 대시보드 배지가 "로그인됨"으로 바뀌지 않음(실제: ${text}) — 앱 재시작 전까지 옛 상태가 남는 실사용자 보고 1번 회귀`,
+            file: 'src/main.ts:initClaudeAuthLoginWatcher',
+          });
+        }
+        const stillLoginNeeded = widget.getByRole('button', { name: '앱에서 로그인' });
+        if ((await stillLoginNeeded.count()) > 0) {
+          bugs.push({ severity: 'Major', symptom: '로그인 완료 후에도 "앱에서 로그인" 버튼이 남아있음(성공이 반영되지 않음)', file: 'src/views/home.ts:claudeAuthWidget' });
         }
       },
     },

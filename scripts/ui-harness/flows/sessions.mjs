@@ -321,13 +321,17 @@ export function scenarios(base) {
         if (!startInvoked) {
           bugs.push({ severity: 'Critical', symptom: '"앱에서 로그인" 버튼을 눌러도 start_claude_auth_login 커맨드가 호출되지 않음', file: 'src/views/sessions.ts:handleClaudeAuthLoginStart' });
         }
-        // 로그인 패널은 이제 인증 실패 안내와 별도의 .alert(.chat-auth-login-panel)로
-        // 그려진다(renderClaudeAuthLoginBlock — chat.error/authError와 무관하게
-        // login.active만 본다) — 그래서 전체 .alert 중 첫 번째가 아니라 이 클래스로
-        // 콕 집어 확인한다.
-        const progressText = await page.locator('.chat-auth-login-panel').first().textContent().catch(() => null);
+        // 로그인 UI는 이제 인증 실패 안내(.alert)와 별도의 모달
+        // (.claude-auth-login-modal-body)로 그려진다(renderClaudeAuthLoginModal —
+        // main.ts가 라우트/화면과 무관하게 state.claudeAuthLogin.modalOpen만
+        // 본다) — 그래서 이 클래스로 콕 집어 확인한다.
+        const progressText = await page.locator('.claude-auth-login-modal-body').first().textContent().catch(() => null);
         if (!progressText || !progressText.includes('시작하는 중')) {
-          bugs.push({ severity: 'Major', symptom: `로그인 시작 직후 진행 중 표시가 뜨지 않음(실제: ${progressText})`, file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+          bugs.push({ severity: 'Major', symptom: `로그인 시작 직후 진행 중 표시가 뜨지 않음(실제: ${progressText})`, file: 'src/views/sessions.ts:renderClaudeAuthLoginModal' });
+        }
+        const modalOverlayVisible = await page.locator('.modal-overlay').count();
+        if (modalOverlayVisible === 0) {
+          bugs.push({ severity: 'Critical', symptom: '"앱에서 로그인" 클릭 후 모달 오버레이가 뜨지 않음(요구사항 2 — 모달 전환 미구현)', file: 'src/views/sessions.ts:renderClaudeAuthLoginModal' });
         }
         const codeInputEarly = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
         if ((await codeInputEarly.count()) === 0) {
@@ -359,17 +363,41 @@ export function scenarios(base) {
         }
         await shot('03-login-url-ready');
 
-        // ---- 4) 개행 없는 프롬프트 원문이 stdout 이벤트로 오면 출력 로그에
-        //         그대로 나타난다(claude_auth.rs가 바이트 단위로 읽어 보내는
-        //         텍스트 — 이 하네스는 TS/DOM 층만 검증하므로 실제 자식
-        //         프로세스는 없다. 이벤트 자체는 emitEvent로 흉내낸다) ----
+        // ---- 4) 개행 없는 프롬프트 원문이 stdout 이벤트로 오면 누적은 되지만
+        //         (claude_auth.rs가 바이트 단위로 읽어 보내는 텍스트 — 이
+        //         하네스는 TS/DOM 층만 검증하므로 실제 자식 프로세스는 없다.
+        //         이벤트 자체는 emitEvent로 흉내낸다) 원문 로그 박스는
+        //         "자세히 보기"를 누르기 전까지 기본 접힘이어야 한다(요구사항
+        //         3 — CLI에 익숙하지 않은 사용자가 원문 쏟아짐에 불안해한다는
+        //         보고). 토글을 누른 뒤에야 보여야 한다. ----
         await emitEvent('claude-auth-login-output', { text: 'Paste code here if prompted > ' });
+        await page.waitForTimeout(100);
+        const outputBoxBeforeToggle = await page.locator('.chat-auth-login-output').count();
+        if (outputBoxBeforeToggle > 0) {
+          bugs.push({ severity: 'Major', symptom: '원문 로그가 "자세히 보기"를 누르기 전인데도 이미 펼쳐져 있음(요구사항 3 — 기본 숨김 미구현)', file: 'src/views/sessions.ts:renderClaudeAuthLoginOutputToggle' });
+        }
+        const logToggleBtn = page.getByRole('button', { name: /자세히 보기 \(원문 로그\)/ });
+        if ((await logToggleBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '원문 로그를 펼치는 "자세히 보기" 토글 버튼이 없음', file: 'src/views/sessions.ts:renderClaudeAuthLoginOutputToggle' });
+        }
+        await shot('04a-raw-output-collapsed-by-default');
+        await logToggleBtn.click();
         await page.waitForTimeout(100);
         const outputLog = await page.locator('.chat-auth-login-output').first().textContent().catch(() => null);
         if (!outputLog || !outputLog.includes('Paste code here if prompted')) {
-          bugs.push({ severity: 'Major', symptom: `claude-auth-login-output 이벤트 원문이 로그 영역에 반영되지 않음(실제: ${outputLog})`, file: 'src/main.ts:initClaudeAuthLoginWatcher' });
+          bugs.push({ severity: 'Major', symptom: `토글 후에도 claude-auth-login-output 이벤트 원문이 로그 영역에 반영되지 않음(실제: ${outputLog})`, file: 'src/main.ts:initClaudeAuthLoginWatcher' });
         }
-        await shot('04-raw-output-shown');
+        await shot('04b-raw-output-expanded-after-toggle');
+        // 다시 접으면 사라져야 한다 — 토글이 실제로 양방향인지 확인한다.
+        await page.getByRole('button', { name: /원문 로그 접기/ }).click();
+        await page.waitForTimeout(100);
+        const outputBoxAfterCollapse = await page.locator('.chat-auth-login-output').count();
+        if (outputBoxAfterCollapse > 0) {
+          bugs.push({ severity: 'Minor', symptom: '"원문 로그 접기"를 눌러도 로그 박스가 다시 숨겨지지 않음', file: 'src/views/sessions.ts:renderClaudeAuthLoginOutputToggle' });
+        }
+        // 다음 단계(코드 제출)를 위해 다시 펼쳐 둔다.
+        await page.getByRole('button', { name: /자세히 보기 \(원문 로그\)/ }).click();
+        await page.waitForTimeout(100);
 
         // ---- 5) 코드 입력 → 제출 → submit_claude_auth_login_code 호출,
         //         입력값이 그대로 전달됐는지 확인 ----
@@ -505,7 +533,7 @@ export function scenarios(base) {
         await page.waitForTimeout(150);
         const codeInputBefore = page.getByPlaceholder('claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)');
         if ((await codeInputBefore.count()) === 0) {
-          bugs.push({ severity: 'Critical', symptom: '로그인 시작 직후 코드 입력창이 뜨지 않음', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+          bugs.push({ severity: 'Critical', symptom: '로그인 시작 직후 코드 입력창이 뜨지 않음', file: 'src/views/sessions.ts:renderClaudeAuthLoginModal' });
         }
         await shot('01-login-active-before-nav');
 
@@ -515,8 +543,8 @@ export function scenarios(base) {
         // 한정)였는데, 그 경계 자체가 v0.2.11류 결함의 축소판이었다: 로그인을
         // 시작할 수 있는 진입점이 대시보드 위젯으로 넓어지자, bottomFixed 자리
         // 자체가 없는 대시보드·세션목록으로 이동하면 코드 입력창을 볼 방법이
-        // 없었다. main.ts가 이제 라우트와 무관하게 앱 셸 최상위에 전역
-        // (position:fixed)으로 패널을 그리므로, 세션목록 화면에도 입력창이
+        // 없었다. main.ts가 이제 라우트와 무관하게 앱 셸 최상위에서 모달로
+        // 그리므로(v0.2.13 후속, 요구사항 2), 세션목록 화면에도 입력창이
         // "있는" 것이 맞는 사양이다 — 아래는 조용히 지운 게 아니라 기대값을
         // 반대로 뒤집은 것이다.
         await page.evaluate(() => { window.location.hash = '#/sessions'; });
@@ -543,7 +571,7 @@ export function scenarios(base) {
         }
         const cancelBtnAfterReturn = page.getByRole('button', { name: '로그인 취소' });
         if ((await cancelBtnAfterReturn.count()) === 0) {
-          bugs.push({ severity: 'Critical', symptom: '화면 이동 후 복귀 시 "로그인 취소" 버튼이 사라짐', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+          bugs.push({ severity: 'Critical', symptom: '화면 이동 후 복귀 시 "로그인 취소" 버튼이 사라짐', file: 'src/views/sessions.ts:renderClaudeAuthLoginModal' });
         }
 
         // ---- 4) 중복 렌더/빈 껍데기 방지: 이미 리셋된 인증 실패 안내 문구가
@@ -553,7 +581,7 @@ export function scenarios(base) {
           bugs.push({ severity: 'Minor', symptom: '화면 복귀 후 이미 리셋된 인증 실패 안내 문구가 다시 나타남(중복 렌더 의심)', file: 'src/views/sessions.ts:renderChatErrorBlock' });
         }
         if (alertTexts.some((t) => t.trim() === '')) {
-          bugs.push({ severity: 'Major', symptom: '빈 alert 껍데기가 렌더됨', file: 'src/views/sessions.ts:renderClaudeAuthLoginBlock' });
+          bugs.push({ severity: 'Major', symptom: '빈 alert 껍데기가 렌더됨', file: 'src/views/sessions.ts:renderClaudeAuthLoginModal' });
         }
 
         // ---- 5) 마무리: 취소로 idle 복귀(다른 시나리오 오염 방지) ----
@@ -563,6 +591,206 @@ export function scenarios(base) {
           await emitEvent('claude-auth-login-finished', { ok: false, canceled: true, error: null, status: null });
           await page.waitForTimeout(150);
         }
+      },
+    },
+    {
+      // 실사용자 보고 1번(v0.2.13)의 핵심 회귀를 직접 고정한다 — 화면에 남아있던
+      // "Failed to authenticate: OAuth session expired..." 에러는 인증이 실제로는
+      // 성공했는데도 사라지지 않았다. 조사 결과 프론트가 백엔드의 `ok` 불리언
+      // 하나만 믿고 있었는데, 그 값은 claude_auth.rs의 재확인 조회("확인 불가"를
+      // 포함)에서 산정된다 — "확인 불가"가 "실패"로 뭉개지면 `ok:false`가 뜨고,
+      // 실제로는 로그인이 성공했어도 화면은 실패로 표시된다. 이 시나리오는 그
+      // 불일치를 그대로 재현한다: `ok:false`이지만 `status.loggedIn:true`(최신
+      // 조회는 성공을 확인했다)인 이벤트를 emit해, 프론트가 `ok`가 아니라
+      // `status.loggedIn`을 근거로 판단하는지 확인한다.
+      id: 'app-login-ok-flag-untrusted',
+      fixtures: {
+        ...base,
+        start_new_session_message: { sessionId: 'harness-ok-flag-session-1', turnId: 'harness-ok-flag-turn-1' },
+        read_session_transcript: {
+          sessionId: 'harness-ok-flag-session-1',
+          cwd: '/Users/hopegiver/workspace/malgn-vscode',
+          transcriptPath: '/dev/null',
+          messages: [],
+          truncated: false,
+          activeTurnId: null,
+        },
+      },
+      async run(page, { shot, bugs, emitEvent }) {
+        if (base.list_workspace_projects.projects.length === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login-ok-flag-untrusted 시나리오에 쓸 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.waitForSelector('.modal-overlay');
+        const projectRow = page.locator('.modal-body .session-row').first();
+        if ((await projectRow.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login-ok-flag-untrusted 시나리오: 선택 가능한 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await projectRow.click();
+        await page.waitForSelector('.chat-page');
+        await page.locator('.chat-input-textarea').fill('OAuth 만료 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+        // 실사용자가 실제로 본 원본 에러 문구 그대로 재현한다(claude_auth.rs
+        // /session_chat/turn.rs 주석의 실측 문자열).
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-ok-flag-session-1',
+          turnId: 'harness-ok-flag-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+        await shot('01-stale-oauth-error-shown');
+
+        const appLoginBtn = page.getByRole('button', { name: '앱에서 로그인' });
+        if ((await appLoginBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '인증 실패 안내에 "앱에서 로그인" 버튼이 없음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+          return;
+        }
+        await appLoginBtn.click();
+        await page.waitForTimeout(150);
+
+        // 핵심 재현: ok:false지만 status.loggedIn:true(재확인 조회는 성공을
+        // 확인했다) — v0.2.13에서 실제로 관측된 것과 같은 모양의 불일치다.
+        await emitEvent('claude-auth-login-finished', {
+          ok: false,
+          canceled: false,
+          error: null,
+          status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        });
+        await page.waitForTimeout(200);
+        await shot('02-after-finished-ok-false-but-status-logged-in');
+
+        const alertTexts = await page.locator('.alert').allTextContents();
+        if (alertTexts.some((t) => t.includes('claude CLI에 로그인이 필요합니다') || t.includes('OAuth session expired'))) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: 'ok:false지만 status.loggedIn:true인데도 옛 인증 실패 배너가 화면에 남아있음 — d.ok 플래그를 신뢰하는 회귀(실사용자 보고 1번)',
+            file: 'src/main.ts:initClaudeAuthLoginWatcher',
+          });
+        }
+        const doneToast = await page.locator('.toast', { hasText: '완료' }).count();
+        if (doneToast === 0) {
+          bugs.push({ severity: 'Minor', symptom: 'status.loggedIn:true인데 로그인 완료 토스트가 뜨지 않음(ok 플래그에 의존하는 잔재 의심)', file: 'src/main.ts:initClaudeAuthLoginWatcher' });
+        }
+      },
+    },
+    {
+      // 요구사항 2의 닫기 정책을 고정한다 — "로그인 중 사용자가 모달을 닫으면
+      // 코드 입력창에 다시 못 돌아가는 상황"을 만들지 않는다. 진행 중(active)에
+      // 닫으면 백엔드는 계속 진행되고(취소가 아니다) 재진입 배너가 뜬다. 실패로
+      // 끝난 뒤에 닫으면(active=false) 결과를 지우고 배너도 함께 사라진다 —
+      // 두 경로가 서로 다르게 동작해야 한다.
+      id: 'app-login-modal-close-policy',
+      fixtures: {
+        ...base,
+        start_new_session_message: { sessionId: 'harness-close-policy-session-1', turnId: 'harness-close-policy-turn-1' },
+        read_session_transcript: {
+          sessionId: 'harness-close-policy-session-1',
+          cwd: '/Users/hopegiver/workspace/malgn-vscode',
+          transcriptPath: '/dev/null',
+          messages: [],
+          truncated: false,
+          activeTurnId: null,
+        },
+      },
+      async run(page, { shot, bugs, emitEvent }) {
+        if (base.list_workspace_projects.projects.length === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login-modal-close-policy 시나리오에 쓸 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await page.getByRole('button', { name: '+ 새 세션' }).click();
+        await page.waitForSelector('.modal-overlay');
+        const projectRow = page.locator('.modal-body .session-row').first();
+        if ((await projectRow.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'app-login-modal-close-policy 시나리오: 선택 가능한 프로젝트가 없음', file: 'scripts/ui-harness/flows/sessions.mjs' });
+          return;
+        }
+        await projectRow.click();
+        await page.waitForSelector('.chat-page');
+        await page.locator('.chat-input-textarea').fill('닫기 정책 재현용 메시지');
+        await page.locator('.chat-input-textarea').press('Enter');
+        await page.waitForTimeout(200);
+        await emitEvent('session-chat-done', {
+          sessionId: 'harness-close-policy-session-1',
+          turnId: 'harness-close-policy-turn-1',
+          ok: false,
+          canceled: false,
+          error: 'success: Not logged in · Please run /login',
+          authError: true,
+        });
+        await page.waitForTimeout(200);
+
+        // ---- 1) 로그인 시작 → 모달이 열린다 ----
+        await page.getByRole('button', { name: '앱에서 로그인' }).click();
+        await page.waitForTimeout(150);
+        const codeInputPlaceholder = 'claude가 코드를 요구하면 여기에 붙여넣으세요 (필요할 때만)';
+        if ((await page.getByPlaceholder(codeInputPlaceholder).count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '로그인 시작 후 모달이 열리지 않음', file: 'src/views/sessions.ts:renderClaudeAuthLoginModal' });
+          return;
+        }
+        await shot('01-modal-open-active');
+
+        // ---- 2) 진행 중(active)에 ESC로 닫는다 → 취소되지 않고 재진입
+        //         배너만 뜬다(백엔드 로그인은 계속 진행) ----
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(150);
+        const modalGoneWhileActive = await page.locator('.modal-overlay').count();
+        if (modalGoneWhileActive > 0) {
+          bugs.push({ severity: 'Major', symptom: 'ESC를 눌러도 로그인 모달이 닫히지 않음', file: 'src/views/sessions.ts:renderClaudeAuthLoginModal' });
+        }
+        const cancelInvokedByClose = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'cancel_claude_auth_login'));
+        if (cancelInvokedByClose) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: '모달을 닫기만 했는데 cancel_claude_auth_login이 호출됨(닫기=취소로 오동작) — 진행 중인 로그인을 실수로 취소시키면 안 된다',
+            file: 'src/views/sessions.ts:closeClaudeAuthLoginModal',
+          });
+        }
+        const reopenBanner = page.locator('.app-login-reopen-banner');
+        if ((await reopenBanner.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '모달을 닫아도 재진입 배너가 뜨지 않음 — 진행 중인 로그인으로 돌아올 길이 없다(갇힘)', file: 'src/views/sessions.ts:renderClaudeAuthLoginReopenBanner' });
+        }
+        await shot('02-modal-closed-reopen-banner-visible');
+
+        // ---- 3) "계속하기" → 같은 모달이 다시 열린다(재시작 아님) ----
+        await reopenBanner.getByRole('button', { name: '계속하기' }).click();
+        await page.waitForTimeout(150);
+        if ((await page.getByPlaceholder(codeInputPlaceholder).count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '"계속하기"를 눌러도 코드 입력창이 있는 모달이 다시 열리지 않음', file: 'src/views/sessions.ts:openClaudeAuthLoginModal' });
+        }
+        const startCallsAfterReopen = await page.evaluate(() => (window.__invokeLog ?? []).filter((e) => e.cmd === 'start_claude_auth_login').length);
+        if (startCallsAfterReopen > 1) {
+          bugs.push({ severity: 'Major', symptom: '"계속하기"가 로그인을 재시작함(start_claude_auth_login이 두 번 이상 호출됨) — 재진입이 아니라 재시작으로 동작', file: 'src/views/sessions.ts:openClaudeAuthLoginModal' });
+        }
+        await shot('03-reopened-same-modal');
+
+        // ---- 4) 실패(확인 불가)로 끝난다 → 모달이 자동으로 닫히지 않고
+        //         결과(원문 로그 포함)를 보여준다 ----
+        await emitEvent('claude-auth-login-finished', { ok: false, canceled: false, error: '테스트: 확인 불가 재현', status: null });
+        await page.waitForTimeout(200);
+        const outcomeText = await page.locator('.claude-auth-login-modal-body').first().textContent().catch(() => null);
+        if (!outcomeText || !outcomeText.includes('확인하지 못했습니다')) {
+          bugs.push({ severity: 'Major', symptom: `확인 불가로 끝났는데 그 문구가 모달에 보이지 않음(실제: ${outcomeText})`, file: 'src/views/sessions.ts:renderClaudeAuthLoginOutcomePanel' });
+        }
+        await shot('04-outcome-unknown-shown-in-modal');
+
+        // ---- 5) "닫기" → 결과가 지워지고 재진입 배너도 사라진다(완전히 끝) ----
+        await page.getByRole('button', { name: '닫기' }).click();
+        await page.waitForTimeout(150);
+        const bannerAfterDismiss = await page.locator('.app-login-reopen-banner').count();
+        if (bannerAfterDismiss > 0) {
+          bugs.push({ severity: 'Minor', symptom: '실패 결과를 "닫기"로 지운 뒤에도 재진입 배너가 남아있음', file: 'src/views/sessions.ts:closeClaudeAuthLoginModal' });
+        }
+        const restartBtn = page.getByRole('button', { name: '앱에서 로그인' });
+        if ((await restartBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '결과를 닫은 뒤 다시 시도할 "앱에서 로그인" 버튼이 돌아오지 않음', file: 'src/views/sessions.ts:renderChatErrorBlock' });
+        }
+        await shot('05-dismissed-idle-again');
       },
     },
     {

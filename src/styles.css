@@ -774,28 +774,33 @@ textarea.settings-input { resize: vertical; }
 .chat-input-row { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; }
 .chat-input-textarea { flex: 1; }
 
-/* ---------------- 앱 안 claude 로그인 — 진행 패널(claude_auth.rs 근본 수정판) ----------------
-   .alert이 기본 flex-row라 첫 번째 자식(설명 텍스트)과 나란히 두 번째
-   자식으로 이 패널 전체를 넣는다 — 패널 내부는 세로로 쌓는다(상태 안내 →
-   URL 링크 → 코드 입력줄 → 원문 로그 → 취소). */
-.chat-auth-login-panel { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+/* ---------------- 앱 안 claude 로그인 — 모달(claude_auth.rs 근본 수정판 +
+   v0.2.13 후속 모달 전환, 요구사항 2) ----------------
+   modal-box/modal-body는 dom.ts createModalOverlay가 만드는 공용 골격을
+   그대로 쓰고, 이 블록은 그 안 내용물의 세로 배치만 담당한다(상태 안내 →
+   URL 링크 → 코드 입력줄 → 원문 로그 토글 → 취소/다시시도/닫기). */
+.claude-auth-login-modal-body { display: flex; flex-direction: column; gap: 10px; }
 .chat-auth-code-row { display: flex; gap: 8px; }
-.chat-auth-code-row .settings-input { min-width: 220px; }
+.chat-auth-code-row .settings-input { min-width: 220px; flex: 1; }
+/* 원문 로그 토글(요구사항 3) — 기본 접힘, 버튼을 누르면 박스가 펼쳐진다. */
+.chat-auth-log-block { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .chat-auth-login-output {
-  max-width: 320px; max-height: 120px; overflow: auto; text-align: left;
+  max-width: 100%; max-height: 160px; overflow: auto; text-align: left;
   font-size: 11px; white-space: pre-wrap; word-break: break-word;
   background: var(--color-neutral-100); border-radius: var(--radius-xs);
-  padding: 8px; margin: 0;
+  padding: 8px; margin: 0; width: 100%;
 }
-/* main.ts renderApp()이 앱 셸(#app) 최상위에 라우트와 무관하게 한 번만 그리는
-   전역 로그인 진행 패널 — 토스트(.toast-root, 하단중앙)·업데이트 배너
+/* main.ts renderApp()이 앱 셸(#app) 최상위에 라우트와 무관하게 그리는 작은
+   재진입 배너 — 모달을 닫아도(active=true인 동안) 백엔드 로그인은 계속
+   진행되므로, 이 배너가 화면 어디서든 "계속하기"로 같은 모달을 다시 여는
+   길을 남긴다(갇힘 방지). 토스트(.toast-root, 하단중앙)·업데이트 배너
    (.update-countdown-banner, 하단중앙)와 겹치지 않도록 하단우측에 둔다.
-   .alert의 margin-bottom(16px)은 여기서는 의미가 없어(다음 형제 요소가 없다)
-   0으로 되돌린다. */
-.app-login-panel-global {
+   .alert의 기본 flex-row를 그대로 써서 문구와 버튼을 한 줄에 둔다. */
+.app-login-reopen-banner {
   position: fixed; bottom: 24px; right: 24px; z-index: 999;
   max-width: min(360px, calc(100vw - 48px)); width: 100%;
   margin-bottom: 0; box-shadow: var(--shadow-toast);
+  align-items: center; gap: 10px;
 }
 
 /* ---------------- 세션 상세: 메타데이터 모달 (배경 클릭/ESC/닫기 버튼) ---------------- */

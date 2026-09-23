@@ -161,10 +161,11 @@ function mcpHubWidget(): HTMLElement {
 // 호출하지 않는다"고 못박았었다(a7cc71a) — 그 시점엔 로그인 진행 패널(코드
 // 입력창)이 세션 상세/draft 화면의 bottomFixed에만 있어서, 대시보드에서
 // 로그인을 시작하면 붙여넣을 자리 자체가 없는 화면에 사용자가 갇혔기
-// 때문이다. 이제 그 패널은 main.ts renderApp()이 라우트와 무관하게 앱 셸
-// 최상위에 전역(position:fixed)으로 그리므로 그 제약이 풀렸다 — "터미널
-// 열기"는 이 환경에서 앱 로그인이 아예 안 될 때의 폴백으로 여전히 나란히
-// 남겨둔다.
+// 때문이다. 이제 그 UI는 main.ts renderApp()이 라우트와 무관하게 앱 셸
+// 최상위에서 모달로 그리므로(sessions.ts renderClaudeAuthLoginModal) 그
+// 제약이 풀렸다 — 모달을 닫아도 재진입 배너(renderClaudeAuthLoginReopenBanner)가
+// 화면 어디서든 다시 열 수 있게 해준다. "터미널 열기"는 이 환경에서 앱
+// 로그인이 아예 안 될 때의 폴백으로 여전히 나란히 남겨둔다.
 //
 // 세 상태를 구분해 보여준다(직전 라운드 회귀의 핵심 교훈 — "없음"이 아니라
 // "있음"으로 판정한다):
@@ -179,7 +180,7 @@ function mcpHubWidget(): HTMLElement {
 //      버튼을 나란히 노출한다(sessions.ts renderChatErrorBlock과 동일 패턴).
 //      이미 진행 중이면(state.claudeAuthLogin.active) 버튼 대신 안내만
 //      보여준다 — 시작 버튼을 다시 눌러 중복 시작할 이유가 없고, 진행 상황은
-//      전역 패널이 이미 화면 어딘가에 떠 있다.
+//      모달 또는 재진입 배너가 이미 화면 어딘가에 떠 있다.
 function claudeAuthWidget(): HTMLElement {
   const auth = state.claudeAuth;
   const login = state.claudeAuthLogin;
@@ -211,7 +212,7 @@ function claudeAuthWidget(): HTMLElement {
   ];
 
   if (login.active) {
-    children.push(el('div', { className: 'home-widget-desc' }, ['로그인이 진행 중입니다 — 화면에 뜬 로그인 패널에서 계속하세요.']));
+    children.push(el('div', { className: 'home-widget-desc' }, ['로그인이 진행 중입니다 — 화면 우측 하단 안내에서 계속하세요.']));
   } else {
     if (login.error) {
       children.push(el('div', { className: 'home-widget-desc' }, [`⚠ ${login.error}`]));

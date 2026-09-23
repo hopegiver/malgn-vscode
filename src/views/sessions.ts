@@ -672,21 +672,37 @@ async function handleClaudeLogin(): Promise<void> {
 // `claude auth login --claudeai`를 시작한다(claude_auth.rs). 여기서는 spawn
 // 성공만 반영하고, 그 다음 진행 상황(로그인 URL·원문 출력·완료/실패/취소)은
 // main.ts가 앱 시작 시 구독한 이벤트가 state.claudeAuthLogin을 갱신하며
-// 채운다 — 이 화면은 그 상태를 읽기만 한다(아래 renderChatErrorBlock).
+// 채운다 — 이 화면은 그 상태를 읽기만 한다(아래 renderClaudeAuthLoginModal).
+//
+// 대시보드 위젯(views/home.ts)과 세션 채팅 인증 실패 배너(아래
+// renderChatErrorBlock) 양쪽이 이 함수를 그대로 재사용한다 — 로그인 로직을
+// 두 화면에 복제하지 않는다(작업 지시). 두 진입점 모두 같은 모달을 연다.
 export async function handleClaudeAuthLoginStart(): Promise<void> {
   state.claudeAuthLogin.active = true;
+  state.claudeAuthLogin.modalOpen = true;
   state.claudeAuthLogin.url = null;
   state.claudeAuthLogin.error = null;
+  state.claudeAuthLogin.outcome = null;
   state.claudeAuthLogin.output = '';
+  state.claudeAuthLogin.outputExpanded = false;
   state.claudeAuthLogin.codeInput = '';
   notifyChange();
   try {
     await startClaudeAuthLogin();
   } catch (err) {
     state.claudeAuthLogin.active = false;
+    state.claudeAuthLogin.outcome = 'unknown';
     state.claudeAuthLogin.error = err instanceof Error ? err.message : String(err);
     notifyChange();
   }
+}
+
+// 이미 진행 중인(또는 방금 실패/확인불가로 끝난) 로그인의 모달을 다시 보여줄
+// 때만 쓴다 — 재시작이 아니다. 재진입 배너(renderClaudeAuthLoginReopenBanner)의
+// "계속하기" 버튼이 이 함수를 부른다. active/error/output은 건드리지 않는다.
+export function openClaudeAuthLoginModal(): void {
+  state.claudeAuthLogin.modalOpen = true;
+  notifyChange();
 }
 
 // 진행 중인 로그인이 없어도(이미 끝난 뒤 늦게 눌렀다 등) 백엔드가 no-op으로
@@ -733,8 +749,37 @@ async function handleClaudeAuthLoginSubmitCode(): Promise<void> {
   }
 }
 
-// 로그인이 진행 중일 때(login.active) 보여줄 패널 — 상태 안내, URL 링크 열기
-// 폴백, 상시 코드 입력창(분기 없음), 원문 출력 로그, 취소 버튼 순서.
+// 원문 로그 토글(요구사항 3) — 기본 접힘. claude가 코드 입력창 아래 원문을
+// 쏟아내면 CLI에 익숙하지 않은 사용자가 불안해한다는 보고에 따라 기본은
+// 숨기되, 완전히 없애지는 않는다(이번 라운드에 원인 추적이 이 원문에만
+// 의존했던 적이 반복됐다). 펼침 여부는 오직
+// state.claudeAuthLogin.outputExpanded(구조화된 플래그)만 본다 — output
+// 원문 텍스트의 특정 문구를 감지해 펼치지 않는다. claude_auth.rs가 "특정
+// 문구가 보이면 분기"하는 패턴을 v0.2.11 사고 원인으로 지목하고 없앤 것과
+// 같은 이유다.
+function renderClaudeAuthLoginOutputToggle(login: typeof state.claudeAuthLogin): HTMLElement {
+  const children: HTMLElement[] = [
+    el(
+      'button',
+      {
+        className: 'btn btn-sm chat-auth-log-toggle',
+        onClick: () => {
+          state.claudeAuthLogin.outputExpanded = !state.claudeAuthLogin.outputExpanded;
+          notifyChange();
+        },
+      },
+      [login.outputExpanded ? '원문 로그 접기 ▲' : '자세히 보기 (원문 로그) ▼']
+    ),
+  ];
+  if (login.outputExpanded) {
+    children.push(el('pre', { className: 'chat-auth-login-output' }, [login.output || '(아직 출력이 없습니다)']));
+  }
+  return el('div', { className: 'chat-auth-log-block' }, children);
+}
+
+// 로그인이 진행 중일 때(login.active) 모달 안에 보여줄 내용 — 상태 안내,
+// URL 링크 열기 폴백, 상시 코드 입력창(분기 없음), 원문 출력 로그 토글,
+// 취소 버튼 순서.
 function renderClaudeAuthLoginActivePanel(login: typeof state.claudeAuthLogin): HTMLElement[] {
   const children: HTMLElement[] = [
     el('div', { className: 'chat-sample-note' }, [
@@ -775,37 +820,135 @@ function renderClaudeAuthLoginActivePanel(login: typeof state.claudeAuthLogin): 
     [login.submitting ? '전달하는 중…' : '코드 제출']
   );
   children.push(el('div', { className: 'chat-auth-code-row' }, [codeInput, submitBtn]));
-
-  if (login.output) {
-    children.push(el('pre', { className: 'chat-auth-login-output' }, [login.output]));
-  }
-
+  children.push(renderClaudeAuthLoginOutputToggle(login));
   children.push(el('button', { className: 'btn', onClick: () => void handleClaudeAuthLoginCancel() }, ['로그인 취소']));
   return children;
 }
 
-// 로그인 진행 패널 — chat.error/authError와 무관하게 state.claudeAuthLogin.active
-// 하나만으로 그린다(hub 이슈, v0.2.11류 회귀 재발 방지). leaveSessionChatView가
-// 화면을 뜰 때마다 state.sessionChat(error·authError 포함)을 통째로 비우므로,
-// 로그인 패널을 authError에 얹어두면 로그인을 시작한 뒤 다른 화면에 갔다
-// 돌아왔을 때(그 사이에도 백엔드 자식 프로세스는 계속 코드를 기다린다) 입력창이
-// 통째로 사라진다 — active 하나만 보고 그리면 화면 이동과 무관하게 항상 뜬다.
+// 로그인이 끝났지만(active=false) 성공/취소가 아니라서 모달을 자동으로 닫지
+// 않은 경우의 내용 — outcome으로 "확인된 실패"(claude auth status --json을
+// 다시 물어 loggedIn:false로 명시 확인됨)와 "확인 불가"(그 재확인 조회
+// 자체가 실패)를 구분해 서로 다른 문구를 보여준다. "없음"을 "실패"로
+// 단정하지 않는 것이 v0.2.13 회귀 수정의 핵심이다.
+function renderClaudeAuthLoginOutcomePanel(login: typeof state.claudeAuthLogin): HTMLElement[] {
+  const label = login.outcome === 'unknown' ? '로그인 결과를 확인하지 못했습니다' : '로그인에 실패했습니다';
+  const children: HTMLElement[] = [
+    el('div', { className: 'chat-sample-note' }, [label]),
+    el('div', {}, [`⚠ ${login.error ?? ''}`]),
+  ];
+  children.push(renderClaudeAuthLoginOutputToggle(login));
+  children.push(
+    el('div', { className: 'settings-form-actions' }, [
+      el('button', { className: 'btn btn-primary', onClick: () => void handleClaudeAuthLoginStart() }, ['다시 시도']),
+      el('button', { className: 'btn', onClick: () => closeClaudeAuthLoginModal() }, ['닫기']),
+    ])
+  );
+  return children;
+}
+
+// 모달 ESC 리스너 — projects.ts의 workspacesModalEscHandler와 동일한 패턴.
+// 이 모달은 특정 라우트에 속하지 않고 main.ts가 매 렌더마다 호출하므로(라우트
+// 이탈이라는 개념이 없다), 열림/닫힘을 이 render 함수 안에서 매번 직접
+// 확인해 붙이고 뗀다 — 별도 leaveXxxView 훅이 필요 없다.
+let claudeAuthLoginModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function detachClaudeAuthLoginModalEscHandler(): void {
+  if (claudeAuthLoginModalEscHandler) {
+    window.removeEventListener('keydown', claudeAuthLoginModalEscHandler);
+    claudeAuthLoginModalEscHandler = null;
+  }
+}
+
+// 모달을 닫는다 — 배경 클릭·ESC·"✕"·"닫기" 버튼 4가지 경로 모두 이 함수를
+// 부른다(요구사항 2: 닫기를 막지 않는다 — 이번 라운드에 세 번 고친 "갇힘"과
+// 같은 부류를 새로 만들지 않는다). active(백엔드 로그인 진행 여부)는 절대
+// 건드리지 않는다: 로그인이 아직 진행 중이면 모달만 숨기고(재진입
+// 배너=renderClaudeAuthLoginReopenBanner가 대신 뜬다) 백엔드는 계속
+// 진행한다. 이미 끝난 뒤(실패/확인불가라 모달이 열려 있던 경우)라면 "결과를
+// 확인했다"는 뜻으로 그 결과(error/outcome/output)까지 함께 지운다 — 다시
+// 시도하려면 "앱에서 로그인"을 새로 눌러야 한다.
+function closeClaudeAuthLoginModal(): void {
+  state.claudeAuthLogin.modalOpen = false;
+  if (!state.claudeAuthLogin.active) {
+    state.claudeAuthLogin.error = null;
+    state.claudeAuthLogin.outcome = null;
+    state.claudeAuthLogin.output = '';
+    state.claudeAuthLogin.outputExpanded = false;
+  }
+  detachClaudeAuthLoginModalEscHandler();
+  restoreModalFocus(closeClaudeAuthLoginModal);
+  notifyChange();
+}
+
+// 로그인 모달(요구사항 2) — 대시보드 위젯(views/home.ts)과 세션 채팅 인증
+// 실패 배너(아래 renderChatErrorBlock) 양쪽의 "앱에서 로그인" 버튼이 같은
+// handleClaudeAuthLoginStart()를 불러 여는 하나의 모달이다 — 컴포넌트가 두
+// 화면으로 갈라지지 않는다. main.ts가 라우트와 무관하게 앱 셸(#app)
+// 최상위에서 매 렌더마다 호출한다 — 특정 화면에 속하지 않으므로 화면
+// 이동으로 사라지지 않는다(이전 전역 고정 패널과 같은 성질을 모달 형태로
+// 유지한다).
 //
-// 이전엔 세션 상세/draft 두 화면에서만 로그인을 시작할 수 있어 두 화면의
-// bottomFixed에만 이 블록을 얹었다(937fde9). 그런데 대시보드 위젯에서도
-// 로그인을 시작할 수 있게 되며(views/home.ts claudeAuthWidget이 아래
-// handleClaudeAuthLoginStart를 재사용) 같은 갇힘이 범위만 좁아진 채
-// 재현됐다 — 대시보드·세션목록에는 애초에 bottomFixed 자리 자체가 없다.
-// 그래서 이 함수는 더 이상 이 파일 안에서 직접 렌더하지 않고 export만 하며,
-// 실제 렌더는 main.ts의 renderApp()이 라우트와 무관하게 앱 셸(#app) 최상위에서
-// 한 번만 호출한다(styles.css `.app-login-panel-global` — position:fixed로
-// 화면 어디서든 보인다). 세션 상세/draft 화면은 이제 이 블록을 자기
-// bottomFixed에 중복으로 넣지 않는다(아래 renderChatErrorBlock의 authError
-// 안내만 남는다).
-export function renderClaudeAuthLoginBlock(): HTMLElement[] {
+// 이 저장소의 기존 모달 관례(dom.ts createModalOverlay — 포커스 트랩·Tab
+// 순환·닫을 때 포커스 복원)를 그대로 재사용한다 — 새로 만들면 그 접근성
+// 처리가 빠진다.
+export function renderClaudeAuthLoginModal(): HTMLElement[] {
   const login = state.claudeAuthLogin;
-  if (!login.active) return [];
-  return [el('div', { className: 'alert chat-auth-login-panel app-login-panel-global' }, renderClaudeAuthLoginActivePanel(login))];
+  if (!login.modalOpen) {
+    detachClaudeAuthLoginModalEscHandler();
+    return [];
+  }
+  // active도 아니고 보여줄 에러도 없으면(이론상 도달하지 않아야 하지만
+  // 방어적으로) 빈 모달 껍데기를 남기지 않는다.
+  if (!login.active && !login.error) {
+    return [];
+  }
+
+  const modalBox = el('div', { className: 'modal-box claude-auth-login-modal' }, [
+    el('div', { className: 'modal-header' }, [
+      el('h2', { className: 'modal-title' }, ['claude CLI 로그인']),
+      el('button', { className: 'modal-close-btn', onClick: closeClaudeAuthLoginModal }, ['✕']),
+    ]),
+    el(
+      'div',
+      { className: 'modal-body claude-auth-login-modal-body' },
+      login.active ? renderClaudeAuthLoginActivePanel(login) : renderClaudeAuthLoginOutcomePanel(login)
+    ),
+  ]);
+
+  if (!claudeAuthLoginModalEscHandler) {
+    claudeAuthLoginModalEscHandler = (e) => {
+      if (e.key === 'Escape') closeClaudeAuthLoginModal();
+    };
+    window.addEventListener('keydown', claudeAuthLoginModalEscHandler);
+  }
+
+  return [createModalOverlay(modalBox, closeClaudeAuthLoginModal)];
+}
+
+// 모달을 닫아도(active인 동안) 로그인은 백엔드에서 계속 진행된다 — 이 작은
+// 배너가 화면 어디서든 "아직 진행 중"임을 알리고, 누르면 같은 모달을
+// 다시 연다(재시작이 아니다, openClaudeAuthLoginModal). 실패/확인불가로
+// 끝난 뒤 모달을 닫지 않고 방치한 경우에도(active=false지만 error가
+// 남아있다) 같은 배너가 재진입 통로가 된다 — "닫기=완전히 사라짐"이 아니라
+// 항상 돌아올 길을 남겨두는 것이 이번 라운드 내내 고친 "갇힘" 방지와
+// 대칭되는 원칙이다. main.ts가 renderClaudeAuthLoginModal과 나란히 매
+// 렌더마다 호출한다.
+export function renderClaudeAuthLoginReopenBanner(): HTMLElement[] {
+  const login = state.claudeAuthLogin;
+  if (login.modalOpen) return [];
+  if (!login.active && !login.error) return [];
+
+  const label = login.active
+    ? 'claude 로그인 진행 중'
+    : login.outcome === 'unknown'
+      ? 'claude 로그인 결과를 확인하지 못했습니다'
+      : 'claude 로그인에 실패했습니다';
+  return [
+    el('div', { className: 'alert app-login-reopen-banner' }, [
+      el('span', {}, [label]),
+      el('button', { className: 'btn btn-sm', onClick: () => openClaudeAuthLoginModal() }, ['계속하기']),
+    ]),
+  ];
 }
 
 // 세션 상세/draft 화면이 공유하는 하단 에러 표시. 일반 에러는 기존 그대로
@@ -814,9 +957,10 @@ export function renderClaudeAuthLoginBlock(): HTMLElement[] {
 // 보여준다 — 이 갭이 실사용자 보고(claude CLI 인증 체크/처리 로직도 화면도
 // 없다)의 핵심이었다. "앱에서 로그인"(새 경로)이 실패하거나 이 환경에서
 // 아예 쓸 수 없을 때 막다른 길에 몰리지 않도록 "터미널 열기"(기존 경로)를
-// 항상 나란히 남겨둔다. 로그인이 진행 중일 때의 입력창·취소 버튼 자체는
-// main.ts가 renderClaudeAuthLoginBlock()으로 전역에 따로 그리므로, 여기서는
-// 중복 렌더하지 않도록 login.active가 아닐 때만 시작 버튼들을 붙인다.
+// 항상 나란히 남겨둔다. 로그인이 진행 중이거나(login.active) 직전 결과가
+// 아직 안 지워졌으면(login.error) 시작 버튼 대신 짧은 안내만 남긴다 —
+// 모달/재진입 배너가 이미 그 상태를 보여주므로 여기서 같은 버튼을 중복으로
+// 그리지 않는다(로그인 로직을 두 곳에 복제하지 않는다는 원칙과 같은 이유).
 function renderChatErrorBlock(): HTMLElement[] {
   const chat = state.sessionChat;
   if (!chat.error) return [];
@@ -829,10 +973,9 @@ function renderChatErrorBlock(): HTMLElement[] {
       ]),
     ];
 
-    if (!login.active) {
-      if (login.error) {
-        children.push(el('div', { className: 'chat-sample-note' }, [`⚠ ${login.error}`]));
-      }
+    if (login.active || login.error) {
+      children.push(el('div', { className: 'chat-sample-note' }, ['로그인 진행 상황은 화면 우측 하단 안내를 확인하세요.']));
+    } else {
       children.push(
         el('button', { className: 'btn btn-primary', onClick: () => void handleClaudeAuthLoginStart() }, ['앱에서 로그인']),
         el('button', { className: 'btn', onClick: () => void handleClaudeLogin() }, ['터미널 열기 (claude login)'])
@@ -967,7 +1110,7 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     scheduleChatAutoScroll();
 
     // 로그인 진행 패널(코드 입력창·취소 버튼)은 여기서 렌더하지 않는다 — main.ts가
-    // 앱 셸 최상위에서 전역으로 한 번만 그린다(renderClaudeAuthLoginBlock 주석 참고).
+    // 앱 셸 최상위에서 전역으로 한 번만 그린다(renderClaudeAuthLoginModal 주석 참고).
     const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
     bottomFixed.push(renderChatInputArea(cwd, (text) => void sendChatMessage(sessionId, text)));
     body.push(el('div', { className: 'chat-bottom-fixed' }, bottomFixed));
@@ -1023,7 +1166,7 @@ export function renderSessionDraftView(projectPath: string): HTMLElement {
   scheduleChatAutoScroll();
 
   // 로그인 진행 패널(코드 입력창·취소 버튼)은 여기서 렌더하지 않는다 — main.ts가
-  // 앱 셸 최상위에서 전역으로 한 번만 그린다(renderClaudeAuthLoginBlock 주석 참고).
+  // 앱 셸 최상위에서 전역으로 한 번만 그린다(renderClaudeAuthLoginModal 주석 참고).
   const bottomFixed: HTMLElement[] = [...renderChatErrorBlock()];
   bottomFixed.push(renderChatInputArea(projectPath, (text) => void sendDraftMessage(projectPath, text), draftSending));
 

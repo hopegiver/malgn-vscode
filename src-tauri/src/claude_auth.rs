@@ -205,17 +205,29 @@ pub struct ClaudeAuthStatus {
 
 /// 실측 출력(이 머신, `claude auth status --json`): `{"loggedIn": true,
 /// "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "...",
-/// "orgName": "...", "subscriptionType": "max", ...}`. 이 함수는 값이
-/// 있으면 뽑아 쓰고, JSON이 아니거나 필드가 없으면(CLI 버전 차이·미로그인
-/// 등) 조용히 기본값(`logged_in: false`)으로 떨어진다 — 종료코드를 신뢰
-/// 신호로 쓰지 않는다는 원칙과 같은 이유로, 파싱 실패도 예외로 만들지
-/// 않는다.
-fn parse_claude_auth_status(stdout: &str) -> ClaudeAuthStatus {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(stdout) else {
-        return ClaudeAuthStatus::default();
-    };
-    ClaudeAuthStatus {
-        logged_in: value.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false),
+/// "orgName": "...", "subscriptionType": "max", ...}`.
+///
+/// ⚠️ v0.2.13 회귀(실사용자 보고, 2026-09-23): 이 함수가 예전엔 JSON이 아니거나
+/// `loggedIn` 필드가 없으면 조용히 `logged_in: false`(기본값)로 떨어졌다 —
+/// "확인 못 함"과 "확인했는데 로그인 안 됨"을 같은 값으로 뭉갰다는 뜻이다.
+/// 그 결과 `run_login`이 로그인 직후 이 함수를 다시 불렀을 때 파싱이 실패하면
+/// (예: 타이밍 레이스로 stdout이 아직 안 왔거나 다른 텍스트가 섞인 경우)
+/// "로그인 안 됨"으로 오판해 `emit_login_finished(ok=false)`를 쏘았다 — 사용자는
+/// 실제로는 로그인에 성공했는데 화면은 실패라고 말하는 상태에 빠졌다. 이제는
+/// 파싱 실패를 `Err`로 명시적으로 올린다 — 호출부(`check_claude_auth_status`)가
+/// 이 `Err`를 "확인 불가"로 그대로 전파하고, "확인했는데 로그인 안 됨"(JSON은
+/// 정상 파싱되고 `loggedIn`이 명시적으로 `false`인 경우)과 구분해 취급한다.
+fn parse_claude_auth_status(stdout: &str) -> Result<ClaudeAuthStatus, String> {
+    let value = serde_json::from_str::<serde_json::Value>(stdout)
+        .map_err(|e| format!("claude auth status 응답을 해석하지 못했습니다(JSON 아님, {e}): {}", tail_chars(stdout, 200)))?;
+    let logged_in = value.get("loggedIn").and_then(|v| v.as_bool()).ok_or_else(|| {
+        format!(
+            "claude auth status 응답에 loggedIn 필드가 없습니다: {}",
+            tail_chars(stdout, 200)
+        )
+    })?;
+    Ok(ClaudeAuthStatus {
+        logged_in,
         auth_method: value.get("authMethod").and_then(|v| v.as_str()).map(String::from),
         email: value.get("email").and_then(|v| v.as_str()).map(String::from),
         org_name: value.get("orgName").and_then(|v| v.as_str()).map(String::from),
@@ -223,7 +235,7 @@ fn parse_claude_auth_status(stdout: &str) -> ClaudeAuthStatus {
             .get("subscriptionType")
             .and_then(|v| v.as_str())
             .map(String::from),
-    }
+    })
 }
 
 /// 보너스 항목(작업 지시): 이 프로젝트가 지금까지 갖지 못했던 신뢰할 만한
@@ -260,7 +272,30 @@ pub fn check_claude_auth_status() -> Result<ClaudeAuthStatus, String> {
     if output.timed_out {
         return Err("claude auth status 조회가 시간 초과되었습니다.".to_string());
     }
-    Ok(parse_claude_auth_status(&output.stdout))
+    parse_claude_auth_status(&output.stdout)
+}
+
+/// 로그인 직후(`run_login` 종료 시점)에만 쓰는 재시도 래퍼 — 일반 조회(대시보드
+/// 위젯이 `check_claude_auth_status`를 직접 부르는 경로)에는 걸지 않는다.
+/// 그 경로는 사용자가 "다시 확인하기"로 언제든 직접 재시도할 수 있어 앱이
+/// 대신 기다려줄 이유가 없다. 반면 여기서는 자식 프로세스(`claude auth
+/// login`)가 막 종료된 직후라 "확인 불가"가 타이밍 레이스일 가능성을 배제할
+/// 수 없다(미확정 — 이 머신에서 실제로 재현·확정하지 못했다). 이 조회는
+/// 읽기 전용이라 재시도해도 부작용이 없으므로, 최대 3회까지 짧게(400ms
+/// 간격) 다시 물어 "확인 불가"를 "실패"로 성급히 단정하지 않는다.
+fn check_claude_auth_status_after_login() -> Result<ClaudeAuthStatus, String> {
+    let attempts = 3;
+    let mut last_err = String::new();
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        match check_claude_auth_status() {
+            Ok(status) => return Ok(status),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 // ==================== 앱 안 로그인 시작 ====================
@@ -491,11 +526,15 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
 
     // 종료코드를 완료 신호로 추측하지 않는다(이 파일 상단 경계 ①) — 대신
     // `claude auth status --json`을 다시 물어 실제 로그인 여부를 확인한다.
-    match check_claude_auth_status() {
+    // `check_claude_auth_status_after_login`(재시도 래퍼)을 쓴다 — 일반
+    // `check_claude_auth_status()`가 아니다.
+    match check_claude_auth_status_after_login() {
         Ok(status) if status.logged_in => {
             emit_login_finished(&app, true, false, None, Some(status));
         }
         Ok(status) => {
+            // "확인했는데 로그인 안 됨" — 명확한 실패. status가 Some이므로
+            // 프론트는 이 경우를 "확인 불가"와 구분해 보여줄 수 있다.
             let tail = tail_chars(&stderr_text, 2000);
             let message = if tail.is_empty() {
                 "로그인이 완료되지 않았습니다. 시간이 초과되었거나 브라우저에서 로그인을 취소했을 수 있습니다.".to_string()
@@ -505,6 +544,8 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
             emit_login_finished(&app, false, false, Some(message), Some(status));
         }
         Err(e) => {
+            // "확인 자체가 안 됨" — 실패로 단정하지 않는다. status를 None으로
+            // 보내 프론트가 이 경우를 별도 문구("확인 불가")로 표시하게 한다.
             emit_login_finished(
                 &app,
                 false,
@@ -576,7 +617,7 @@ mod tests {
         // 실측 출력 그대로(이 머신, `claude auth status --json`) — 필드
         // 이름·타입이 실제 CLI와 어긋나면 이 테스트가 먼저 깨진다.
         let json = r#"{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "dev@malgnsoft.com", "orgName": "malgnsoft", "subscriptionType": "max"}"#;
-        let status = parse_claude_auth_status(json);
+        let status = parse_claude_auth_status(json).expect("정상 JSON은 Ok여야 합니다");
         assert!(status.logged_in);
         assert_eq!(status.auth_method.as_deref(), Some("claude.ai"));
         assert_eq!(status.email.as_deref(), Some("dev@malgnsoft.com"));
@@ -584,18 +625,34 @@ mod tests {
         assert_eq!(status.subscription_type.as_deref(), Some("max"));
     }
 
+    // "확인했는데 로그인 안 됨" — loggedIn 필드가 명시적으로 false로 정상
+    // 파싱된 경우. 아래 두 "확인 불가"(파싱 실패/필드 없음) 테스트와 대비되는
+    // 케이스다 — 이 셋을 구분하는 것이 이번 회귀 수정의 핵심이다.
     #[test]
-    fn parse_claude_auth_status_not_logged_in() {
+    fn parse_claude_auth_status_confirmed_not_logged_in() {
         let json = r#"{"loggedIn": false}"#;
-        let status = parse_claude_auth_status(json);
+        let status = parse_claude_auth_status(json).expect("loggedIn 필드가 있으면 Ok여야 합니다");
         assert!(!status.logged_in);
         assert!(status.auth_method.is_none());
     }
 
+    // "확인 불가" 케이스 ① — JSON 자체가 아님. v0.2.13 회귀 전에는 이 경우도
+    // 조용히 `logged_in: false`(확인된 미로그인과 동일한 값)로 떨어졌다 —
+    // 이제는 Err로 구분한다(위 confirmed_not_logged_in과 다른 결과여야 한다).
     #[test]
-    fn parse_claude_auth_status_falls_back_to_default_on_invalid_json() {
-        let status = parse_claude_auth_status("not json at all");
-        assert!(!status.logged_in);
+    fn parse_claude_auth_status_indeterminate_on_invalid_json() {
+        let result = parse_claude_auth_status("not json at all");
+        assert!(result.is_err(), "JSON이 아니면 확인 불가(Err)여야 합니다 — 로그인 안 됨으로 단정하면 안 됩니다");
+    }
+
+    // "확인 불가" 케이스 ② — JSON은 맞지만 loggedIn 필드 자체가 없음(CLI
+    // 버전 차이 등으로 이 필드가 빠진 응답을 흉내낸다). 이 경우도 "로그인
+    // 안 됨"이 아니라 "확인 불가"로 취급해야 한다.
+    #[test]
+    fn parse_claude_auth_status_indeterminate_when_logged_in_field_missing() {
+        let json = r#"{"authMethod": "claude.ai"}"#;
+        let result = parse_claude_auth_status(json);
+        assert!(result.is_err(), "loggedIn 필드가 없으면 확인 불가(Err)여야 합니다");
     }
 
     #[test]

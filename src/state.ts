@@ -129,17 +129,47 @@ export interface AppState {
   // 01m33qe0zhn55mczhcdgec2b61, stdin=/dev/null로 사용자를 멈춘 화면에 가둠)의
   // 근본 수정판. 자식 stdin이 이제 파이프이고, 로그인이 진행 중인 동안
   // codeInput/코드 제출 UI를 "감지 분기 없이" 항상 띄운다(views/sessions.ts).
+  //
+  // v0.2.13 실사용자 보고 후속(2026-09-23): 입력 UI를 전역 고정 패널에서
+  // 모달로 바꾸며 active(백엔드 진행 여부)와 modalOpen(그 모달이 화면에
+  // 떠 있는지)을 분리했다 — 모달을 닫아도 백엔드 로그인은 계속 진행되고
+  // (전역 단일 슬롯, 화면과 무관), 진행 중임을 알리는 작은 재진입 배너가
+  // 대신 뜬다(views/sessions.ts renderClaudeAuthLoginReopenBanner). 이렇게
+  // 나눈 이유: "닫기"를 아예 막으면(active일 때 닫기 불가) 이번 라운드에
+  // 세 번 고친 "갇힘"과 같은 부류가 되고, 반대로 닫을 때 active까지
+  // 꺼버리면(=취소와 동일시) 사용자가 실수로 배경을 클릭하거나 ESC를 눌렀을
+  // 뿐인데 진행 중이던 로그인이 취소된다 — 취소는 명시적 "로그인 취소"
+  // 버튼(cancel_claude_auth_login 호출)에서만 일어나야 한다.
   claudeAuthLogin: {
-    /** true인 동안만 취소 버튼·코드 입력창을 보여준다. */
+    /** true인 동안 백엔드가 로그인 프로세스를 붙들고 있다(화면 표시 여부와
+     * 무관 — modalOpen이 false여도 백엔드는 계속 진행 중일 수 있다). */
     active: boolean;
+    /** 이 값 하나로 모달을 그릴지 정한다. 닫아도(false) active는 그대로
+     * 두고 재진입 배너만 남긴다 — 배경 클릭·ESC·닫기 버튼 어느 경로로
+     * 닫혀도 백엔드 로그인 진행에는 영향이 없다. */
+    modalOpen: boolean;
     /** 자식 프로세스 stdout에서 뽑은 로그인 URL. 자동으로 브라우저가 안
      * 열렸을 때 수동으로 열 수 있는 링크로 보여준다. */
     url: string | null;
-    /** 직전 시도가 실패로 끝났을 때의 원문 메시지. */
+    /** 직전 시도가 끝난 뒤(성공/취소 제외) 보여줄 원문 메시지. */
     error: string | null;
+    /** error가 있을 때만 의미가 있다 — 'failed'는 `claude auth status
+     * --json`을 다시 물어 "확인은 됐지만 로그인 안 됨"으로 명확히 판정된
+     * 경우, 'unknown'은 그 재확인 조회 자체가 실패해 "확인 불가"인 경우다.
+     * "없음"을 "실패"로 단정하지 않기 위해 이 구분을 둔다(v0.2.13 회귀의
+     * 핵심 교훈) — 화면 문구가 이 값에 따라 달라진다. */
+    outcome: 'failed' | 'unknown' | null;
     /** 자식 stdout 원문 누적(claude-auth-login-output 이벤트). 줄바꿈 없는
-     * 프롬프트도 그대로 보존된다 — 로그인 시작마다 빈 문자열로 리셋. */
+     * 프롬프트도 그대로 보존된다. 로그인 시작마다·성공/취소 시 비우지만,
+     * 실패/확인불가로 끝났을 때는 원인 추적 단서라 남겨둔다(요구사항 3 —
+     * 원문 로그를 완전히 없애지 않는다). */
     output: string;
+    /** 원문 로그 박스를 펼쳤는지 — 기본은 접힘(요구사항 3). error가 새로
+     * 생기는 순간 한 번 자동으로 펼쳐진다(이후엔 사용자가 다시 접을 수
+     * 있다). 텍스트 패턴 감지가 아니라 이 구조화된 신호로만 펼친다 —
+     * claude_auth.rs가 "특정 문구를 보고 분기하지 않는다"는 원칙과 같은
+     * 이유로, 프론트도 output 원문을 보고 펼침 여부를 판단하지 않는다. */
+    outputExpanded: boolean;
     /** 코드 입력창의 현재 값(제어 컴포넌트, boundField가 관리). */
     codeInput: string;
     /** 코드 제출 IPC 왕복 중 짧은 로딩 표시(이중 클릭 방지). */
@@ -385,7 +415,17 @@ function createInitialState(): AppState {
     streamingTools: [],
     input: '',
   },
-  claudeAuthLogin: { active: false, url: null, error: null, output: '', codeInput: '', submitting: false },
+  claudeAuthLogin: {
+    active: false,
+    modalOpen: false,
+    url: null,
+    error: null,
+    outcome: null,
+    output: '',
+    outputExpanded: false,
+    codeInput: '',
+    submitting: false,
+  },
   claudeAuth: { status: null, loading: false, error: null, loaded: false },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
