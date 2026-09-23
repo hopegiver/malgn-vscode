@@ -846,6 +846,12 @@ function validateCronLight(expr: string): string | null {
 // 목록/진행상황판 전환 UI는 사이드바로 이관됐다(terminus-shell-ia.md §2-2,
 // §4-6) — 본문에서 같은 전환을 중복으로 그리지 않는다.
 
+// design-system.md §3.1 — 박스 공용 헤더(home.ts boxHead()와 동일 패턴, 이
+// 화면은 우측 부가 콘텐츠가 없어 제목만 받는 단순 버전).
+function boxHead(title: string): HTMLElement {
+  return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title])]);
+}
+
 export function renderAutonomousTasksListView(): HTMLElement {
   const addBtn = el('button', { className: 'btn btn-primary', onClick: () => openTaskFormModal(null) }, ['+ 새 자율업무']);
   const configEditToggleBtn = renderConfigEditToggleBtn();
@@ -858,29 +864,32 @@ export function renderAutonomousTasksListView(): HTMLElement {
     el('div', { className: 'devtool-header-actions' }, [addBtn, ...(configEditToggleBtn ? [configEditToggleBtn] : [])]),
   ]);
 
-  const body: HTMLElement[] = [];
+  const notices: HTMLElement[] = [];
   const stallBanner = renderSchedulerStallBanner();
-  if (stallBanner) body.push(stallBanner);
+  if (stallBanner) notices.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
-  if (configBanner) body.push(configBanner);
+  if (configBanner) notices.push(configBanner);
 
+  let listBody: HTMLElement;
   if (state.autonomousTasks.loading && state.autonomousTasks.items.length === 0) {
-    body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]));
+    listBody = el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]);
   } else if (state.autonomousTasks.error) {
     const retry = el('button', { className: 'btn', onClick: () => void loadAutonomousTasks() }, ['다시 시도']);
-    body.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.autonomousTasks.error}`]), retry]));
+    listBody = el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.autonomousTasks.error}`]), retry]);
   } else if (state.autonomousTasks.items.length === 0) {
-    body.push(
-      el('div', { className: 'state-block' }, [
-        el('div', { className: 'state-block-title' }, ['등록된 자율업무가 없습니다']),
-        el('div', { className: 'state-block-desc' }, ['"+ 새 자율업무"로 프로젝트별 자율업무를 등록하세요.']),
-      ])
-    );
+    listBody = el('div', { className: 'state-block' }, [
+      el('div', { className: 'state-block-title' }, ['등록된 자율업무가 없습니다']),
+      el('div', { className: 'state-block-desc' }, ['"+ 새 자율업무"로 프로젝트별 자율업무를 등록하세요.']),
+    ]);
   } else {
-    body.push(el('div', { className: 'task-list' }, state.autonomousTasks.items.map(renderTaskRow)));
+    listBody = el('div', { className: 'task-list' }, state.autonomousTasks.items.map(renderTaskRow));
   }
 
-  const rootChildren: HTMLElement[] = [header, ...body];
+  // design-system.md §3.1 .box — devTools.ts와 동일하게 목록 전체를 "┌─" 헤더가
+  // 있는 패널 하나로 감싼다(task-row/task-list 등 기존 클래스는 유지).
+  const box = el('div', { className: 'box' }, [boxHead('자율업무 목록'), el('div', { className: 'box-body' }, [listBody])]);
+
+  const rootChildren: HTMLElement[] = [header, ...notices, box];
   if (state.malgnAgentConfig.editingAutonomy && state.malgnAgentConfig.status?.ok) {
     if (!autonomyConfigModalEscHandler) {
       autonomyConfigModalEscHandler = (e) => {
@@ -1475,19 +1484,20 @@ export function renderAutonomousTaskBoardView(): HTMLElement {
     el('div', {}, [el('h1', { className: 'page-title' }, ['자율업무']), el('div', { className: 'page-subtitle' }, ['진행상황판'])]),
   ]);
 
-  const body: HTMLElement[] = [];
+  const notices: HTMLElement[] = [];
   const stallBanner = renderSchedulerStallBanner();
-  if (stallBanner) body.push(stallBanner);
+  if (stallBanner) notices.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
-  if (configBanner) body.push(configBanner);
+  if (configBanner) notices.push(configBanner);
 
+  let boardBody: HTMLElement;
   if (state.autonomousTasks.loading && state.autonomousTasks.items.length === 0) {
-    body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]));
+    boardBody = el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]);
   } else if (state.autonomousTasks.error) {
     const retry = el('button', { className: 'btn', onClick: () => void loadAutonomousTasks() }, ['다시 시도']);
-    body.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.autonomousTasks.error}`]), retry]));
+    boardBody = el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.autonomousTasks.error}`]), retry]);
   } else {
-    const board = el(
+    boardBody = el(
       'div',
       { className: 'task-board' },
       BOARD_COLUMNS.map((column) => {
@@ -1502,10 +1512,10 @@ export function renderAutonomousTaskBoardView(): HTMLElement {
         ]);
       })
     );
-    body.push(board);
   }
 
-  return el('div', {}, [header, ...body]);
+  const box = el('div', { className: 'box' }, [boxHead('진행상황판'), el('div', { className: 'box-body' }, [boardBody])]);
+  return el('div', {}, [header, ...notices, box]);
 }
 
 function renderBoardCard(task: AutonomousTask, statusClass: string): HTMLElement {
