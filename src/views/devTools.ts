@@ -67,7 +67,7 @@ export async function loadDevTools(): Promise<void> {
     state.devTools.items = await fetchDevTools();
     state.devTools.loaded = true;
   } catch (err) {
-    state.devTools.error = err instanceof Error ? err.message : '개발 환경 정보를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.devTools.error = err instanceof Error ? err.message : '개발 도구 정보를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.devTools.loading = false;
     notifyChange();
@@ -575,9 +575,17 @@ function renderManualPanel(tool: DevToolStatus): HTMLElement {
   // 를 재사용해 실행 전 무엇이 실행될지 보여주고 [실행]/[취소]를 받는다.
   const pending = manualPendingCommand[tool.id];
   if (pending) {
+    // M3-r 수정(리뷰 2026-09-24 2차) — 이전에는 Rust가 만든 한글 안내 문구
+    // 전체("다음 명령을 실행합니다: {cmd}")를 .devtool-panel-command(모노)에
+    // 그대로 넣어 한글이 모노 폴백으로 렌더됐다. 한글 접두 문구는 라벨(body)로
+    // 떼어내고, 명령 부분만 .devtool-panel-command에 남긴다.
+    const command = pending.message.startsWith(MANUAL_PREVIEW_PREFIX)
+      ? pending.message.slice(MANUAL_PREVIEW_PREFIX.length)
+      : pending.message;
     return el('div', { className: 'devtool-panel' }, [
       el('div', { className: 'devtool-panel-title' }, ['실행 전 확인']),
-      el('div', { className: 'devtool-panel-command' }, [pending.message]),
+      el('div', { className: 'devtool-panel-label' }, [MANUAL_PREVIEW_PREFIX.trim()]),
+      el('div', { className: 'devtool-panel-command' }, [command]),
       el('div', { className: 'devtool-panel-actions' }, [
         el('button', { className: 'btn btn-primary', onClick: () => void handleConfirmManualExecute(tool) }, ['실행']),
         el('button', { className: 'btn', onClick: () => cancelManualConfirm(tool.id) }, ['취소']),

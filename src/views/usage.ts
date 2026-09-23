@@ -20,6 +20,11 @@ function barFillEl(pct: number): HTMLElement {
 interface UsageStat {
   readonly label: string;
   readonly value: string;
+  // M3-r 수정(리뷰 2026-09-24 2차) — 값에 한글 단위("일" 등)가 붙는 경우
+  // 여기 넣는다. .stat-value 전체는 JetBrains Mono(font-numeric)인데 한글
+  // 단위까지 그 안에서 그대로 렌더되면 모노 폴백으로 나간다(확정 방침 위반).
+  // 숫자만 .stat-value에 두고 단위는 별도 <small>로 분리해 font-body를 준다.
+  readonly unit?: string;
 }
 
 // design-system.md §3.3 — home.ts의 통계 타일(.stat-row/.stat)과 동일한
@@ -28,7 +33,7 @@ interface UsageStat {
 function statTile(s: UsageStat): HTMLElement {
   return el('div', { className: 'stat' }, [
     el('div', { className: 'stat-label' }, [s.label]),
-    el('div', { className: 'stat-value' }, [s.value]),
+    el('div', { className: 'stat-value' }, [s.value, ...(s.unit ? [el('small', {}, [s.unit])] : [])]),
   ]);
 }
 
@@ -257,7 +262,7 @@ function renderUsageStatCards(): HTMLElement {
   const t = computeUsageTotals(state.dailyUsage.items);
   const stats: UsageStat[] = [
     { label: '최근 30일 총 토큰', value: formatTokenCount(t.totalTokens) },
-    { label: '최근 30일 활동일수', value: `${t.activeDays}일` },
+    { label: '최근 30일 활동일수', value: String(t.activeDays), unit: '일' },
     { label: '일평균 토큰', value: formatTokenCount(t.avgPerDay) },
     { label: '캐시 히트율', value: t.cacheHitRate !== null ? `${t.cacheHitRate}%` : '—' },
   ];

@@ -387,6 +387,14 @@ html, body {
 .statusline-left {
   display: flex; align-items: center; gap: var(--space-3);
   flex: 1 1 auto; min-width: 0; overflow: hidden;
+  /* n3 수정(리뷰 2026-09-24 2차) — 낮은 우선순위 세그먼트가 컨테이너 밖으로
+     밀려 잘릴 때 글자 중간에서 뚝 끊기던 것을, 오른쪽 가장자리를 투명하게
+     페이드시켜 "잘렸다"는 것을 시각적으로 알 수 있게 한다(개별 세그먼트마다
+     text-overflow:ellipsis를 넣는 대신 컨테이너 1곳에서 처리 — 세그먼트가
+     여러 개라 각각 적용하기 번거롭고, 어차피 기능 손실은 없는 잘림이라 정확한
+     말줄임 위치보다 "끊김을 부드럽게" 하는 것으로 충분하다). */
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
 }
 .statusline-right {
   display: flex; align-items: center; gap: var(--space-3);
@@ -987,7 +995,10 @@ textarea.settings-input { resize: vertical; }
 }
 .devtool-main { flex: 1; min-width: 0; }
 .devtool-name { font-weight: 600; font-size: var(--font-size-body); color: var(--text-primary); }
-.devtool-binary { font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); margin-top: 1px; }
+/* m9 수정(리뷰 2026-09-24 2차) — tool.path는 Windows 한글 사용자명 등 한글
+   폴더명이 섞일 수 있는 경로다(devTools.ts:436). 방침(경로=body, 폰트 표
+   §1)에 맞춰 .detail-path/.applink-filepath와 같은 규칙으로 통일한다. */
+.devtool-binary { font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-body); margin-top: 1px; }
 
 /* IA §7-6 — 개발 도구 사이드바 행 클릭 시 본문 해당 행으로 스크롤 + 일시
    강조(views/devTools.ts highlightDevTool). 배경만 accent-dim으로 잠깐
@@ -1264,7 +1275,9 @@ textarea.settings-input { resize: vertical; }
   font-family: var(--font-numeric); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;
   color: var(--text-primary); display: flex; align-items: baseline; gap: var(--space-1-5);
 }
-.stat-value small { font-size: var(--font-size-micro); font-weight: 500; color: var(--text-muted-aa); } /* 배치 D — 구 11px 하드코딩 편입, 통계 값 옆 단위 라벨이라 micro 유지 */
+/* M3-r 수정(리뷰 2026-09-24 2차) — 단위 라벨("일" 등)은 한글이 섞일 수 있어
+   부모 .stat-value의 font-numeric(JetBrains Mono)을 여기서 font-body로 되돌린다. */
+.stat-value small { font-size: var(--font-size-micro); font-weight: 500; color: var(--text-muted-aa); font-family: var(--font-body); } /* 배치 D — 구 11px 하드코딩 편입, 통계 값 옆 단위 라벨이라 micro 유지 */
 .stat-trend { font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; }
 .stat-trend.up { color: var(--status-good); }
 .stat-trend.warn { color: var(--status-warn); }

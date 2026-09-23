@@ -84,7 +84,17 @@ interface TabSpec {
 // aria-selected)를 직접 얹는다. 활성 탭은 지금까지 시각 표시(.active 클래스)뿐
 // 스크린리더에는 전달되지 않았다.
 function tabEl(spec: TabSpec): HTMLElement {
-  const node = clickable(el('div', { className: `tab${spec.active ? ' active' : ''}` }, [el('span', { className: 'dot' }, []), spec.label]), spec.onClick);
+  // m10 — 탭을 활성화(마우스 클릭이든 키보드 Enter/Space든)하면 열려 있는 계정
+  // 메뉴를 닫는다. 마우스 클릭은 이미 window 'click' 바깥클릭 감지로 닫히지만,
+  // 키보드 Enter/Space는 clickable()이 합성 click 이벤트를 내지 않고
+  // onActivate()를 직접 호출해 그 경로를 타지 않으므로(=메뉴가 새 화면 위에
+  // 그대로 남음) 여기서 직접 닫는다. 메뉴가 이미 닫혀 있으면 closeAccountMenu는
+  // no-op에 가깝다(리스너가 이미 null).
+  const onActivate = (): void => {
+    if (state.sidebar.accountMenuOpen) closeAccountMenu();
+    spec.onClick();
+  };
+  const node = clickable(el('div', { className: `tab${spec.active ? ' active' : ''}` }, [el('span', { className: 'dot' }, []), spec.label]), onActivate);
   node.setAttribute('role', 'tab');
   node.setAttribute('aria-selected', String(spec.active));
   return node;
@@ -115,7 +125,14 @@ function tabEl(spec: TabSpec): HTMLElement {
 let accountMenuOutsideClickHandler: ((e: MouseEvent) => void) | null = null;
 let accountMenuEscHandler: ((e: KeyboardEvent) => void) | null = null;
 
+// m10 수정(리뷰 2026-09-24 2차) — 키보드로 메뉴를 열면 재렌더로 칩 노드가
+// 바뀌어 포커스가 body로 떨어졌다(로그아웃까지 가려면 Tab을 처음부터 다시
+// 눌러야 함). 닫힐 때 포커스가 칩/드롭다운 안에 있었던 경우에만(=키보드로
+// 조작하다 닫은 경우) 칩으로 되돌린다 — 바깥을 마우스로 클릭해 닫은 경우는
+// 이미 클릭한 자리에 자연스럽게 포커스가 있으므로 빼앗지 않는다.
 function closeAccountMenu(): void {
+  const chip = document.querySelector<HTMLElement>('.tabstrip-account');
+  const shouldReturnFocus = !!(chip && document.activeElement instanceof Node && chip.contains(document.activeElement));
   state.sidebar.accountMenuOpen = false;
   if (accountMenuOutsideClickHandler) {
     window.removeEventListener('click', accountMenuOutsideClickHandler);
@@ -126,6 +143,7 @@ function closeAccountMenu(): void {
     accountMenuEscHandler = null;
   }
   notifyChange();
+  if (shouldReturnFocus) document.querySelector<HTMLElement>('.tabstrip-account')?.focus();
 }
 
 function openAccountMenu(): void {
@@ -149,6 +167,9 @@ function openAccountMenu(): void {
     window.addEventListener('keydown', accountMenuEscHandler);
   }
   notifyChange();
+  // m10 — notifyChange()는 동기 재렌더라 이 시점에 드롭다운 DOM이 이미 있다.
+  // 첫 메뉴 항목(로그아웃)으로 포커스를 옮겨 body로 떨어지지 않게 한다.
+  document.querySelector<HTMLElement>('.tabstrip-account-dropdown-item')?.focus();
 }
 
 function renderAccountChip(): HTMLElement {

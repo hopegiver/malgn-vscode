@@ -153,7 +153,7 @@ function sessionBlistRow(s: ClaudeSessionRecord): HTMLElement {
     el('span', { className: 'blist-id' }, [shortId(sessionId)]),
     el('span', { className: 'blist-accent' }, [projectNameFromCwd(asString(s.cwd))]),
     el('span', { className: 'blist-body' }, [sessionTitle(s)]),
-    el('span', { className: `blist-status ${running ? 'status-run' : 'status-done'}` }, [el('span', { className: 'dot' }, []), running ? '실행중' : '완료']),
+    el('span', { className: `blist-status ${running ? 'status-run' : 'status-done'}` }, [el('span', { className: 'dot' }, []), running ? '실행 중' : '완료']),
     el('span', { className: 'blist-time' }, [updatedAt !== null ? formatCompactElapsed(updatedAt) : '-']),
   ]);
   return clickable(row, () => navigate(`#/sessions/${encodeURIComponent(sessionId)}`));

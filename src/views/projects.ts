@@ -208,7 +208,7 @@ function renderWorkspacesEditForm(status: MalgnAgentConfigStatus): HTMLElement {
     el('label', { className: 'settings-field' }, [
       el('span', { className: 'settings-field-label' }, ['Workspaces (한 줄에 하나씩)']),
       workspacesInput,
-      el('div', { className: 'settings-form-hint' }, ['자율업무·프로젝트 화면이 스캔할 절대경로를 한 줄에 하나씩 입력하세요. 빈 줄은 무시됩니다.']),
+      el('div', { className: 'settings-form-hint' }, ['자율 작업·프로젝트 화면이 스캔할 절대경로를 한 줄에 하나씩 입력하세요. 빈 줄은 무시됩니다.']),
     ]),
   ]);
 

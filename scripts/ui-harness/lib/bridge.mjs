@@ -13,18 +13,38 @@
  * removeEventListener를 감싸 타입별 활성 리스너 개수를 window.__listenerCounts에
  * 기록한다. 화면 전환 시 ESC 리스너 등이 실제로 detach되는지(leave*View 정리
  * 로직이 도는지) 테스트에서 읽어 검증하는 데 쓴다.
+ *
+ * n6 수정(리뷰 2026-09-24 2차) — 이전에는 type별 정수 카운터를 add에서 +1,
+ * remove에서 -1 했다. 이러면 "등록된 적 없는 핸들러를 remove"해도 카운트가
+ * 줄어(예: -1), 실제로는 누수가 있어도 다른 정상적인 add/remove 쌍이 그 -1을
+ * 상쇄해 카운트가 기준선으로 돌아온 것처럼 보일 수 있었다(M1 사이드바 계정
+ * 메뉴의 0ms 지연 등록 구조에서 실측: "열기→0ms 안에 닫기"가 등록 없이
+ * removeEventListener를 부른다). 실제로 등록된 함수 참조 집합(Set)을
+ * type별로 추적해, 등록되지 않은 핸들러의 remove는 집합 크기를 바꾸지 않게
+ * 한다 — __listenerCounts[type]은 이 집합의 size다.
  */
 export function installListenerProbe() {
+  const registry = new Map(); // type -> Set<핸들러 함수 참조>
   const counts = {};
-  const orig = { add: window.addEventListener.bind(window), remove: window.removeEventListener.bind(window) };
   window.__listenerCounts = counts;
-  window.addEventListener = function (type, ...rest) {
-    counts[type] = (counts[type] ?? 0) + 1;
-    return orig.add(type, ...rest);
+  const orig = { add: window.addEventListener.bind(window), remove: window.removeEventListener.bind(window) };
+  const syncCount = (type) => {
+    counts[type] = registry.get(type)?.size ?? 0;
   };
-  window.removeEventListener = function (type, ...rest) {
-    if (counts[type]) counts[type] -= 1;
-    return orig.remove(type, ...rest);
+  window.addEventListener = function (type, fn, ...rest) {
+    let set = registry.get(type);
+    if (!set) {
+      set = new Set();
+      registry.set(type, set);
+    }
+    set.add(fn);
+    syncCount(type);
+    return orig.add(type, fn, ...rest);
+  };
+  window.removeEventListener = function (type, fn, ...rest) {
+    const set = registry.get(type);
+    if (set && set.delete(fn)) syncCount(type);
+    return orig.remove(type, fn, ...rest);
   };
 }
 
