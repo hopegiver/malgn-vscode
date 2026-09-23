@@ -31,6 +31,7 @@ import * as majorReview20260921 from './flows/majorReview20260921.mjs';
 import * as updateCheck from './flows/updateCheck.mjs';
 import * as home from './flows/home.mjs';
 import * as tabstripOverflow from './flows/tabstripOverflow.mjs';
+import * as qaShellNavCoverage from './flows/qaShellNavCoverage.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_URL = process.env.UI_HARNESS_BASE_URL || 'http://localhost:1420';
@@ -39,7 +40,7 @@ const SHOTS_DIR =
   '/private/tmp/claude-501/-Users-hopegiver-workspace-malgn-vscode/9682b635-b50a-4778-8416-a05a9cb13e8a/scratchpad/shots';
 const REPORT_PATH = path.join(__dirname, 'last-run-report.json');
 
-const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow];
+const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow, qaShellNavCoverage];
 
 const [, , flowFilter, scenarioFilter] = process.argv;
 
@@ -85,7 +86,12 @@ function isConnectionRefusedError(err) {
 async function runScenario(browser, flow, scenario, baseFixtures) {
   // 시나리오가 반응형 검증을 위해 뷰포트를 지정할 수 있게 한다(예: 900×600
   // 하한에서의 탭스트립 오버플로 회귀 검사). 미지정 시 기존 기본값 유지.
-  const context = await browser.newContext({ viewport: scenario.viewport ?? { width: 1280, height: 820 } });
+  const context = await browser.newContext({
+    viewport: scenario.viewport ?? { width: 1280, height: 820 },
+    // 경계 상황(prefers-reduced-motion) 검증용 — 시나리오가 지정하지 않으면
+    // Playwright 기본값('no-preference')을 그대로 쓴다.
+    ...(scenario.reducedMotion ? { reducedMotion: scenario.reducedMotion } : {}),
+  });
   const page = await context.newPage();
 
   const errors = [];
