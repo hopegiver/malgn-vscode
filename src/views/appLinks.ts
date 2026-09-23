@@ -265,12 +265,26 @@ function boxHead(title: string, right: Node | string): HTMLElement {
   return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title]), right]);
 }
 
+// terminus-shell-ia.md §1이 앱 링크를 최상위 탭(#8)으로 승격해뒀다 — 이전에는
+// settings.ts의 renderSettingsView()가 "설정" page-header를 씌워줬지만, 이제
+// 이 탭은 renderSettingsView()에서 직접 이 함수를 반환하므로(제목 중복 회귀
+// 수정, 배치 C) 이 화면 스스로 page-header를 그려야 한다(devTools.ts와 동일
+// 원칙 — page-header는 탭 자신의 제목, box-head는 그 안의 콘텐츠 라벨).
+function renderAppLinksHeader(): HTMLElement {
+  return el('div', { className: 'page-header' }, [
+    el('div', {}, [
+      el('h1', { className: 'page-title' }, ['앱 링크']),
+      el('div', { className: 'page-subtitle' }, ['사이드바에서 바로 열 수 있는 사내/외부 웹 앱 바로가기']),
+    ]),
+  ]);
+}
+
 export function renderAppLinksPanel(): HTMLElement {
-  if (state.appLinks.loading && !state.appLinks.loaded) return loadingBlock();
-  if (state.appLinks.error) return errorBlock(state.appLinks.error, () => void loadAppLinks());
+  if (state.appLinks.loading && !state.appLinks.loaded) return el('div', {}, [renderAppLinksHeader(), loadingBlock()]);
+  if (state.appLinks.error) return el('div', {}, [renderAppLinksHeader(), errorBlock(state.appLinks.error, () => void loadAppLinks())]);
 
   const status = state.appLinks.status;
-  if (!status) return loadingBlock();
+  if (!status) return el('div', {}, [renderAppLinksHeader(), loadingBlock()]);
 
   const notices: HTMLElement[] = [];
 
@@ -322,9 +336,9 @@ export function renderAppLinksPanel(): HTMLElement {
 
   boxBody.push(el('div', { className: 'applink-filepath' }, [`저장 위치: ${status.filePath}`]));
 
-  const box = el('div', { className: 'box' }, [boxHead('앱 링크', addBtn), el('div', { className: 'box-body' }, boxBody)]);
+  const box = el('div', { className: 'box' }, [boxHead('등록된 링크', addBtn), el('div', { className: 'box-body' }, boxBody)]);
 
   const modalEl = renderLinkFormModalIfOpen();
-  const body = [...notices, box];
+  const body = [renderAppLinksHeader(), ...notices, box];
   return el('div', {}, modalEl ? [...body, modalEl] : body);
 }

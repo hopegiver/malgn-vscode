@@ -33,10 +33,25 @@ export const TAB_META: readonly { readonly key: SettingsTab; readonly label: str
   { key: 'devtools', label: '개발 환경' },
 ];
 
+// design-system.md §3.1 — 박스 공용 헤더(home.ts boxHead()와 동일 패턴, 이 화면은
+// 우측에 부가 액션 버튼을 받는 버전).
+function boxHead(title: string, right?: Node | string): HTMLElement {
+  return el('div', { className: 'box-head' }, right !== undefined ? [el('span', { className: 'box-title' }, [title]), right] : [el('span', { className: 'box-title' }, [title])]);
+}
+
 // 탭 전환 자체는 사이드바 하위메뉴가 담당한다(U-15) — 여기서는 동일한 8항목을
 // 상단에 칩 탭으로 다시 그리지 않는다(두 벌 내비게이션 + 이중 하이라이트 제거).
 // TAB_META는 현재 탭 이름을 페이지 부제로 보여주는 용도로만 남는다.
+//
+// 개발 도구(devtools)·앱 링크(applinks)는 terminus-shell-ia.md §1이 최상위 탭으로
+// 승격해뒀다(#5·#8) — 이 두 탭은 각자 고유한 page-header(제목)를 스스로 그리므로
+// (renderDevToolsView/renderAppLinksPanel), 여기서 "설정" page-header를 한 번 더
+// 씌우면 화면에 제목이 두 번(예: "설정 / 개발 환경" 다음 줄에 또 "개발 환경") 뜬다
+// — 배치 C에서 실측 확인한 회귀. 이 두 탭은 그 화면 자체를 그대로 반환한다.
 export function renderSettingsView(tab: SettingsTab): HTMLElement {
+  if (tab === 'devtools') return renderDevToolsView();
+  if (tab === 'applinks') return renderAppLinksPanel();
+
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [el('h1', { className: 'page-title' }, ['설정']), el('div', { className: 'page-subtitle' }, [TAB_META.find((t) => t.key === tab)?.label ?? ''])]),
   ]);
@@ -46,8 +61,6 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
   else if (tab === 'github') body = renderGithubPanel();
   else if (tab === 'cloudflare') body = renderCloudflarePanel();
   else if (tab === 'marketplace') body = renderMarketplacePanel();
-  else if (tab === 'applinks') body = renderAppLinksPanel();
-  else if (tab === 'devtools') body = renderDevToolsView();
   else body = renderMcpPanel();
 
   return el('div', {}, [header, body]);
@@ -191,10 +204,13 @@ function renderOtelPanel(): HTMLElement {
   // 못 하는 파일을 저장 시도로 덮어쓰는 사고를 막는다(백엔드도 이 경우 저장을
   // 거부하지만, 프론트도 폼 자체를 아예 그리지 않는다).
   if (settings.parseError) {
-    return el('div', { className: 'settings-card' }, [
-      el('div', { className: 'alert' }, [`⚠ ${settings.settingsPath} 파싱 실패: ${settings.parseError}`]),
-      el('div', { className: 'settings-form-hint' }, ['파일을 직접 열어 문법 오류를 고친 뒤 "다시 시도"를 누르세요.']),
-      el('button', { className: 'btn', onClick: () => void loadOtelEnv() }, ['다시 시도']),
+    return el('div', { className: 'box' }, [
+      boxHead('OTel 환경변수'),
+      el('div', { className: 'box-body' }, [
+        el('div', { className: 'alert' }, [`⚠ ${settings.settingsPath} 파싱 실패: ${settings.parseError}`]),
+        el('div', { className: 'settings-form-hint' }, ['파일을 직접 열어 문법 오류를 고친 뒤 "다시 시도"를 누르세요.']),
+        el('button', { className: 'btn', onClick: () => void loadOtelEnv() }, ['다시 시도']),
+      ]),
     ]);
   }
 
@@ -291,7 +307,7 @@ function renderOtelPanel(): HTMLElement {
   saveBtn.type = 'submit';
   form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
 
-  return el('div', { className: 'settings-card' }, [form]);
+  return el('div', { className: 'box' }, [boxHead('OTel 환경변수'), el('div', { className: 'box-body' }, [form])]);
 }
 
 // ---------------- GitHub 설정 (CLI 위임, 이 앱은 토큰을 취급하지 않는다) ----------------
@@ -359,48 +375,57 @@ function renderGithubPanel(): HTMLElement {
   );
 
   if (!status || !status.installed) {
-    return el('div', { className: 'settings-card integration-panel' }, [
-      el('div', { className: 'settings-form-hint' }, [
-        'GitHub CLI(gh)가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
-      ]),
-      el('div', { className: 'settings-form-actions' }, [
-        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
-        refreshBtn,
+    return el('div', { className: 'box' }, [
+      boxHead('GitHub 계정'),
+      el('div', { className: 'box-body integration-panel' }, [
+        el('div', { className: 'settings-form-hint' }, [
+          'GitHub CLI(gh)가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
+        ]),
+        el('div', { className: 'settings-form-actions' }, [
+          el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
+          refreshBtn,
+        ]),
       ]),
     ]);
   }
 
   if (!status.connected) {
-    return el('div', { className: 'settings-card integration-panel' }, [
-      el('div', { className: 'settings-form-hint' }, [
-        '조직 리포지토리 접근에 사용할 GitHub 계정을 연결합니다. 버튼을 누르면 터미널 창이 열리고, 그 창에서 로그인 절차를 직접 진행합니다. 로그인을 마친 뒤 "상태 새로고침"으로 확인하세요.',
-      ]),
-      el('div', { className: 'settings-form-actions' }, [
-        el(
-          'button',
-          { className: 'btn btn-primary', disabled: state.github.connecting, onClick: () => void handleGithubConnect() },
-          [state.github.connecting ? '터미널 여는 중…' : 'GitHub 계정 연결하기']
-        ),
-        refreshBtn,
+    return el('div', { className: 'box' }, [
+      boxHead('GitHub 계정'),
+      el('div', { className: 'box-body integration-panel' }, [
+        el('div', { className: 'settings-form-hint' }, [
+          '조직 리포지토리 접근에 사용할 GitHub 계정을 연결합니다. 버튼을 누르면 터미널 창이 열리고, 그 창에서 로그인 절차를 직접 진행합니다. 로그인을 마친 뒤 "상태 새로고침"으로 확인하세요.',
+        ]),
+        el('div', { className: 'settings-form-actions' }, [
+          el(
+            'button',
+            { className: 'btn btn-primary', disabled: state.github.connecting, onClick: () => void handleGithubConnect() },
+            [state.github.connecting ? '터미널 여는 중…' : 'GitHub 계정 연결하기']
+          ),
+          refreshBtn,
+        ]),
       ]),
     ]);
   }
 
-  return el('div', { className: 'settings-card integration-panel' }, [
-    el('div', { className: 'integration-account-row' }, [
-      el('div', { className: 'integration-account-avatar' }, [(status.login ?? '?').charAt(0).toUpperCase()]),
-      el('div', { className: 'integration-account-info' }, [
-        el('div', { className: 'integration-account-name' }, [status.name ?? status.login ?? '']),
-        el('div', { className: 'integration-account-status' }, [`@${status.login ?? '?'} · 연결됨`]),
+  return el('div', { className: 'box' }, [
+    boxHead('GitHub 계정'),
+    el('div', { className: 'box-body integration-panel' }, [
+      el('div', { className: 'integration-account-row' }, [
+        el('div', { className: 'integration-account-avatar' }, [(status.login ?? '?').charAt(0).toUpperCase()]),
+        el('div', { className: 'integration-account-info' }, [
+          el('div', { className: 'integration-account-name' }, [status.name ?? status.login ?? '']),
+          el('div', { className: 'integration-account-status' }, [`@${status.login ?? '?'} · 연결됨`]),
+        ]),
       ]),
-    ]),
-    el('div', { className: 'settings-form-actions' }, [
-      el(
-        'button',
-        { className: 'btn', disabled: state.github.disconnecting, onClick: () => void handleGithubDisconnect() },
-        [state.github.disconnecting ? '터미널 여는 중…' : '연결 해제']
-      ),
-      refreshBtn,
+      el('div', { className: 'settings-form-actions' }, [
+        el(
+          'button',
+          { className: 'btn', disabled: state.github.disconnecting, onClick: () => void handleGithubDisconnect() },
+          [state.github.disconnecting ? '터미널 여는 중…' : '연결 해제']
+        ),
+        refreshBtn,
+      ]),
     ]),
   ]);
 }
@@ -466,48 +491,57 @@ function renderCloudflarePanel(): HTMLElement {
   );
 
   if (!status || !status.installed) {
-    return el('div', { className: 'settings-card integration-panel' }, [
-      el('div', { className: 'settings-form-hint' }, [
-        'Wrangler CLI가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
-      ]),
-      el('div', { className: 'settings-form-actions' }, [
-        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
-        refreshBtn,
+    return el('div', { className: 'box' }, [
+      boxHead('Cloudflare 계정'),
+      el('div', { className: 'box-body integration-panel' }, [
+        el('div', { className: 'settings-form-hint' }, [
+          'Wrangler CLI가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
+        ]),
+        el('div', { className: 'settings-form-actions' }, [
+          el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
+          refreshBtn,
+        ]),
       ]),
     ]);
   }
 
   if (!status.connected) {
-    return el('div', { className: 'settings-card integration-panel' }, [
-      el('div', { className: 'settings-form-hint' }, [
-        '배포·DNS 자동화에 사용할 Cloudflare 계정을 연결합니다. 버튼을 누르면 터미널 창이 열리고, 그 창에서 로그인 절차를 직접 진행합니다. 로그인을 마친 뒤 "상태 새로고침"으로 확인하세요.',
-      ]),
-      el('div', { className: 'settings-form-actions' }, [
-        el(
-          'button',
-          { className: 'btn btn-primary', disabled: state.cloudflare.connecting, onClick: () => void handleCloudflareConnect() },
-          [state.cloudflare.connecting ? '터미널 여는 중…' : 'Cloudflare 계정 연결하기']
-        ),
-        refreshBtn,
+    return el('div', { className: 'box' }, [
+      boxHead('Cloudflare 계정'),
+      el('div', { className: 'box-body integration-panel' }, [
+        el('div', { className: 'settings-form-hint' }, [
+          '배포·DNS 자동화에 사용할 Cloudflare 계정을 연결합니다. 버튼을 누르면 터미널 창이 열리고, 그 창에서 로그인 절차를 직접 진행합니다. 로그인을 마친 뒤 "상태 새로고침"으로 확인하세요.',
+        ]),
+        el('div', { className: 'settings-form-actions' }, [
+          el(
+            'button',
+            { className: 'btn btn-primary', disabled: state.cloudflare.connecting, onClick: () => void handleCloudflareConnect() },
+            [state.cloudflare.connecting ? '터미널 여는 중…' : 'Cloudflare 계정 연결하기']
+          ),
+          refreshBtn,
+        ]),
       ]),
     ]);
   }
 
-  return el('div', { className: 'settings-card integration-panel' }, [
-    el('div', { className: 'integration-account-row' }, [
-      el('div', { className: 'integration-account-avatar' }, [(status.email ?? '?').charAt(0).toUpperCase()]),
-      el('div', { className: 'integration-account-info' }, [
-        el('div', { className: 'integration-account-name' }, [status.email ?? '']),
-        el('div', { className: 'integration-account-status' }, ['연결됨']),
+  return el('div', { className: 'box' }, [
+    boxHead('Cloudflare 계정'),
+    el('div', { className: 'box-body integration-panel' }, [
+      el('div', { className: 'integration-account-row' }, [
+        el('div', { className: 'integration-account-avatar' }, [(status.email ?? '?').charAt(0).toUpperCase()]),
+        el('div', { className: 'integration-account-info' }, [
+          el('div', { className: 'integration-account-name' }, [status.email ?? '']),
+          el('div', { className: 'integration-account-status' }, ['연결됨']),
+        ]),
       ]),
-    ]),
-    el('div', { className: 'settings-form-actions' }, [
-      el(
-        'button',
-        { className: 'btn', disabled: state.cloudflare.disconnecting, onClick: () => void handleCloudflareDisconnect() },
-        [state.cloudflare.disconnecting ? '터미널 여는 중…' : '연결 해제']
-      ),
-      refreshBtn,
+      el('div', { className: 'settings-form-actions' }, [
+        el(
+          'button',
+          { className: 'btn', disabled: state.cloudflare.disconnecting, onClick: () => void handleCloudflareDisconnect() },
+          [state.cloudflare.disconnecting ? '터미널 여는 중…' : '연결 해제']
+        ),
+        refreshBtn,
+      ]),
     ]),
   ]);
 }
@@ -763,14 +797,16 @@ function renderMarketplacePanel(): HTMLElement {
 
   const recommendBlock = renderMarketplaceRecommendBlock();
 
-  return el('div', { className: 'settings-card marketplace-panel' }, [
-    description,
-    ...(recommendBlock ? [recommendBlock] : []),
-    el('div', { className: 'marketplace-repo-list' }, repoRows),
-    el('div', { className: 'marketplace-actions' }, [refreshBtn]),
-    renderMarketplaceAddForm(),
-    el('div', { className: 'settings-field-label marketplace-list-label' }, ['설치된 플러그인']),
-    pluginList,
+  return el('div', { className: 'box marketplace-panel' }, [
+    boxHead('마켓플레이스', refreshBtn),
+    el('div', { className: 'box-body' }, [
+      description,
+      ...(recommendBlock ? [recommendBlock] : []),
+      el('div', { className: 'marketplace-repo-list' }, repoRows),
+      renderMarketplaceAddForm(),
+      el('div', { className: 'settings-field-label marketplace-list-label' }, ['설치된 플러그인']),
+      pluginList,
+    ]),
   ]);
 }
 
@@ -1499,13 +1535,13 @@ function renderMcpPanel(): HTMLElement {
     { className: 'btn', disabled: mcpRefreshing, onClick: () => { void loadMcp(); void loadMcpCatalog(); } },
     [mcpRefreshing ? '새로고침 중…' : '↻ 새로고침']
   );
-  const addToggleBtn = el('button', { className: 'btn btn-primary', onClick: () => openMcpAddModal(null) }, ['+ 새 MCP 서버']);
+  const addToggleBtn = el('button', { className: 'btn btn-primary btn-sm', onClick: () => openMcpAddModal(null) }, ['+ 새 MCP 서버']);
+  const headerActions = el('div', { className: 'mcp-toolbar' }, [refreshBtn, addToggleBtn]);
 
   const body: HTMLElement[] = [
     el('div', { className: 'settings-form-hint' }, [
       'claude mcp CLI로 연결 상태만 확인합니다 — 모델을 호출하지 않는 순수 헬스체크라 빠르고 비용이 들지 않습니다. 카탈로그 항목은 OAuth 로그인이, GitHub 공식 MCP는 Personal Access Token이 필요합니다. "설치"/"인증"을 누르면 터미널 창이 열리고, 그 창에서 절차를 직접 마친 뒤 "↻ 새로고침"으로 반영하세요.',
     ]),
-    el('div', { className: 'mcp-toolbar' }, [refreshBtn, addToggleBtn]),
   ];
 
   if (state.mcpCatalog.error) {
@@ -1540,6 +1576,7 @@ function renderMcpPanel(): HTMLElement {
   // 카탈로그 항목은 로딩이 끝나면 설치 가능한 서버 섹션에 합류한다.
   if (catalogStillLoading) body.push(loadingBlock());
 
+  const box = el('div', { className: 'box' }, [boxHead('MCP 서버', headerActions), el('div', { className: 'box-body' }, body)]);
   const modalEl = renderMcpAddModalIfOpen();
-  return el('div', {}, modalEl ? [...body, modalEl] : body);
+  return el('div', {}, modalEl ? [box, modalEl] : [box]);
 }
