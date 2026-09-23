@@ -1,0 +1,722 @@
+<meta charset="UTF-8">
+<title>맑은에이전트 — Terminus 방향</title>
+<meta name="description" content="터미널 에뮬레이터(Terminus/Tabby) 미학을 차용한 맑은에이전트 홈 화면 디자인 시안">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  /* =========================================================
+     맑은에이전트 — Terminus/Tabby 방향 디자인 시안
+     이 파일은 "발표용 아트보드"이며 실제 앱 코드가 아니다.
+     .artboard = 프레젠테이션 배경 / .window = 실제 앱이 렌더링될 네이티브 창 모형
+
+     폰트 전략 (UI 라벨 산세리프 + 데이터/버전 모노스페이스 절충):
+     - 한글이 섞일 수 있는 모든 UI 텍스트(탭 라벨, 사이드바 프로젝트명, 패널 제목,
+       인사말, 버튼/상태 라벨 등)는 --font-display / --font-body(시스템 산세리프 +
+       Noto Sans KR)를 쓴다. 다른 방향 시안들과 동일한 절충안이라 일관성이 있다.
+     - 순수 숫자·버전·시계·세션ID 등 한글이 섞일 가능성이 전혀 없는 leaf 요소만
+       --font-numeric(JetBrains Mono)을 골라 쓴다.
+     - 예외: "┌─" 같은 박스드로잉 글리프는 모노스페이스에서만 정렬이 맞으므로,
+       그 글리프가 들어가는 노드(.panel-head::before)만 국소적으로
+       --font-numeric을 유지한다 — 이 노드는 한글 텍스트와 같은 텍스트 노드에
+       섞이지 않는 별도의 생성 콘텐츠이므로 문제 없다.
+     ========================================================= */
+
+  :root{
+    /* --- 아트보드(발표 배경) 전용 토큰 --- */
+    --artboard-bg: #eef1f4;
+    --artboard-ink: #363a44;
+    --artboard-ink-muted: #868c98;
+
+    /* --- 창(앱) 토큰 : 이 방향은 "터미널"이라는 하나의 세계관에
+       의도적으로 고정된 다크 단일 테마다. 배경/전경 모두 명시적으로 지정한다. --- */
+    --tl-red:#ff5f57; --tl-yellow:#febc2e; --tl-green:#28c840;
+
+    --win-bg:#0d0e12;           /* 메인 터미널 표면 */
+    --titlebar-bg:#15161b;
+    --tabstrip-bg:#111217;
+    --panel-bg:#121319;
+    --panel-bg-alt:#15161d;
+    --sidebar-bg:#0f1014;
+    --statusline-bg:#0a0b0e;
+
+    --border:#25272f;
+    --border-soft:#1b1c22;
+
+    --text-primary:#dadde3;
+    --text-secondary:#8d919c;
+    --text-muted:#585c68;
+
+    --accent:#5fd0dc;           /* ANSI bright cyan — 브랜드 포인트 */
+    --accent-dim:#356469;
+
+    --ansi-green:#52d97f;
+    --ansi-yellow:#e2b34f;
+    --ansi-red:#f25f6c;
+    --ansi-magenta:#c98ae6;
+    --ansi-blue:#6fa2f2;
+
+    --status-good:var(--ansi-green);
+    --status-warn:var(--ansi-yellow);
+    --status-bad:var(--ansi-red);
+    --status-idle:var(--text-muted);
+
+    /* 한글이 섞일 수 있는 모든 UI 텍스트(탭/사이드바/인사말/패널 제목 등)용 — 시스템 산세리프 */
+    --font-display:-apple-system, BlinkMacSystemFont, 'Noto Sans KR', 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    --font-body:-apple-system, BlinkMacSystemFont, 'Noto Sans KR', 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+    /* 순수 숫자·버전·시계·세션ID 전용 leaf 요소만 사용 (한글 섞일 가능성 없는 곳) */
+    --font-numeric:'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+    color-scheme: dark;
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    background:var(--artboard-bg);
+    color:var(--artboard-ink);
+    margin:0;
+    font-family:var(--font-body);
+  }
+
+  /* ---------- 아트보드 (발표 배경, 앱 코드 아님) ---------- */
+  .artboard{
+    min-height:100%;
+    width:100%;
+    padding:40px 16px 56px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:22px;
+    background:
+      radial-gradient(circle at 18% -10%, #ffffff 0%, transparent 45%),
+      var(--artboard-bg);
+  }
+  .artboard-label{
+    text-align:center;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .artboard-eyebrow{
+    font-family:var(--font-display);
+    font-size:11px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--artboard-ink-muted);
+  }
+  .artboard-title{
+    font-family:var(--font-display);
+    font-weight:700;
+    font-size:19px;
+    color:var(--artboard-ink);
+  }
+  .artboard-title .prompt-sym{ color:#3a8f98; }
+
+  /* ---------- 네이티브 창 프레임 ---------- */
+  .window{
+    container-type: inline-size;
+    width: clamp(900px, 78vw, 1180px);
+    height: clamp(600px, 74vh, 760px);
+    background:var(--win-bg);
+    border-radius:9px;
+    overflow:hidden;
+    box-shadow: 0 30px 70px -20px rgba(20,22,30,.45), 0 2px 0 rgba(255,255,255,.4) inset;
+    display:flex;
+    flex-direction:column;
+    font-family:var(--font-body);
+    color:var(--text-primary);
+  }
+
+  /* ---------- 타이틀바 ---------- */
+  .titlebar{
+    height:34px;
+    flex:none;
+    background:var(--titlebar-bg);
+    border-bottom:1px solid var(--border-soft);
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:0 12px;
+  }
+  .traffic{ display:flex; gap:7px; }
+  .traffic span{ width:11px; height:11px; border-radius:50%; display:block; }
+  .traffic .r{ background:var(--tl-red); }
+  .traffic .y{ background:var(--tl-yellow); }
+  .traffic .g{ background:var(--tl-green); }
+  .titlebar-title{
+    flex:1;
+    text-align:center;
+    font-size:11.5px;
+    color:var(--text-muted);
+    letter-spacing:.01em;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .titlebar-spacer{ width:53px; flex:none; }
+
+  /* ---------- 탭 스트립 ---------- */
+  .tabstrip{
+    flex:none;
+    height:32px;
+    background:var(--tabstrip-bg);
+    border-bottom:1px solid var(--border);
+    display:flex;
+    align-items:stretch;
+    padding:0 8px;
+    gap:2px;
+  }
+  .tab{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    padding:0 12px;
+    font-size:12px;
+    color:var(--text-secondary);
+    border-right:1px solid var(--border-soft);
+    white-space:nowrap;
+    position:relative;
+    cursor:default;
+  }
+  .tab .dot{ width:5px; height:5px; border-radius:50%; background:var(--text-muted); flex:none; }
+  .tab.active{
+    background:var(--win-bg);
+    color:var(--text-primary);
+    font-weight:700;
+  }
+  .tab.active::after{
+    content:"";
+    position:absolute;
+    left:0; right:0; bottom:-1px;
+    height:2px;
+    background:var(--accent);
+  }
+  .tab.active .dot{ background:var(--accent); }
+  .tabstrip-account{
+    margin-left:auto;
+    flex:none;
+    display:flex;
+    align-items:center;
+    gap:6px;
+    padding:0 10px;
+    font-size:11px;
+    color:var(--text-secondary);
+  }
+  .tabstrip-account .dot{ width:6px; height:6px; border-radius:50%; background:var(--status-good); box-shadow:0 0 0 2px rgba(82,217,127,.15); }
+
+  /* ---------- 본문: 사이드바 + 메인 ---------- */
+  .body{
+    flex:1;
+    min-height:0;
+    display:flex;
+  }
+  .sidebar{
+    width:190px;
+    flex:none;
+    background:var(--sidebar-bg);
+    border-right:1px solid var(--border);
+    padding:12px 0;
+    overflow-y:auto;
+    display:flex;
+    flex-direction:column;
+  }
+  .sidebar-head{
+    font-size:10.5px;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:var(--text-muted);
+    padding:2px 14px 8px;
+  }
+  .conn{
+    display:flex;
+    align-items:flex-start;
+    gap:8px;
+    padding:6px 14px;
+    cursor:default;
+    border-left:2px solid transparent;
+  }
+  .conn.current{
+    background:var(--panel-bg);
+    border-left-color:var(--accent);
+  }
+  .conn .dot{
+    width:6px; height:6px; border-radius:50%;
+    margin-top:5px; flex:none;
+  }
+  .conn .dot.good{ background:var(--status-good); box-shadow:0 0 0 2px rgba(82,217,127,.12); }
+  .conn .dot.warn{ background:var(--status-warn); box-shadow:0 0 0 2px rgba(226,179,79,.12); }
+  .conn .dot.idle{ background:var(--status-idle); }
+  .conn-text{ min-width:0; display:flex; flex-direction:column; gap:1px; }
+  .conn-name{ font-size:12px; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .conn-meta{ font-size:10.5px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sidebar-foot{
+    margin-top:auto;
+    padding:10px 14px 4px;
+    font-size:10.5px;
+    color:var(--text-muted);
+    border-top:1px solid var(--border-soft);
+  }
+
+  .main{
+    flex:1;
+    min-width:0;
+    overflow-y:auto;
+    padding:20px 22px 18px;
+    display:flex;
+    flex-direction:column;
+    gap:18px;
+  }
+
+  /* ---------- 프롬프트 인사말 ---------- */
+  .greet{ display:flex; flex-direction:column; gap:3px; }
+  .greet-line{
+    font-family:var(--font-display);
+    font-size:16px;
+    font-weight:700;
+    display:flex;
+    align-items:baseline;
+    gap:8px;
+    color:var(--text-primary);
+  }
+  .greet-line .sym{ color:var(--accent); }
+  .cursor{
+    display:inline-block;
+    width:7px; height:15px;
+    background:var(--accent);
+    margin-left:1px;
+    animation:blink 1.1s steps(1) infinite;
+    transform:translateY(2px);
+  }
+  @keyframes blink{ 0%,49%{opacity:1;} 50%,100%{opacity:0;} }
+  @media (prefers-reduced-motion: reduce){ .cursor{ animation:none; opacity:1; } }
+  .greet-sub{ font-size:11.5px; color:var(--text-muted); }
+  .greet-sub b{ color:var(--text-secondary); font-weight:700; }
+
+  /* ---------- 공통 패널 ---------- */
+  .panel{
+    position:relative;
+    background:var(--panel-bg);
+    border:1px solid var(--border);
+  }
+  .panel-head{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    padding:7px 12px;
+    border-bottom:1px solid var(--border);
+    font-family:var(--font-display);
+  }
+  .panel-head::before{
+    content:"┌─";
+    color:var(--text-muted);
+    font-size:12px;
+    line-height:1;
+    font-family:var(--font-numeric); /* 박스드로잉 글리프는 모노스페이스에서만 정렬이 맞음 */
+  }
+  .panel-title{
+    font-size:11px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--text-secondary);
+  }
+  .panel-head .count{
+    margin-left:auto;
+    font-size:10.5px;
+    color:var(--text-muted);
+    font-family:var(--font-body);
+  }
+  .panel-body{ padding:10px 12px 12px; }
+
+  /* ---------- 통계 타일 ---------- */
+  .stat-row{
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(155px,1fr));
+    gap:10px;
+  }
+  .stat{
+    background:var(--panel-bg);
+    border:1px solid var(--border);
+    padding:10px 12px;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .stat-label{
+    font-size:10.5px;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    color:var(--text-muted);
+  }
+  .stat-value{
+    font-family:var(--font-numeric);
+    font-size:22px;
+    font-weight:600;
+    font-variant-numeric:tabular-nums;
+    color:var(--text-primary);
+    display:flex;
+    align-items:baseline;
+    gap:6px;
+  }
+  .stat-value small{ font-size:11px; font-weight:500; color:var(--text-muted); }
+  .stat-trend{ font-size:10.5px; font-variant-numeric:tabular-nums; }
+  .stat-trend.up{ color:var(--status-good); }
+  .stat-trend.warn{ color:var(--status-warn); }
+  .stat-trend.flat{ color:var(--text-muted); }
+
+  /* ---------- 2단 영역 ---------- */
+  .split{
+    display:grid;
+    grid-template-columns: 1.6fr 1fr;
+    gap:12px;
+    align-items:start;
+  }
+  .col{ display:flex; flex-direction:column; gap:12px; min-width:0; }
+
+  /* ---------- 세션 리스트 ---------- */
+  .proc{ display:flex; flex-direction:column; }
+  .proc-row{
+    display:grid;
+    grid-template-columns: 52px 96px 1fr 74px 56px;
+    gap:10px;
+    align-items:center;
+    padding:6px 0;
+    border-bottom:1px solid var(--border-soft);
+    font-size:11.5px;
+  }
+  .proc-row:last-child{ border-bottom:none; }
+  .proc-id{ color:var(--text-muted); font-variant-numeric:tabular-nums; font-family:var(--font-numeric); }
+  .proc-proj{
+    color:var(--accent);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-size:11px;
+  }
+  .proc-task{ color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .proc-status{ display:flex; align-items:center; gap:5px; font-size:10.5px; white-space:nowrap; }
+  .proc-status .dot{ width:6px; height:6px; border-radius:50%; flex:none; }
+  .proc-status .dot.run{ background:var(--status-good); box-shadow:0 0 0 2px rgba(82,217,127,.15); }
+  .proc-status .dot.done{ background:var(--text-muted); }
+  .proc-status .dot.idle{ background:var(--status-warn); }
+  .proc-status.run{ color:var(--status-good); }
+  .proc-status.done{ color:var(--text-muted); }
+  .proc-status.idle{ color:var(--status-warn); }
+  .proc-time{ color:var(--text-muted); text-align:right; font-variant-numeric:tabular-nums; }
+
+  /* ---------- 자율 작업 큐 ---------- */
+  .queue-row{
+    display:grid;
+    grid-template-columns: 62px 1fr 60px;
+    gap:10px;
+    align-items:center;
+    padding:6px 0;
+    border-bottom:1px solid var(--border-soft);
+    font-size:11.5px;
+  }
+  .queue-row:last-child{ border-bottom:none; }
+  .queue-id{ color:var(--text-muted); font-family:var(--font-numeric); }
+  .queue-desc{ color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge{
+    font-size:10px;
+    padding:2px 6px;
+    border:1px solid currentColor;
+    text-align:center;
+    letter-spacing:.02em;
+    justify-self:end;
+  }
+  .badge.wait{ color:var(--text-muted); }
+  .badge.run{ color:var(--accent); }
+
+  /* ---------- 개발 도구 버전 ---------- */
+  .tool-row{
+    display:grid;
+    grid-template-columns: 20px 60px 1fr auto;
+    gap:8px;
+    align-items:center;
+    padding:5px 0;
+    border-bottom:1px solid var(--border-soft);
+    font-size:11.5px;
+  }
+  .tool-row:last-child{ border-bottom:none; }
+  .tool-sym{ color:var(--text-muted); }
+  .tool-name{ color:var(--text-secondary); }
+  .tool-ver{ color:var(--text-primary); font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--font-numeric); }
+  .tool-flag{ font-size:10px; white-space:nowrap; }
+  .tool-flag.ok{ color:var(--status-good); }
+  .tool-flag.update{ color:var(--status-warn); }
+
+  /* ---------- 사용량 스파크라인 ---------- */
+  .usage-figures{
+    display:flex;
+    gap:16px;
+    margin-bottom:10px;
+    flex-wrap:wrap;
+  }
+  .usage-figure{ display:flex; flex-direction:column; gap:2px; }
+  .usage-figure .v{ font-family:var(--font-numeric); font-size:14px; font-weight:600; color:var(--text-primary); font-variant-numeric:tabular-nums; }
+  .usage-figure .l{ font-size:10px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; }
+  .spark-wrap{ width:100%; }
+  .spark-wrap svg{ width:100%; height:auto; display:block; }
+  .spark-days{
+    display:flex; justify-content:space-between;
+    font-size:9.5px; color:var(--text-muted); margin-top:4px;
+  }
+
+  /* ---------- 상태 라인 ---------- */
+  .statusline{
+    flex:none;
+    height:24px;
+    background:var(--statusline-bg);
+    border-top:1px solid var(--border-soft);
+    display:flex;
+    align-items:center;
+    padding:0 10px;
+    gap:12px;
+    font-size:10.5px;
+    color:var(--text-secondary);
+    overflow:hidden;
+    white-space:nowrap;
+  }
+  .statusline .seg{ display:flex; align-items:center; gap:5px; }
+  .statusline .sep{ color:var(--border); }
+  .statusline .dot{ width:5px; height:5px; border-radius:50%; background:var(--status-good); flex:none; }
+  .statusline .accent{ color:var(--accent); }
+  .statusline .warn{ color:var(--status-warn); }
+  .statusline-fill{ flex:1; }
+  .statusline .clock{ font-variant-numeric:tabular-nums; color:var(--text-primary); font-family:var(--font-numeric); }
+
+  /* ---------- 컨테이너 쿼리 : 900px 하한까지 안전하게 ---------- */
+  @container (max-width: 1040px){
+    .split{ grid-template-columns: 1fr; }
+  }
+  @container (max-width: 760px){
+    .sidebar{ width:150px; }
+    .proc-row{ grid-template-columns: 40px 80px 1fr 60px; }
+    .proc-time{ display:none; }
+  }
+</style>
+
+<div class="artboard">
+  <div class="artboard-label">
+    <div class="artboard-eyebrow">맑은에이전트 · 디자인 방향 시안</div>
+    <div class="artboard-title"><span class="prompt-sym">❯</span> Terminus / Tabby 터미널 에뮬레이터 스타일</div>
+  </div>
+
+  <!-- ============ 아래부터 .window 는 실제 앱 창(1180×760, macOS 네이티브 프레임) 모형입니다 ============ -->
+  <div class="window">
+
+    <div class="titlebar">
+      <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+      <div class="titlebar-title">맑은에이전트 — dev@malgn: ~/workspace</div>
+      <div class="titlebar-spacer"></div>
+    </div>
+
+    <div class="tabstrip">
+      <div class="tab active"><span class="dot"></span>홈</div>
+      <div class="tab"><span class="dot"></span>프로젝트</div>
+      <div class="tab"><span class="dot"></span>세션</div>
+      <div class="tab"><span class="dot"></span>사용량</div>
+      <div class="tab"><span class="dot"></span>개발 도구</div>
+      <div class="tab"><span class="dot"></span>자율 작업</div>
+      <div class="tab"><span class="dot"></span>카탈로그</div>
+      <div class="tab"><span class="dot"></span>앱 링크</div>
+      <div class="tab"><span class="dot"></span>설정</div>
+      <div class="tabstrip-account"><span class="dot"></span>dev@malgnsoft.com</div>
+    </div>
+
+    <div class="body">
+      <aside class="sidebar">
+        <div class="sidebar-head">workspace ~ (5)</div>
+
+        <div class="conn current">
+          <span class="dot good"></span>
+          <div class="conn-text">
+            <div class="conn-name">malgn-vscode</div>
+            <div class="conn-meta">main · clean</div>
+          </div>
+        </div>
+        <div class="conn">
+          <span class="dot good"></span>
+          <div class="conn-text">
+            <div class="conn-name">malgn-agent</div>
+            <div class="conn-meta">main · 2 files</div>
+          </div>
+        </div>
+        <div class="conn">
+          <span class="dot warn"></span>
+          <div class="conn-text">
+            <div class="conn-name">mall-api</div>
+            <div class="conn-meta">fix/batch-timeout</div>
+          </div>
+        </div>
+        <div class="conn">
+          <span class="dot idle"></span>
+          <div class="conn-text">
+            <div class="conn-name">biz-crm-admin</div>
+            <div class="conn-meta">idle · 3일 전</div>
+          </div>
+        </div>
+        <div class="conn">
+          <span class="dot idle"></span>
+          <div class="conn-text">
+            <div class="conn-name">edu-lms-api</div>
+            <div class="conn-meta">idle · 1주 전</div>
+          </div>
+        </div>
+
+        <div class="sidebar-foot">+ 새 워크스페이스 연결</div>
+      </aside>
+
+      <main class="main">
+        <div class="greet">
+          <div class="greet-line"><span class="sym">❯</span>좋은 아침입니다, 근호님<span class="cursor"></span></div>
+          <div class="greet-sub">2026-09-23 (수) 09:14 · <b>5</b>개 워크스페이스 연결됨 · 실행 중 세션 <b>1</b>개</div>
+        </div>
+
+        <div class="stat-row">
+          <div class="stat">
+            <div class="stat-label">활성 프로젝트</div>
+            <div class="stat-value">5 <small>/ 5</small></div>
+            <div class="stat-trend flat">변동 없음</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">실행 중 세션</div>
+            <div class="stat-value">1</div>
+            <div class="stat-trend up">▲ 3건 오늘 완료</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">오늘 토큰 사용량</div>
+            <div class="stat-value">812<small>K</small></div>
+            <div class="stat-trend flat">캐시 히트율 78%</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">대기 중 자율 작업</div>
+            <div class="stat-value">2</div>
+            <div class="stat-trend warn">▲ 1건 신규</div>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="col">
+            <div class="panel">
+              <div class="panel-head"><span class="panel-title">최근 세션</span><span class="count">4건 표시 · 전체 보기</span></div>
+              <div class="panel-body">
+                <div class="proc">
+                  <div class="proc-row">
+                    <span class="proc-id">#2214</span>
+                    <span class="proc-proj">malgn-vscode</span>
+                    <span class="proc-task">대시보드 Anthropic 계정 로그아웃 구현</span>
+                    <span class="proc-status run"><span class="dot run"></span>실행중</span>
+                    <span class="proc-time">18m</span>
+                  </div>
+                  <div class="proc-row">
+                    <span class="proc-id">#2211</span>
+                    <span class="proc-proj">malgn-vscode</span>
+                    <span class="proc-task">인증 완료 시 창 포커스 + 로그인 페이지 정리</span>
+                    <span class="proc-status done"><span class="dot done"></span>완료</span>
+                    <span class="proc-time">47m</span>
+                  </div>
+                  <div class="proc-row">
+                    <span class="proc-id">#2205</span>
+                    <span class="proc-proj">malgn-agent</span>
+                    <span class="proc-task">GitHub 로그인 대화형 질문 3개 생략</span>
+                    <span class="proc-status done"><span class="dot done"></span>완료</span>
+                    <span class="proc-time">2h 05m</span>
+                  </div>
+                  <div class="proc-row">
+                    <span class="proc-id">#2198</span>
+                    <span class="proc-proj">mall-api</span>
+                    <span class="proc-task">정산 배치 N+1 쿼리 수정</span>
+                    <span class="proc-status idle"><span class="dot idle"></span>대기</span>
+                    <span class="proc-time">어제</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span class="panel-title">자율 작업 큐</span><span class="count">2건 대기</span></div>
+              <div class="panel-body">
+                <div class="queue-row">
+                  <span class="queue-id">WBS-114</span>
+                  <span class="queue-desc">malgn-agent 지식 문서 정리 및 중복 제거</span>
+                  <span class="badge wait">대기</span>
+                </div>
+                <div class="queue-row">
+                  <span class="queue-id">WBS-109</span>
+                  <span class="queue-desc">mall-api 정산 배치 테스트 커버리지 보강</span>
+                  <span class="badge run">진행중</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="panel">
+              <div class="panel-head"><span class="panel-title">개발 도구</span><span class="count">2건 업데이트</span></div>
+              <div class="panel-body">
+                <div class="tool-row">
+                  <span class="tool-sym">$</span><span class="tool-name">claude</span><span class="tool-ver">2.1.4</span><span class="tool-flag ok">✓ 최신</span>
+                </div>
+                <div class="tool-row">
+                  <span class="tool-sym">$</span><span class="tool-name">node</span><span class="tool-ver">v22.9.0</span><span class="tool-flag ok">✓ 최신</span>
+                </div>
+                <div class="tool-row">
+                  <span class="tool-sym">$</span><span class="tool-name">pnpm</span><span class="tool-ver">9.12.1</span><span class="tool-flag update">↑ 9.12.3</span>
+                </div>
+                <div class="tool-row">
+                  <span class="tool-sym">$</span><span class="tool-name">git</span><span class="tool-ver">2.46.0</span><span class="tool-flag ok">✓ 최신</span>
+                </div>
+                <div class="tool-row">
+                  <span class="tool-sym">$</span><span class="tool-name">gh</span><span class="tool-ver">2.58.0</span><span class="tool-flag update">↑ 2.60.1</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span class="panel-title">이번 주 토큰 사용량</span></div>
+              <div class="panel-body">
+                <div class="usage-figures">
+                  <div class="usage-figure"><span class="v">4.2M</span><span class="l">이번 주</span></div>
+                  <div class="usage-figure"><span class="v">78%</span><span class="l">캐시 히트율</span></div>
+                </div>
+                <div class="spark-wrap">
+                  <svg viewBox="0 0 280 64" preserveAspectRatio="none" role="img" aria-label="7일간 토큰 사용량 추이">
+                    <polygon points="0,64 0,40 40,44 80,30 120,36 160,18 200,24 240,10 280,16 280,64"
+                      fill="var(--accent)" opacity="0.12"></polygon>
+                    <polyline points="0,40 40,44 80,30 120,36 160,18 200,24 240,10 280,16"
+                      fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>
+                    <circle cx="0" cy="40" r="2.4" fill="var(--accent)"><title>목 605K</title></circle>
+                    <circle cx="40" cy="44" r="2.4" fill="var(--accent)"><title>화 560K</title></circle>
+                    <circle cx="80" cy="30" r="2.4" fill="var(--accent)"><title>수 700K</title></circle>
+                    <circle cx="120" cy="36" r="2.4" fill="var(--accent)"><title>목 630K</title></circle>
+                    <circle cx="160" cy="18" r="2.4" fill="var(--accent)"><title>금 820K</title></circle>
+                    <circle cx="200" cy="24" r="2.4" fill="var(--accent)"><title>토 760K</title></circle>
+                    <circle cx="240" cy="10" r="3" fill="var(--accent)"><title>일 900K</title></circle>
+                    <circle cx="280" cy="16" r="3.2" fill="var(--accent)" stroke="var(--win-bg)" stroke-width="1.5"><title>오늘 812K</title></circle>
+                  </svg>
+                </div>
+                <div class="spark-days"><span>목</span><span>금</span><span>토</span><span>일</span><span>월</span><span>화</span><span>수</span><span>오늘</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="statusline">
+      <span class="seg"><span class="dot"></span>5 workspaces</span>
+      <span class="sep">│</span>
+      <span class="seg">session: <span class="accent">1 running</span>, 3 idle</span>
+      <span class="sep">│</span>
+      <span class="seg">claude 2.1.4 · node v22.9.0</span>
+      <span class="sep">│</span>
+      <span class="seg">main ✓ clean</span>
+      <span class="sep">│</span>
+      <span class="seg warn">pnpm/gh 업데이트 2건</span>
+      <div class="statusline-fill"></div>
+      <span class="seg">dev@malgnsoft.com</span>
+      <span class="sep">│</span>
+      <span class="clock">09:14:52</span>
+    </div>
+  </div>
+</div>
