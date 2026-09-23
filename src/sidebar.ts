@@ -18,8 +18,7 @@ import type { Route } from './route';
 import { asBoolean, asString, asNumber, sortedSessions, sessionTitle, projectNameFromCwd, openNewSessionModal, loadSessions } from './views/sessions';
 import type { ClaudeSessionRecord } from './sessionsApi';
 import { sortedProjectsByRecency } from './views/projects';
-import { loadDailyUsage, getUsagePeriodDays, setUsagePeriodDays, toggleDailyDetail, dailyUsageTotal, formatTokenCount } from './views/usage';
-import type { DailyUsage } from './usageApi';
+import { loadDailyUsage } from './views/usage';
 import { highlightDevTool } from './views/devTools';
 import type { DevToolStatus } from './devToolsApi';
 import type { AutonomousTask } from './state';
@@ -349,45 +348,15 @@ function renderSessionsSidebar(route: Route): HTMLElement {
 }
 
 // =====================================================================
-// §4-4 — 사용량: 기간 토글(클라이언트 전용) + 최근 활동일 퀵점프
+// §4-4 — 사용량: "일별 사용량" 단일 항목(PM 결정, 2026-09-24) — 예전의
+// 기간 토글(7일/30일)과 "최근 활동일" 퀵점프 목록은 폐기됐다. 이 탭
+// 본문(usage.ts)이 곧 "일별 사용량" 전체이므로 사이드바는 그 사실을 알려주는
+// 정적 nav 행 하나만 둔다(다른 목적지가 없어 클릭 동작은 없다).
 // =====================================================================
-function usagePeriodToggle(): HTMLElement {
-  const days = getUsagePeriodDays();
-  return el('div', { className: 'sidebar-nav-group' }, [
-    navRow('최근 7일', days === 7, () => setUsagePeriodDays(7)),
-    navRow('최근 30일', days === 30, () => setUsagePeriodDays(30)),
-  ]);
-}
-
-function recentActivityRow(d: DailyUsage): HTMLElement {
-  const selected = state.dailyDetail.selectedDate === d.date;
-  return narrowRow({
-    dotClass: selected ? 'accent' : 'idle',
-    name: d.date,
-    meta: `${formatTokenCount(dailyUsageTotal(d))} 토큰`,
-    current: selected,
-    onClick: () => toggleDailyDetail(d.date),
-  });
-}
-
 function renderUsageSidebar(): HTMLElement {
-  const usage = state.dailyUsage;
   const head = el('div', { className: 'sidebar-head' }, ['usage']);
-  const body: HTMLElement[] = [usagePeriodToggle()];
-
-  if (usage.error) {
-    body.push(sidebarEmpty(`⚠ ${usage.error}`));
-  } else if (usage.loading && !usage.loaded) {
-    body.push(sidebarEmpty('불러오는 중…'));
-  } else if (usage.items.length === 0) {
-    body.push(sidebarEmpty('최근 30일 이내 사용 기록이 없습니다'));
-  } else {
-    const days = [...usage.items].sort((a, b) => b.date.localeCompare(a.date));
-    body.push(groupHead('최근 활동일'));
-    body.push(el('div', {}, days.map(recentActivityRow)));
-  }
-
-  return el('aside', { className: 'sidebar' }, [head, ...body]);
+  const body = el('div', { className: 'sidebar-nav-row current' }, ['일별 사용량']);
+  return el('aside', { className: 'sidebar' }, [head, body]);
 }
 
 // =====================================================================

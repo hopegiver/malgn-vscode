@@ -22,11 +22,20 @@ interface UsageStat {
   readonly value: string;
 }
 
-function statCardEl(s: UsageStat): HTMLElement {
-  return el('div', { className: 'stat-card' }, [
-    el('div', { className: 'stat-card-label' }, [s.label]),
-    el('div', { className: 'stat-card-value' }, [s.value]),
+// design-system.md §3.3 — home.ts의 통계 타일(.stat-row/.stat)과 동일한
+// 캐노니컬 클래스로 이관한다(구 .stat-grid/.stat-card 폐기, JetBrains
+// Mono+tabular-nums가 이미 .stat-value CSS에 붙어 있다).
+function statTile(s: UsageStat): HTMLElement {
+  return el('div', { className: 'stat' }, [
+    el('div', { className: 'stat-label' }, [s.label]),
+    el('div', { className: 'stat-value' }, [s.value]),
   ]);
+}
+
+// design-system.md §3.1 — 박스 공용 헤더(home.ts boxHead()와 동일 패턴, 이
+// 화면은 우측 부가 콘텐츠가 없어 제목만 받는 단순 버전).
+function boxHead(title: string): HTMLElement {
+  return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title])]);
 }
 
 export function formatUsd(v: number): string {
@@ -113,32 +122,11 @@ export async function loadDailyDetail(date: string): Promise<void> {
   }
 }
 
-// IA §4-4ⓐ: 사용량 사이드바의 "최근 7일/최근 30일" 토글 — 순수 클라이언트
-// 상태(비영속, PM 결정 IA §8-②)다. state.dailyUsage.items는 이미 30일 전체를
-// 담고 있으므로 이 값은 그 배열을 얼마나 슬라이스할지만 결정한다. 세션 간
-// 기억하지 않는다 — 앱을 새로 열면 항상 기본값(30일)으로 되돌아간다.
-let usagePeriodDays: 7 | 30 = 30;
-
-export function getUsagePeriodDays(): 7 | 30 {
-  return usagePeriodDays;
-}
-
-export function setUsagePeriodDays(days: 7 | 30): void {
-  if (usagePeriodDays === days) return;
-  usagePeriodDays = days;
-  notifyChange();
-}
-
-// 선택된 기간으로 자른 목록 — 날짜 내림차순(최신 우선)이 이미 정본 정렬이라
-// 그 순서에서 앞의 N개만 취한다.
-function periodFilteredItems(): DailyUsage[] {
-  const days = [...state.dailyUsage.items].sort((a, b) => b.date.localeCompare(a.date));
-  return days.slice(0, usagePeriodDays);
-}
-
-// IA §4-4: 사이드바 "최근 활동일" 퀵점프가 호출한다 — 본문의 해당 날짜 행을
-// 펼치는 것과 완전히 같은 동작이라 별도 로직 없이 export만 한다.
-export function toggleDailyDetail(date: string): void {
+// 사용량 사이드바는 "일별 사용량" 단일 항목만 둔다(PM 결정, 2026-09-24) —
+// 예전에 있던 "최근 7일/최근 30일" 기간 토글과 "최근 활동일" 날짜 퀵점프
+// 목록은 폐기됐다. 이 화면은 항상 최근 30일 전체를 보여주는 main 브랜치
+// 원래 동작으로 되돌아간다(사이드바에서 이 화면을 제어하지 않는다).
+function toggleDailyDetail(date: string): void {
   if (state.dailyDetail.selectedDate === date) {
     state.dailyDetail.selectedDate = null;
     state.dailyDetail.report = null;
@@ -215,10 +203,6 @@ function renderDailyDetailPanel(date: string): HTMLElement {
 }
 
 function renderDailyUsageSection(): HTMLElement {
-  const labelRow = el('div', { className: 'overview-label-row' }, [
-    el('div', { className: 'overview-label' }, [`일별 사용량 (최근 ${usagePeriodDays}일)`]),
-  ]);
-
   let body: HTMLElement;
   if (state.dailyUsage.loading && !state.dailyUsage.loaded) {
     body = el('div', { className: 'state-block-desc' }, ['불러오는 중…']);
@@ -228,9 +212,9 @@ function renderDailyUsageSection(): HTMLElement {
       el('button', { className: 'btn', onClick: () => void loadDailyUsage() }, ['다시 시도']),
     ]);
   } else {
-    const days = periodFilteredItems();
+    const days = [...state.dailyUsage.items].sort((a, b) => b.date.localeCompare(a.date));
     if (days.length === 0) {
-      body = el('div', { className: 'state-block-desc' }, [`최근 ${usagePeriodDays}일 이내 사용 기록이 없습니다.`]);
+      body = el('div', { className: 'state-block-desc' }, ['최근 30일 이내 사용 기록이 없습니다.']);
     } else {
       const maxTotal = Math.max(...days.map(dailyUsageTotal));
       const rows: HTMLElement[] = [];
@@ -246,7 +230,10 @@ function renderDailyUsageSection(): HTMLElement {
               // 고정 grid라 새 컬럼을 추가하면 레이아웃이 깨진다).
               el('div', { className: 'bar-row-label' }, [`${selected ? '▾' : '▸'} ${d.date}`]),
               el('div', { className: 'bar-track' }, [barFillEl(pct)]),
-              el('div', { className: 'bar-row-value' }, [`${total.toLocaleString('ko-KR')} 토큰`]),
+              el('div', { className: 'bar-row-value' }, [
+                el('span', { className: 'bar-row-value-num' }, [total.toLocaleString('ko-KR')]),
+                ' 토큰',
+              ]),
             ]),
             () => toggleDailyDetail(d.date)
           )
@@ -257,7 +244,7 @@ function renderDailyUsageSection(): HTMLElement {
     }
   }
 
-  return el('div', { className: 'overview-card' }, [labelRow, body]);
+  return el('div', { className: 'box' }, [boxHead('일별 사용량 (최근 30일)'), el('div', { className: 'box-body' }, [body])]);
 }
 
 function renderUsageStatCards(): HTMLElement {
@@ -267,18 +254,18 @@ function renderUsageStatCards(): HTMLElement {
   if (state.dailyUsage.error || state.dailyUsage.items.length === 0) {
     return el('div', {}, []);
   }
-  const t = computeUsageTotals(periodFilteredItems());
+  const t = computeUsageTotals(state.dailyUsage.items);
   const stats: UsageStat[] = [
-    { label: `최근 ${usagePeriodDays}일 총 토큰`, value: formatTokenCount(t.totalTokens) },
-    { label: `최근 ${usagePeriodDays}일 활동일수`, value: `${t.activeDays}일` },
+    { label: '최근 30일 총 토큰', value: formatTokenCount(t.totalTokens) },
+    { label: '최근 30일 활동일수', value: `${t.activeDays}일` },
     { label: '일평균 토큰', value: formatTokenCount(t.avgPerDay) },
     { label: '캐시 히트율', value: t.cacheHitRate !== null ? `${t.cacheHitRate}%` : '—' },
   ];
-  return el('div', { className: 'stat-grid' }, stats.map(statCardEl));
+  return el('div', { className: 'stat-row' }, stats.map(statTile));
 }
 
 function renderDailyTab(): HTMLElement {
-  return el('div', {}, [renderUsageStatCards(), renderDailyUsageSection()]);
+  return el('div', { className: 'col' }, [renderUsageStatCards(), renderDailyUsageSection()]);
 }
 
 // ---------------- 화면 진입점 ----------------
