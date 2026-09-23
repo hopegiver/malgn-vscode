@@ -59,3 +59,6 @@
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 1차(최초, 풀패널 — Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul.md`
   — 재사용 사유: 좌측 내비 → 상단 9탭 전환은 매일 쓰는 사람의 반복 동선(탭 전환·앱 링크 퀵오픈·업데이트 적용)과 키보드 경로를 통째로 바꾼다. 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 계정 메뉴가 열린 상태의 탭 클릭·Escape, 탭의 role/활성 표기, 앱 링크 퀵오픈이 전 화면 상시 → 단일 탭으로 좁아진 동선 비용.
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 2차(증분 — 직전 4인 전원 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r2.md`
+  — 재사용 사유: 탭 클릭 흡수(M1-b)·Escape·ARIA(m6)·홈 숫자 모순(m1)·용어(m3) 해소 여부가 매일 쓰는 사람의 동선 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: 키보드로 계정 메뉴를 연 뒤 포커스 위치, 드롭다운 내부 클릭 동작, 용어 잔존 grep.

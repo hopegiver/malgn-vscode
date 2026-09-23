@@ -78,3 +78,6 @@
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 1차(최초, 풀패널 — Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul.md`
   — 재사용 사유: 설계 정본 3종(`terminus-mockup.html`·`terminus-design-system.md`·`terminus-shell-ia.md`)과 사용자 확정 조항(폰트 방침·탭별 맥락 사이드바·body 14px/사이드바 220px)을 조항 단위로 구현과 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: 폰트 방침 "한글 섞일 가능성 있는 텍스트는 산세리프, 예외 없음"(design-system §1 표)을 `font-numeric` 적용 셀렉터 전수와 대조, IA §4-1~§4-9 사이드바 명세와 `sidebar.ts` 분기 대조, "`src/*Api.ts`·`src-tauri/**` diff 0" 불변식 실측.
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 2차(증분 — 직전 4인 전원 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r2.md`
+  — 재사용 사유: M3(폰트 방침) 해소 여부와 m4·m5 문서·문구 드리프트 정정 여부를 조항 단위로 다시 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: `font-numeric` 잔존 셀렉터 전수 + 9탭 DOM에서 "한글 텍스트 노드의 부모가 JetBrains Mono인가" 실측 스캔, IA §2-3·§4-6 갱신 대조.

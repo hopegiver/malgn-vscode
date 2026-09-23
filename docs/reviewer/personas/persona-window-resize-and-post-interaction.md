@@ -73,3 +73,6 @@
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 1차(최초, 풀패널 — Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul.md`
   — 재사용 사유: 셸 전체가 고정 높이 탭스트립·상태줄(overflow:hidden)로 바뀌어 "최소 창 900px에서 무엇이 잘리는가"와 "로그아웃·드롭다운 같은 조작 이후 상태"가 새 리스크 표면의 핵심이다. 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 업데이트 배지가 붙은 상태줄의 900/1180px 실측, 계정 드롭다운 열림→로그아웃→재로그인 순서의 리스너 수·첫 클릭 실측.
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 2차(증분 — 직전 4인 전원 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r2.md`
+  — 재사용 사유: M1(조작 이후 리스너 잔존)·M2(900px 상태줄) 수정이 새로 들인 `setTimeout(…,0)` 지연 등록과 좌우 그룹 분리가 이 페르소나의 두 축에 정확히 걸린다. 6대 요소 무수정.
+  — 이번 라운드 집중: window 리스너 정확 집합 추적(열기/닫기 20회·동일 태스크 열기→Esc→열기 경합·키보드 로그아웃), 업데이트 배지+긴 프로젝트명+900px 최악 조합 좌표 실측, 수정 전 트리(ce8251f)에서 회귀 흐름 실패 재현.
