@@ -37,7 +37,7 @@ const ROUTES = [
   { id: 'sessions-list', hash: '#/sessions', note: '탭3 세션 목록 — 세션 사이드바' },
   { id: 'sessions-detail', hash: `#/sessions/${enc(IDS.SESSION_ID)}`, note: '탭3 세션 상세(채팅) — 사이드바 현재 세션 강조' },
   { id: 'sessions-draft', hash: `#/sessions/new/${enc(IDS.PROJECT_PATH)}`, note: '탭3 새 세션 draft(채팅 입력)' },
-  { id: 'usage', hash: '#/usage', note: '탭4 사용량 — 기간 토글+최근 활동일 사이드바' },
+  { id: 'usage', hash: '#/usage', note: '탭4 사용량 — 사이드바 단일 항목(배치 B로 기간 토글/최근 활동일 폐기, scripts/capture/batchB.mjs 참고)' },
   { id: 'settings-devtools', hash: '#/settings/devtools', note: '탭5 개발 도구 — 필수/선택 그룹 사이드바' },
   { id: 'tasks-list', hash: '#/tasks', note: '탭6 자율 작업 — 뷰 전환+작업 큐 사이드바' },
   { id: 'catalog', hash: '#/catalog', note: '탭7 카탈로그 — nav 사이드바' },
