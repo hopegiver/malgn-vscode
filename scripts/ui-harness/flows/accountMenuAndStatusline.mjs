@@ -9,6 +9,11 @@
 // (재현 로그는 docs/reviewer/review-ui-terminus-overhaul.md "M1 재현 절" 참고).
 // M2 재현 근거: .statusline이 overflow:hidden 단일 flex 행이라 900px에서
 // 오른쪽 세그먼트(업데이트 적용/새 버전 확인/시계)가 뷰포트 밖으로 밀려났다.
+// M4(리뷰 r3) 재현 근거: m10 수정으로 메뉴를 열자마자 포커스가 곧바로
+// "로그아웃" 항목에 놓였고, dom.ts의 clickable() keydown이 e.repeat를 걸러내지
+// 않아 칩에서 Enter/Space를 길게 누르면(OS 키 반복) 확인 없이 로그아웃이
+// 실행됐다. keyboard.down()을 up() 없이 연속 호출해 repeat:true keydown을
+// 재현한다(page.keyboard.down 두 번째 호출부터 repeat:true — 실측 확인).
 export const flowId = 'accountMenuAndStatusline';
 export const startHash = '#/';
 
@@ -154,6 +159,66 @@ export function scenarios(base) {
         }
         if ((await page.locator('.tabstrip-account-dropdown').count()) > 0) {
           bugs.push({ severity: 'Minor', symptom: '[M1-b] 탭 클릭 후에도 계정 메뉴가 닫히지 않음', file: 'src/sidebar.ts:accountMenuOutsideClickHandler' });
+        }
+      },
+    },
+    // ---- M4 — 계정 칩에서 Enter/Space를 길게 눌러도(OS 키 반복) 로그아웃되지
+    // 않는다(리뷰 r3). keyboard.down()을 up() 없이 연속 호출하면 두 번째부터
+    // repeat:true인 keydown이 발생한다(OS 키 반복 재현, probeRepeat로 확인).
+    // 수정 전(a30064f 이후 m10 반영 직후)에는 메뉴가 열리자마자 포커스가 곧바로
+    // "로그아웃" 항목에 놓여 반복 keydown이 그대로 로그아웃을 실행했다.
+    {
+      id: 'hold-enter-on-chip-does-not-logout',
+      fixtures: { ...base },
+      async run(page, { shot, bugs }) {
+        await page.waitForSelector('.tabstrip-account');
+        await page.locator('.tabstrip-account').focus();
+
+        await page.keyboard.down('Enter');
+        await page.waitForSelector('.tabstrip-account-dropdown');
+        await shot('01-opened-by-enter');
+
+        // 키를 떼지 않고 두 번 더 down() — 두 번째부터 repeat:true.
+        await page.keyboard.down('Enter');
+        await page.keyboard.down('Enter');
+        await page.keyboard.up('Enter');
+        await page.waitForTimeout(150);
+        await shot('02-after-enter-held');
+
+        if ((await page.locator('.login-screen').count()) > 0) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: '[M4] 계정 칩에서 Enter를 길게 눌렀더니(키 반복) 확인 없이 로그아웃됨',
+            file: 'src/sidebar.ts:openAccountMenu / src/dom.ts:clickable',
+            repro: '.tabstrip-account에 포커스 → keyboard.down("Enter") 3회(up 없이) → .login-screen 존재 여부 확인',
+          });
+        }
+      },
+    },
+    {
+      id: 'hold-space-on-chip-does-not-logout',
+      fixtures: { ...base },
+      async run(page, { shot, bugs }) {
+        await page.waitForSelector('.tabstrip-account');
+        await page.locator('.tabstrip-account').focus();
+
+        await page.keyboard.down(' ');
+        await page.waitForSelector('.tabstrip-account-dropdown');
+        await shot('01-opened-by-space');
+
+        await page.keyboard.down(' ');
+        await page.keyboard.down(' ');
+        await page.keyboard.up(' ');
+        await page.waitForTimeout(150);
+        await shot('02-after-space-held');
+
+        if ((await page.locator('.login-screen').count()) > 0) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: '[M4] 계정 칩에서 Space를 길게 눌렀더니(키 반복) 확인 없이 로그아웃됨',
+            file: 'src/sidebar.ts:openAccountMenu / src/dom.ts:clickable',
+            repro: '.tabstrip-account에 포커스 → keyboard.down(" ") 3회(up 없이) → .login-screen 존재 여부 확인',
+          });
         }
       },
     },

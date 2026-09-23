@@ -168,8 +168,13 @@ function openAccountMenu(): void {
   }
   notifyChange();
   // m10 — notifyChange()는 동기 재렌더라 이 시점에 드롭다운 DOM이 이미 있다.
-  // 첫 메뉴 항목(로그아웃)으로 포커스를 옮겨 body로 떨어지지 않게 한다.
-  document.querySelector<HTMLElement>('.tabstrip-account-dropdown-item')?.focus();
+  // M4 수정(리뷰 r3) — 예전에는 첫(=유일한) 메뉴 항목인 로그아웃에 곧바로
+  // 포커스를 줬다. 그러면 body로 떨어지는 문제는 막히지만, 위험(danger) 항목에
+  // 포커스가 놓인 채로 남아 Enter/Space를 길게 누르면(키 반복) 확인 없이
+  // 로그아웃이 실행됐다. 대신 드롭다운 컨테이너(role="menu", tabindex="-1")로
+  // 포커스를 두고, 거기서 Tab이나 화살표로 로그아웃 항목까지 이동해야 실행되게
+  // 한다 — body로 떨어지지 않으면서 위험 항목을 우발적으로 활성화하지 않는다.
+  document.querySelector<HTMLElement>('.tabstrip-account-dropdown')?.focus();
 }
 
 function renderAccountChip(): HTMLElement {
@@ -201,11 +206,25 @@ function renderAccountChip(): HTMLElement {
     },
     { stopPropagation: true }
   );
+  // clickable()의 기본 role="button"을 메뉴 항목 시맨틱스로 덮어쓴다(tabEl과
+  // 동일한 패턴, sidebar.ts:98 참고).
+  logoutItem.setAttribute('role', 'menuitem');
 
   const dropdown = el('div', { className: 'tabstrip-account-dropdown' }, [
     ...(email ? [el('div', { className: 'tabstrip-account-dropdown-email' }, [email])] : []),
     logoutItem,
   ]);
+  // M4 수정 — 드롭다운 컨테이너 자체가 초기 포커스 대상(openAccountMenu 참고)이
+  // 되도록 role="menu" + tabindex="-1"을 둔다. 화살표 키로도 로그아웃 항목까지
+  // 이동할 수 있게 한다(Tab은 DOM 순서상 이미 자연히 도달한다).
+  dropdown.setAttribute('role', 'menu');
+  dropdown.setAttribute('tabindex', '-1');
+  dropdown.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      logoutItem.focus();
+    }
+  });
   chip.appendChild(dropdown);
   return chip;
 }

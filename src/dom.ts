@@ -41,7 +41,17 @@ export function clickable<T extends HTMLElement>(node: T, onActivate: () => void
   });
   node.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
+      // Space의 페이지 스크롤 방지는 반복 keydown에서도 계속 막아야 하므로
+      // preventDefault는 항상 먼저 실행한다.
       e.preventDefault();
+      // M4(리뷰 r3) — OS 키 반복으로 들어오는 두 번째 이후 keydown(e.repeat)은
+      // onActivate()를 실행하지 않는다. 이게 없으면 role="button" 요소에서
+      // Enter/Space를 길게 눌러 키만 떼지 않아도 활성화가 반복 실행된다 —
+      // 특히 계정 메뉴 드롭다운처럼 열자마자 위험 항목(로그아웃)에 포커스가 갈
+      // 수 있는 곳에서는 첫 keydown이 메뉴를 열고 두 번째(반복) keydown이 그대로
+      // 그 항목을 실행해 확인 없이 로그아웃되는 결과로 이어졌다. 전 clickable()
+      // 사용처에 적용되는 범용 방어라 개별 화면을 고칠 필요가 없다.
+      if (e.repeat) return;
       if (opts?.stopPropagation) e.stopPropagation();
       onActivate();
     }
