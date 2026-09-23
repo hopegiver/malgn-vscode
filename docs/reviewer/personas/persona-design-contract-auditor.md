@@ -75,3 +75,6 @@
 - 2026-09-17 / target_id `autonomy-detail-redesign` / 1차(최초, 약식 2인 패널 — Standard 등급) / `docs/reviewer/review-autonomy-detail-redesign-2026-09-17.md`
   — 재사용 사유: 역할개념("사라진 조항의 형태로 오는 불일치")이 그대로 유효하다. 설계 정본 `docs/design/autonomy-task-detail-redesign.md`가 §4-2 결과 4종 표·§4-3 시각 분기·§4-4 소요시간 공식·§4-6 4상태 표·§5 여백 px를 전부 수치로 못박아 조항 대조의 과녁이 뚜렷했다. 6대 요소 무수정.
   — 이번 라운드 집중: §4-2~§4-6·§5 조항 전수 코드 대조(전행 통과), PM이 승인한 의도적 이탈 2건(에러 트리거·이력 건별 summary 생략)의 **경계 확정** — 승인 범위는 "이력 각 건의 summary"까지이고 런타임 최근 1건 summary(`AutonomyRuntimeStatus.summary`)의 화면 제거는 그 승인에 포함되지 않은 조용한 누락임을 §1 위계표 10번 조항과 대조해 판정(D3 미충족, M2).
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 1차(최초, 풀패널 — Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul.md`
+  — 재사용 사유: 설계 정본 3종(`terminus-mockup.html`·`terminus-design-system.md`·`terminus-shell-ia.md`)과 사용자 확정 조항(폰트 방침·탭별 맥락 사이드바·body 14px/사이드바 220px)을 조항 단위로 구현과 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: 폰트 방침 "한글 섞일 가능성 있는 텍스트는 산세리프, 예외 없음"(design-system §1 표)을 `font-numeric` 적용 셀렉터 전수와 대조, IA §4-1~§4-9 사이드바 명세와 `sidebar.ts` 분기 대조, "`src/*Api.ts`·`src-tauri/**` diff 0" 불변식 실측.
