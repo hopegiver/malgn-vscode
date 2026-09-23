@@ -1,153 +1,356 @@
-/* 톤앤매너 참고: malgnai-hub 프론트 스크린샷(dashboard-populated-desktop.png,
-   pd-overview.png) — 좌측 고정 다크 사이드바 + 밝은 콘텐츠 영역 + 인디고 강조색 +
-   카드 그리드. 이 UI 목업은 Tauri(웹뷰) 프론트엔드이며 프레임워크 없이 순수 CSS로만
-   기존 Electron 렌더러와 같은 톤을 재현한다. */
+/* Terminus 디자인 시스템 — docs/design/terminus-design-system.md 정본.
+   다크 단일 테마(Terminus/Tabby 터미널 에뮬레이터 미학). 값은 그 문서 §1의
+   토큰을 그대로 옮긴 것이다(재계산 없음) — 값을 바꿀 일이 있으면 그 문서부터
+   갱신한다. */
 
 :root {
-  --color-brand: #4f46e5;
-  --color-brand-soft: #eef0ff;
-  --color-canvas: #f7f8fa;
-  --color-surface: #ffffff;
-  --color-ink: #14161c;
-  --color-ink-muted: #6b7280;
-  /* WCAG AA 접근성 감사(P1) 결과 수정 — 상세 계산은 아래 각 규칙 옆 주석 참고.
-     밝은/어두운 배경 위에서 쓰는 회색·인버스 값은 서로 다른 토큰으로 분리한다:
-     같은 리터럴을 그대로 어둡게 하면 어두운 배경(사이드바 등) 위 텍스트가
-     반대로 안 보이게 되기 때문이다. */
-  --color-ink-faint: #6a6f77; /* 밝은 배경용. 구 #9ca3af(대비 2.539:1)는 AA 미달 — 실사용 배경 중
-    가장 불리한 badge-unknown(.badge-unknown, 배경 --color-neutral-100) 기준 4.595:1로 다크닝. */
-  --color-ink-faint-inverse: #9ca3af; /* 어두운 배경(사이드바 #14161c)용 — 기존 값 그대로 유지(대비
-    7.123:1로 이미 AA 충족), 밝은 배경용 --color-ink-faint와는 별개 토큰으로 분리만 함. */
-  --color-ink-muted-inverse: #7d8590; /* P2 — .sidebar-subnav-empty가 밝은 배경용 --color-ink-muted의
-    리터럴(#6b7280)을 다크 사이드바 위에 그대로 재사용해 3.739:1로 AA 미달이던 것을 위와 같은
-    패턴(분리)으로 수정. 사용처 전수 확인 결과 이 한 곳뿐(밝은 배경용 --color-ink-muted의 24개
-    사용처는 전부 --color-surface/--color-canvas/--color-neutral-100 등 밝은 배경 위라 문제 없음,
-    값 변경 없이 유지). #14161c 위 4.848:1로 AA 충족, 같은 배경 위 --color-ink-faint-inverse
-    (7.123:1)보다는 낮은 대비로 둬 원래 리터럴(#6b7280, 3.739:1)에서 최소한만 밝혀 시각적
-    변화를 줄인다(faint-inverse 수준까지 밝히면 육안 인상이 달라진다). */
-  --color-surface-inverse: #14161c; /* --color-ink과 계산된 값은 같지만(#14161c) 의미가 다르다 —
-    --color-ink은 밝은 배경 위 "텍스트" 색, 이 토큰은 사이드바/토스트/코드블록 등 "어두운
-    배경 자체"의 색이다. 순수 리팩터: 시각적 변화 없음. */
-  --color-hairline: #e5e7eb;
-  --color-neutral-100: #f3f4f6; /* 근접-중복 정리: 기존 #f3f4f6(hover/배지 배경)와 #f4f6f9(칩/hover
-    배경, RGB 차이 ≤3)를 동일 토큰으로 통합. */
-  --color-neutral-200: #eceff3; /* 기존 #eceff3(스켈레톤/트랙 배경) — neutral-100보다 한 단계 어두운
-    스케일 값으로 유지(트랙이 배경과 구분돼 보여야 하므로 완전 통합하지 않음). */
-  --color-danger: #ca2323; /* 구 #dc2626 — 흰 배경 위 4.829:1은 AA 충족이지만 --color-danger-soft
-    (#fee2e2) 배경 위에서 3.953:1로 미달. ca2323으로 다크닝해 흰 배경 5.561:1 / soft 배경
-    4.553:1 양쪽 AA 충족(기존 사용처 전체 이 토큰 재사용, 신규 토큰 없음). */
-  --color-danger-soft: #fee2e2;
-  --color-success-soft: #ecfdf5;
-  --color-success-text: #04825b; /* 구 #059669 — 흰 배경 3.768:1 · soft 배경(#ecfdf5) 3.577:1 모두
-    AA 미달. 04825b로 다크닝해 흰 배경 4.828:1 / soft 배경 4.584:1 / canvas(#f7f8fa) 배경
-    4.544:1 모두 AA 충족. */
-  --color-warn-bg: #fffbeb;
-  --color-warn-border: #fde68a;
-  --color-warn-text: #92400e;
-  --sidebar-width: 216px;
+  /* ---- §1.1 색상 ---- */
+  --win-bg: #0d0e12;
+  --panel-bg: #121319;
+  --panel-bg-alt: #15161d;
+  --sidebar-bg: #0f1014;
+  --tabstrip-bg: #111217;
+  --statusline-bg: #0a0b0e;
 
-  /* radius 토큰화(P2) — 실측 결과 4/6/7/8/9/10/12/14/16px(999px·50% 제외) 9종 리터럴이 흩어져
-     있었다. 14px(로그인 카드)·16px(채팅 말풍선)는 각 1곳뿐인 단독 값이라 토큰화 이득이 없어
-     리터럴로 남긴다(기계적으로 토큰을 만들지 않는다). 나머지는 1px 차이뿐인 인접 값을
-     하나로 합쳐(7→8, 9→10 — P1의 font-size 0.5px 내림과 같은 크기의, 육안으로 구분 안 되는
-     보정) 5단계로 정리했다: xs/sm/md/lg/xl. 999px(필/캡슐)과 50%(원)는 스케일과 무관한
-     별도 의미라 각각의 토큰으로 분리한다. */
+  --border: #25272f;
+  --border-soft: #1b1c22;
+  --border-interactive: #5c6478;
+
+  --text-primary: #dadde3;
+  --text-secondary: #8d919c;
+  --text-muted: #585c68; /* 장식 전용 — AA 미달(§1.2), 텍스트 색으로 쓰지 않는다 */
+  --text-muted-aa: #7d818c;
+
+  --accent: #5fd0dc;
+  --accent-dim: #356469; /* 배경 전용 — 텍스트로 쓰지 않는다 */
+
+  --ansi-green: #52d97f;
+  --ansi-yellow: #e2b34f;
+  --ansi-red: #f25f6c;
+  --ansi-magenta: #c98ae6;
+  --ansi-blue: #6fa2f2;
+
+  --status-good: var(--ansi-green);
+  --status-warn: var(--ansi-yellow);
+  --status-bad: var(--ansi-red);
+  --status-idle: var(--text-muted-aa);
+
+  /* ---- §1.3 타이포그래피 ---- */
+  --font-display: -apple-system, BlinkMacSystemFont, 'Noto Sans KR', 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Noto Sans KR', 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+  --font-numeric: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --font-size-hero: 16px;
+  --font-size-h1: 18px;
+  --font-size-h2: 15px;
+  --font-size-body: 13px;
+  --font-size-body-lg: 14px;
+  --font-size-label: 11px;
+  --font-size-small: 11px;
+  --font-size-caption: 10px;
+  --font-size-micro: 9px;
+
+  --line-height-tight: 1.3;
+  --line-height-base: 1.6;
+  --line-height-loose: 1.7;
+
+  --letter-spacing-label: 0.08em;
+  --letter-spacing-eyebrow: 0.06em;
+
+  /* ---- §1.4 간격 ---- */
+  --space-05: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-3-5: 14px;
+  --space-4: 16px;
+  --space-5: 18px;
+  --space-6: 20px;
+  --space-7: 22px;
+  --space-8: 24px;
+  --space-10: 32px;
+
+  /* ---- §1.5 보더/라운드/그림자 ---- */
+  --radius-0: 0;
+  --radius-circle: 50%;
+  --border-width: 1px;
+  --border-width-accent: 2px;
+  --border-width-callout: 3px;
+  --shadow-float: 0 4px 16px rgba(0, 0, 0, 0.45);
+
+  /* ---- §1.6 모션 ---- */
+  --transition-fast: 120ms ease;
+  --transition-base: 180ms ease;
+  --transition-slow: 320ms ease;
+  --pulse-duration: 1.6s ease-in-out infinite;
+  --skeleton-duration: 1.2s ease-in-out infinite;
+
+  /* ---- §1.7 포커스 링 ---- */
+  --focus-ring: 0 0 0 2px var(--win-bg), 0 0 0 4px var(--accent);
+
+  --sidebar-width: 190px;
+
+  /* ---- 구 토큰(라이트 인디고 테마) → 새 팔레트 호환 별칭 ----
+     이번 라운드는 홈+셸만 새 컴포넌트 클래스(.box/.blist/.stat/... §3)로
+     새로 만들고, 나머지 9개 화면은 기존 클래스(.home-widget/.session-row/
+     .mcp-row 등, styles.css 나머지 800여 줄)를 그대로 쓴다(작업 지시 —
+     "셸 안에서 기존 마크업 그대로 렌더"). 그 화면들이 참조하는 구 변수 이름을
+     여기서 새 다크 토큰에 다시 연결해, 값을 개별 규칙마다 고치지 않고도
+     "밝은 배경 위 어두운 잉크"였던 조합이 "어두운 배경 위 밝은 잉크"로
+     일괄 반전되게 한다 — 전면 재작성은 다음 단계(9개 화면 마이그레이션)
+     범위다. radius-xs~xl은 모양(둥근 정도) 자체는 이번 단계에서 바꾸지
+     않는다(순수 시각 토큰 교체 범위 밖). */
+  --color-brand: var(--accent);
+  --color-brand-soft: rgba(95, 208, 220, 0.16);
+  --color-canvas: var(--win-bg);
+  --color-surface: var(--panel-bg);
+  --color-surface-inverse: var(--statusline-bg);
+  --color-ink: var(--text-primary);
+  --color-ink-muted: var(--text-secondary);
+  --color-ink-faint: var(--text-muted-aa);
+  --color-ink-faint-inverse: var(--text-muted-aa);
+  --color-ink-muted-inverse: var(--text-secondary);
+  --color-hairline: var(--border);
+  --color-neutral-100: var(--panel-bg-alt);
+  --color-neutral-200: var(--border-soft);
+  --color-danger: var(--ansi-red);
+  --color-danger-soft: rgba(242, 95, 108, 0.16);
+  --color-success-soft: rgba(82, 217, 127, 0.16);
+  --color-success-text: var(--ansi-green);
+  --color-warn-bg: rgba(226, 179, 79, 0.14);
+  --color-warn-border: rgba(226, 179, 79, 0.4);
+  --color-warn-text: var(--ansi-yellow);
+
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 10px;
   --radius-xl: 12px;
   --radius-pill: 999px;
-  --radius-circle: 50%;
 
-  /* box-shadow 토큰화(P2) — 실측 결과 6곳 중 로그인카드(4px 24px/0.06)·모달(12px 40px/0.2)·
-     토글 썸(1px 2px/0.25)은 각 1곳뿐이라 리터럴로 남긴다. 카드 hover 리프트(1px 6px/0.06)는
-     project-card·home-widget 2곳이 값은 동일한데 rgba 표기(공백 유무)만 달라 근접-중복이었고,
-     토스트/카운트다운 배너(4px 16px/0.2)도 2곳이 완전히 같은 값이라 각각 토큰으로 묶는다. */
-  --shadow-hover: 0 1px 6px rgba(0, 0, 0, 0.06);
-  --shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.2);
+  --shadow-hover: 0 1px 6px rgba(0, 0, 0, 0.35);
+  --shadow-toast: var(--shadow-float);
 }
 
-/* font-size 정수화(P1) — 11.5/12.5/13.5/10.5px(실측 50곳)를 정수 스케일로 내림(floor)
-   반올림했다: 11.5→11, 12.5→12, 13.5→13, 10.5→10px. 올림 대신 내림을 택한 이유는 절반이
-   text-overflow:ellipsis/white-space:nowrap 컨텍스트(경로·타임스탬프·배지)라 글자가 커지는
-   쪽보다 작아지는 쪽이 줄바꿈/말줄임 회귀 위험이 낮기 때문. 이후 새 폰트 크기를 추가할 때도
-   이 정수 스케일(10/11/12/13/14/15/16/18/22/30px)과 내림 규칙을 따른다. */
+/* §5 폰트 공급 — 숫자/버전 전용 모노스페이스만 로컬 번들(라이선스: OFL-1.1,
+   src/assets/fonts/OFL.txt). 한글 UI 폰트는 OS 시스템 폰트에 맡기고 번들하지
+   않는다(문서 §5 근거). CSP(`default-src 'self'`)는 이미 same-origin 번들
+   자산을 허용하므로 별도 변경이 필요 없다. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./assets/fonts/JetBrainsMono-Regular-latin.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+2018-201F, U+2022, U+2039-203A;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./assets/fonts/JetBrainsMono-SemiBold-latin.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+2018-201F, U+2022, U+2039-203A;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0;
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
-  color: var(--color-ink);
-  background: var(--color-canvas);
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  background: var(--win-bg);
   font-size: 14px;
 }
 
-/* ---------------- 접근성: 키보드 포커스 표시 (U-13) ---------------- */
-/* dom.ts clickable()로 키보드 활성화 가능해진 요소(홈 위젯/프로젝트 트리 행/
-   사용량 날짜 행 등, U-07·U-08)가 Tab 탐색 시 실제로 위치를 보여주도록 한다.
-   마우스 클릭 포커스에는 안 보이고 키보드 탐색 때만 보이는 :focus-visible을
-   쓴다. 대비: 인디고(#4f46e5) on 흰 배경 ~5.5:1, WCAG AA 통과. */
+/* ---------------- 접근성: 키보드 포커스 표시 ---------------- */
+/* dom.ts clickable()로 키보드 활성화 가능해진 요소가 Tab 탐색 시 실제로
+   위치를 보여주도록 한다. §1.7 포커스 링(accent, 모든 배경에서 9.9~10.8:1)을
+   전역에 적용 — 마우스 클릭에는 안 보이고 키보드 탐색 때만 보이는
+   :focus-visible만 쓴다. */
 :focus-visible {
-  outline: 2px solid var(--color-brand);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
-#app { display: flex; height: 100vh; }
+/* container-type: 최소 창 900×600(design-system §0)에서 탭스트립 오버플로·
+   split 2단 붕괴를 창 폭 기준으로 반응시키기 위한 컨테이너 쿼리 기준선
+   (terminus-mockup.html의 .window와 동일한 역할, 셸 최상위가 그 창 프레임에
+   대응한다). */
+#app { display: flex; flex-direction: column; height: 100vh; background: var(--win-bg); container-type: inline-size; }
 
-/* ---------------- 사이드바 ---------------- */
-/* 뷰포트 높이로 고정하고 자체 스크롤만 허용한다 — 오른쪽 콘텐츠가 길어져도
-   사이드바가 같이 흘러가지 않게(전에는 #app이 min-height라 페이지 전체가
-   스크롤되며 사이드바까지 끌려갔다). */
-.sidebar {
-  width: var(--sidebar-width);
-  height: 100vh;
-  overflow-y: auto;
-  flex-shrink: 0;
-  background: var(--color-surface-inverse);
-  color: #e5e7eb;
-  display: flex;
-  flex-direction: column;
-  padding: 16px 12px;
-}
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
-  font-weight: 700;
-  font-size: 15px;
-  color: #fff;
-  margin-bottom: 12px;
-}
+/* ---------------- Terminus 셸: 탭스트립 + 사이드바 + 상태줄 ----------------
+   docs/design/terminus-shell-ia.md·terminus-design-system.md §2 정본. #app이
+   세로 flex(탭스트립 → shell-body → statusline)이고, shell-body가 가로
+   flex(사이드바 + 메인)다. 로그인 화면(views/login.ts)은 이 셸을 렌더하지
+   않는다(IA §7-1). */
+.login-brand .sidebar-brand-mark,
 .sidebar-brand-mark {
   width: 26px; height: 26px;
   object-fit: contain;
   flex-shrink: 0;
 }
-.sidebar-nav-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 10px; border-radius: var(--radius-md);
-  color: #cbd5e1; font-weight: 500; font-size: 13px;
+
+.tabstrip {
+  flex: none;
+  height: 32px;
+  background: var(--tabstrip-bg);
+  border-bottom: var(--border-width) solid var(--border);
+  display: flex;
+  align-items: stretch;
+  padding: 0 var(--space-2);
+  gap: 2px;
+  overflow-x: auto; /* 900px 하한에서 9탭+계정 칩 오버플로 대응(IA §7-2) */
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: 0 var(--space-3);
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-right: var(--border-width) solid var(--border-soft);
+  white-space: nowrap;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  flex: none;
+}
+.tab .dot { width: 5px; height: 5px; border-radius: var(--radius-circle); background: var(--text-muted); flex: none; }
+.tab:hover { color: var(--text-primary); }
+.tab.active { background: var(--win-bg); color: var(--text-primary); font-weight: 700; }
+.tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: var(--border-width-accent); background: var(--accent); }
+.tab.active .dot { background: var(--accent); }
+.tabstrip-account {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: 0 var(--space-2-5);
+  font-size: var(--font-size-caption);
+  color: var(--text-secondary);
+  cursor: pointer;
+  position: relative;
+}
+.tabstrip-account:hover { color: var(--text-primary); }
+.tabstrip-account .dot { width: 6px; height: 6px; border-radius: var(--radius-circle); background: var(--status-good); box-shadow: 0 0 0 2px rgba(82, 217, 127, .15); }
+.tabstrip-account-dropdown {
+  position: absolute; top: 100%; right: 0; margin-top: 4px; z-index: 50;
+  background: var(--panel-bg); border: var(--border-width) solid var(--border);
+  box-shadow: var(--shadow-float); min-width: 200px; padding: var(--space-1) 0;
+}
+.tabstrip-account-dropdown-email {
+  padding: var(--space-2) var(--space-3); font-size: var(--font-size-caption); color: var(--text-muted-aa);
+  border-bottom: var(--border-width) solid var(--border-soft); margin-bottom: var(--space-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tabstrip-account-dropdown-item {
+  padding: var(--space-2) var(--space-3); font-size: var(--font-size-small); color: var(--text-primary);
   cursor: pointer; user-select: none;
 }
-.sidebar-nav-item.active { background: var(--color-brand); color: #fff; }
-.sidebar-nav-item.active:active { background: #3730a3; }
-.sidebar-nav-item:not(.active):hover { background: rgba(255,255,255,0.06); }
-/* active 상태 보강(P2) — hover 대비 두 배 알파로 눌림을 표현(아래 sidebar-logout/
-   update-item/subnav-item/chevron-btn도 각자 hover 알파의 대략 두 배로 통일). */
-.sidebar-nav-item:not(.active):active { background: rgba(255,255,255,0.12); }
+.tabstrip-account-dropdown-item:hover { background: var(--panel-bg-alt); }
+.tabstrip-account-dropdown-item.danger { color: var(--status-bad); }
 
-/* 다크 사이드바(#14161c) 위에서는 기본 인디고 아웃라인(#4f46e5)의 실측 대비가
-   ~2.9:1로 WCAG 1.4.11 비텍스트 대비(3:1) 미달이라, 더 밝은 인디고(indigo-400,
-   대비 ~6:1)로 사이드바 안에서만 교체한다. */
-.sidebar :focus-visible {
-  outline-color: #818cf8;
+.shell-body { flex: 1; min-height: 0; display: flex; }
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex: none;
+  background: var(--sidebar-bg);
+  border-right: var(--border-width) solid var(--border);
+  padding: var(--space-3) 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-head {
+  font-size: var(--font-size-caption);
+  letter-spacing: var(--letter-spacing-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-muted-aa);
+  padding: 2px var(--space-3-5) var(--space-2);
+}
+.ws-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-3-5);
+  cursor: pointer;
+  border-left: var(--border-width-accent) solid transparent;
+}
+.ws-row:hover { background: var(--panel-bg-alt); }
+.ws-row.current { background: var(--panel-bg); border-left-color: var(--accent); }
+.ws-row .dot { width: 6px; height: 6px; border-radius: var(--radius-circle); margin-top: 5px; flex: none; }
+.ws-row .dot.good { background: var(--status-good); box-shadow: 0 0 0 2px rgba(82, 217, 127, .12); }
+.ws-row .dot.warn { background: var(--status-warn); box-shadow: 0 0 0 2px rgba(226, 179, 79, .12); }
+.ws-row .dot.idle { background: var(--status-idle); }
+.ws-row-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ws-row-name { font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-row-meta { font-size: var(--font-size-caption); color: var(--text-muted-aa); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-numeric); }
+.sidebar-empty { padding: var(--space-2) var(--space-3-5); font-size: var(--font-size-small); color: var(--text-muted-aa); }
+.sidebar-foot {
+  margin-top: auto;
+  padding: var(--space-2-5) var(--space-3-5) var(--space-1);
+  font-size: var(--font-size-caption);
+  color: var(--text-secondary);
+  border-top: var(--border-width) solid var(--border-soft);
+  cursor: pointer;
+}
+.sidebar-foot:hover { color: var(--text-primary); }
+
+.statusline {
+  flex: none;
+  height: 24px;
+  background: var(--statusline-bg);
+  border-top: var(--border-width) solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-2-5);
+  gap: var(--space-3);
+  font-size: var(--font-size-caption);
+  color: var(--text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.statusline .seg { display: flex; align-items: center; gap: var(--space-1); }
+.statusline .sep { color: var(--border); }
+.statusline .dot { width: 5px; height: 5px; border-radius: var(--radius-circle); background: var(--status-good); flex: none; }
+.statusline .accent { color: var(--accent); }
+.statusline .warn { color: var(--status-warn); }
+.statusline-fill { flex: 1; }
+.statusline .clock { font-variant-numeric: tabular-nums; color: var(--text-primary); font-family: var(--font-numeric); }
+.statusline-update {
+  cursor: pointer; color: var(--accent); font-weight: 600;
+}
+.statusline-update:hover { text-decoration: underline; }
+/* "새 버전 확인" 버튼 — 구 사이드바(어두운 배경) 버전과 같은 반투명 override
+   패턴을 상태줄(더 어두운 배경)에 맞게 재사용한다. */
+.sidebar-version-check-btn {
+  border: var(--border-width) solid var(--border-interactive); background: transparent; color: var(--text-secondary);
+  font-size: var(--font-size-caption); padding: 1px var(--space-2); cursor: pointer; font-family: var(--font-body);
+}
+.sidebar-version-check-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+.sidebar-version-check-btn:disabled { opacity: 0.55; cursor: default; }
+
+@container (max-width: 760px) {
+  .sidebar { width: 150px; }
 }
 
 /* ---------------- 메인 콘텐츠 ---------------- */
-.content { flex: 1; min-width: 0; height: 100vh; overflow-y: auto; padding: 28px 32px; }
+.content { flex: 1; min-width: 0; height: 100%; overflow-y: auto; padding: var(--space-6) var(--space-7) var(--space-5); }
 /* 세션 상세(채팅) 전용 — 이 라우트에서만 main.ts가 얹는 보조 클래스. 페이지 전체
    스크롤 대신 헤더/입력창은 고정하고 메시지 목록(.chat-thread)만 자체 스크롤한다.
    다른 화면(.content 단독)의 스크롤 동작에는 영향 없다. */
@@ -180,9 +383,14 @@ html, body {
 /* 목록 재조회 중임을 알리는 최소 표시 — 새 애니메이션 없이 opacity만 낮춘다
    (MCP 관리 새로고침처럼 재조회에 수 초~수십 초가 걸릴 수 있는 목록에 사용). */
 .is-refreshing { opacity: 0.55; pointer-events: none; transition: opacity 0.15s ease; }
-.btn-primary { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
-.btn-primary:hover { background: #4338ca; }
-.btn-primary:active { background: #3730a3; }
+/* --color-brand는 이제 --accent(밝은 청록)를 가리킨다(§ 토큰 별칭) — 그 위에
+   구 라이트테마의 흰 텍스트(#fff)를 그대로 두면 1.8:1로 AA 미달을 넘어 거의
+   안 보인다(design-system.md §1.2 "버튼 배경 위 텍스트 색" 함정과 동일 원인).
+   다크 잉크(--win-bg)로 교체하고, hover/active도 하드코딩 인디고 리터럴 대신
+   accent 톤 자체를 옅게/짙게 써서 다크 텍스트와의 대비가 항상 유지되게 한다. */
+.btn-primary { background: var(--color-brand); color: var(--win-bg); border-color: var(--color-brand); font-weight: 600; }
+.btn-primary:hover { box-shadow: 0 0 0 3px rgba(95, 208, 220, .22); }
+.btn-primary:active { opacity: 0.82; }
 
 .filter-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
 .filter-row .filter-group { margin-bottom: 0; }
@@ -196,8 +404,8 @@ html, body {
    hover/active 둘 다 없었다(P2) — .btn과 같은 neutral 톤 단계를 재사용한다. */
 .filter-btn:hover { background: var(--color-neutral-100); }
 .filter-btn:active { background: var(--color-neutral-200); }
-.filter-btn.active { background: var(--color-brand); color: #fff; border-color: var(--color-brand); }
-.filter-btn.active:active { background: #3730a3; border-color: #3730a3; }
+.filter-btn.active { background: var(--color-brand); color: var(--win-bg); border-color: var(--color-brand); font-weight: 600; }
+.filter-btn.active:active { opacity: 0.82; }
 
 /* ---------------- 카드 그리드 ---------------- */
 .project-grid {
@@ -228,7 +436,10 @@ html, body {
   font-size: 12px; color: var(--color-brand); font-weight: 600; cursor: pointer;
 }
 .project-card-link:hover { text-decoration: underline; }
-.project-card-link:active { color: #4338ca; }
+/* 구 #4338ca(다크 인디고)는 이제 --color-surface(다크 패널) 배경 위 텍스트라
+   거의 안 보인다 — 다른 :active 눌림 표현(예: .home-widget:active)과 같은
+   패턴으로 opacity만 낮춘다. */
+.project-card-link:active { opacity: 0.75; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 /* radius --radius-lg(10px)로 편입 — 구 9px에서 1px 병합(P1의 font-size 0.5px 내림과 같은 급). */
 .btn-large { padding: 12px 28px; font-size: 15px; font-weight: 600; border-radius: var(--radius-lg); }
@@ -343,76 +554,13 @@ html, body {
   padding: 10px 12px; border-radius: var(--radius-md); margin-bottom: 16px; text-align: left; line-height: 1.5;
 }
 
-/* ---------------- 사이드바 그룹/서브메뉴 ---------------- */
-.sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
-.sidebar-footer {
-  margin-top: auto; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08);
-  display: flex; flex-direction: column; gap: 2px;
-}
-.sidebar-logout { color: #f87171; }
-.sidebar-logout:hover { background: rgba(248, 113, 113, 0.12); }
-.sidebar-logout:active { background: rgba(248, 113, 113, 0.2); }
-/* 자동 업데이트 버튼 — 평소엔 렌더조차 되지 않다가(sidebar.ts renderUpdateItem)
-   감지됐을 때만 나타나는 조용한 항목이라, 다른 사이드바 메뉴와 톤은 맞추되
-   인디고 계열로 살짝 강조해 "새 상태"임을 표시한다. live-pulse 애니메이션은
-   기존 실시간 감시 표시(.live-dot)와 동일한 것을 재사용한다. */
-.sidebar-update-item { color: #a5b4fc; }
-.sidebar-update-item:hover { background: rgba(129, 140, 248, 0.14); }
-.sidebar-update-item:active { background: rgba(129, 140, 248, 0.22); }
-.sidebar-update-item.disabled { cursor: default; opacity: 0.75; }
-.sidebar-update-dot {
-  width: 7px; height: 7px; border-radius: var(--radius-circle); background: #818cf8; flex-shrink: 0;
-  animation: live-pulse 1.6s ease-in-out infinite;
-}
-/* 이메일 + 로그아웃 한 줄(이메일주소 [로그아웃]) — 이메일이 없어도(state.auth.userEmail
-   falsy) 로그아웃 버튼은 항상 그려지므로 space-between으로 두되, 이메일이 없어
-   버튼 하나만 있을 때도 자연스럽게 좌측에 붙도록 한다. */
-.sidebar-user-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 6px 10px 10px 10px;
-}
-.sidebar-user-email {
-  font-size: 11px; color: var(--color-ink-faint-inverse); flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* sidebar-logout(색상)은 기존 규칙을 그대로 재사용하고, 이 클래스는 옛
-   sidebar-nav-item의 전체너비 블록 대신 아래 sidebar-version-check-btn과 같은
-   "칩" 크기로만 자리를 잡는다 — 좌하단에 버튼 두 개(로그아웃/새 버전 확인)가
-   세로로 겹쳐 보일 때 크기·정렬이 어긋나 보이지 않도록 맞춘다. */
-.sidebar-logout-btn {
-  display: inline-flex; align-items: center;
-  padding: 3px 8px; border-radius: var(--radius-md); flex-shrink: 0;
-  font-size: 11px; cursor: pointer; user-select: none;
-}
-/* 버전 표시 옆 "업데이트 확인" 버튼 — .btn은 밝은 배경(--color-surface) 기준이라
-   어두운 사이드바에 그대로 쓰면 튀어 보인다. 같은 다크 컨텍스트에서 이미 쓰던
-   .update-countdown-later-btn과 동일한 override 패턴(테두리/배경만 반투명
-   흰색으로 재정의)을 재사용한다 — 새 톤 체계를 만들지 않는다. */
-.sidebar-version-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 6px 10px 10px 10px;
-}
-.sidebar-version-label {
-  font-size: 11px; color: var(--color-ink-faint-inverse); overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.sidebar-version-check-btn {
-  padding: 3px 8px; font-size: 11px; flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.16); color: #cbd5e1;
-}
-.sidebar-version-check-btn:hover { background: rgba(255, 255, 255, 0.16); }
-.sidebar-version-check-btn:active { background: rgba(255, 255, 255, 0.24); }
-.sidebar-nav-group-header { display: flex; align-items: center; justify-content: space-between; }
-.sidebar-nav-chevron { font-size: 10px; color: var(--color-ink-faint-inverse); }
-.sidebar-subnav { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 4px 14px; }
-.sidebar-subnav-item {
-  padding: 7px 10px; border-radius: var(--radius-md); font-size: 12px; color: var(--color-ink-faint-inverse);
-  cursor: pointer; user-select: none;
-}
-.sidebar-subnav-item.active { background: rgba(79, 70, 229, 0.25); color: #fff; }
-.sidebar-subnav-item.active:active { background: rgba(79, 70, 229, 0.4); }
-.sidebar-subnav-item:not(.active):hover { background: rgba(255, 255, 255, 0.06); color: #cbd5e1; }
-.sidebar-subnav-item:not(.active):active { background: rgba(255, 255, 255, 0.12); color: #cbd5e1; }
+/* ---------------- 계정 칩 드롭다운의 로그아웃 항목 ----------------
+   클래스명 sidebar-logout/sidebar-logout-btn은 옛 사이드바 시절 이름 그대로
+   유지한다 — ui-harness(majorReview20260921.mjs)가
+   document.querySelector('.sidebar-logout')로 전역 조회해 클릭하므로, 이
+   요소가 이제 탭스트립 계정 칩 드롭다운 안에 있어도 클래스명만 유지하면
+   하네스를 고칠 필요가 없다(검증 약화 없이 DOM 위치만 이동). */
+.sidebar-logout { color: var(--status-bad); }
 
 /* ---------------- 카탈로그 (플러그인 단위) ---------------- */
 .plugin-list { display: flex; flex-direction: column; gap: 16px; }
@@ -475,13 +623,16 @@ html, body {
 .applink-count-label { font-size: 12px; color: var(--color-ink-muted); }
 .applink-filepath { margin-top: 16px; font-size: 11px; color: var(--color-ink-faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
 
-/* 토글 스위치 */
+/* 토글 스위치 — 구 리터럴 #d1d5db(밝은 회색 트랙)는 다크 UI 안에서 튀는
+   흰 상자로 보여 남겨두지 않는다(가독성 실패는 아니지만 이번 토큰 교체가
+   직접 만든 눈에 띄는 부조화라 최소 수정 — 흰 thumb과의 대비는 유지). */
 .toggle-track {
   display: inline-flex; align-items: center; width: 36px; height: 20px;
-  border-radius: var(--radius-pill); background: #d1d5db; cursor: pointer; padding: 2px;
+  border-radius: var(--radius-pill); background: var(--color-neutral-100); border: 1px solid var(--color-hairline);
+  cursor: pointer; padding: 2px;
   flex-shrink: 0; transition: background 0.15s ease;
 }
-.toggle-track.on { background: var(--color-brand); justify-content: flex-end; }
+.toggle-track.on { background: var(--color-brand); border-color: var(--color-brand); justify-content: flex-end; }
 .toggle-thumb { width: 16px; height: 16px; border-radius: var(--radius-circle); background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); }
 
 /* ---------------- 설정 폼 ---------------- */
@@ -527,7 +678,9 @@ textarea.settings-input { resize: vertical; }
 .bar-row-clickable { cursor: pointer; border-radius: var(--radius-sm); padding: 4px 6px; margin: -4px -6px; }
 .bar-row-clickable:hover { background: var(--color-neutral-100); }
 .bar-row-clickable:active { background: var(--color-neutral-200); }
-.bar-row-clickable.selected { background: #eef2ff; }
+/* 구 #eef2ff(거의 흰색)는 이제 밝은 텍스트(--text-primary) 위 밝은 배경이 되어
+   글자가 안 보인다 — accent 톤 저채도 배경(뱃지·트리 선택 상태와 동일 패턴)으로 교체. */
+.bar-row-clickable.selected { background: rgba(95, 208, 220, 0.14); }
 .daily-detail-panel { display: flex; flex-direction: column; gap: 12px; padding: 4px 6px 12px; }
 .session-detail-card { padding: 14px; }
 .tool-usage-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -638,7 +791,7 @@ textarea.settings-input { resize: vertical; }
 }
 .integration-account-avatar {
   width: 36px; height: 36px; border-radius: var(--radius-circle); background: var(--color-brand);
-  color: #fff; font-weight: 700; font-size: 15px;
+  color: var(--win-bg); font-weight: 700; font-size: 15px;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .integration-account-info { flex: 1; min-width: 0; }
@@ -689,15 +842,6 @@ textarea.settings-input { resize: vertical; }
 }
 @keyframes devtool-spin { to { transform: rotate(360deg); } }
 
-/* ---------------- 사이드바 펼침 서브목록(프로젝트/세션목록 실데이터) ---------------- */
-.sidebar-nav-expandable { display: flex; align-items: center; justify-content: space-between; }
-.sidebar-nav-chevron-btn { cursor: pointer; padding: 2px 4px; border-radius: var(--radius-xs); }
-.sidebar-nav-chevron-btn:hover { background: rgba(255, 255, 255, 0.12); }
-.sidebar-nav-chevron-btn:active { background: rgba(255, 255, 255, 0.2); }
-/* P2 — 다크 사이드바 위 리터럴 #6b7280(대비 3.739:1, AA 미달) → --color-ink-muted-inverse로 교체 */
-.sidebar-subnav-empty { padding: 7px 10px; font-size: 11px; color: var(--color-ink-muted-inverse); }
-.sidebar-subnav-item.sidebar-subnav-viewall { color: var(--color-brand); font-weight: 600; }
-.sidebar-subnav-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------------- 플러그인 업데이트 결과 안내 ---------------- */
 .plugin-update-note { font-size: 12px; padding: 8px 12px; border-radius: var(--radius-md); margin-bottom: 16px; }
@@ -881,3 +1025,120 @@ textarea.settings-input { resize: vertical; }
 
 /* ---------------- 세션 상세 — 도구 호출 한 줄(§8, docs/design/session-chat.md) ---------------- */
 .chat-tool-line { padding: 4px 6px 4px 18px; font-size: 12px; color: var(--color-ink-faint); }
+
+/* =====================================================================
+   Terminus 홈 화면 — docs/design/terminus-design-system.md §2~3 신규
+   캐노니컬 클래스. 이번 라운드에서 새로 옮긴 홈 화면(views/home.ts)과
+   새 셸(sidebar.ts)만 이 클래스들을 쓴다. 나머지 9개 화면은 위의 기존
+   클래스(.home-widget/.session-row/... )를 그대로 쓰며 토큰 별칭만 물려받는다.
+   ===================================================================== */
+.home-view { display: flex; flex-direction: column; gap: var(--space-5); }
+
+/* ---- 인사말 (정적 커서 — 깜빡임 없음, design-system §0/§1.6 확정 사항) ---- */
+.greet { display: flex; flex-direction: column; gap: 3px; }
+.greet-line {
+  font-family: var(--font-display); font-size: var(--font-size-hero); font-weight: 700;
+  display: flex; align-items: baseline; gap: var(--space-2); color: var(--text-primary);
+}
+.greet-line .sym { color: var(--accent); }
+.cursor {
+  display: inline-block; width: 7px; height: 15px; background: var(--accent);
+  margin-left: 1px; transform: translateY(2px); /* 정적 — animation 없음(확정 사항) */
+}
+.greet-sub { font-size: var(--font-size-small); color: var(--text-muted-aa); }
+.greet-sub b { color: var(--text-secondary); font-weight: 700; }
+
+/* ---- 통계 타일 ---- */
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: var(--space-2-5); }
+.stat {
+  background: var(--panel-bg); border: var(--border-width) solid var(--border);
+  padding: var(--space-2-5) var(--space-3); display: flex; flex-direction: column; gap: var(--space-1);
+}
+.stat-label { font-size: var(--font-size-caption); letter-spacing: var(--letter-spacing-eyebrow); text-transform: uppercase; color: var(--text-muted-aa); }
+.stat-value {
+  font-family: var(--font-numeric); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--text-primary); display: flex; align-items: baseline; gap: var(--space-1-5);
+}
+.stat-value small { font-size: 11px; font-weight: 500; color: var(--text-muted-aa); }
+.stat-trend { font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; }
+.stat-trend.up { color: var(--status-good); }
+.stat-trend.warn { color: var(--status-warn); }
+.stat-trend.flat { color: var(--text-muted-aa); }
+
+/* ---- 2단 영역 ---- */
+.split { display: grid; grid-template-columns: 1.6fr 1fr; gap: var(--space-3); align-items: start; }
+.col { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+@container (max-width: 1040px) {
+  .split { grid-template-columns: 1fr; }
+}
+
+/* ---- .box (구 .panel, design-system §3.1) ---- */
+.box { position: relative; background: var(--panel-bg); border: var(--border-width) solid var(--border); border-radius: var(--radius-0); }
+.box-head {
+  display: flex; align-items: center; gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3); border-bottom: var(--border-width) solid var(--border);
+  font-family: var(--font-display);
+}
+.box-head::before { content: "┌─"; color: var(--text-muted); font-size: 12px; font-family: var(--font-numeric); }
+.box-title { font-size: var(--font-size-label); letter-spacing: var(--letter-spacing-label); text-transform: uppercase; color: var(--text-secondary); }
+.box-head .count { margin-left: auto; font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-body); }
+.box-body { padding: var(--space-2-5) var(--space-3) var(--space-3); }
+.box-body .state-block { padding: var(--space-6) var(--space-3); }
+
+/* ---- .blist (design-system §3.2) ---- */
+.blist { display: flex; flex-direction: column; }
+.blist-row {
+  display: grid; gap: var(--space-2-5); align-items: center;
+  padding: var(--space-1-5) 0; border-bottom: var(--border-width) solid var(--border-soft);
+  font-size: var(--font-size-small); color: var(--text-primary);
+}
+.blist-row:last-child { border-bottom: none; }
+.blist-row--sessions { grid-template-columns: 52px 96px 1fr 74px 56px; }
+.blist-row--tasks { grid-template-columns: 62px 1fr 60px; }
+.blist-row--devtools { grid-template-columns: 20px 60px 1fr auto; }
+.blist-id { color: var(--text-muted-aa); font-variant-numeric: tabular-nums; font-family: var(--font-numeric); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blist-accent { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.blist-body { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blist-time { color: var(--text-muted-aa); text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-numeric); white-space: nowrap; }
+.blist-status { display: flex; align-items: center; gap: 5px; font-size: var(--font-size-caption); white-space: nowrap; }
+.blist-status .dot { width: 6px; height: 6px; border-radius: var(--radius-circle); flex: none; }
+.blist-status.status-run { color: var(--status-good); }
+.blist-status.status-run .dot { background: var(--status-good); box-shadow: 0 0 0 2px rgba(82, 217, 127, .15); }
+.blist-status.status-done { color: var(--text-muted-aa); }
+.blist-status.status-done .dot { background: var(--text-muted-aa); }
+.blist-status.status-idle { color: var(--status-warn); }
+.blist-status.status-idle .dot { background: var(--status-warn); }
+
+/* ---- 자율 작업 큐 배지(목업 .badge 원형 — currentColor 테두리 박스,
+   구 pill형 .badge와 이름이 겹치지 않도록 blist- 접두사로 분리한다) ---- */
+.blist-badge {
+  display: inline-flex; align-items: center; justify-self: end;
+  padding: 2px var(--space-1-5); font-size: var(--font-size-caption); letter-spacing: .02em;
+  border: var(--border-width) solid currentColor; text-align: center;
+}
+.blist-badge.wait { color: var(--text-muted-aa); }
+.blist-badge.run { color: var(--accent); }
+
+/* ---- 개발 도구 행 ---- */
+.blist-devtool-sym { color: var(--text-muted-aa); }
+.blist-devtool-ver { color: var(--text-primary); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-numeric); }
+.blist-devtool-flag { font-size: var(--font-size-caption); white-space: nowrap; }
+.blist-devtool-flag.ok { color: var(--status-good); }
+.blist-devtool-flag.bad { color: var(--status-bad); }
+.blist-devtool-flag.missing { color: var(--text-muted-aa); }
+
+/* ---- 이번 주 토큰 사용량 스파크라인 ---- */
+.usage-figures { display: flex; gap: var(--space-4); margin-bottom: var(--space-2-5); flex-wrap: wrap; }
+.usage-figure { display: flex; flex-direction: column; gap: 2px; }
+.usage-figure .v { font-family: var(--font-numeric); font-size: 14px; font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.usage-figure .l { font-size: var(--font-size-caption); color: var(--text-muted-aa); text-transform: uppercase; letter-spacing: .05em; }
+.spark-wrap { width: 100%; }
+.spark-wrap svg { width: 100%; height: auto; display: block; }
+.spark-days { display: flex; justify-content: space-between; font-size: var(--font-size-micro); color: var(--text-muted-aa); margin-top: var(--space-1); }
+
+/* ---- 홈 나머지 위젯(claude 로그인/malgnai-hub/카탈로그) — 새 셸 안에서도
+   기존 .home-widget 클래스를 그대로 쓴다(ui-harness home.mjs가 이 클래스+텍스트로
+   11개 시나리오를 검증하므로 클래스명을 유지해야 한다). 다크 팔레트는 토큰
+   별칭으로 이미 반영되어 별도 규칙이 필요 없다 — 그리드 폭만 홈 최상단
+   .stat-row와 시각적으로 맞춘다. */
+.home-extra-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-3); }
