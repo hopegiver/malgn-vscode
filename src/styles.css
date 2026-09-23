@@ -103,15 +103,12 @@
      범위다. radius-xs~xl은 모양(둥근 정도) 자체는 이번 단계에서 바꾸지
      않는다(순수 시각 토큰 교체 범위 밖). */
   --color-brand: var(--accent);
-  --color-brand-soft: rgba(95, 208, 220, 0.16);
   --color-canvas: var(--win-bg);
   --color-surface: var(--panel-bg);
   --color-surface-inverse: var(--statusline-bg);
   --color-ink: var(--text-primary);
   --color-ink-muted: var(--text-secondary);
   --color-ink-faint: var(--text-muted-aa);
-  --color-ink-faint-inverse: var(--text-muted-aa);
-  --color-ink-muted-inverse: var(--text-secondary);
   --color-hairline: var(--border);
   --color-neutral-100: var(--panel-bg-alt);
   --color-neutral-200: var(--border-soft);
@@ -123,12 +120,14 @@
   --color-warn-border: rgba(226, 179, 79, 0.4);
   --color-warn-text: var(--ansi-yellow);
 
+  /* radius-sm/-pill은 배치 C에서 마지막 사용처(구 task-board-count 필/뱃지
+     pill 모양)가 radius-0으로 교체되며 미사용이 되어 제거했다(grep 전수 확인
+     — src/**, scripts/** 어디서도 참조 없음). radius-xs~xl 나머지는 여전히
+     쓰는 곳이 있어 유지한다(모양 자체는 이번 라운드 범위 밖). */
   --radius-xs: 4px;
-  --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 10px;
   --radius-xl: 12px;
-  --radius-pill: 999px;
 
   --shadow-hover: 0 1px 6px rgba(0, 0, 0, 0.35);
   --shadow-toast: var(--shadow-float);
@@ -522,24 +521,25 @@ html, body {
 /* ---------------- 자율업무 상세 재설계: 2컬럼 + 실행 이력 ---------------- */
 /* 좌측 메타(240~320px 고정)/우측 프롬프트+기록(1fr) 2컬럼 — .project-tree-layout과
    동일한 840px 붕괴 기준을 재사용한다(실측 근거는 위 project-tree-layout 주석 참고). */
-.task-detail-grid { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 24px; margin-top: 20px; align-items: start; }
+.task-detail-grid { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: var(--space-8); margin-top: var(--space-6); align-items: start; }
 @media (max-width: 840px) {
   .task-detail-grid { grid-template-columns: 1fr; }
 }
 /* 좌측 메타 카드 하단의 수정/삭제 버튼 묶음 — 파괴적 액션(삭제)을 구분선
    아래 단독 배치해 "중지"·"수정"과 실수로 나란히 눌리지 않게 한다. */
-.overview-card-footer-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-hairline); }
+.overview-card-footer-actions { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); padding-top: var(--space-4); border-top: var(--border-width) solid var(--border-soft); }
 /* 기록(이력) 카드 — 리스트 아이템 자체가 좌우 여백을 가지므로 카드 패딩을
-   .overview-card의 20px보다 살짝 좁게 준다. */
-.run-history-card { padding: 16px; }
+   .overview-card의 space-6보다 살짝 좁게 준다. */
+.run-history-card { padding: var(--space-4); }
 .run-history-list { display: flex; flex-direction: column; }
-.run-history-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--color-hairline); }
+.run-history-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2-5) 0; border-bottom: var(--border-width) solid var(--border-soft); font-size: var(--font-size-small); }
 .run-history-row:last-child { border-bottom: none; }
-/* 결과 4종 배지 — 색상은 전부 기존 success/danger/warn/archived 토큰 재조합이다(신규 토큰 0개). */
-.badge-run-success { background: var(--color-success-soft); color: var(--color-success-text); }
-.badge-run-failed { background: var(--color-danger-soft); color: var(--color-danger); }
-.badge-run-timeout { background: var(--color-warn-bg); color: var(--color-warn-text); border: 1px solid var(--color-warn-border); }
-.badge-run-aborted { background: var(--color-neutral-100); color: var(--color-ink-muted); }
+/* 결과 4종 배지 — 색상은 전부 기존 success/danger/warn/muted semantic 토큰
+   재조합이다(신규 토큰 0개, 배치 C에서 직접 토큰명으로 정리). */
+.badge-run-success { background: var(--color-success-soft); color: var(--status-good); }
+.badge-run-failed { background: var(--color-danger-soft); color: var(--status-bad); }
+.badge-run-timeout { background: var(--color-warn-bg); color: var(--status-warn); border: var(--border-width) solid var(--color-warn-border); }
+.badge-run-aborted { background: var(--panel-bg-alt); color: var(--text-secondary); }
 
 .raw-fallback-note { font-size: 12px; color: var(--color-ink-faint); margin-bottom: 10px; }
 .raw-fallback-pre {
@@ -556,35 +556,48 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: var(--color-canvas);
+  /* 배경 사진(login.ts가 인라인 style.backgroundImage로 얹는다)이 항상 있으므로
+     이 색은 로드 전 아주 짧은 순간의 폴백일 뿐이다 — design-system.md §3.15가
+     허용한 진입 화면 전용 미세 그라디언트를 그 폴백에 적용한다(절제된 수준,
+     사진과 같은 어두운 계열이라 로드 전환이 튀지 않는다). */
+  background-color: var(--win-bg);
+  background-image: linear-gradient(45deg, var(--win-bg), #101219);
   background-size: cover;
   background-position: center;
 }
+/* design-system.md §3.15 — card bg panel-bg / border border / radius 0.
+   그림자는 스크림 없이 뜨는 요소에 허용된 --shadow-float(§1.5)로 교체(구
+   0.06 불투명도는 밝은 배경 기준값이라 이 다크 UI 위에서는 사실상 안 보였다). */
 .login-card {
   width: 360px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-hairline);
-  border-radius: 14px;
-  padding: 36px 32px;
+  background: var(--panel-bg);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-0);
+  padding: var(--space-10) var(--space-8);
   text-align: center;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-float);
 }
 .login-brand {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-weight: 700;
-  font-size: 16px;
-  margin-bottom: 24px;
+  font-size: var(--font-size-h2);
+  margin-bottom: var(--space-8);
 }
-.login-title { font-size: 18px; font-weight: 700; margin: 0 0 8px 0; }
-.login-desc { color: var(--color-ink-muted); font-size: 13px; margin-bottom: 24px; }
-.login-btn { width: 100%; justify-content: center; padding: 11px 14px; font-size: 13px; }
-.login-note { margin-top: 18px; font-size: 11px; color: var(--color-ink-faint); }
+.login-title { font-size: var(--font-size-h1); font-weight: 700; margin: 0 0 var(--space-2) 0; color: var(--text-primary); }
+.login-desc { color: var(--text-secondary); font-size: var(--font-size-body); margin-bottom: var(--space-8); }
+.login-btn { width: 100%; justify-content: center; padding: var(--space-2-5) var(--space-3-5); font-size: var(--font-size-body); }
+.login-note { margin-top: var(--space-5); font-size: var(--font-size-caption); color: var(--text-muted-aa); }
+/* §3.6 `.callout-danger`와 같은 좌측 강조선 어법(카드 안 컴팩트 배너라 배경은
+   한 단 밝은 --panel-bg-alt) — 클래스명은 유지한다(harness.mjs가
+   .login-error를 전수 조회). */
 .login-error {
-  background: var(--color-danger-soft); color: var(--color-danger); font-size: 12px;
-  padding: 10px 12px; border-radius: var(--radius-md); margin-bottom: 16px; text-align: left; line-height: 1.5;
+  background: var(--panel-bg-alt); color: var(--text-primary); font-size: var(--font-size-caption);
+  border: var(--border-width) solid var(--border); border-left: var(--border-width-callout) solid var(--status-bad);
+  padding: var(--space-2-5) var(--space-3); border-radius: var(--radius-0); margin-bottom: var(--space-4);
+  text-align: left; line-height: var(--line-height-base);
 }
 
 /* ---------------- 계정 칩 드롭다운의 로그아웃 항목 ----------------
@@ -634,24 +647,29 @@ html, body {
 .global-entry-status.invalid { font-size: var(--font-size-caption); font-weight: 600; color: var(--status-bad); }
 
 /* ---------------- 마켓플레이스 설정 ---------------- */
+/* design-system.md §4 배치 C — 값만 신규 스펙(spacing 토큰, JetBrains Mono
+   숫자/버전 leaf)으로 교체, 클래스명 유지(.marketplace-repo-row 등을 이 화면이
+   유일하게 쓴다). `.marketplace-actions`(구 새로고침 버튼 래퍼)는 그 버튼이
+   box-head 우측 슬롯으로 이관되며 사용처가 없어져 제거했다(grep 확인 완료). */
 .marketplace-panel { max-width: 560px; }
-.marketplace-repo-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--color-hairline); }
-.marketplace-repo-name { font-weight: 600; font-size: 13px; }
-.marketplace-repo-path { font-size: 11px; color: var(--color-ink-faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.marketplace-actions { margin-bottom: 16px; }
-.marketplace-list-label { margin-bottom: 8px; }
-.marketplace-plugin-list { display: flex; flex-direction: column; margin-bottom: 18px; }
-.marketplace-plugin-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--color-hairline); }
+.marketplace-repo-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-bottom: var(--space-3-5); margin-bottom: var(--space-3-5); border-bottom: var(--border-width) solid var(--border-soft); }
+.marketplace-repo-name { font-weight: 600; font-size: var(--font-size-body); color: var(--text-primary); }
+.marketplace-repo-path { font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); }
+.marketplace-list-label { margin-bottom: var(--space-2); }
+.marketplace-plugin-list { display: flex; flex-direction: column; margin-bottom: var(--space-5); }
+.marketplace-plugin-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2-5) 0; border-bottom: var(--border-width) solid var(--border-soft); }
 .marketplace-plugin-row:last-child { border-bottom: none; }
-.marketplace-plugin-name { font-size: 13px; font-weight: 600; }
-.marketplace-plugin-version { font-size: 11px; color: var(--color-ink-faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.marketplace-plugin-name { font-size: var(--font-size-body); font-weight: 600; color: var(--text-primary); }
+.marketplace-plugin-version { font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 
 /* ---------------- MCP 관리 / 앱링크(행을 공유) — design-system.md §4 배치 B.
    클래스명 유지(.mcp-row를 settingsMcp.mjs/appLinks.mjs가 전수 조회) — 값만
    §3.2 .blist-row 개념(radius-0, spacing 토큰, JetBrains Mono 숫자/경로
    leaf)으로 교체. 이 블록은 settings.ts의 MCP 패널과도 공유되어(배치 C 범위,
    구조 변경 없음) 값 변경이 그쪽 화면에도 파급된다 — 캡처로 확인. */
-.mcp-toolbar { display: flex; gap: var(--space-2); margin-bottom: var(--space-4); }
+/* box-head 우측 슬롯에 들어가는 버튼 묶음(MCP 관리 탭) — box-head가 이미
+   flex 행이라 별도 세로 여백이 필요 없다. */
+.mcp-toolbar { display: flex; gap: var(--space-2); }
 .mcp-list { display: flex; flex-direction: column; gap: var(--space-2); max-width: 1040px; }
 .mcp-row {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3-5);
@@ -688,11 +706,14 @@ html, body {
 .toggle-thumb { width: 14px; height: 14px; border-radius: var(--radius-0); background: var(--text-secondary); }
 .toggle-track.on .toggle-thumb { background: var(--win-bg); }
 
-/* ---------------- 설정 폼 ---------------- */
-.settings-card { background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 24px; max-width: 480px; }
-.settings-form-hint { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 18px; overflow-wrap: anywhere; }
-.settings-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
-.settings-field-label { font-size: 12px; font-weight: 600; color: var(--color-ink); }
+/* ---------------- 설정 폼 — design-system.md §4 배치 C.
+   `.settings-card`(구 라이트 테마 전용 래퍼)는 이제 모든 설정 패널이 §3.1
+   `.box`로 감싸져 사용처가 없어 제거했다(grep 확인 완료) — 나머지는 클래스명
+   유지, 값만 신규 스펙(spacing 토큰, JetBrains Mono 없음 — 순수 텍스트 필드라
+   해당 없음)으로 교체. */
+.settings-form-hint { font-size: var(--font-size-caption); color: var(--text-muted-aa); margin-bottom: var(--space-5); overflow-wrap: anywhere; }
+.settings-field { display: flex; flex-direction: column; gap: var(--space-1-5); margin-bottom: var(--space-4); }
+.settings-field-label { font-size: var(--font-size-small); font-weight: 600; color: var(--text-secondary); }
 /* design-system.md §3.8 `.input` 스펙 적용 — 클래스명은 유지(.settings-input을
    .chat-input-textarea/.task-form-textarea 등 다수 화면이 공유). */
 .settings-input {
@@ -704,18 +725,18 @@ html, body {
    우선 적용되므로 이중 표시(outline+border)로 겹치지 않는다. */
 .settings-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(95, 208, 220, .15); }
 textarea.settings-input { resize: vertical; }
-.settings-form-actions { margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+.settings-form-actions { margin-top: var(--space-1); display: flex; gap: var(--space-2); flex-wrap: wrap; }
 /* 자율업무 폼의 cron 표현식 등 인라인 필드 에러 — settings-form-hint와 같은
    자리에 놓이되 위험색으로 구분한다(#/tasks 고정시간 "사용자 지정" 탭). */
-.settings-field-error { font-size: 12px; color: var(--color-danger); margin-bottom: 18px; overflow-wrap: anywhere; }
+.settings-field-error { font-size: var(--font-size-caption); color: var(--status-bad); margin-bottom: var(--space-5); overflow-wrap: anywhere; }
 /* validation 테두리 정본(P2) — 입력 오류 상태의 테두리 규칙이 화면마다 없거나 제각각이었다
    (실측: 사용처 전수 조사 결과 input 테두리를 에러색으로 바꾸는 규칙이 어디에도 없었고,
-   .settings-field-error 텍스트만 표시됨). 위 .settings-field-error와 같은 --color-danger를
+   .settings-field-error 텍스트만 표시됨). 위 .settings-field-error와 같은 --status-bad를
    테두리에도 써서 짝을 맞춘 정본 클래스를 추가한다. :focus보다 뒤에 둬 포커스 중에도 에러
    테두리가 유지되게 한다(동일 특이도 2단계, 소스 순서로 우선). 실제 입력 요소에 이 클래스를
    붙이는 것은 TS 쪽 작업이라 이번 CSS 전용 라운드 범위 밖 — 정의만 해둔다(아래 보고 참고). */
 .settings-input.settings-input-error,
-.settings-input.settings-input-error:focus { border-color: var(--color-danger); }
+.settings-input.settings-input-error:focus { border-color: var(--status-bad); }
 
 /* ---------------- 사용량 통계 — design-system.md §4 배치 B.
    구 .stat-grid/.stat-card는 usage.ts가 home.ts와 동일한 캐노니컬 .stat-row/
@@ -747,8 +768,9 @@ textarea.settings-input { resize: vertical; }
    컬럼(이름)만 제외하고 숫자 leaf 규칙(JetBrains Mono+tabular-nums)을 적용. */
 .thief-table-row > span:not(:first-child) { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 
-/* ---------------- 홈 대시보드 위젯 ---------------- */
-.home-widget-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+/* ---------------- 홈 대시보드 위젯 ----------------
+   .home-widget-grid(구 래퍼)는 renderHomeView()가 이제 .home-extra-grid를
+   쓰면서 사용처가 없어져 제거했다(grep 전수 확인 완료, 배치 C). */
 .home-widget {
   background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-xl);
   padding: 18px; cursor: pointer; display: flex; flex-direction: column;
@@ -761,9 +783,8 @@ textarea.settings-input { resize: vertical; }
 .home-widget-big-number { font-size: 30px; font-weight: 700; }
 .home-widget-desc { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 10px; }
 .home-widget-breakdown { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--color-ink-muted); margin-bottom: 4px; }
-.home-widget-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
-.home-widget-list-item { font-size: 12px; color: var(--color-ink); }
-.home-widget-list-item.muted { color: var(--color-ink-faint); }
+/* .home-widget-list/-list-item(구 목록형 위젯 본문)도 같은 이유로 사용처가
+   없어져 제거했다 — 남은 위젯 3종은 전부 desc/breakdown/btn-row만 쓴다. */
 .home-widget-link { margin-top: auto; padding-top: 10px; font-size: 12px; color: var(--color-brand); font-weight: 600; }
 /* .home-widget는 column flex라 자식 .badge(inline-flex)가 교차축 stretch로
    카드 전체 폭까지 늘어난다 — 배지만 자기 너비로 되돌린다(부모 align-items는
@@ -800,68 +821,74 @@ textarea.settings-input { resize: vertical; }
 .session-field-key { color: var(--color-ink-muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .session-field-value { word-break: break-all; }
 
-/* ---------------- 자율업무 ---------------- */
-.task-list { display: flex; flex-direction: column; gap: 8px; }
+/* ---------------- 자율업무 — design-system.md §4 배치 C.
+   클래스명 유지(autonomousTasks.mjs/routes.mjs가 .task-row/.task-board-column을
+   전수 조회) — 값만 신규 스펙(radius-0, spacing/폰트 토큰, JetBrains Mono 숫자
+   leaf)으로 교체. 목록 전체는 autonomousTasks.ts에서 하나의 .box로 감싸므로
+   (§3.1), .mcp-row와 같은 "패널 하나 안의 행" 톤으로 맞춘다. ---------------- */
+.task-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .task-row {
-  display: flex; align-items: flex-start; gap: 14px;
-  background: var(--color-surface); border: 1px solid var(--color-hairline);
-  border-radius: var(--radius-lg); padding: 14px 16px;
+  display: flex; align-items: flex-start; gap: var(--space-3-5);
+  background: var(--panel-bg); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-0); padding: var(--space-3-5) var(--space-4);
 }
 .task-row-main { flex: 1; min-width: 0; cursor: pointer; }
-.task-row-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.task-row-actions { display: flex; align-items: center; gap: var(--space-2-5); flex-shrink: 0; }
 /* 자율업무 이름은 코드상 길이 제한이 없어(mcp-row-name과 달리 ellipsis로
    자르면 정보 손실이 있다) ellipsis 대신 줄바꿈을 허용하고, align-items를
    flex-start로 바꿔 배지가 2줄 이름 "사이"에 끼는 대신 첫 줄 옆(위쪽)에
    붙도록 한다. 행 높이가 들쭉날쭉해지는 트레이드오프는 감수한다. */
-.task-row-top { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 4px; }
-.task-row-name { font-weight: 600; font-size: 13px; }
-.task-row-desc { font-size: 12px; color: var(--color-ink-muted); margin-bottom: 8px; }
-.task-row-schedule { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--color-ink-faint); }
-.task-add-card { margin-bottom: 16px; max-width: 480px; }
+.task-row-top { display: flex; align-items: flex-start; gap: var(--space-2); margin-bottom: var(--space-1); }
+.task-row-name { font-weight: 600; font-size: var(--font-size-body); color: var(--text-primary); }
+.task-row-desc { font-size: var(--font-size-caption); color: var(--text-muted-aa); margin-bottom: var(--space-2); }
+.task-row-schedule { display: flex; gap: var(--space-3-5); flex-wrap: wrap; font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 .task-form-textarea { min-height: 64px; }
-.task-history-list { display: flex; flex-direction: column; gap: 6px; }
-.task-history-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; }
-.task-history-time { color: var(--color-ink-muted); }
-.task-history-result.ok { color: var(--color-success-text); font-weight: 600; }
-.task-history-result.fail { color: var(--color-danger); font-weight: 600; }
+/* .task-add-card/.task-history-*(구 인라인 추가폼·이력 카드)는 상세 화면
+   재설계(§4-2)로 추가는 모달, 이력은 .run-history-*로 완전히 대체되며 어느
+   .ts에서도 더 이상 참조하지 않아 제거했다(grep 전수 확인 완료). */
 
 /* ---------------- 자율업무 진행상황판 ---------------- */
-.task-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-items: start; }
-.task-board-column { background: var(--color-canvas); border: 1px solid var(--color-hairline); border-radius: var(--radius-lg); padding: 10px; min-height: 80px; }
+.task-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-3); align-items: start; }
+/* 칸반 컬럼 배경은 win-bg(리스트보다 한 단계 낮은 층) — design-system.md §4
+   #25. 카드(.task-run-card)가 그 위에서 panel-bg로 한 단 떠 보이게 한다. */
+.task-board-column { background: var(--win-bg); border: var(--border-width) solid var(--border); border-radius: var(--radius-0); padding: var(--space-2-5); min-height: 80px; }
 .task-board-column-head {
   display: flex; justify-content: space-between; align-items: center;
-  font-size: 12px; font-weight: 700; color: var(--color-ink-muted); padding: 4px 4px 10px 4px;
+  font-size: var(--font-size-caption); font-weight: 700; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: var(--letter-spacing-eyebrow);
+  padding: var(--space-1) var(--space-1) var(--space-2-5) var(--space-1);
 }
 .task-board-count {
-  background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: var(--radius-pill);
-  padding: 1px 8px; font-size: 11px; color: var(--color-ink);
+  background: var(--panel-bg); border: var(--border-width) solid var(--border); border-radius: var(--radius-0);
+  padding: 1px var(--space-2); font-size: var(--font-size-caption); color: var(--text-muted-aa);
+  font-family: var(--font-numeric); font-variant-numeric: tabular-nums;
 }
-.task-board-cards { display: flex; flex-direction: column; gap: 8px; }
-.task-board-empty { font-size: 11px; color: var(--color-ink-faint); text-align: center; padding: 12px 0; }
+.task-board-cards { display: flex; flex-direction: column; gap: var(--space-2); }
+.task-board-empty { font-size: var(--font-size-caption); color: var(--text-muted-aa); text-align: center; padding: var(--space-3) 0; }
 .task-run-card {
-  background: var(--color-surface); border: 1px solid var(--color-hairline); border-left: 3px solid var(--color-hairline);
-  border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px;
+  background: var(--panel-bg); border: var(--border-width) solid var(--border); border-left: var(--border-width-callout) solid var(--border);
+  border-radius: var(--radius-0); padding: var(--space-2-5) var(--space-3); font-size: var(--font-size-caption);
 }
-.task-run-card.status-running { border-left-color: var(--color-brand); }
-.task-run-card.status-ok { border-left-color: var(--color-success-text); }
-.task-run-card.status-fail { border-left-color: var(--color-danger); }
-.task-run-card.status-pending { border-left-color: var(--color-ink-faint); }
-.task-run-name { font-weight: 600; margin-bottom: 4px; }
-.task-run-time { color: var(--color-ink-faint); font-size: 11px; }
+.task-run-card.status-running { border-left-color: var(--accent); }
+.task-run-card.status-ok { border-left-color: var(--status-good); }
+.task-run-card.status-fail { border-left-color: var(--status-bad); }
+.task-run-card.status-pending { border-left-color: var(--text-muted-aa); }
+.task-run-name { font-weight: 600; margin-bottom: var(--space-1); color: var(--text-primary); }
+.task-run-time { color: var(--text-muted-aa); font-size: var(--font-size-caption); font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 
 /* ---------------- 연동 설정 공용 (GitHub/Cloudflare 연결 상태 표시) ---------------- */
-.integration-panel { display: flex; flex-direction: column; gap: 4px; }
+.integration-panel { display: flex; flex-direction: column; gap: var(--space-1); }
 .integration-account-row {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: var(--space-3);
 }
 .integration-account-avatar {
-  width: 36px; height: 36px; border-radius: var(--radius-circle); background: var(--color-brand);
-  color: var(--win-bg); font-weight: 700; font-size: 15px;
+  width: 36px; height: 36px; border-radius: var(--radius-circle); background: var(--accent);
+  color: var(--win-bg); font-weight: 700; font-size: var(--font-size-h2);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .integration-account-info { flex: 1; min-width: 0; }
-.integration-account-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.integration-account-status { font-size: 11px; color: var(--color-success-text); font-weight: 600; }
+.integration-account-name { font-weight: 600; font-size: var(--font-size-body); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.integration-account-status { font-size: var(--font-size-caption); color: var(--status-good); font-weight: 600; }
 
 /* ---------------- 개발 환경 (실제 CLI 버전 조회) — design-system.md §4
    배치 B. 클래스명 유지(majorReview20260921.mjs가 .devtool-panel-running/
@@ -934,10 +961,10 @@ textarea.settings-input { resize: vertical; }
 .plugin-update-note.fail { border-left-color: var(--status-bad); color: var(--status-bad); }
 
 /* ---------------- 마켓플레이스: 저장소 목록(복수) ---------------- */
-.marketplace-repo-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-.marketplace-repo-list .marketplace-repo-row { padding-bottom: 10px; margin-bottom: 0; border-bottom: 1px solid var(--color-hairline); }
+.marketplace-repo-list { display: flex; flex-direction: column; gap: var(--space-2-5); margin-bottom: var(--space-4); }
+.marketplace-repo-list .marketplace-repo-row { padding-bottom: var(--space-2-5); margin-bottom: 0; border-bottom: var(--border-width) solid var(--border-soft); }
 .marketplace-repo-list .marketplace-repo-row:last-child { border-bottom: none; padding-bottom: 0; }
-.marketplace-repo-updated { font-size: 11px; color: var(--color-ink-faint); margin-top: 2px; }
+.marketplace-repo-updated { font-size: var(--font-size-caption); color: var(--text-muted-aa); margin-top: 2px; font-family: var(--font-numeric); }
 
 /* ---------------- 프로젝트 폴더 구조 + 파일 미리보기 — design-system.md §3.1
    `.box`(패널)와 동일 토큰(클래스명은 유지). ---------------- */
