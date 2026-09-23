@@ -335,6 +335,20 @@ fn emit_login_output(app: &tauri::AppHandle, text: &str) {
     let _ = app.emit("claude-auth-login-output", ClaudeAuthLoginOutputPayload { text: text.to_string() });
 }
 
+/// 포커스 정책(작업 지시로 판단): `canceled == true`일 때만 건너뛴다.
+/// `cancel_claude_auth_login`은 세션 채팅 화면의 "취소" 버튼으로만 호출되므로
+/// (`claude_auth`에는 브라우저발 콜백이 없다 — 완료 판정은 `claude auth
+/// status --json` 재폴링이다), 그 경로는 사용자가 이미 이 앱 화면을 보며
+/// 직접 누른 조작이라 창을 앞으로 당길 필요가 없다(오히려 다른 일을 하던
+/// 중이 아니라 지금 이 화면에 있다는 뜻). 그 외 모든 종료 — 성공, 그리고
+/// "확인했는데 로그인 안 됨"/"확인 자체가 안 됨"을 포함한 실패 — 는 전부
+/// 포커스한다: 이 흐름은 브라우저에서 사용자가 뭘 했는지와 무관하게 앱이
+/// 자체 타임아웃(`LOGIN_MAX_WAIT`, 5분)이나 CLI 폴링이 끝난 뒤에야 비로소
+/// 결과를 아는 구조라, "실패를 브라우저만 보고 있다가 영영 모르는" 위험이
+/// 성공 못지않게 크다(spawn 에러처럼 브라우저를 열기도 전에 실패하는
+/// 즉시 종료 경로도 섞여 있지만, 이미 포커스된 상태에서 또 불러도 부작용이
+/// 없으므로 — 이 파일 상단 `window_focus::focus_main_window` 문서 — 따로
+/// 가려낼 필요가 없다).
 fn emit_login_finished(
     app: &tauri::AppHandle,
     ok: bool,
@@ -343,6 +357,9 @@ fn emit_login_finished(
     status: Option<ClaudeAuthStatus>,
 ) {
     use tauri::Emitter;
+    if !canceled {
+        crate::window_focus::focus_main_window(app);
+    }
     let _ = app.emit(
         "claude-auth-login-finished",
         ClaudeAuthLoginFinishedPayload {

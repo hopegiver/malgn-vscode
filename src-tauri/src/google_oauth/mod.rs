@@ -104,8 +104,82 @@ fn parse_oauth_callback_url(
     code.ok_or_else(|| "콜백에 code 값이 없습니다.".to_string())
 }
 
+/// 완료 페이지 공통 뼈대 — 외부 리소스(폰트·이미지·CDN) 없이 인라인 CSS만
+/// 쓴다(오프라인·사내망에서도 깨지지 않아야 한다는 작업 지시). 응답 헤더에
+/// 이미 `charset=utf-8`이 붙어 있으므로 한글은 그대로 안전하다.
+///
+/// 문구는 "이 창을 닫고 앱으로 돌아가세요"가 아니라 "앱이 자동으로 앞으로
+/// 나옵니다"로 쓴다 — `wait_for_oauth_callback`이 이 응답을 보낸 직후
+/// `window_focus::focus_main_window`를 호출해 실제로 그렇게 동작하기
+/// 때문이다(코드와 문구가 어긋나지 않게 이 함수 바로 아래에서 그 호출이
+/// 일어난다).
+fn oauth_result_page(accent: &str, icon: &str, title: &str, detail: &str) -> String {
+    format!(
+        r#"<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>맑은에이전트 로그인</title>
+<style>
+  html,body{{height:100%;margin:0;}}
+  body{{
+    display:flex;align-items:center;justify-content:center;
+    font-family:-apple-system,"Malgun Gothic",sans-serif;
+    background:#0f1115;color:#e6e6e6;
+  }}
+  .card{{
+    text-align:center;padding:40px 48px;border-radius:16px;
+    background:#1a1d24;box-shadow:0 8px 24px rgba(0,0,0,0.35);
+    max-width:360px;
+  }}
+  .icon{{
+    width:56px;height:56px;line-height:56px;margin:0 auto 20px;
+    border-radius:50%;font-size:28px;color:#0f1115;background:{accent};
+  }}
+  h1{{font-size:18px;margin:0 0 8px;}}
+  p{{font-size:14px;line-height:1.6;color:#9ba1ac;margin:0;}}
+</style></head>
+<body>
+  <div class="card">
+    <div class="icon">{icon}</div>
+    <h1>{title}</h1>
+    <p>{detail}</p>
+  </div>
+</body></html>"#
+    )
+}
+
+fn oauth_success_page() -> String {
+    oauth_result_page(
+        "#3ddc84",
+        "&#10003;",
+        "로그인 완료",
+        "맑은에이전트 창이 자동으로 앞에 나타납니다.<br>혹시 나타나지 않으면 이 창을 닫고 직접 전환해주세요.",
+    )
+}
+
+fn oauth_failure_page() -> String {
+    oauth_result_page(
+        "#f2545b",
+        "&#10005;",
+        "로그인 실패",
+        "맑은에이전트 창이 자동으로 앞에 나타납니다.<br>거기서 오류 메시지를 확인해주세요.",
+    )
+}
+
 /// 루프백 서버 하나로 딱 한 번의 콜백 요청만 받고 즉시 닫는다. 최대 5분 대기.
+///
+/// 창 포커스 정책(작업 지시로 판단): 브라우저가 실제로 콜백을 보내온
+/// 경우에만(`Ok(Some(request))`) 포커스한다 — 성공/실패(Google이 보낸
+/// error 파라미터, state 불일치 등) 모두 포함한다. 둘 다 "사용자가 방금
+/// 브라우저에서 어떤 식으로든 응답을 끝냈다"는 동일한 신호이기 때문이다
+/// (이 앱에는 이 대기를 사용자가 직접 취소하는 버튼이 없다 — `authApi.ts`가
+/// 그냥 invoke를 기다릴 뿐이다 — 그래서 "이미 앱 화면을 보고 있어서
+/// 포커스가 불필요한" 경로가 애초에 없다). 반대로 5분 타임아웃(`Ok(None)`
+/// 반복 끝 데드라인 도달)이나 서버 자체 오류는 포커스하지 않는다 — 콜백이
+/// 한 번도 오지 않았다는 것은 사용자가 이미 브라우저 탭을 닫았거나 다른
+/// 일로 떠났을 가능성이 높고, 5분이나 지난 시점에 갑자기 창을 앞으로
+/// 당기면 그 사이 다른 작업을 하던 사용자를 방해한다(작업 지시의 "방해"
+/// 사례에 해당).
 async fn wait_for_oauth_callback(
+    app: tauri::AppHandle,
     server: tiny_http::Server,
     expected_state: String,
 ) -> Result<String, String> {
@@ -125,9 +199,9 @@ async fn wait_for_oauth_callback(
                     let raw = request.url().to_string();
                     let result = parse_oauth_callback_url(&raw, &expected_state);
                     let body = if result.is_ok() {
-                        "<html><body><h3>로그인 완료 — 이 창을 닫고 앱으로 돌아가세요.</h3></body></html>"
+                        oauth_success_page()
                     } else {
-                        "<html><body><h3>로그인 실패 — 앱으로 돌아가 오류 메시지를 확인하세요.</h3></body></html>"
+                        oauth_failure_page()
                     };
                     if let Ok(header) = tiny_http::Header::from_bytes(
                         &b"Content-Type"[..],
@@ -136,6 +210,7 @@ async fn wait_for_oauth_callback(
                         let response = tiny_http::Response::from_string(body).with_header(header);
                         let _ = request.respond(response);
                     }
+                    crate::window_focus::focus_main_window(&app);
                     let _ = tx.send(result);
                     return;
                 }
@@ -234,7 +309,7 @@ async fn attempt_google_oauth_authorization(
             .map_err(|e| format!("브라우저를 열지 못했습니다: {e}"))?;
     }
 
-    let code = wait_for_oauth_callback(server, state).await?;
+    let code = wait_for_oauth_callback(app.clone(), server, state).await?;
     Ok(OauthAttemptResult {
         code,
         code_verifier,
@@ -353,5 +428,67 @@ mod tests {
     fn rejects_oauth_callback_missing_code() {
         let result = parse_oauth_callback_url("/callback?state=xyz", "xyz");
         assert!(result.is_err(), "code가 없으면 거부되어야 합니다");
+    }
+
+    // ==================== 완료 페이지(오프라인 안전 + 문구) ====================
+    // 작업 지시: "HTML 본문을 테스트로 고정해라(문자열이 실수로 깨지면 잡히게)".
+    // 두 페이지 공통으로 ①외부 리소스를 참조하지 않는지 ②charset=utf-8과
+    // 짝이 맞는 meta 태그가 있는지 ③실제 동작(자동 포커스)과 문구가 맞는지를
+    // 고정한다.
+    fn assert_no_external_resources(html: &str) {
+        assert!(
+            !html.contains("http://") && !html.contains("https://"),
+            "완료 페이지는 외부 리소스(폰트·이미지·CDN)를 참조하면 안 됩니다: {html}"
+        );
+        assert!(
+            !html.to_lowercase().contains("<link") && !html.to_lowercase().contains("<script"),
+            "완료 페이지는 <link>/<script> 태그를 쓰면 안 됩니다(인라인 CSS만): {html}"
+        );
+    }
+
+    #[test]
+    fn oauth_success_page_has_no_external_resources_and_utf8_meta() {
+        let html = oauth_success_page();
+        assert_no_external_resources(&html);
+        assert!(html.contains(r#"<meta charset="utf-8">"#));
+    }
+
+    #[test]
+    fn oauth_failure_page_has_no_external_resources_and_utf8_meta() {
+        let html = oauth_failure_page();
+        assert_no_external_resources(&html);
+        assert!(html.contains(r#"<meta charset="utf-8">"#));
+    }
+
+    // 문구가 실제 동작(자동 포커스)과 어긋나지 않아야 한다 — "닫고 앱으로
+    // 돌아가세요"류의, 사용자가 직접 전환해야 한다고 잘못 안내하는 문구가
+    // 주 문장으로 돌아오면 이 테스트가 깨진다.
+    #[test]
+    fn oauth_success_page_mentions_automatic_focus_not_manual_switch() {
+        let html = oauth_success_page();
+        assert!(html.contains("로그인 완료"));
+        assert!(
+            html.contains("자동으로"),
+            "자동 포커스 동작을 안내하는 문구가 있어야 합니다: {html}"
+        );
+    }
+
+    #[test]
+    fn oauth_failure_page_mentions_automatic_focus_not_manual_switch() {
+        let html = oauth_failure_page();
+        assert!(html.contains("로그인 실패"));
+        assert!(
+            html.contains("자동으로"),
+            "자동 포커스 동작을 안내하는 문구가 있어야 합니다: {html}"
+        );
+    }
+
+    #[test]
+    fn oauth_success_and_failure_pages_are_visually_distinct() {
+        let success = oauth_success_page();
+        let failure = oauth_failure_page();
+        assert_ne!(success, failure);
+        assert!(success.contains("#3ddc84"), "성공 페이지는 성공 색상을 써야 합니다");
+        assert!(failure.contains("#f2545b"), "실패 페이지는 실패 색상을 써야 합니다");
     }
 }

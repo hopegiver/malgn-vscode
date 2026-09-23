@@ -18,6 +18,7 @@ mod session_chat;
 mod session_list;
 mod session_watch;
 mod usage_stats;
+mod window_focus;
 mod workspace;
 
 // `autonomy`/`session_chat`이 이 크레이트 루트 경로(`crate::resolve_validated_project_root`,
