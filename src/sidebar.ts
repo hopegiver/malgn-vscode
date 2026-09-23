@@ -1,30 +1,29 @@
+// Terminus 셸 — 탭스트립(상단) + 사이드바(워크스페이스 목록) + 상태줄(하단).
+// docs/design/terminus-shell-ia.md가 정본이다. main.ts가 이 세 렌더 함수를
+// #app 안에 세로로 쌓는다(탭스트립 → shell-body{사이드바+본문} → 상태줄).
+//
+// 구 버전(아코디언 사이드바)과 달리 이 사이드바는 워크스페이스(=프로젝트)
+// 목록 전용이고, 설정/카탈로그/자율업무 하위탭 전환·프로젝트/세션 서브목록·
+// 앱링크 바로가기 목록은 전부 본문(탭 콘텐츠) 쪽으로 옮겨졌다(IA §2~4) —
+// 이 화면들 자체는 다음 단계(9개 화면 마이그레이션) 범위라 여기서는 탭
+// 전환(navigate)만 담당한다.
 import { getVersion } from '@tauri-apps/api/app';
 import { el, clickable } from './dom';
 import { state, notifyChange, resetStateForLogout } from './state';
-import type { SettingsTab, CatalogTab } from './state';
 import { navigate } from './route';
 import type { Route } from './route';
-import { sortedSessions, sessionTitle, asString } from './views/sessions';
+import { asBoolean } from './views/sessions';
 import { sortedProjectsByRecency } from './views/projects';
 import { loadDailyUsage } from './views/usage';
-import { enabledAppLinks, openLink } from './views/appLinks';
-import { brandMark } from './brand';
 import { applyUpdateFromButton, checkForUpdateFromButton } from './updateApi';
+import type { WorkspaceProject } from './workspaceApi';
 
-// 앱 버전 표시 — Tauri가 tauri.conf.json의 version을 읽어주는 getVersion()을
-// 그대로 쓴다(런타임 내내 바뀌지 않으므로 한 번만 읽어 모듈 스코프에 캐싱).
-// Tauri IPC 브리지가 없는 환경(하네스의 순수 브라우저 + __TAURI_INTERNALS__
-// 스텁 등)에서는 invoke 자체가 실패할 수 있으므로, authApi.tryDevAutoLogin()과
-// 동일하게 실패를 조용히 흡수하고(console.debug만 남김) 그 경우 버전 영역
-// 자체를 렌더하지 않는다 — 나머지 화면 동작에는 영향을 주지 않는다.
+// ---------------- 앱 버전 캐시(구 sidebar.ts와 동일한 모듈 스코프 캐싱 패턴) ----------------
+// views/home.ts의 페이지 부제(v0.2.x)와 이 파일의 상태줄이 같은 값을 공유한다
+// — getVersion() IPC 호출은 앱 수명 동안 정확히 1회만 낸다.
 let appVersion: string | null = null;
 let appVersionRequested = false;
 
-// 대시보드(views/home.ts)도 같은 버전을 표시해야 하지만 별도로 getVersion()을
-// 다시 호출하지 않는다 — main.ts의 renderApp()이 매 렌더마다 renderHomeView()
-// (있다면) 다음 renderSidebar()를 호출하므로, 어느 쪽이 먼저 ensureAppVersionLoaded()를
-// 불러도 이 모듈 스코프 캐시 하나(appVersionRequested 플래그)만 실제 IPC 호출을
-// 낸다. getAppVersion()으로 현재 캐시된 값만 읽어간다.
 export function ensureAppVersionLoaded(): void {
   if (appVersionRequested) return;
   appVersionRequested = true;
@@ -34,7 +33,7 @@ export function ensureAppVersionLoaded(): void {
       notifyChange();
     })
     .catch((e) => {
-      console.debug('getVersion failed (no Tauri bridge?), hiding sidebar version', e);
+      console.debug('getVersion failed (no Tauri bridge?), hiding version display', e);
     });
 }
 
@@ -42,339 +41,303 @@ export function getAppVersion(): string | null {
   return appVersion;
 }
 
-const SETTINGS_TABS: readonly { readonly key: SettingsTab; readonly label: string }[] = [
-  { key: 'otel', label: 'OTel 설정' },
-  { key: 'github', label: 'GitHub 설정' },
-  { key: 'cloudflare', label: 'Cloudflare 설정' },
-  { key: 'marketplace', label: '마켓플레이스 설정' },
-  { key: 'mcp', label: 'MCP 관리' },
-  { key: 'applinks', label: '앱링크 설정' },
-  { key: 'devtools', label: '개발 환경' },
-];
+// ---------------- 상태줄 시계 ----------------
+// 전역 notifyChange()를 매초 부르면 앱 전체가 매초 재렌더된다(포커스/스크롤
+// 흔들림 위험) — 대신 마지막으로 그려진 <span> 노드 참조만 갱신하고 그
+// 텍스트만 직접 바꾼다. renderStatusline()이 호출될 때마다 최신 노드로
+// 교체되므로, 이전 렌더에서 분리된(detached) 노드는 자연히 더 이상
+// 갱신되지 않고 GC된다 — 인터벌 자체는 앱 수명 동안 1개만 존재한다.
+let clockEl: HTMLElement | null = null;
+let clockTimerStarted = false;
 
-const CATALOG_TABS: readonly { readonly key: CatalogTab; readonly label: string }[] = [
-  { key: 'plugins', label: '플러그인 카탈로그' },
-  { key: 'global', label: '전역 카탈로그' },
-];
+function formatClock(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
-const SIDEBAR_SUBLIST_LIMIT = 6;
+function ensureClockTimer(): void {
+  if (clockTimerStarted) return;
+  clockTimerStarted = true;
+  setInterval(() => {
+    if (clockEl) clockEl.textContent = formatClock(new Date());
+  }, 1000);
+}
 
-// 사용 빈도순 배치(로그아웃만 하단에 고정). "개발 환경"은 독립 메뉴가 아니라
-// "설정" 하위 탭이다(설정 > 개발 환경).
-// "프로젝트"·"세션목록"은 펼치면 실제 로컬 데이터(이미 main.ts가 로그인 직후
-// 미리 불러온 state.dashboard.projects/state.sessions.items)를 서브 목록으로
-// 바로 보여준다 — 화면 전환은 항목 본문 클릭, 펼침/접힘은 화살표 클릭으로 분리한다.
-export function renderSidebar(route: Route): HTMLElement {
-  ensureAppVersionLoaded();
+// ---------------- 탭스트립 ----------------
+interface TabSpec {
+  readonly label: string;
+  readonly active: boolean;
+  readonly onClick: () => void;
+}
 
-  const settingsGroup = navGroup({
-    label: '설정',
-    active: route.kind === 'settings',
-    expanded: state.sidebar.settingsExpanded,
-    onToggle: () => {
-      state.sidebar.settingsExpanded = !state.sidebar.settingsExpanded;
-      notifyChange();
-    },
-    onNavigate: () => navigate('#/settings'),
-    subItems: SETTINGS_TABS.map((t) => ({
-      label: t.label,
-      active: route.kind === 'settings' && route.tab === t.key,
-      onClick: () => navigate(`#/settings/${t.key}`),
-    })),
-  });
+function tabEl(spec: TabSpec): HTMLElement {
+  return clickable(el('div', { className: `tab${spec.active ? ' active' : ''}` }, [el('span', { className: 'dot' }, []), spec.label]), spec.onClick);
+}
 
-  const catalogGroup = navGroup({
-    label: '카탈로그',
-    active: route.kind === 'catalog',
-    expanded: state.sidebar.catalogExpanded,
-    onToggle: () => {
-      state.sidebar.catalogExpanded = !state.sidebar.catalogExpanded;
-      notifyChange();
-    },
-    onNavigate: () => navigate('#/catalog'),
-    subItems: CATALOG_TABS.map((t) => ({
-      label: t.label,
-      active: route.kind === 'catalog' && route.tab === t.key,
-      onClick: () => navigate(`#/catalog/${t.key}`),
-    })),
-  });
+// 계정 칩 드롭다운 — 열려 있는 동안 바깥 클릭으로 닫히도록 window에 리스너를
+// 1개만 붙인다(appLinks.ts/projects.ts의 ESC 핸들러 등록/해제 관례와 동일 원칙).
+let accountMenuOutsideClickHandler: ((e: MouseEvent) => void) | null = null;
 
-  const mainItems: HTMLElement[] = [
-    navItem('대시보드', route.kind === 'home', () => navigate('#/')),
-    renderProjectsGroup(route),
-    renderSessionsGroup(route),
-    navItem('자율업무', route.kind === 'tasks-list' || route.kind === 'tasks-board' || route.kind === 'tasks-detail', () => navigate('#/tasks')),
-    navItem('사용량 통계', route.kind === 'usage', () => {
-      navigate('#/usage');
-      // 실시간 감시를 없앤 대신 이 메뉴를 누르는 시점마다 새로 불러온다. 이미
-      // #/usage에 있으면 해시가 안 바뀌어 라우팅만으로는 재로딩이 안 트리거되니
-      // 여기서 직접 부른다(겹쳐 쌓이지 않게 loading 가드).
-      if (!state.dailyUsage.loading) void loadDailyUsage();
-    }),
-    catalogGroup,
-    renderAppLinksGroup(),
-    settingsGroup,
-  ];
+function closeAccountMenu(): void {
+  state.sidebar.accountMenuOpen = false;
+  if (accountMenuOutsideClickHandler) {
+    window.removeEventListener('mousedown', accountMenuOutsideClickHandler);
+    accountMenuOutsideClickHandler = null;
+  }
+  notifyChange();
+}
 
-  // 별도 "로그아웃" 항목(구 sidebar-nav-item)을 없애고 이메일 옆에 붙여 한 줄로
-  // 합친다. 클래스명 sidebar-logout은 그대로 유지한다 — ui-harness
-  // (majorReview20260921.mjs)가 document.querySelector('.sidebar-logout')로
-  // 이 요소를 직접 찾아 클릭하므로, 여기서 클래스를 바꾸면 harness 시나리오가
-  // 깨진다. 핸들러 본문은 기존과 완전히 동일하게 유지한다(G1, 리뷰 v0.2.5 —
-  // sessionChat을 제외한 상태 초기화 + 해시 리셋으로 leaveSessionChatView() 등
-  // 실제 리스너 해제까지 이어진다).
-  const logoutButton = clickable(
-    el('span', { className: 'sidebar-logout sidebar-logout-btn' }, ['로그아웃']),
+function openAccountMenu(): void {
+  state.sidebar.accountMenuOpen = true;
+  if (!accountMenuOutsideClickHandler) {
+    accountMenuOutsideClickHandler = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (target && !document.querySelector('.tabstrip-account')?.contains(target)) closeAccountMenu();
+    };
+    window.addEventListener('mousedown', accountMenuOutsideClickHandler);
+  }
+  notifyChange();
+}
+
+function renderAccountChip(): HTMLElement {
+  const email = state.auth.userEmail;
+  const chip = clickable(
+    el('div', { className: 'tabstrip-account' }, [
+      el('span', { className: 'dot' }, []),
+      email ?? '계정',
+    ]),
     () => {
+      if (state.sidebar.accountMenuOpen) closeAccountMenu();
+      else openAccountMenu();
+    }
+  );
+
+  if (!state.sidebar.accountMenuOpen) return chip;
+
+  const logoutItem = clickable(
+    el('div', { className: 'tabstrip-account-dropdown-item danger sidebar-logout sidebar-logout-btn' }, ['로그아웃']),
+    () => {
+      closeAccountMenu();
       resetStateForLogout();
       window.location.hash = '';
       notifyChange();
     }
   );
 
-  // 이메일이 없어도(state.auth.userEmail이 falsy) 로그아웃 버튼은 항상 렌더한다
-  // — 이메일 유무와 무관하게 로그아웃 가능해야 한다는 요구를 지키기 위해, 조건부인
-  // 것은 이메일 span 쪽뿐이고 logoutButton은 이 배열 바깥(항상 push)에 둔다.
-  const userRow = el('div', { className: 'sidebar-user-row' }, [
-    ...(state.auth.userEmail ? [el('span', { className: 'sidebar-user-email' }, [state.auth.userEmail])] : []),
-    logoutButton,
+  const dropdown = el('div', { className: 'tabstrip-account-dropdown' }, [
+    ...(email ? [el('div', { className: 'tabstrip-account-dropdown-email' }, [email])] : []),
+    logoutItem,
   ]);
-
-  return el('aside', { className: 'sidebar' }, [
-    el('div', { className: 'sidebar-brand' }, [brandMark(), '맑은에이전트']),
-    el('nav', { className: 'sidebar-nav' }, mainItems),
-    el('div', { className: 'sidebar-footer' }, [
-      ...renderUpdateItem(),
-      userRow,
-      ...(appVersion ? [renderVersionRow(appVersion)] : []),
-    ]),
-  ]);
+  chip.appendChild(dropdown);
+  return chip;
 }
 
-function renderProjectsGroup(route: Route): HTMLElement {
-  const expanded = state.sidebar.projectsExpanded;
-  const active = route.kind === 'projects-list' || route.kind === 'projects-detail';
-
-  const header = expandableNavItem('프로젝트', active, () => navigate('#/projects'), expanded, () => {
-    state.sidebar.projectsExpanded = !expanded;
-    notifyChange();
-  });
-
-  const children: HTMLElement[] = [header];
-  if (expanded) {
-    const items = sortedProjectsByRecency().slice(0, SIDEBAR_SUBLIST_LIMIT).map((p) => ({
-      label: p.name,
-      active: route.kind === 'projects-detail' && route.path === p.path,
-      onClick: () => navigate(`#/project/${encodeURIComponent(p.path)}`),
-    }));
-    if (items.length === 0) {
-      // B1(리뷰 v0.2.5) — items.length === 0만으로 "불러오는 중…"을 단정하면
-      // 로드가 끝났는데 프로젝트가 진짜 0건인 사용자(신규 입사자 첫 실행이
-      // 정확히 이 상태)에게 이 문구가 영원히 뜬다. 같은 파일의 앱링크 그룹
-      // (renderAppLinksGroup, `!state.appLinks.loaded`)이 이미 올바른 선례라
-      // 그대로 따른다.
-      children.push(
-        el('div', { className: 'sidebar-subnav' }, [
-          el('div', { className: 'sidebar-subnav-empty' }, [state.dashboard.loaded ? '프로젝트가 없습니다' : '불러오는 중…']),
-        ])
-      );
-    } else {
-      children.push(subList(items, state.dashboard.projects.length > SIDEBAR_SUBLIST_LIMIT ? '전체 보기 →' : null, () => navigate('#/projects')));
-    }
-  }
-
-  return el('div', { className: 'sidebar-nav-group' }, children);
-}
-
-function renderSessionsGroup(route: Route): HTMLElement {
-  const expanded = state.sidebar.sessionsExpanded;
-  const active = route.kind === 'sessions-list' || route.kind === 'sessions-detail' || route.kind === 'sessions-draft';
-
-  const header = expandableNavItem('세션목록', active, () => navigate('#/sessions'), expanded, () => {
-    state.sidebar.sessionsExpanded = !expanded;
-    notifyChange();
-  });
-
-  const children: HTMLElement[] = [header];
-  if (expanded) {
-    const sessions = sortedSessions().slice(0, SIDEBAR_SUBLIST_LIMIT);
-    const items = sessions.map((s) => {
-      const sessionId = asString(s.sessionId);
-      return {
-        label: sessionTitle(s),
-        active: route.kind === 'sessions-detail' && route.sessionId === sessionId,
-        onClick: () => navigate(`#/sessions/${encodeURIComponent(sessionId)}`),
-      };
-    });
-    if (items.length === 0) {
-      // B1(리뷰 v0.2.5) — 프로젝트 그룹과 동일한 원인·동일한 수정.
-      children.push(
-        el('div', { className: 'sidebar-subnav' }, [
-          el('div', { className: 'sidebar-subnav-empty' }, [state.sessions.loaded ? '세션이 없습니다' : '불러오는 중…']),
-        ])
-      );
-    } else {
-      children.push(subList(items, state.sessions.items.length > SIDEBAR_SUBLIST_LIMIT ? '전체 보기 →' : null, () => navigate('#/sessions')));
-    }
-  }
-
-  return el('div', { className: 'sidebar-nav-group' }, children);
-}
-
-// 앱링크 — 대응하는 라우트가 없어(클릭 = 외부 브라우저 열기, 화면 전환 없음)
-// 항상 active:false다. navGroup()과 달리 헤더는 라우트를 갖지 않는 순수 토글
-// 헤더이고(navGroup의 헤더 구조를 그대로 복제), 로딩 중에는 프로젝트/세션
-// 그룹과 동일하게 "불러오는 중…"을 비클릭 항목으로 보여준다(설계 §6-2 —
-// subList()의 항목은 전부 clickable()로 감싸지므로 이 비클릭 상태만은 subList를
-// 거치지 않고 직접 그린다).
-function renderAppLinksGroup(): HTMLElement {
-  const expanded = state.sidebar.appLinksExpanded;
-
-  const header = clickable(
-    el('div', { className: 'sidebar-nav-item sidebar-nav-group-header' }, [
-      el('span', { className: 'sidebar-nav-group-label' }, ['앱링크']),
-      el('span', { className: 'sidebar-nav-chevron' }, [expanded ? '▾' : '▸']),
-    ]),
-    () => {
-      state.sidebar.appLinksExpanded = !expanded;
-      notifyChange();
-    }
-  );
-
-  const children: HTMLElement[] = [header];
-  if (expanded) {
-    if (!state.appLinks.loaded) {
-      children.push(el('div', { className: 'sidebar-subnav' }, [el('div', { className: 'sidebar-subnav-empty' }, ['불러오는 중…'])]));
-    } else {
-      const links = enabledAppLinks();
-      const items =
-        links.length > 0
-          ? links.map((l) => ({ label: l.name, active: false, onClick: () => void openLink(l) }))
-          : [{ label: '앱링크 설정에서 추가 →', active: false, onClick: () => navigate('#/settings/applinks') }];
-      children.push(subList(items, null, () => {}));
-    }
-  }
-
-  return el('div', { className: 'sidebar-nav-group' }, children);
-}
-
-// 자동 업데이트 배지/버튼 — 평소엔 아무것도 렌더하지 않는다(state.update.available
-// === false, updateApi.ts가 실제로 감지·다운로드를 마쳤을 때만 true). 사이드바
-// 최하단(로그아웃 위)에 두는 이유: 화면 전환을 일으키지 않는 항목이라 메인
-// 내비게이션(mainItems) 목록과 섞이면 "화면"으로 오인될 수 있고, VSCode가 좌측
-// 하단 게이지/알림 영역에 조용히 상태를 띄우는 것과 같은 자리라 기존 사용자
-// 습관과도 맞는다. 클릭 시 그 자리에서 설치+재시작(installing 동안 중복 클릭
-// 방지 — updateApi.applyUpdateFromButton 내부 가드와 이중으로 막는다).
-function renderUpdateItem(): HTMLElement[] {
-  if (!state.update.available) return [];
-  const installing = state.update.installing;
-  const label = installing ? '업데이트 적용 중…' : `업데이트 적용${state.update.version ? ` (v${state.update.version})` : ''}`;
-  const row = el('div', { className: `sidebar-nav-item sidebar-update-item${installing ? ' disabled' : ''}` }, [
-    el('span', { className: 'sidebar-update-dot' }, []),
-    label,
-  ]);
-  return [
-    clickable(row, () => {
-      if (!installing) void applyUpdateFromButton();
-    }),
-  ];
-}
-
-// 앱 버전 옆 "새 버전 확인" 버튼 — 지금까지는 자동(부팅 1회 + 1시간 주기)뿐이라
-// 사용자가 원할 때 직접 확인할 방법이 없었다. updateApi.checkForUpdateFromButton()을
-// 그대로 호출한다(강제 체크·결과 토스트는 그쪽 책임, 여기서는 로컬 UI 상태만
-// 반영). 결과가 "새 버전 있음"이면 renderUpdateItem()이 다음 렌더에서 그 자리에
-// 나타나므로 이 버튼 쪽에서 별도 문구를 더할 필요가 없다.
-//
-// 라벨을 "업데이트 확인"이 아니라 "새 버전 확인"으로 둔 이유(실측 회귀) — 이
-// 사이드바는 모든 화면에서 함께 렌더되는데, 개발 환경 패널(devTools.ts)의 CLI
-// 도구별 "업데이트 확인" 버튼과 카탈로그 플러그인 카드의 "업데이트" 버튼이
-// 이미 같은 화면 트리에 존재한다. Playwright의 getByRole name 매칭은 기본이
-// 부분일치라 "업데이트"를 포함하는 라벨을 쓰면 DOM에서 더 앞서 렌더되는(사이드바가
-// 본문보다 먼저 appendChild됨) 이 버튼이 기존 하네스 시나리오의 `.first()`
-// 선택자를 가로채 버린다(majorReview20260921.mjs 등에서 실제로 재현됨) — 겹치지
-// 않는 라벨을 쓰는 것으로 해결한다.
-function renderVersionRow(version: string): HTMLElement {
-  const checking = state.update.checking;
-  const checkBtn = el(
-    'button',
+export function renderTabstrip(route: Route): HTMLElement {
+  const tabs: TabSpec[] = [
+    { label: '홈', active: route.kind === 'home', onClick: () => navigate('#/') },
+    { label: '프로젝트', active: route.kind === 'projects-list' || route.kind === 'projects-detail', onClick: () => navigate('#/projects') },
     {
-      className: 'btn btn-sm sidebar-version-check-btn',
-      onClick: () => {
-        if (!checking) void checkForUpdateFromButton();
-      },
-      disabled: checking || state.update.installing,
+      label: '세션',
+      active: route.kind === 'sessions-list' || route.kind === 'sessions-detail' || route.kind === 'sessions-draft',
+      onClick: () => navigate('#/sessions'),
     },
-    [checking ? '확인 중…' : '새 버전 확인']
-  );
-  checkBtn.type = 'button';
-  return el('div', { className: 'sidebar-version-row' }, [el('span', { className: 'sidebar-version-label' }, [`v${version}`]), checkBtn]);
+    {
+      label: '사용량',
+      active: route.kind === 'usage',
+      onClick: () => {
+        navigate('#/usage');
+        // 실시간 감시가 없어 이 탭을 누를 때마다 새로 불러온다(이미 #/usage에
+        // 있으면 해시가 안 바뀌어 라우팅만으로는 재로딩이 안 트리거된다) —
+        // 구 sidebar.ts의 동일 동작을 그대로 승계.
+        if (!state.dailyUsage.loading) void loadDailyUsage();
+      },
+    },
+    { label: '개발 도구', active: route.kind === 'settings' && route.tab === 'devtools', onClick: () => navigate('#/settings/devtools') },
+    {
+      label: '자율 작업',
+      active: route.kind === 'tasks-list' || route.kind === 'tasks-board' || route.kind === 'tasks-detail',
+      onClick: () => navigate('#/tasks'),
+    },
+    { label: '카탈로그', active: route.kind === 'catalog', onClick: () => navigate('#/catalog') },
+    { label: '앱 링크', active: route.kind === 'settings' && route.tab === 'applinks', onClick: () => navigate('#/settings/applinks') },
+    {
+      label: '설정',
+      active: route.kind === 'settings' && route.tab !== 'devtools' && route.tab !== 'applinks',
+      onClick: () => navigate('#/settings'),
+    },
+  ];
+
+  return el('div', { className: 'tabstrip' }, [...tabs.map(tabEl), renderAccountChip()]);
 }
 
-function navItem(label: string, active: boolean, onClick: () => void): HTMLElement {
-  return clickable(el('div', { className: `sidebar-nav-item${active ? ' active' : ''}` }, [label]), onClick);
+// ---------------- 사이드바(워크스페이스 목록 전용) ----------------
+// 상태 점: active→good(초록), unknown·archived→idle(무채색) — PM 확정(IA §8-①
+// 관련, 노랑(warn)은 실제 경고 전용이라 여기서는 쓰지 않는다).
+function dotClassFor(p: WorkspaceProject): 'good' | 'idle' {
+  return p.archiveStatus === 'active' ? 'good' : 'idle';
 }
 
-// 헤더 본문 클릭/Enter = 화면 전환, 화살표 클릭/Enter = 펼침/접힘만(전환 없음).
-// 캐럿도 clickable()로 키보드 포커스·Enter/Space를 받되 stopPropagation:true를
-// 줘서 부모 row(clickable, 네비게이션)까지 이중으로 발동하지 않게 한다.
-function expandChevron(expanded: boolean, onToggle: () => void): HTMLElement {
+// "3일 전"/"1주 전" 류 — 구 git 브랜치/워킹트리 상태 대신 IA §4가 지정한
+// 대체 데이터(WorkspaceProject.updatedAt, epoch ms)를 상대시간으로 표시한다.
+// 신규 API 호출 없는 순수 프론트 계산(views/autonomousTasks.ts의 유사 패턴
+// 재사용 — export되어 있지 않아 이 파일 전용으로 다시 작성).
+function formatDaysAgo(updatedAtMs: number): string {
+  const diffMs = Date.now() - updatedAtMs;
+  const diffMin = Math.round(diffMs / 60000);
+  if (diffMin < 1) return '방금 전';
+  if (diffMin < 60) return `${diffMin}분 전`;
+  const diffHour = Math.round(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}시간 전`;
+  const diffDay = Math.round(diffHour / 24);
+  if (diffDay < 7) return `${diffDay}일 전`;
+  return `${Math.round(diffDay / 7)}주 전`;
+}
+
+function wsRow(p: WorkspaceProject, route: Route): HTMLElement {
+  const current = route.kind === 'projects-detail' && route.path === p.path;
   return clickable(
-    el('span', { className: 'sidebar-nav-chevron sidebar-nav-chevron-btn' }, [expanded ? '▾' : '▸']),
-    onToggle,
-    { stopPropagation: true }
-  );
-}
-
-function expandableNavItem(label: string, active: boolean, onClick: () => void, expanded: boolean, onToggle: () => void): HTMLElement {
-  return clickable(
-    el('div', { className: `sidebar-nav-item sidebar-nav-expandable${active ? ' active' : ''}` }, [
-      el('span', { className: 'sidebar-nav-group-label' }, [label]),
-      expandChevron(expanded, onToggle),
+    el('div', { className: `ws-row${current ? ' current' : ''}` }, [
+      el('span', { className: `dot ${dotClassFor(p)}` }, []),
+      el('div', { className: 'ws-row-text' }, [
+        el('div', { className: 'ws-row-name' }, [p.name]),
+        el('div', { className: 'ws-row-meta' }, [formatDaysAgo(p.updatedAt)]),
+      ]),
     ]),
-    onClick
+    () => navigate(`#/project/${encodeURIComponent(p.path)}`)
   );
 }
 
-function subList(
-  items: readonly { readonly label: string; readonly active: boolean; readonly onClick: () => void }[],
-  viewAllLabel: string | null,
-  onViewAll: () => void
-): HTMLElement {
-  return el('div', { className: 'sidebar-subnav' }, [
-    ...items.map((s) => clickable(el('div', { className: `sidebar-subnav-item${s.active ? ' active' : ''}` }, [s.label]), s.onClick)),
-    ...(viewAllLabel ? [clickable(el('div', { className: 'sidebar-subnav-item sidebar-subnav-viewall' }, [viewAllLabel]), onViewAll)] : []),
-  ]);
+// 워크스페이스 경로 편집 진입 — 정확히 대응하는 "1클릭 연결" 기능은 없다.
+// 가장 가까운 기존 기능인 views/projects.ts의 "workspace 설정" 토글
+// (state.malgnAgentConfig.editingWorkspaces)을 그대로 재사용한다(IA §4).
+// 그 모달은 프로젝트 목록 화면에서만 그려지므로 먼저 그 라우트로 이동한 뒤
+// 플래그를 켠다 — 아직 malgnAgentConfig가 로드되지 않았어도, 로드가 끝나는
+// 대로(loadProjects()이 이미 로그인 직후 트리거해둔 로딩이 이어짐) 다음
+// 렌더에서 모달이 자동으로 뜬다.
+function openWorkspacesManager(): void {
+  navigate('#/projects');
+  state.malgnAgentConfig.editingWorkspaces = true;
+  notifyChange();
 }
 
-interface NavGroupSpec {
-  readonly label: string;
-  readonly active: boolean;
-  readonly expanded: boolean;
-  readonly onToggle: () => void;
-  readonly onNavigate: () => void;
-  readonly subItems: readonly { readonly label: string; readonly active: boolean; readonly onClick: () => void }[];
-}
+export function renderSidebar(route: Route): HTMLElement {
+  const dash = state.dashboard;
+  const projects = sortedProjectsByRecency();
 
-function navGroup(spec: NavGroupSpec): HTMLElement {
-  // 수동 토글 상태이거나, 그 섹션이 현재 활성 라우트면 항상 펼쳐 보여준다.
-  const expanded = spec.expanded || spec.active;
+  const head = el('div', { className: 'sidebar-head' }, [`workspace ~ (${dash.loaded ? projects.length : '…'})`]);
 
-  // expandableNavItem()과 동일하게 본문 클릭=navigate / 화살표 클릭=onToggle로
-  // 분리한다(P1-1) — 이전에는 헤더 전체가 onToggle만 호출해 "설정"·"카탈로그"
-  // 라벨을 클릭해도 화면 전환이 안 됐다.
-  const header = clickable(
-    el('div', { className: `sidebar-nav-item sidebar-nav-group-header${spec.active ? ' active' : ''}` }, [
-      el('span', { className: 'sidebar-nav-group-label' }, [spec.label]),
-      expandChevron(expanded, spec.onToggle),
-    ]),
-    spec.onNavigate
-  );
-
-  const children: HTMLElement[] = [header];
-  if (expanded) {
-    children.push(subList(spec.subItems, null, () => {}));
+  let body: HTMLElement;
+  if (dash.error) {
+    body = el('div', { className: 'sidebar-empty' }, [`⚠ ${dash.error}`]);
+  } else if (!dash.loaded) {
+    body = el('div', { className: 'sidebar-empty' }, ['불러오는 중…']);
+  } else if (projects.length === 0) {
+    body = el('div', { className: 'sidebar-empty' }, ['워크스페이스가 없습니다']);
+  } else {
+    body = el('div', {}, projects.map((p) => wsRow(p, route)));
   }
 
-  return el('div', { className: 'sidebar-nav-group' }, children);
+  const foot = clickable(el('div', { className: 'sidebar-foot' }, ['워크스페이스 경로 관리']), openWorkspacesManager);
+
+  return el('aside', { className: 'sidebar' }, [head, body, foot]);
+}
+
+// ---------------- 상태줄 ----------------
+function seg(children: readonly (Node | string)[], className = 'seg'): HTMLElement {
+  return el('span', { className }, children);
+}
+
+function sep(): HTMLElement {
+  return el('span', { className: 'sep' }, ['│']);
+}
+
+export function renderStatusline(route: Route): HTMLElement {
+  ensureAppVersionLoaded();
+  ensureClockTimer();
+
+  const segments: HTMLElement[] = [];
+
+  if (state.dashboard.loaded) {
+    segments.push(seg([el('span', { className: 'dot' }, []), `${state.dashboard.projects.length} workspaces`]));
+  }
+
+  if (state.sessions.loaded) {
+    const running = state.sessions.items.filter((s) => asBoolean(s.running)).length;
+    const idle = state.sessions.items.length - running;
+    segments.push(seg(['session: ', el('span', { className: 'accent' }, [`${running} running`]), `, ${idle} idle`]));
+  }
+
+  const claude = state.devTools.items.find((t) => t.id === 'claude');
+  const node = state.devTools.items.find((t) => t.id === 'node');
+  if (claude?.version || node?.version) {
+    const parts = [claude?.version ? `claude ${claude.version}` : null, node?.version ? `node ${node.version}` : null].filter(Boolean);
+    segments.push(seg([parts.join(' · ')]));
+  }
+
+  if (route.kind === 'projects-detail') {
+    const proj = state.dashboard.projects.find((p) => p.path === route.path);
+    if (proj) segments.push(seg([proj.name]));
+  }
+
+  // pnpm/gh 등 개별 CLI 업데이트 가용 여부는 로그인 시점에 일괄 조회할 방법이
+  // 없다(devToolsApi.ts DevToolStatus에 "최신 버전" 필드 없음, IA §5) — 가짜
+  // 배지 대신 탭 이동만 하는 정적 링크로 대체한다.
+  segments.push(clickable(seg(['개발 도구 확인 →']), () => navigate('#/settings/devtools')));
+
+  const rightSegments: HTMLElement[] = [];
+  const version = getAppVersion();
+  if (version) rightSegments.push(seg([`v${version}`]));
+
+  // 자동 감지된 업데이트 배지 — 클릭 시 그 자리에서 설치+재시작(§8-④, 업데이트
+  // 세그먼트만 클릭 가능). 클래스명 sidebar-update-item은 구 sidebar.ts
+  // 시절 이름을 그대로 유지한다 — ui-harness(updateCheck.mjs)가 이 클래스로
+  // count()/textContent를 조회하므로 이동만 하고 이름은 바꾸지 않는다.
+  if (state.update.available) {
+    const installing = state.update.installing;
+    rightSegments.push(
+      clickable(
+        seg([installing ? '업데이트 적용 중…' : `업데이트 적용${state.update.version ? ` (v${state.update.version})` : ''}`], 'seg statusline-update sidebar-update-item'),
+        () => {
+          if (!installing) void applyUpdateFromButton();
+        }
+      )
+    );
+  }
+
+  // 수동 "새 버전 확인" 버튼 — 구 sidebar.ts renderVersionRow()와 동일한
+  // 동작(연타 방지·"확인 중…" 표시)을 그대로 옮긴다. 클래스명도 유지한다
+  // (ui-harness updateCheck.mjs가 getByRole('button', name:'새 버전 확인') +
+  // .sidebar-version-check-btn 셀렉터로 8개 시나리오를 검증한다).
+  if (version) {
+    const checking = state.update.checking;
+    const checkBtn = el(
+      'button',
+      {
+        className: 'sidebar-version-check-btn',
+        onClick: () => {
+          if (!checking) void checkForUpdateFromButton();
+        },
+        disabled: checking || state.update.installing,
+      },
+      [checking ? '확인 중…' : '새 버전 확인']
+    );
+    checkBtn.type = 'button';
+    rightSegments.push(checkBtn);
+  }
+
+  clockEl = el('span', { className: 'clock' }, [formatClock(new Date())]);
+  rightSegments.push(clockEl);
+
+  const withSeparators: HTMLElement[] = [];
+  segments.forEach((s, i) => {
+    if (i > 0) withSeparators.push(sep());
+    withSeparators.push(s);
+  });
+  const rightWithSeparators: HTMLElement[] = [];
+  rightSegments.forEach((s, i) => {
+    if (i > 0) rightWithSeparators.push(sep());
+    rightWithSeparators.push(s);
+  });
+
+  return el('div', { className: 'statusline' }, [...withSeparators, el('div', { className: 'statusline-fill' }, []), ...rightWithSeparators]);
 }

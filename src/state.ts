@@ -86,12 +86,13 @@ export interface AppState {
     previewLoading: boolean;
     previewError: string | null;
   };
+  // Terminus 셸(sidebar.ts) 전용 순수 UI 상태 — 구 아코디언 펼침 플래그
+  // (settingsExpanded 등)는 새 셸에서 사이드바가 워크스페이스 목록 전용으로
+  // 바뀌며(설정/카탈로그 하위탭은 본문 보조탭으로 이동) 더 이상 쓰이지 않아
+  // 제거했다. accountMenuOpen만 새로 남는다 — 탭스트립 계정 칩 드롭다운의
+  // 열림 여부.
   sidebar: {
-    settingsExpanded: boolean;
-    projectsExpanded: boolean;
-    sessionsExpanded: boolean;
-    catalogExpanded: boolean;
-    appLinksExpanded: boolean;
+    accountMenuOpen: boolean;
   };
   // 목업이 아니라 실제 ~/.claude/sessions/*.json을 읽어온 값이 들어간다. live는
   // 파일시스템 워처 이벤트 구독이 실제로 성공했을 때만 true — 브라우저 폴백
@@ -405,7 +406,7 @@ function createInitialState(): AppState {
     previewLoading: false,
     previewError: null,
   },
-  sidebar: { settingsExpanded: false, projectsExpanded: false, sessionsExpanded: false, catalogExpanded: false, appLinksExpanded: false },
+  sidebar: { accountMenuOpen: false },
   sessions: { items: [], loading: false, error: null, loaded: false, live: false },
   sessionChat: {
     sessionId: null,

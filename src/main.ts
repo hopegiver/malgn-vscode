@@ -38,7 +38,7 @@
 import { el, captureActiveFocusForRerender, flushPendingFieldFocus, showToast } from './dom';
 import { state, onStateChange, notifyChange, applyAuthenticatedIdentity } from './state';
 import { parseRoute } from './route';
-import { renderSidebar } from './sidebar';
+import { renderTabstrip, renderSidebar, renderStatusline } from './sidebar';
 import { renderLoginView } from './views/login';
 import { renderHomeView, loadClaudeAuthStatus } from './views/home';
 import { renderProjectsListView, renderProjectsDetailView, loadProjects, loadProjectTree, leaveProjectsListView } from './views/projects';
@@ -143,8 +143,11 @@ function renderApp(): void {
   // 기존 전체 페이지 스크롤(`.content` 단독)을 그대로 쓴다.
   const contentClassName = route.kind === 'sessions-detail' || route.kind === 'sessions-draft' ? 'content chat-route' : 'content';
   const main = el('main', { className: contentClassName }, [content]);
-  root.appendChild(renderSidebar(route));
-  root.appendChild(main);
+  // Terminus 셸: 탭스트립(상단) → shell-body{사이드바+본문}(가운데) → 상태줄
+  // (하단)을 세로로 쌓는다(#app이 flex-direction:column, styles.css 참고).
+  root.appendChild(renderTabstrip(route));
+  root.appendChild(el('div', { className: 'shell-body' }, [renderSidebar(route), main]));
+  root.appendChild(renderStatusline(route));
   // 앱 안 claude 로그인 — 라우트와 무관하게 state.claudeAuthLogin(modalOpen/
   // active/error) 하나만으로 앱 셸(#app) 최상위에 한 번만 그린다. 이전엔
   // 전역 고정 패널(position:fixed)이었지만, v0.2.13 후속 작업(요구사항 2)에서
