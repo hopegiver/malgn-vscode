@@ -136,6 +136,16 @@ export async function checkClaudeAuthStatus(): Promise<ClaudeAuthStatus> {
   return invoke<ClaudeAuthStatus>('check_claude_auth_status');
 }
 
+// 이 앱 자체 계정(Google 로그인, sidebar.ts의 사이드바 "로그아웃")과 무관하다 —
+// 이 함수는 claude CLI 자신의 Anthropic 계정 로그인만 끊는다
+// (`claude auth logout` 위임 실행, claude_auth.rs logout_claude_auth). 완료
+// 판정은 종료코드가 아니라 백엔드가 다시 물은 `claude auth status --json`
+// 결과다 — 그 재확인 자체가 실패하면(확인 불가) 이 호출도 그대로 reject되고,
+// 호출부는 이를 "로그아웃 성공"으로 단정하지 않는다.
+export async function logoutClaudeAuth(): Promise<ClaudeAuthStatus> {
+  return invoke<ClaudeAuthStatus>('logout_claude_auth');
+}
+
 /** 즉시 반환한다(spawn 확인까지만) — 실제 진행 상황은
  * onClaudeAuthLoginUrl/onClaudeAuthLoginFinished 이벤트로 온다. */
 export async function startClaudeAuthLogin(): Promise<void> {

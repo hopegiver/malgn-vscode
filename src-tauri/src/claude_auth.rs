@@ -275,27 +275,89 @@ pub fn check_claude_auth_status() -> Result<ClaudeAuthStatus, String> {
     parse_claude_auth_status(&output.stdout)
 }
 
-/// 로그인 직후(`run_login` 종료 시점)에만 쓰는 재시도 래퍼 — 일반 조회(대시보드
-/// 위젯이 `check_claude_auth_status`를 직접 부르는 경로)에는 걸지 않는다.
-/// 그 경로는 사용자가 "다시 확인하기"로 언제든 직접 재시도할 수 있어 앱이
-/// 대신 기다려줄 이유가 없다. 반면 여기서는 자식 프로세스(`claude auth
-/// login`)가 막 종료된 직후라 "확인 불가"가 타이밍 레이스일 가능성을 배제할
-/// 수 없다(미확정 — 이 머신에서 실제로 재현·확정하지 못했다). 이 조회는
-/// 읽기 전용이라 재시도해도 부작용이 없으므로, 최대 3회까지 짧게(400ms
-/// 간격) 다시 물어 "확인 불가"를 "실패"로 성급히 단정하지 않는다.
-fn check_claude_auth_status_after_login() -> Result<ClaudeAuthStatus, String> {
+/// 인증 상태를 바꾸는 자식 프로세스(`claude auth login` 또는 `claude auth
+/// logout`)가 막 종료된 직후에만 쓰는 재시도 래퍼 — 일반 조회(대시보드 위젯이
+/// `check_claude_auth_status`를 직접 부르는 경로)에는 걸지 않는다. 그 경로는
+/// 사용자가 "다시 확인하기"로 언제든 직접 재시도할 수 있어 앱이 대신
+/// 기다려줄 이유가 없다. 반면 여기서는 자식 프로세스가 막 종료된 직후라
+/// "확인 불가"가 타이밍 레이스일 가능성을 배제할 수 없다(로그인 경로는
+/// 미확정 — 이 머신에서 실제로 재현·확정하지 못했다). 이 조회는 읽기
+/// 전용이라 재시도해도 부작용이 없으므로, 최대 3회까지 짧게(400ms 간격)
+/// 다시 물어 "확인 불가"를 "실패"로 성급히 단정하지 않는다.
+fn check_claude_auth_status_after_auth_mutation() -> Result<ClaudeAuthStatus, String> {
+    retry_status_check(check_claude_auth_status)
+}
+
+/// 위 함수의 재시도 루프 자체를 `check_claude_auth_status`(실제 프로세스 spawn)
+/// 없이 단위 테스트할 수 있도록 조회 함수를 주입받는 형태로 뽑았다 — 로그인·
+/// 로그아웃 두 경로가 모두 `check_claude_auth_status_after_auth_mutation`을
+/// 통해 이 함수를 거치므로, 여기서 "확인 불가를 Ok로 둔갑시키지 않는다"를
+/// 고정하면 두 경로 모두에 적용된다.
+fn retry_status_check(check: impl Fn() -> Result<ClaudeAuthStatus, String>) -> Result<ClaudeAuthStatus, String> {
     let attempts = 3;
     let mut last_err = String::new();
     for attempt in 0..attempts {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(400));
         }
-        match check_claude_auth_status() {
+        match check() {
             Ok(status) => return Ok(status),
             Err(e) => last_err = e,
         }
     }
     Err(last_err)
+}
+
+// ==================== claude auth logout ====================
+//
+// 대시보드 위젯의 "로그아웃" 버튼용. `claude auth logout`은 Ink 렌더 + 그
+// 종료를 기다리는 커맨드다(작업 지시서 인용 — `a.render(... "Successfully
+// logged out from your Anthropic account.")` 후 `await a.wait`). 이 파일
+// 상단 v0.2.11 사고("Ink 기반 CLI를 TTY 없이 spawn했더니 영원히 대기")와
+// 조건이 겹쳐 보였으므로, 구현 전에 격리된 `CLAUDE_CONFIG_DIR`에서 실제로
+// 실측했다(이 머신의 실제 로그인 세션은 절대 건드리지 않았다):
+//
+//   CLAUDE_CONFIG_DIR=<임시 빈 디렉터리> claude auth logout < /dev/null
+//
+// 결과: 두 번 모두 stdin 입력이나 강제 종료 없이 0.4~0.7초 안에 스스로
+// 종료했다(exit code 0, stdout "Successfully logged out from your Anthropic
+// account."). 격리 디렉터리는 애초에 로그인돼 있지 않아 "로그아웃할 게
+// 없음" 경로였는데도 멈추지 않았다 — `run_login`처럼 stdin을 피워 두거나
+// 자체 워치독으로 강제 종료할 필요가 없다는 뜻이다. 그래도 CLI 버전이
+// 바뀌면 이 경로가 다시 대기할 가능성을 완전히 배제할 수 없으므로,
+// `check_claude_auth_status`가 이미 쓰는
+// `run_process_with_timeout_cancellable`의 15초 상한(같은 stdin=null 조건)을
+// 그대로 물려 쓴다 — 별도 자식 stdin 배관·워치독 스레드는 만들지 않는다.
+#[tauri::command]
+pub fn logout_claude_auth() -> Result<ClaudeAuthStatus, String> {
+    let claude_path = resolve_claude()?;
+    let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let args = ["auth".to_string(), "logout".to_string()];
+    // check_claude_auth_status와 동일한 근거로 CWD를 명시적으로 고정한다.
+    let cwd = crate::global_cwd::default_global_cwd();
+    let output = crate::dev_tools::run_process_with_timeout_cancellable(
+        &claude_path,
+        &args,
+        &path_env,
+        &[],
+        Duration::from_secs(15),
+        None,
+        None,
+        cwd.as_deref(),
+    );
+    if let Some(err) = output.spawn_error {
+        return Err(err);
+    }
+    if output.timed_out {
+        return Err("claude auth logout 처리가 시간 초과되었습니다.".to_string());
+    }
+    // 종료코드를 완료 신호로 추측하지 않는다(이 파일 상단 경계 ①과 동일한
+    // 원칙) — `claude auth logout`의 종료코드가 0이어도 실제로 로그아웃됐는지는
+    // `claude auth status --json`을 다시 물어야만 안다. 이 재조회가 실패
+    // (Err)하면 "로그아웃됨"으로 단정하지 않고 그 Err를 그대로 호출자에게
+    // 전파한다 — 프론트(views/home.ts)는 이 Err를 받으면 배지를 "로그아웃됨"
+    // 으로 바꾸지 않고 기존 상태를 유지한 채 에러만 보여준다.
+    check_claude_auth_status_after_auth_mutation()
 }
 
 // ==================== 앱 안 로그인 시작 ====================
@@ -543,9 +605,9 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
 
     // 종료코드를 완료 신호로 추측하지 않는다(이 파일 상단 경계 ①) — 대신
     // `claude auth status --json`을 다시 물어 실제 로그인 여부를 확인한다.
-    // `check_claude_auth_status_after_login`(재시도 래퍼)을 쓴다 — 일반
+    // `check_claude_auth_status_after_auth_mutation`(재시도 래퍼)을 쓴다 — 일반
     // `check_claude_auth_status()`가 아니다.
-    match check_claude_auth_status_after_login() {
+    match check_claude_auth_status_after_auth_mutation() {
         Ok(status) if status.logged_in => {
             emit_login_finished(&app, true, false, None, Some(status));
         }
@@ -670,6 +732,39 @@ mod tests {
         let json = r#"{"authMethod": "claude.ai"}"#;
         let result = parse_claude_auth_status(json);
         assert!(result.is_err(), "loggedIn 필드가 없으면 확인 불가(Err)여야 합니다");
+    }
+
+    // ==================== retry_status_check(로그인·로그아웃 공용 재확인 루프) ====================
+    // "확인 불가를 로그아웃됨/로그인됨으로 단정하지 않는다"는 이 라운드
+    // (logout_claude_auth 추가) 작업 지시의 핵심 요구사항이다. 실제 프로세스를
+    // spawn하지 않고 조회 함수를 직접 주입해 그 불변식만 고정한다.
+    #[test]
+    fn retry_status_check_propagates_err_when_always_indeterminate() {
+        let calls = std::cell::Cell::new(0);
+        let result = retry_status_check(|| {
+            calls.set(calls.get() + 1);
+            Err("claude auth status 응답을 해석하지 못했습니다".to_string())
+        });
+        assert!(
+            result.is_err(),
+            "재확인 조회가 계속 실패(확인 불가)하면 로그아웃/로그인 됨으로 단정하지 말고 Err를 반환해야 합니다"
+        );
+        assert_eq!(calls.get(), 3, "최대 3회까지 재시도해야 합니다");
+    }
+
+    #[test]
+    fn retry_status_check_returns_ok_as_soon_as_check_succeeds() {
+        let calls = std::cell::Cell::new(0);
+        let result = retry_status_check(|| {
+            calls.set(calls.get() + 1);
+            Ok(ClaudeAuthStatus {
+                logged_in: false,
+                ..Default::default()
+            })
+        });
+        assert!(result.is_ok(), "조회가 성공하면(설령 loggedIn=false라도) 그 결과를 그대로 Ok로 반환해야 합니다");
+        assert_eq!(calls.get(), 1, "첫 시도에 성공하면 재시도하지 않아야 합니다");
+        assert_eq!(result.unwrap().logged_in, false);
     }
 
     #[test]

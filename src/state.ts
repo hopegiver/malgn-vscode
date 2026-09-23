@@ -187,6 +187,10 @@ export interface AppState {
     loading: boolean;
     error: string | null;
     loaded: boolean;
+    /** "Anthropic 계정 로그아웃" 버튼(views/home.ts) 왕복 중 이중 클릭
+     * 방지용. sidebar.ts 사이드바 로그아웃(이 앱 자체 Google 계정)과는 완전히
+     * 별개 상태다. */
+    loggingOut: boolean;
   };
   // 사용량 통계의 "일별 사용량" — 실제 ~/.claude/projects/**/*.jsonl 집계(최근
   // 30일). 로그인 직후 한 번 미리 불러오고(main.ts), 이후 "사용량 통계" 메뉴
@@ -426,7 +430,7 @@ function createInitialState(): AppState {
     codeInput: '',
     submitting: false,
   },
-  claudeAuth: { status: null, loading: false, error: null, loaded: false },
+  claudeAuth: { status: null, loading: false, error: null, loaded: false, loggingOut: false },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
   autonomousTasks: { items: [], loading: false, error: null, loaded: false },

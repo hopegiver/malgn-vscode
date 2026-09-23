@@ -130,7 +130,8 @@ pub fn run() {
             claude_auth::check_claude_auth_status,
             claude_auth::start_claude_auth_login,
             claude_auth::cancel_claude_auth_login,
-            claude_auth::submit_claude_auth_login_code
+            claude_auth::submit_claude_auth_login_code,
+            claude_auth::logout_claude_auth
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

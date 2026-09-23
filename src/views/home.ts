@@ -2,7 +2,7 @@
 // 보여준다. 위젯 클릭 시 해당 상세 화면으로 이동한다. 프로젝트·세션·개발환경·
 // 카탈로그·사용량 통계·자율업무 위젯은 전부 실제 로컬 데이터를 쓴다(main.ts가
 // 로그인 직후 한 번씩 미리 불러온다).
-import { el, clickable, showToast } from '../dom';
+import { el, clickable, showToast, confirmDialog } from '../dom';
 import { state, notifyChange } from '../state';
 import { navigate } from '../route';
 import { computeTodayTokens, formatTokenCount, loadDailyUsage } from './usage';
@@ -13,7 +13,7 @@ import { loadDevTools } from './devTools';
 import { loadAutonomousTasks } from './autonomousTasks';
 import { loadMcp } from './settings';
 import { ensureAppVersionLoaded, getAppVersion } from '../sidebar';
-import { checkClaudeAuthStatus, openClaudeLoginTerminal } from '../sessionsApi';
+import { checkClaudeAuthStatus, openClaudeLoginTerminal, logoutClaudeAuth } from '../sessionsApi';
 
 const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
 
@@ -194,10 +194,25 @@ function claudeAuthWidget(): HTMLElement {
 
   if (confirmedLoggedIn) {
     const email = auth.status?.email;
+    // 라벨을 "Anthropic 계정 로그아웃"으로 명시한다 — 사이드바 좌하단의
+    // "로그아웃"(이 앱 자체 Google 계정, sidebar.ts)과 같은 화면에 함께 떠
+    // 있으므로 "로그아웃"만 쓰면 둘 다 같은 문구가 돼 어느 버튼이 무엇을
+    // 끊는지 알 수 없다(작업 지시). 실측: 사이드바 로그아웃은 모든 화면에
+    // 함께 렌더되는 `span[role=button]`이라, 여기서도 e2e 테스트를 작성할
+    // 때는 page.getByRole 전역 조회가 아니라 이 위젯(.home-widget) 스코프로
+    // 좁혀야 한다(settingsMcp.mjs의 `hubRow.getByRole(...)` 선례와 동일한
+    // 이유 — 부분일치로 사이드바 요소를 잘못 집는 회귀를 피한다).
     return el('div', { className: 'home-widget' }, [
       title,
       el('span', { className: 'badge badge-active' }, ['로그인됨']),
       el('div', { className: 'home-widget-desc' }, [email ?? '인증된 상태입니다.']),
+      el('div', { className: 'home-widget-btn-row' }, [
+        el(
+          'button',
+          { className: 'btn', disabled: auth.loggingOut, onClick: () => void handleClaudeAuthLogout() },
+          [auth.loggingOut ? '로그아웃 중…' : 'Anthropic 계정 로그아웃']
+        ),
+      ]),
     ]);
   }
 
@@ -238,6 +253,60 @@ async function handleOpenClaudeLoginTerminalFromHome(): Promise<void> {
     showToast(result.message);
   } catch (err) {
     showToast(`터미널을 여는 데 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// claude CLI 자신의 Anthropic 계정 로그인을 끊는다(`claude auth logout` 위임
+// 실행, sessionsApi.ts logoutClaudeAuth → claude_auth.rs logout_claude_auth).
+// sidebar.ts의 앱 자체 로그아웃(resetStateForLogout)과 완전히 무관 — 이
+// 핸들러는 state.claudeAuth 슬라이스만 건드린다.
+//
+// 확인 단계를 둔 이유: 로그아웃하면 이 위젯의 "앱에서 로그인" 버튼으로 다시
+// 브라우저 왕복을 거쳐야 한다 — 45명 중 대부분이 CLI에 익숙하지 않아 실수로
+// 누르면 자기가 무엇을 끊었는지 모른 채 작업이 막힐 수 있다. 이 프로젝트가
+// 이미 삭제류 동작(MCP 서버 삭제, 자율업무 삭제 등)에 confirmDialog를 쓰는
+// 것과 동일한 기준으로, "다시 사용하려면 재로그인이 필요하다"는 되돌리기
+// 비용이 있는 동작이라 판단해 여기도 confirmDialog를 건다.
+async function handleClaudeAuthLogout(): Promise<void> {
+  if (state.claudeAuth.loggingOut) return; // 이중 클릭 방지
+
+  // confirmLabel을 굳이 "로그아웃 확인"으로 구체화한다 — 이 모달이 열려 있는
+  // 동안에도 사이드바의 정확히 "로그아웃"인 span[role=button]은 화면에 함께
+  // 남아 있다(사이드바는 모든 화면에 렌더). 두 버튼 텍스트가 같으면
+  // getByRole 부분일치 테스트가 어느 쪽을 눌렀는지 구분하지 못하는 회귀
+  // 조건을 그대로 재현하게 된다(작업 지시 경고) — 라벨 자체를 다르게 두면
+  // 스코프 없는 조회로도 모호함이 줄어든다.
+  const proceed = await confirmDialog(
+    'claude CLI의 Anthropic 계정 로그인을 해제합니다. 다시 사용하려면 브라우저로 재로그인해야 합니다. 계속할까요?',
+    { title: 'Anthropic 계정 로그아웃', confirmLabel: '로그아웃 확인', danger: true }
+  );
+  if (!proceed) return;
+
+  state.claudeAuth.loggingOut = true;
+  notifyChange();
+  try {
+    // 완료 판정은 종료코드가 아니라 백엔드가 재조회한 `claude auth status
+    // --json` 결과다(claude_auth.rs logout_claude_auth) — 그 결과를 그대로
+    // state.claudeAuth.status에 반영하면 배지가 "로그인됨"/"로그인 필요"
+    // 판정 로직(auth.status?.loggedIn)을 그대로 재사용해 즉시 갱신된다.
+    const status = await logoutClaudeAuth();
+    state.claudeAuth.status = status;
+    state.claudeAuth.loaded = true;
+    state.claudeAuth.error = null;
+    showToast(
+      status.loggedIn
+        ? '로그아웃이 완료되지 않았습니다. 잠시 후 다시 시도해주세요.'
+        : 'Anthropic 계정에서 로그아웃했습니다.'
+    );
+  } catch (err) {
+    // 재확인 자체가 실패(확인 불가)한 경우 — "로그아웃됨"으로 단정하지 않는다
+    // (claude_auth.rs 상단 경계와 동일 원칙). 기존 status는 그대로 두고
+    // 에러만 알린다 — 배지가 실제로 확인되지 않은 상태를 "로그인 필요"처럼
+    // 보여주면 안 된다.
+    showToast(`로그아웃 상태를 확인하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.claudeAuth.loggingOut = false;
+    notifyChange();
   }
 }
 

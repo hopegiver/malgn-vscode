@@ -55,6 +55,170 @@ export function scenarios(base) {
         if (loginBtn > 0) {
           bugs.push({ severity: 'Major', symptom: '이미 로그인된 상태인데도 "터미널 열기" 로그인 버튼이 노출됨(불필요한 액션 노출)', file: 'src/views/home.ts:claudeAuthWidget' });
         }
+
+        // ---- 로그아웃 버튼: 위젯 안에 있고, 라벨이 사이드바의 앱 자체
+        // "로그아웃"(sidebar-logout span)과 다르다. 사이드바 요소는 모든
+        // 화면에 함께 렌더되므로 페이지 전역 getByRole('로그아웃')로 확인하면
+        // 두 요소가 동시에 걸려 어느 쪽인지 구분되지 않는다 — 그래서 위젯
+        // 스코프(widget.getByRole)로만 조회한다(작업 지시 경고와 동일한 함정
+        // 회피).
+        const logoutBtn = widget.getByRole('button', { name: 'Anthropic 계정 로그아웃' });
+        if ((await logoutBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '로그인된 상태인데 claude CLI 로그아웃 버튼이 없음', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        // 사이드바 앱 자체 로그아웃과 정확히 같은 텍스트("로그아웃")를 쓰는
+        // 버튼이 없어야 한다 — 있으면 두 로그아웃이 라벨로 구분되지 않는다.
+        const sameLabelAsSidebar = widget.getByRole('button', { name: '로그아웃', exact: true });
+        if ((await sameLabelAsSidebar.count()) > 0) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: '위젯의 claude CLI 로그아웃 버튼이 사이드바 앱 로그아웃과 정확히 같은 라벨("로그아웃")을 씀 — 둘을 구분할 수 없음',
+            file: 'src/views/home.ts:claudeAuthWidget',
+          });
+        }
+      },
+    },
+    // ⑦ claude CLI 로그아웃 — 확인 다이얼로그를 취소하면 아무 일도 일어나지
+    // 않는다(logout_claude_auth 미호출, 배지도 그대로).
+    {
+      id: 'logout-cancelled-does-not-log-out',
+      fixtures: {
+        ...base,
+        check_claude_auth_status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        logout_claude_auth: { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null },
+      },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        const logoutBtn = widget.getByRole('button', { name: 'Anthropic 계정 로그아웃' });
+        if ((await logoutBtn.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '로그인된 상태인데 claude CLI 로그아웃 버튼이 없음', file: 'src/views/home.ts:claudeAuthWidget' });
+          return;
+        }
+        await logoutBtn.click();
+        await page.waitForTimeout(150);
+        const overlay = page.locator('.modal-overlay');
+        if ((await overlay.count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: 'claude CLI 로그아웃 버튼을 눌러도 확인 다이얼로그가 뜨지 않음', file: 'src/views/home.ts:handleClaudeAuthLogout' });
+          return;
+        }
+        await shot('01-logout-confirm-dialog');
+        await overlay.getByRole('button', { name: '취소' }).click();
+        await page.waitForTimeout(150);
+        const invoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'logout_claude_auth'));
+        if (invoked) {
+          bugs.push({ severity: 'Critical', symptom: '확인 다이얼로그에서 "취소"를 눌렀는데도 logout_claude_auth가 호출됨', file: 'src/views/home.ts:handleClaudeAuthLogout' });
+        }
+        const stillLoggedIn = await widget.textContent().catch(() => null);
+        if (!stillLoggedIn || !stillLoggedIn.includes('로그인됨')) {
+          bugs.push({ severity: 'Critical', symptom: `로그아웃을 취소했는데 배지가 바뀜(실제: ${stillLoggedIn})`, file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+      },
+    },
+    // ⑧ claude CLI 로그아웃 확정 — 완료 후 배지가 즉시 "로그인 필요"로
+    // 바뀐다(로그인 완료 시 즉시 갱신과 대칭인 요구사항). check_claude_auth_status
+    // 픽스처는 의도적으로 낡은 "로그인됨" 값으로 고정해둔다 — logout_claude_auth의
+    // 응답만으로(재조회 없이) 갱신되는지가 이 시나리오의 핵심(⑥과 동일한 검증
+    // 기법).
+    {
+      id: 'logout-confirmed-updates-dashboard-badge-immediately',
+      fixtures: {
+        ...base,
+        check_claude_auth_status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        logout_claude_auth: { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null },
+      },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        await widget.getByRole('button', { name: 'Anthropic 계정 로그아웃' }).click();
+        await page.waitForTimeout(150);
+        const overlay = page.locator('.modal-overlay');
+        await overlay.getByRole('button', { name: '로그아웃 확인' }).click();
+        await page.waitForTimeout(250);
+        await shot('01-logout-confirmed-badge-updated');
+
+        const invoked = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'logout_claude_auth'));
+        if (!invoked) {
+          bugs.push({ severity: 'Critical', symptom: '확인 다이얼로그에서 확정해도 logout_claude_auth가 호출되지 않음', file: 'src/views/home.ts:handleClaudeAuthLogout' });
+        }
+        const text = await widget.textContent().catch(() => null);
+        if (!text || text.includes('로그인됨')) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: `로그아웃 완료 직후에도 배지가 "로그인 필요"로 바뀌지 않음(실제: ${text}) — check_claude_auth_status 재조회에만 의존하는 회귀`,
+            file: 'src/views/home.ts:handleClaudeAuthLogout',
+          });
+        }
+        const loginBtnBack = widget.getByRole('button', { name: '앱에서 로그인' });
+        if ((await loginBtnBack.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '로그아웃 완료 후 "앱에서 로그인" 버튼이 다시 나타나지 않음', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+      },
+    },
+    // ⑨ 로그아웃 재확인(status --json) 자체가 실패하면(확인 불가) "로그아웃
+    // 됨"으로 단정하지 않는다 — claude_auth.rs 상단 경계와 동일한 원칙을
+    // 프론트에서도 지킨다. 배지는 로그인됨 그대로 남아야 한다.
+    {
+      id: 'logout-verify-failure-does-not-assume-logged-out',
+      fixtures: {
+        ...base,
+        check_claude_auth_status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        logout_claude_auth: { __throw: '테스트 강제 에러: claude auth status --json 재확인 실패' },
+      },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        await widget.getByRole('button', { name: 'Anthropic 계정 로그아웃' }).click();
+        await page.waitForTimeout(150);
+        const overlay = page.locator('.modal-overlay');
+        await overlay.getByRole('button', { name: '로그아웃 확인' }).click();
+        await page.waitForTimeout(250);
+        await shot('01-logout-verify-failed-badge-unchanged');
+
+        const text = await widget.textContent().catch(() => null);
+        if (!text || !text.includes('로그인됨')) {
+          bugs.push({
+            severity: 'Critical',
+            symptom: `재확인 조회 실패(확인 불가)인데도 배지가 "로그인됨"에서 바뀜(실제: ${text}) — 확인 불가를 로그아웃됨으로 단정함`,
+            file: 'src/views/home.ts:handleClaudeAuthLogout',
+          });
+        }
+        const toastCount = await page.locator('.toast', { hasText: '확인하지 못했습니다' }).count();
+        if (toastCount === 0) {
+          bugs.push({ severity: 'Minor', symptom: '재확인 실패 토스트가 뜨지 않음', file: 'src/views/home.ts:handleClaudeAuthLogout' });
+        }
+      },
+    },
+    // ⑩ 이중 클릭 방지 — 왕복 중 버튼이 비활성화되고 라벨이 "로그아웃 중…"로
+    // 바뀐다. __delay로 응답을 늦춰 그 사이 창을 관찰한다.
+    {
+      id: 'logout-in-flight-disables-button',
+      fixtures: {
+        ...base,
+        check_claude_auth_status: { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' },
+        logout_claude_auth: { __delay: 600, value: { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null } },
+      },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        await widget.getByRole('button', { name: 'Anthropic 계정 로그아웃' }).click();
+        await page.waitForTimeout(150);
+        const overlay = page.locator('.modal-overlay');
+        await overlay.getByRole('button', { name: '로그아웃 확인' }).click();
+        await page.waitForTimeout(150);
+        await shot('01-logout-in-flight');
+
+        const inFlightBtn = widget.getByRole('button', { name: '로그아웃 중…' });
+        if ((await inFlightBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '로그아웃 요청 왕복 중 버튼 라벨이 "로그아웃 중…"으로 바뀌지 않음', file: 'src/views/home.ts:claudeAuthWidget' });
+        } else if (!(await inFlightBtn.isDisabled())) {
+          bugs.push({ severity: 'Critical', symptom: '로그아웃 요청이 진행 중인데도 버튼이 비활성화되지 않음(이중 클릭 가능)', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        await page.waitForTimeout(700);
+        const calls = await page.evaluate(() => (window.__invokeLog ?? []).filter((e) => e.cmd === 'logout_claude_auth'));
+        if (calls.length !== 1) {
+          bugs.push({ severity: 'Critical', symptom: `logout_claude_auth 호출 횟수가 1이 아님(실제: ${calls.length}) — 이중 클릭 방지 실패`, file: 'src/views/home.ts:handleClaudeAuthLogout' });
+        }
       },
     },
     // ③ 로그인 안 됨 — loggedIn: false(명시적 응답은 받았지만 부정).
