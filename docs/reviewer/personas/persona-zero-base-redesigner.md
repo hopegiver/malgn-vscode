@@ -92,3 +92,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 2차(증분 — 직전 4인 전원 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r2.md`
   — 재사용 사유: 발산형 게이트. 이번에는 PM이 R1(업데이트 배지 탭스트립 이전)을 채택하지 않고 상태줄 우선순위 분리를 택한 결정의 타당성을 판정한다. 6대 요소 무수정.
   — 이번 라운드 집중: R1 미채택 결정 판정, 폰트 방침이 로그·명령 박스까지 산세리프로 바꾸는 부작용(규칙 자체의 경계).
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 3차(축소 — 4인 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r3.md`
+  — 재사용 사유: 발산형 게이트. 접두 문자열 비교로 Rust 문구를 쪼개는 방식 자체(문자열 계약)가 맞는 구조인가를 본다. 6대 요소 무수정.
+  — 이번 라운드 집중: 프론트-백엔드 간 한국어 문장 접두 계약, R5 후속.

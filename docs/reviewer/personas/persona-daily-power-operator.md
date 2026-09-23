@@ -62,3 +62,6 @@
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 2차(증분 — 직전 4인 전원 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r2.md`
   — 재사용 사유: 탭 클릭 흡수(M1-b)·Escape·ARIA(m6)·홈 숫자 모순(m1)·용어(m3) 해소 여부가 매일 쓰는 사람의 동선 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: 키보드로 계정 메뉴를 연 뒤 포커스 위치, 드롭다운 내부 클릭 동작, 용어 잔존 grep.
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 3차(축소 — 4인 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r3.md`
+  — 재사용 사유: m10(키보드 포커스 관리) 수정이 매일 쓰는 키보드 경로를 바꿨다. 6대 요소 무수정.
+  — 이번 라운드 집중: 메뉴 열기 직후 포커스가 위험 항목(로그아웃)에 놓이는 것의 부작용 — 키 반복·마우스로 연 뒤 Enter/Space.

@@ -81,3 +81,6 @@
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 2차(증분 — 직전 4인 전원 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r2.md`
   — 재사용 사유: M3(폰트 방침) 해소 여부와 m4·m5 문서·문구 드리프트 정정 여부를 조항 단위로 다시 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: `font-numeric` 잔존 셀렉터 전수 + 9탭 DOM에서 "한글 텍스트 노드의 부모가 JetBrains Mono인가" 실측 스캔, IA §2-3·§4-6 갱신 대조.
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 3차(축소 — 4인 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r3.md`
+  — 재사용 사유: M3 잔존 2곳의 해소와 design-system §1 표 개정(데이터 종류 기준)이 구현과 조항 단위로 맞는지 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: 접두 분리 폴백 경로(`devTools.ts:255`·`:582-584`) 도달 가능성, `command_display`/`copyable_command` 원천의 한글 유입 가능성, 수정 전 트리 대비 스캔 흐름 실패 재현.

@@ -76,3 +76,6 @@
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 2차(증분 — 직전 4인 전원 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r2.md`
   — 재사용 사유: M1(조작 이후 리스너 잔존)·M2(900px 상태줄) 수정이 새로 들인 `setTimeout(…,0)` 지연 등록과 좌우 그룹 분리가 이 페르소나의 두 축에 정확히 걸린다. 6대 요소 무수정.
   — 이번 라운드 집중: window 리스너 정확 집합 추적(열기/닫기 20회·동일 태스크 열기→Esc→열기 경합·키보드 로그아웃), 업데이트 배지+긴 프로젝트명+900px 최악 조합 좌표 실측, 수정 전 트리(ce8251f)에서 회귀 흐름 실패 재현.
+- 2026-09-24 / target_id `ui-terminus-overhaul` / 3차(축소 — 4인 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r3.md`
+  — 재사용 사유: n3(상태줄 mask 페이드)와 m10(메뉴 조작 이후 포커스 상태) 수정이 두 축에 걸린다. 6대 요소 무수정.
+  — 이번 라운드 집중: 1440px(넘침 없음)과 900px 최악 조합에서 mask 동작, 키보드 열기→Esc→탭 Enter 뒤 포커스·메뉴 상태.
