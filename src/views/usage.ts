@@ -82,7 +82,7 @@ export async function loadDailyUsage(): Promise<void> {
   }
 }
 
-function dailyUsageTotal(d: DailyUsage): number {
+export function dailyUsageTotal(d: DailyUsage): number {
   return d.inputTokens + d.outputTokens + d.cacheCreationTokens + d.cacheReadTokens;
 }
 
