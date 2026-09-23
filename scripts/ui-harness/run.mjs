@@ -11,8 +11,8 @@
 // 인자 없이 실행하면 모든 흐름 x 모든 시나리오를 순차 실행한다. 첫 인자로
 // 흐름 id(autonomousTasks/sessions/catalog/settingsMcp/appLinks/
 // formBackgroundRerender/majorReview20260921/updateCheck/home/
-// tabstripOverflow)를, 두 번째 인자로 시나리오 id(golden/empty/large/error/
-// slow 등)를 주면 그 조합만 돈다.
+// tabstripOverflow/qaShellNavCoverage/accountMenuAndStatusline)를, 두 번째
+// 인자로 시나리오 id(golden/empty/large/error/slow 등)를 주면 그 조합만 돈다.
 import { chromium } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -32,6 +32,7 @@ import * as updateCheck from './flows/updateCheck.mjs';
 import * as home from './flows/home.mjs';
 import * as tabstripOverflow from './flows/tabstripOverflow.mjs';
 import * as qaShellNavCoverage from './flows/qaShellNavCoverage.mjs';
+import * as accountMenuAndStatusline from './flows/accountMenuAndStatusline.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_URL = process.env.UI_HARNESS_BASE_URL || 'http://localhost:1420';
@@ -40,7 +41,7 @@ const SHOTS_DIR =
   '/private/tmp/claude-501/-Users-hopegiver-workspace-malgn-vscode/9682b635-b50a-4778-8416-a05a9cb13e8a/scratchpad/shots';
 const REPORT_PATH = path.join(__dirname, 'last-run-report.json');
 
-const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow, qaShellNavCoverage];
+const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow, qaShellNavCoverage, accountMenuAndStatusline];
 
 const [, , flowFilter, scenarioFilter] = process.argv;
 

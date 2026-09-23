@@ -80,19 +80,50 @@ interface TabSpec {
   readonly onClick: () => void;
 }
 
+// m6(접근성) — clickable()의 기본 role="button" 대신 탭 시맨틱스(role="tab" +
+// aria-selected)를 직접 얹는다. 활성 탭은 지금까지 시각 표시(.active 클래스)뿐
+// 스크린리더에는 전달되지 않았다.
 function tabEl(spec: TabSpec): HTMLElement {
-  return clickable(el('div', { className: `tab${spec.active ? ' active' : ''}` }, [el('span', { className: 'dot' }, []), spec.label]), spec.onClick);
+  const node = clickable(el('div', { className: `tab${spec.active ? ' active' : ''}` }, [el('span', { className: 'dot' }, []), spec.label]), spec.onClick);
+  node.setAttribute('role', 'tab');
+  node.setAttribute('aria-selected', String(spec.active));
+  return node;
 }
 
-// 계정 칩 드롭다운 — 열려 있는 동안 바깥 클릭으로 닫히도록 window에 리스너를
-// 1개만 붙인다(appLinks.ts/projects.ts의 ESC 핸들러 등록/해제 관례와 동일 원칙).
+// 계정 칩 드롭다운 — 열려 있는 동안 바깥 클릭/Escape로 닫히도록 window에
+// 리스너를 붙인다(appLinks.ts/projects.ts의 ESC 핸들러 등록/해제 관례와 동일
+// 원칙). M1 회귀 수정(2026-09-24): 원래 'mousedown'에 걸었던 바깥 클릭
+// 리스너를 'click'으로 옮겼다 — mousedown 시점에 이미 재렌더(notifyChange)가
+// 일어나면, 사용자가 실제로 누르고 있던 DOM 노드(예: 다른 탭)가 mouseup 전에
+// 교체돼 그 요소의 click 이벤트 자체가 발화하지 않았다(=탭 1회 클릭이
+// 흡수됨, M1-b). 'click' 리스너는 버블 단계에서 항상 타깃 자신의 클릭
+// 핸들러(예: 탭의 navigate)보다 나중에 window에 도달하므로, 먼저 원래
+// 클릭의 동작이 실행된 뒤에 메뉴가 닫힌다.
+//
+// setTimeout(…, 0)으로 등록을 한 틱 미루는 이유(실측으로 발견한 2차 회귀) —
+// 계정 칩 자체의 클릭 핸들러(openAccountMenu 호출)도 'click' 이벤트 버블
+// 경로 위에 있다. window.addEventListener를 동시(synchronous)에 부르면, DOM
+// 이벤트 경로는 dispatch 시작 시점에 고정되지만 각 노드의 리스너 목록은
+// 해당 노드 차례가 될 때 다시 읽힌다 — 그래서 이 클릭이 아직 window까지
+// 버블링하는 도중에 "방금 추가한" 이 리스너가 같은 이벤트에 대해 즉시
+// 실행돼버린다. 게다가 openAccountMenu()의 notifyChange()가 동기 재렌더로
+// 칩 DOM 노드 자체를 교체하므로, 그 시점의 e.target(구 노드)은 새 칩과
+// contains() 관계가 아니어서 "바깥 클릭"으로 오판해 메뉴를 열자마자 다시
+// 닫아버렸다(실측: 클릭해도 드롭다운이 전혀 안 뜸). setTimeout으로 다음
+// 매크로태스크까지 등록을 미루면 그 시점엔 이번 클릭의 dispatch가 이미
+// 끝나 있어 이 문제가 사라진다.
 let accountMenuOutsideClickHandler: ((e: MouseEvent) => void) | null = null;
+let accountMenuEscHandler: ((e: KeyboardEvent) => void) | null = null;
 
 function closeAccountMenu(): void {
   state.sidebar.accountMenuOpen = false;
   if (accountMenuOutsideClickHandler) {
-    window.removeEventListener('mousedown', accountMenuOutsideClickHandler);
+    window.removeEventListener('click', accountMenuOutsideClickHandler);
     accountMenuOutsideClickHandler = null;
+  }
+  if (accountMenuEscHandler) {
+    window.removeEventListener('keydown', accountMenuEscHandler);
+    accountMenuEscHandler = null;
   }
   notifyChange();
 }
@@ -100,11 +131,22 @@ function closeAccountMenu(): void {
 function openAccountMenu(): void {
   state.sidebar.accountMenuOpen = true;
   if (!accountMenuOutsideClickHandler) {
-    accountMenuOutsideClickHandler = (e: MouseEvent) => {
+    const handler = (e: MouseEvent): void => {
       const target = e.target as Node | null;
       if (target && !document.querySelector('.tabstrip-account')?.contains(target)) closeAccountMenu();
     };
-    window.addEventListener('mousedown', accountMenuOutsideClickHandler);
+    accountMenuOutsideClickHandler = handler;
+    setTimeout(() => {
+      // 그 사이 메뉴가 이미 닫혔으면(예: Escape) 등록하지 않는다.
+      if (accountMenuOutsideClickHandler === handler) window.addEventListener('click', handler);
+    }, 0);
+  }
+  if (!accountMenuEscHandler) {
+    // m6 — 계정 메뉴 Escape 지원(appLinks.ts/projects.ts와 동일한 등록/해제 관례).
+    accountMenuEscHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeAccountMenu();
+    };
+    window.addEventListener('keydown', accountMenuEscHandler);
   }
   notifyChange();
 }
@@ -124,6 +166,10 @@ function renderAccountChip(): HTMLElement {
 
   if (!state.sidebar.accountMenuOpen) return chip;
 
+  // M1 수정 — logoutItem은 chip(clickable) 안쪽 자식이다. stopPropagation 없이는
+  // 이 클릭이 chip까지 버블링해, chip의 토글 핸들러가 "방금 closeAccountMenu()가
+  // false로 바꿔둔 accountMenuOpen"을 보고 openAccountMenu()를 다시 호출한다 —
+  // 그 결과 로그인 화면에 바깥 클릭 리스너가 재등록된 채로 남는다(재현 절 참고).
   const logoutItem = clickable(
     el('div', { className: 'tabstrip-account-dropdown-item danger sidebar-logout sidebar-logout-btn' }, ['로그아웃']),
     () => {
@@ -131,7 +177,8 @@ function renderAccountChip(): HTMLElement {
       resetStateForLogout();
       window.location.hash = '';
       notifyChange();
-    }
+    },
+    { stopPropagation: true }
   );
 
   const dropdown = el('div', { className: 'tabstrip-account-dropdown' }, [
@@ -180,10 +227,9 @@ export function renderTabstrip(route: Route): HTMLElement {
   // 탭 목록만 별도 스크롤 컨테이너(.tabstrip-tabs)로 감싼다 — 계정 드롭다운
   // 잘림 회귀 수정(styles.css .tabstrip 주석 참고). 계정 칩은 그 컨테이너
   // 밖의 형제라 overflow-y:hidden의 영향을 받지 않는다.
-  return el('div', { className: 'tabstrip' }, [
-    el('div', { className: 'tabstrip-tabs' }, tabs.map(tabEl)),
-    renderAccountChip(),
-  ]);
+  const tabsContainer = el('div', { className: 'tabstrip-tabs' }, tabs.map(tabEl));
+  tabsContainer.setAttribute('role', 'tablist'); // m6 — tabEl의 role="tab"과 짝을 이루는 컨테이너 역할.
+  return el('div', { className: 'tabstrip' }, [tabsContainer, renderAccountChip()]);
 }
 
 // =====================================================================
@@ -419,11 +465,11 @@ function taskGroupOf(t: AutonomousTask): 0 | 1 | 2 {
 
 function taskNarrowRow(t: AutonomousTask, route: Route): HTMLElement {
   const current = route.kind === 'tasks-detail' && route.taskId === t.id;
-  // running=accent(cyan)는 home.ts taskQueueRow(.blist-badge.run)와 동일한
-  // 색 의미(진행중=accent)를 사이드바에서도 그대로 따른다 — 세션의
-  // "running=green"과는 다른 기존 관례이지만, 각 탭이 원래 쓰던 의미를
-  // 유지하는 편이 새 규칙을 만드는 것보다 일관적이다.
-  const dotClass: DotClass = t.running ? 'accent' : 'idle';
+  // m1 수정(리뷰 2026-09-24) — running=green(good)으로 통일한다. 이전엔
+  // home.ts taskQueueRow(.blist-badge.run)의 accent(cyan)를 그대로 따랐는데,
+  // home.ts 쪽이 세션의 "running=green" 관례와 달라 화면마다 상태색이 달랐다
+  // (리뷰 m1). home.ts도 이번에 green으로 맞췄으므로 여기도 같이 맞춘다.
+  const dotClass: DotClass = t.running ? 'good' : 'idle';
   return narrowRow({
     dotClass,
     name: t.name,
@@ -448,7 +494,9 @@ function renderTasksSidebar(route: Route): HTMLElement {
   } else if (!tasks.loaded) {
     body.push(sidebarEmpty('불러오는 중…'));
   } else if (tasks.items.length === 0) {
-    body.push(sidebarEmpty('대기 중인 자율 작업이 없습니다'));
+    // m5 수정 — 이 사이드바는 "큐=전체 작업"(비활성도 흐리게 포함)이라 0건은
+    // "대기 중인 게 없다"가 아니라 "등록된 게 없다"는 뜻이다.
+    body.push(sidebarEmpty('등록된 자율 작업이 없습니다'));
   } else {
     const sorted = [...tasks.items].sort((a, b) => taskGroupOf(a) - taskGroupOf(b));
     body.push(groupHead('작업 큐'));
@@ -557,6 +605,14 @@ export function renderStatusline(route: Route): HTMLElement {
   ensureAppVersionLoaded();
   ensureClockTimer();
 
+  // M2 수정(2026-09-24) — 왼쪽 세그먼트는 우선순위가 있다: 뒤에 나올수록(배열
+  // 끝에 가까울수록) 창이 좁아질 때 먼저 잘려나간다(.statusline-left가 아래서
+  // overflow:hidden + min-width:0로 실제 내용보다 좁게 줄어들 수 있고, flex
+  // 레이아웃은 넘치는 뒤쪽 자식부터 컨테이너 밖으로 밀어내기 때문). 그래서 낮은
+  // 우선순위(버전 정보·개발 도구 확인 링크)를 배열 맨 끝 두 자리에 둔다 —
+  // 업데이트 적용/새 버전 확인/시계는 아예 별도의 `.statusline-right`(flex:none)
+  // 로 분리해 이 축소 대상에서 제외한다(900px 최소 창에서도 항상 완전히 보여야
+  // 한다는 PM 결정, 리뷰 M2).
   const segments: HTMLElement[] = [];
 
   if (state.dashboard.loaded) {
@@ -569,16 +625,18 @@ export function renderStatusline(route: Route): HTMLElement {
     segments.push(seg(['session: ', el('span', { className: 'accent' }, [`${running} running`]), `, ${idle} idle`]));
   }
 
+  if (route.kind === 'projects-detail') {
+    const proj = state.dashboard.projects.find((p) => p.path === route.path);
+    if (proj) segments.push(seg([proj.name]));
+  }
+
+  // 아래 두 세그먼트(claude/node 버전, "개발 도구 확인 →")는 의도적으로 배열
+  // 맨 끝에 둔다 — 위 주석 참고, 가장 먼저 잘려나가야 하는 낮은 우선순위다.
   const claude = state.devTools.items.find((t) => t.id === 'claude');
   const node = state.devTools.items.find((t) => t.id === 'node');
   if (claude?.version || node?.version) {
     const parts = [claude?.version ? `claude ${claude.version}` : null, node?.version ? `node ${node.version}` : null].filter(Boolean);
     segments.push(seg([parts.join(' · ')]));
-  }
-
-  if (route.kind === 'projects-detail') {
-    const proj = state.dashboard.projects.find((p) => p.path === route.path);
-    if (proj) segments.push(seg([proj.name]));
   }
 
   // pnpm/gh 등 개별 CLI 업데이트 가용 여부는 로그인 시점에 일괄 조회할 방법이
@@ -641,5 +699,14 @@ export function renderStatusline(route: Route): HTMLElement {
     rightWithSeparators.push(s);
   });
 
-  return el('div', { className: 'statusline' }, [...withSeparators, el('div', { className: 'statusline-fill' }, []), ...rightWithSeparators]);
+  // M2 수정 — 왼쪽 그룹(.statusline-left)만 min-width:0 + overflow:hidden으로
+  // 실제로 줄어들 수 있게 하고, 오른쪽 그룹(.statusline-right)은 flex:none +
+  // margin-left:auto로 항상 자기 내용 전체 폭을 요구한다. 창이 좁아지면 왼쪽
+  // 그룹의 폭 자체가 줄어들며(내부 세그먼트가 배열 순서대로, 즉 낮은 우선순위부터
+  // 컨테이너 오른쪽 밖으로 밀려 시각적으로 잘린다) 오른쪽 그룹은 항상 자기 폭을
+  // 온전히 확보한다 — 옛 `.statusline-fill` 스페이서는 제거(같은 폭 배분 역할을
+  // margin-left:auto가 대신한다).
+  const left = el('div', { className: 'statusline-left' }, withSeparators);
+  const right = el('div', { className: 'statusline-right' }, rightWithSeparators);
+  return el('div', { className: 'statusline' }, [left, right]);
 }

@@ -30,7 +30,7 @@ export const TAB_META: readonly { readonly key: SettingsTab; readonly label: str
   { key: 'marketplace', label: '마켓플레이스 설정' },
   { key: 'mcp', label: 'MCP 관리' },
   { key: 'applinks', label: '앱링크 설정' },
-  { key: 'devtools', label: '개발 환경' },
+  { key: 'devtools', label: '개발 도구' },
 ];
 
 // design-system.md §3.1 — 박스 공용 헤더(home.ts boxHead()와 동일 패턴, 이 화면은
@@ -379,10 +379,10 @@ function renderGithubPanel(): HTMLElement {
       boxHead('GitHub 계정'),
       el('div', { className: 'box-body integration-panel' }, [
         el('div', { className: 'settings-form-hint' }, [
-          'GitHub CLI(gh)가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
+          'GitHub CLI(gh)가 설치되어 있지 않습니다 → 개발 도구 화면에서 설치 상태를 확인하세요.',
         ]),
         el('div', { className: 'settings-form-actions' }, [
-          el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
+          el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 도구 화면으로 이동']),
           refreshBtn,
         ]),
       ]),
@@ -495,10 +495,10 @@ function renderCloudflarePanel(): HTMLElement {
       boxHead('Cloudflare 계정'),
       el('div', { className: 'box-body integration-panel' }, [
         el('div', { className: 'settings-form-hint' }, [
-          'Wrangler CLI가 설치되어 있지 않습니다 → 개발 환경 화면에서 설치 상태를 확인하세요.',
+          'Wrangler CLI가 설치되어 있지 않습니다 → 개발 도구 화면에서 설치 상태를 확인하세요.',
         ]),
         el('div', { className: 'settings-form-actions' }, [
-          el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 환경 화면으로 이동']),
+          el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['개발 도구 화면으로 이동']),
           refreshBtn,
         ]),
       ]),

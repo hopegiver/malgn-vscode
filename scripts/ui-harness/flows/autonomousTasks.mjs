@@ -1,4 +1,4 @@
-// 흐름 (1) 자율업무 상세화면/이력목록 — src/views/autonomousTasks.ts (1649줄, 가장 크고 위험)
+// 흐름 (1) 자율 작업 상세화면/이력목록 — src/views/autonomousTasks.ts (1649줄, 가장 크고 위험)
 import { historyEntries, manyAutonomyGroups } from '../lib/fixtures.mjs';
 
 export const flowId = 'autonomousTasks';
@@ -23,36 +23,36 @@ export function scenarios(base) {
         const rows = page.locator('.task-row');
         const rowCount = await rows.count();
         if (rowCount === 0) {
-          bugs.push({ severity: 'Major', symptom: 'golden 시나리오인데 자율업무 목록이 비어 있음(실제 .claude/autonomy.json에 활성 task가 없을 수 있음 — 데이터 이슈, 코드 버그 아닐 수 있음)', file: 'scripts/ui-harness/flows/autonomousTasks.mjs', repro: '#/tasks 진입' });
+          bugs.push({ severity: 'Major', symptom: 'golden 시나리오인데 자율 작업 목록이 비어 있음(실제 .claude/autonomy.json에 활성 task가 없을 수 있음 — 데이터 이슈, 코드 버그 아닐 수 있음)', file: 'scripts/ui-harness/flows/autonomousTasks.mjs', repro: '#/tasks 진입' });
           return;
         }
 
         // ---- 추가 모달: ESC로 닫기 ----
         const before = await getListenerCount('keydown');
-        await page.getByRole('button', { name: '+ 새 자율업무' }).click();
+        await page.getByRole('button', { name: '+ 새 자율 작업' }).click();
         await page.waitForSelector('.modal-overlay');
         await shot('02-add-modal');
         await page.keyboard.press('Escape');
         await page.waitForSelector('.modal-overlay', { state: 'detached' }).catch(() => {
-          bugs.push({ severity: 'Critical', symptom: 'ESC를 눌러도 "새 자율업무" 추가 모달이 닫히지 않음', file: 'src/views/autonomousTasks.ts', repro: '#/tasks → "+ 새 자율업무" 클릭 → ESC' });
+          bugs.push({ severity: 'Critical', symptom: 'ESC를 눌러도 "새 자율 작업" 추가 모달이 닫히지 않음', file: 'src/views/autonomousTasks.ts', repro: '#/tasks → "+ 새 자율 작업" 클릭 → ESC' });
         });
         const afterEsc = await getListenerCount('keydown');
         if (afterEsc > before) {
-          bugs.push({ severity: 'Minor', symptom: `ESC로 모달을 닫은 뒤에도 keydown 리스너가 정리되지 않음(before=${before}, after=${afterEsc})`, file: 'src/views/autonomousTasks.ts:detachTaskFormModalEscHandler', repro: '+ 새 자율업무 열기 → ESC → 리스너 카운트 확인' });
+          bugs.push({ severity: 'Minor', symptom: `ESC로 모달을 닫은 뒤에도 keydown 리스너가 정리되지 않음(before=${before}, after=${afterEsc})`, file: 'src/views/autonomousTasks.ts:detachTaskFormModalEscHandler', repro: '+ 새 자율 작업 열기 → ESC → 리스너 카운트 확인' });
         }
 
         // ---- 배경 클릭으로 닫기 ----
-        await page.getByRole('button', { name: '+ 새 자율업무' }).click();
+        await page.getByRole('button', { name: '+ 새 자율 작업' }).click();
         await page.waitForSelector('.modal-overlay');
         await page.locator('.modal-overlay').click({ position: { x: 5, y: 5 } });
         const stillOpen = await page.locator('.modal-overlay').count();
         if (stillOpen > 0) {
-          bugs.push({ severity: 'Major', symptom: '배경(오버레이) 클릭으로 "새 자율업무" 모달이 닫히지 않음', file: 'src/dom.ts:createModalOverlay', repro: '+ 새 자율업무 열기 → 모달 바깥 클릭' });
+          bugs.push({ severity: 'Major', symptom: '배경(오버레이) 클릭으로 "새 자율 작업" 모달이 닫히지 않음', file: 'src/dom.ts:createModalOverlay', repro: '+ 새 자율 작업 열기 → 모달 바깥 클릭' });
           await page.keyboard.press('Escape'); // 다음 단계 진행을 위해 강제로 닫는다
         }
 
         // ---- 모달 연 채로 라우트 이탈 → leaveAutonomousTasksListView가 리스너 정리하는지 ----
-        await page.getByRole('button', { name: '+ 새 자율업무' }).click();
+        await page.getByRole('button', { name: '+ 새 자율 작업' }).click();
         await page.waitForSelector('.modal-overlay');
         const beforeLeave = await getListenerCount('keydown');
         await page.evaluate(() => {
@@ -65,7 +65,7 @@ export function scenarios(base) {
             severity: 'Major',
             symptom: `모달을 연 채로 다른 라우트로 이동해도 keydown 리스너가 정리되지 않음(누수) — before=${beforeLeave}, after=${afterLeave}`,
             file: 'src/main.ts:leaveAutonomousTasksListView 호출부 / src/views/autonomousTasks.ts:leaveAutonomousTasksListView',
-            repro: '#/tasks → "+ 새 자율업무" 열기(닫지 않음) → location.hash를 "#/"로 변경 → keydown 리스너 카운트 확인',
+            repro: '#/tasks → "+ 새 자율 작업" 열기(닫지 않음) → location.hash를 "#/"로 변경 → keydown 리스너 카운트 확인',
           });
         }
         await page.evaluate(() => {
@@ -103,7 +103,7 @@ export function scenarios(base) {
         await shot('01-empty');
         const emptyTitle = await page.locator('.state-block-title').first().textContent().catch(() => null);
         if (!emptyTitle || !emptyTitle.includes('없습니다')) {
-          bugs.push({ severity: 'Major', symptom: `빈 목록인데 "등록된 자율업무가 없습니다" 안내가 보이지 않음(실제: ${emptyTitle})`, file: 'src/views/autonomousTasks.ts:renderAutonomousTasksListView', repro: 'autonomy_list=[] 로 #/tasks 진입' });
+          bugs.push({ severity: 'Major', symptom: `빈 목록인데 "등록된 자율 작업이 없습니다" 안내가 보이지 않음(실제: ${emptyTitle})`, file: 'src/views/autonomousTasks.ts:renderAutonomousTasksListView', repro: 'autonomy_list=[] 로 #/tasks 진입' });
         }
       },
     },
@@ -111,7 +111,7 @@ export function scenarios(base) {
       // hub 이슈 01m2wm499xmh3046rnvx4cyn8n 재발 방지 — 프로젝트 폴더가 실제로
       // 있는데도 CLAUDE.md가 없어(또는 workspace 루트를 읽지 못해) 조용히
       // 제외되던 문제. list_workspace_projects가 0건 + skipped 몇 건을 반환할
-      // 때, "새 자율업무" 폼의 빈 프로젝트 드롭다운에 스캔 조건 설명과 제외
+      // 때, "새 자율 작업" 폼의 빈 프로젝트 드롭다운에 스캔 조건 설명과 제외
       // 사유 요약이 실제로 뜨는지 못박는다(기존 'empty' 시나리오의 판정 로직은
       // 건드리지 않고 이 시나리오만 추가한다).
       id: 'empty-workspace-scan',
@@ -127,7 +127,7 @@ export function scenarios(base) {
         },
       },
       async run(page, { shot, bugs }) {
-        await page.getByRole('button', { name: '+ 새 자율업무' }).click();
+        await page.getByRole('button', { name: '+ 새 자율 작업' }).click();
         await page.waitForSelector('.modal-overlay');
         await shot('01-empty-project-select-hint');
 
@@ -142,7 +142,7 @@ export function scenarios(base) {
             severity: 'Major',
             symptom: `프로젝트 0건인데 스캔 조건 안내(CLAUDE.md 언급)가 보이지 않음(실제: ${combined || '(없음)'})`,
             file: 'src/views/autonomousTasks.ts:renderTaskForm',
-            repro: 'list_workspace_projects=[]로 #/tasks → "+ 새 자율업무" 클릭',
+            repro: 'list_workspace_projects=[]로 #/tasks → "+ 새 자율 작업" 클릭',
           });
         }
         if (!hints.some((h) => h.includes('CLAUDE.md가 없어 제외'))) {
@@ -181,7 +181,7 @@ export function scenarios(base) {
       id: 'single',
       fixtures: {
         ...base,
-        autonomy_list: [{ projectPath: '/Users/hopegiver/workspace/single-project', projectName: 'single-project', tasks: [{ id: 'single-task', name: '단일 자율업무', prompt: '단일 케이스 프롬프트', subagent: null, interval: 60, scheduleMode: 'interval', atTime: null, days: [], hourlyMinute: null, cron: null, enabled: true, timeout: null }] }],
+        autonomy_list: [{ projectPath: '/Users/hopegiver/workspace/single-project', projectName: 'single-project', tasks: [{ id: 'single-task', name: '단일 자율 작업', prompt: '단일 케이스 프롬프트', subagent: null, interval: 60, scheduleMode: 'interval', atTime: null, days: [], hourlyMinute: null, cron: null, enabled: true, timeout: null }] }],
         autonomy_runtime_status: [runtimeFor('/Users/hopegiver/workspace/single-project', 'single-task', { nextRunAt: new Date(Date.now() + 3600_000).toISOString() })],
         autonomy_task_history: [],
       },
@@ -266,7 +266,7 @@ export function scenarios(base) {
       })(),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
-        const banner = page.locator('.alert', { hasText: '예약된 자율업무가 실행되지 않고 있습니다' });
+        const banner = page.locator('.alert', { hasText: '예약된 자율 작업이 실행되지 않고 있습니다' });
         if ((await banner.count()) === 0) {
           bugs.push({
             severity: 'Critical',
@@ -287,7 +287,7 @@ export function scenarios(base) {
       })(),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
-        const banner = page.locator('.alert', { hasText: '예약된 자율업무가 실행되지 않고 있습니다' });
+        const banner = page.locator('.alert', { hasText: '예약된 자율 작업이 실행되지 않고 있습니다' });
         if ((await banner.count()) > 0) {
           bugs.push({
             severity: 'Major',
@@ -304,7 +304,7 @@ export function scenarios(base) {
       fixtures: { ...base, autonomy_scheduler_health: { lastTickAt: null, now: new Date().toISOString(), tickSeconds: 10 } },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
-        const banner = page.locator('.alert', { hasText: '예약된 자율업무가 실행되지 않고 있습니다' });
+        const banner = page.locator('.alert', { hasText: '예약된 자율 작업이 실행되지 않고 있습니다' });
         if ((await banner.count()) > 0) {
           bugs.push({
             severity: 'Major',
@@ -337,13 +337,13 @@ export function scenarios(base) {
           });
         }
 
-        // ---- 화면 안(자율업무 라우트): 폴링이 실제로 도는지 ----
+        // ---- 화면 안(자율 작업 라우트): 폴링이 실제로 도는지 ----
         await page.waitForTimeout(31000);
         const afterOnRoute = await countCalls();
         if (afterOnRoute <= initialCount) {
           bugs.push({
             severity: 'Major',
-            symptom: `자율업무 화면에 머무는 동안(31초 대기) 스케줄러 heartbeat 폴링이 추가로 호출되지 않음(before=${initialCount}, after=${afterOnRoute})`,
+            symptom: `자율 작업 화면에 머무는 동안(31초 대기) 스케줄러 heartbeat 폴링이 추가로 호출되지 않음(before=${initialCount}, after=${afterOnRoute})`,
             file: 'src/views/autonomousTasks.ts:ensureSchedulerHealthWatcher',
           });
         }
@@ -360,7 +360,7 @@ export function scenarios(base) {
         if (afterOffRoute > beforeOffRoute) {
           bugs.push({
             severity: 'Major',
-            symptom: `자율업무 화면을 벗어난 동안(31초 대기)에도 스케줄러 heartbeat가 계속 폴링됨(A3 가드 미적용, before=${beforeOffRoute}, after=${afterOffRoute})`,
+            symptom: `자율 작업 화면을 벗어난 동안(31초 대기)에도 스케줄러 heartbeat가 계속 폴링됨(A3 가드 미적용, before=${beforeOffRoute}, after=${afterOffRoute})`,
             file: 'src/views/autonomousTasks.ts:checkSchedulerHealth',
           });
         }

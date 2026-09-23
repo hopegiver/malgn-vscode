@@ -3,11 +3,11 @@
 //
 // main.ts:renderApp()은 root.replaceChildren()로 DOM 트리 전체를 파괴하고 새로
 // 만든다 — notifyChange() 호출부가 169곳이라, 폼에 입력하는 도중 사용자 행동과
-// 무관한 배경 이벤트(세션 파일 감시·자율업무 폴링·devtools 경과시간 타이머 등)
+// 무관한 배경 이벤트(세션 파일 감시·자율 작업 폴링·devtools 경과시간 타이머 등)
 // 가 오면 입력 중이던 <input>/<textarea>의 값이 통째로 사라질 수 있었다.
 //
 // 이 흐름은 리뷰가 실측한 재현 폼 5개(OTel URL·마켓플레이스 URL·workspaces
-// 편집·MCP 등록 모달·자율업무 프롬프트) 전부와, 구조적으로 동일한 버그를 가졌던
+// 편집·MCP 등록 모달·자율 작업 프롬프트) 전부와, 구조적으로 동일한 버그를 가졌던
 // 앱링크 추가 폼(보너스, 원래 5개에는 없었지만 같은 패턴이라 함께 고쳤다)을
 // 덮는다. 배경 이벤트는 실제 트리거 중 하나인 "claude-sessions-changed"를
 // emitEvent(bridge.mjs)로 직접 발화해 흉내 낸다 — 어느 라우트에 있든 main.ts의
@@ -155,14 +155,14 @@ export function scenarios(base) {
         void okTarget;
       },
     },
-    // 재현 폼 5/5 — 자율업무 추가/수정 폼의 이름·프롬프트
+    // 재현 폼 5/5 — 자율 작업 추가/수정 폼의 이름·프롬프트
     {
       id: 'autonomous-task-prompt-survives-background-rerender',
       startHash: '#/tasks',
       fixtures: { ...base },
       async run(page, { shot, bugs, emitEvent }) {
         await page.waitForTimeout(300);
-        await page.getByRole('button', { name: '+ 새 자율업무' }).click();
+        await page.getByRole('button', { name: '+ 새 자율 작업' }).click();
         await page.waitForSelector('.modal-overlay');
         const nameInput = page.locator('.task-add-form input.settings-input').first();
         const promptInput = page.locator('.task-form-textarea');
@@ -178,14 +178,14 @@ export function scenarios(base) {
           bugs,
           locator: page.locator('.task-add-form input.settings-input').first(),
           typed: typedName,
-          symptomLabel: '자율업무 이름',
+          symptomLabel: '자율 작업 이름',
           file: 'src/views/autonomousTasks.ts:renderTaskForm',
         });
         await assertPreserved(page, {
           bugs,
           locator: page.locator('.task-form-textarea'),
           typed: typedPrompt,
-          symptomLabel: '자율업무 프롬프트',
+          symptomLabel: '자율 작업 프롬프트',
           file: 'src/views/autonomousTasks.ts:renderTaskForm',
         });
       },

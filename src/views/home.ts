@@ -30,6 +30,14 @@ const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
 const RECENT_SESSIONS_LIMIT = 5;
 const TASK_QUEUE_LIMIT = 5;
 
+// m1 수정(리뷰 2026-09-24) — 통계 타일 "자율 작업 대기열"과 자율 작업 큐 박스가
+// 서로 다른 정의(타일은 대기만, 큐는 실행중+대기)를 써서 같은 화면 안에서 수치가
+// 모순됐다. 두 곳 모두 이 한 정의(실행 중이거나, 켜져 있고 아직 실행 전인 작업)를
+// 공유해 드리프트를 구조적으로 막는다.
+function isQueuedTask(t: AutonomousTask): boolean {
+  return t.running || (t.enabled && !t.running);
+}
+
 export function renderHomeView(): HTMLElement {
   ensureAppVersionLoaded();
 
@@ -97,15 +105,15 @@ function renderStatRow(): HTMLElement {
       ? { text: `캐시 히트율 ${usageTotals.cacheHitRate}%`, tone: 'flat' as const }
       : undefined;
 
-  const waitingTasks = state.autonomousTasks.loaded
-    ? String(state.autonomousTasks.items.filter((t) => t.enabled && !t.running).length)
+  const queuedTasks = state.autonomousTasks.loaded
+    ? String(state.autonomousTasks.items.filter(isQueuedTask).length)
     : '—';
 
   return el('div', { className: 'stat-row' }, [
     statTile('활성 프로젝트', `${activeValue}${totalValue}`),
     statTile('실행 중 세션', runningSessions),
     statTile('오늘 토큰 사용량', todayTokens, cacheHitTrend),
-    statTile('대기 중 자율 작업', waitingTasks),
+    statTile('자율 작업 대기열', queuedTasks),
   ]);
 }
 
@@ -114,8 +122,12 @@ function boxHead(title: string, right: Node | string): HTMLElement {
   return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title]), right]);
 }
 
-// ---------------- 최근 세션 ----------------
-function shortSessionId(id: string): string {
+// m2 수정(리뷰 2026-09-24) — 자율 작업 id(crypto.randomUUID(), 36자)를
+// 그대로 넣으면 좁은 .blist-id 열에서 식별 불가 수준으로 잘린다. 세션 ID와
+// 같은 8자+말줄임 규칙을 공유해, .blist-row--tasks의 minmax(64px, max-content)
+// 열 폭만으로 항상 온전히 보이게 한다(원래 이름 shortSessionId를 범용으로
+// 승격 — 세션/작업 두 곳 모두 같은 "#앞8자…" 표기를 쓴다).
+function shortId(id: string): string {
   return id.length <= 8 ? `#${id}` : `#${id.slice(0, 8)}…`;
 }
 
@@ -138,7 +150,7 @@ function sessionBlistRow(s: ClaudeSessionRecord): HTMLElement {
   const running = asBoolean(s.running);
   const updatedAt = asNumber(s.updatedAt) ?? asNumber(s.startedAt);
   const row = el('div', { className: 'blist-row blist-row--sessions' }, [
-    el('span', { className: 'blist-id' }, [shortSessionId(sessionId)]),
+    el('span', { className: 'blist-id' }, [shortId(sessionId)]),
     el('span', { className: 'blist-accent' }, [projectNameFromCwd(asString(s.cwd))]),
     el('span', { className: 'blist-body' }, [sessionTitle(s)]),
     el('span', { className: `blist-status ${running ? 'status-run' : 'status-done'}` }, [el('span', { className: 'dot' }, []), running ? '실행중' : '완료']),
@@ -174,10 +186,14 @@ function recentSessionsBox(): HTMLElement {
 
 // ---------------- 자율 작업 큐 ----------------
 function taskQueueRow(t: AutonomousTask): HTMLElement {
+  // m1 수정 — 라벨·색을 tasks 목록(.badge-active/"실행 중")·사이드바 메타와
+  // 같은 "실행 중"(green)으로 통일한다(이전엔 "진행중"/accent(cyan)이라
+  // 화면마다 다른 상태 명칭·색을 썼다).
+  // m2 수정 — 전체 UUID 대신 세션과 같은 짧은 표기(shortId)를 쓴다.
   const row = el('div', { className: 'blist-row blist-row--tasks' }, [
-    el('span', { className: 'blist-id' }, [t.id]),
+    el('span', { className: 'blist-id' }, [shortId(t.id)]),
     el('span', { className: 'blist-body' }, [`${t.projectName} · ${t.name}`]),
-    el('span', { className: `blist-badge ${t.running ? 'run' : 'wait'}` }, [t.running ? '진행중' : '대기']),
+    el('span', { className: `blist-badge ${t.running ? 'run' : 'wait'}` }, [t.running ? '실행 중' : '대기']),
   ]);
   return clickable(row, () => navigate(`#/tasks/item/${encodeURIComponent(t.id)}`));
 }
@@ -192,12 +208,16 @@ function taskQueueBox(): HTMLElement {
   } else if (!tasks.loaded) {
     body = loadingBlock();
   } else {
-    const queued = tasks.items.filter((t) => t.running || (t.enabled && !t.running)).slice(0, TASK_QUEUE_LIMIT);
+    // m1 수정 — isQueuedTask()를 통계 타일과 공유해 정의를 통일한다. 헤더
+    // 카운트는 화면에 그려지는(슬라이스된) 개수가 아니라 전체 큐 개수를 써야
+    // 타일 숫자와 항상 같은 값을 가리킨다.
+    const allQueued = tasks.items.filter(isQueuedTask);
+    const queued = allQueued.slice(0, TASK_QUEUE_LIMIT);
     if (queued.length === 0) {
       body = el('div', { className: 'state-block-desc' }, ['대기 중인 자율 작업이 없습니다.']);
     } else {
       body = el('div', { className: 'blist' }, queued.map(taskQueueRow));
-      countLabel = `${queued.length}건 대기 · 전체 보기 →`;
+      countLabel = `${allQueued.length}건 · 전체 보기 →`;
     }
   }
 

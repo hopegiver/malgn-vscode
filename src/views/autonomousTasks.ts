@@ -416,7 +416,7 @@ export async function loadAutonomousTasks(): Promise<void> {
   } catch (err) {
     // 전역 설정(malgn-agent.json)이 손상되면 autonomy_list가 Err를 던진다
     // (fail-closed) — 목록을 비우는 대신 오류 배너로 원인을 보여준다.
-    state.autonomousTasks.error = err instanceof Error ? err.message : '자율업무 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.autonomousTasks.error = err instanceof Error ? err.message : '자율 작업 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
     state.autonomousTasks.loading = false;
     notifyAutonomyChange();
@@ -502,7 +502,7 @@ function renderSchedulerStallBanner(): HTMLElement | null {
   const lastTickLabel = lastTickAt && !Number.isNaN(Date.parse(lastTickAt)) ? formatElapsedSince(Date.parse(lastTickAt)) : '알 수 없음';
   return el('div', { className: 'alert' }, [
     el('span', {}, [
-      `⚠ 예약된 자율업무가 실행되지 않고 있습니다(스케줄러 마지막 응답: ${lastTickLabel}). 맑은에이전트 앱을 완전히 종료했다가 다시 실행해 주세요. 재시작 후에도 계속되면 IT/개발팀에 문의하세요.`,
+      `⚠ 예약된 자율 작업이 실행되지 않고 있습니다(스케줄러 마지막 응답: ${lastTickLabel}). 맑은에이전트 앱을 완전히 종료했다가 다시 실행해 주세요. 재시작 후에도 계속되면 IT/개발팀에 문의하세요.`,
     ]),
   ]);
 }
@@ -719,7 +719,7 @@ function renderConfigEditForm(status: MalgnAgentConfigStatus): HTMLElement {
 function renderConfigEditModal(status: MalgnAgentConfigStatus): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
-      el('h2', { className: 'modal-title' }, ['자율업무 전역 설정']),
+      el('h2', { className: 'modal-title' }, ['자율 작업 전역 설정']),
       el('button', { className: 'modal-close-btn', onClick: closeAutonomyConfigModal }, ['✕']),
     ]),
     el('div', { className: 'modal-body' }, [renderConfigEditForm(status)]),
@@ -818,11 +818,11 @@ async function handleRunNow(task: AutonomousTask): Promise<void> {
 }
 
 async function handleDeleteTask(task: AutonomousTask, afterDelete?: () => void): Promise<void> {
-  if (!(await confirmDialog(`"${task.name}" 자율업무를 삭제할까요? 되돌릴 수 없습니다.`, { danger: true }))) return;
+  if (!(await confirmDialog(`"${task.name}" 자율 작업을 삭제할까요? 되돌릴 수 없습니다.`, { danger: true }))) return;
   try {
     await deleteAutonomyTask(task.projectPath, task.id);
     state.autonomousTasks.items = state.autonomousTasks.items.filter((t) => !(t.projectPath === task.projectPath && t.id === task.id));
-    showToast(`"${task.name}" 자율업무가 삭제되었습니다`);
+    showToast(`"${task.name}" 자율 작업이 삭제되었습니다`);
     afterDelete?.();
   } catch (err) {
     showToast(err instanceof Error ? err.message : '삭제에 실패했습니다');
@@ -853,13 +853,13 @@ function boxHead(title: string): HTMLElement {
 }
 
 export function renderAutonomousTasksListView(): HTMLElement {
-  const addBtn = el('button', { className: 'btn btn-primary', onClick: () => openTaskFormModal(null) }, ['+ 새 자율업무']);
+  const addBtn = el('button', { className: 'btn btn-primary', onClick: () => openTaskFormModal(null) }, ['+ 새 자율 작업']);
   const configEditToggleBtn = renderConfigEditToggleBtn();
 
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
-      el('h1', { className: 'page-title' }, ['자율업무']),
-      el('div', { className: 'page-subtitle' }, [`등록된 자율업무 ${state.autonomousTasks.items.length}개`]),
+      el('h1', { className: 'page-title' }, ['자율 작업']),
+      el('div', { className: 'page-subtitle' }, [`등록된 자율 작업 ${state.autonomousTasks.items.length}개`]),
     ]),
     el('div', { className: 'devtool-header-actions' }, [addBtn, ...(configEditToggleBtn ? [configEditToggleBtn] : [])]),
   ]);
@@ -878,8 +878,8 @@ export function renderAutonomousTasksListView(): HTMLElement {
     listBody = el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.autonomousTasks.error}`]), retry]);
   } else if (state.autonomousTasks.items.length === 0) {
     listBody = el('div', { className: 'state-block' }, [
-      el('div', { className: 'state-block-title' }, ['등록된 자율업무가 없습니다']),
-      el('div', { className: 'state-block-desc' }, ['"+ 새 자율업무"로 프로젝트별 자율업무를 등록하세요.']),
+      el('div', { className: 'state-block-title' }, ['등록된 자율 작업이 없습니다']),
+      el('div', { className: 'state-block-desc' }, ['"+ 새 자율 작업"으로 프로젝트별 자율 작업을 등록하세요.']),
     ]);
   } else {
     listBody = el('div', { className: 'task-list' }, state.autonomousTasks.items.map(renderTaskRow));
@@ -887,7 +887,7 @@ export function renderAutonomousTasksListView(): HTMLElement {
 
   // design-system.md §3.1 .box — devTools.ts와 동일하게 목록 전체를 "┌─" 헤더가
   // 있는 패널 하나로 감싼다(task-row/task-list 등 기존 클래스는 유지).
-  const box = el('div', { className: 'box' }, [boxHead('자율업무 목록'), el('div', { className: 'box-body' }, [listBody])]);
+  const box = el('div', { className: 'box' }, [boxHead('자율 작업 목록'), el('div', { className: 'box-body' }, [listBody])]);
 
   const rootChildren: HTMLElement[] = [header, ...notices, box];
   if (state.malgnAgentConfig.editingAutonomy && state.malgnAgentConfig.status?.ok) {
@@ -958,7 +958,7 @@ function renderTaskRow(task: AutonomousTask): HTMLElement {
 function renderAppMustBeRunningBanner(): HTMLElement {
   return el('div', { className: 'alert' }, [
     el('span', {}, [
-      '자율업무는 맑은에이전트 앱이 실행 중인 동안에만 동작합니다. 앱을 종료한 상태에서는 예약된 시각이 지나도 실행되지 않습니다(OS 스케줄러 연동 없음).',
+      '자율 작업은 맑은에이전트 앱이 실행 중인 동안에만 동작합니다. 앱을 종료한 상태에서는 예약된 시각이 지나도 실행되지 않습니다(OS 스케줄러 연동 없음).',
     ]),
   ]);
 }
@@ -986,7 +986,7 @@ function renderTaskForm(editingTask: AutonomousTask | null, draft: TaskFormDraft
     }
   );
   promptInput.className = 'settings-input task-form-textarea';
-  promptInput.placeholder = '이 자율업무가 실제로 실행될 때 claude에게 전달할 지시문을 구체적으로 적으세요';
+  promptInput.placeholder = '이 자율 작업이 실제로 실행될 때 claude에게 전달할 지시문을 구체적으로 적으세요';
   promptInput.rows = 4;
 
   let projectSelect: HTMLSelectElement | null = null;
@@ -1300,7 +1300,7 @@ function renderTaskForm(editingTask: AutonomousTask | null, draft: TaskFormDraft
     } else {
       startupHint.textContent =
         startupGrace !== null
-          ? `등록 후 약 ${startupGrace}분 뒤 첫 실행됩니다(앱을 새로 시작한 직후에도 동일합니다 — 재시작 즉시 전체 자율업무가 몰려 실행되는 것을 막기 위한 유예 시간입니다).`
+          ? `등록 후 약 ${startupGrace}분 뒤 첫 실행됩니다(앱을 새로 시작한 직후에도 동일합니다 — 재시작 즉시 전체 자율 작업이 몰려 실행되는 것을 막기 위한 유예 시간입니다).`
           : '등록 직후 바로 실행되지 않고, 짧은 유예 시간 뒤에 첫 실행됩니다.';
     }
   }
@@ -1432,14 +1432,14 @@ function renderTaskForm(editingTask: AutonomousTask | null, draft: TaskFormDraft
     void (async () => {
       try {
         await saveAutonomyTask(projectPath, task);
-        showToast(editingTask ? `"${name}" 자율업무를 수정했습니다` : `"${name}" 자율업무가 추가되었습니다`);
+        showToast(editingTask ? `"${name}" 자율 작업을 수정했습니다` : `"${name}" 자율 작업이 추가되었습니다`);
         closeTaskFormModal();
         await loadAutonomousTasks();
       } catch (err) {
         // cron 탭은 백엔드가 돌려준 한국어 에러 메시지를 필드 아래(cronError)에
         // 그대로 노출한다(지시서 필수 요구사항 — 프론트에서 문구를 새로 짓지
         // 않는다). 그 외 탭은 기존과 동일하게 토스트로 보여준다.
-        const message = err instanceof Error ? err.message : '자율업무 저장에 실패했습니다';
+        const message = err instanceof Error ? err.message : '자율 작업 저장에 실패했습니다';
         if (scheduleMode === 'cron') {
           cronError.textContent = message;
         } else {
@@ -1461,7 +1461,7 @@ function renderTaskForm(editingTask: AutonomousTask | null, draft: TaskFormDraft
 function renderTaskFormModal(editingTask: AutonomousTask | null, draft: TaskFormDraft): HTMLElement {
   const modalBox = el('div', { className: 'modal-box' }, [
     el('div', { className: 'modal-header' }, [
-      el('h2', { className: 'modal-title' }, [editingTask ? '자율업무 수정' : '새 자율업무 추가']),
+      el('h2', { className: 'modal-title' }, [editingTask ? '자율 작업 수정' : '새 자율 작업 추가']),
       el('button', { className: 'modal-close-btn', onClick: closeTaskFormModal }, ['✕']),
     ]),
     el('div', { className: 'modal-body' }, [renderTaskForm(editingTask, draft)]),
@@ -1481,7 +1481,7 @@ function boardColumnOf(task: AutonomousTask): BoardColumn {
 
 export function renderAutonomousTaskBoardView(): HTMLElement {
   const header = el('div', { className: 'page-header' }, [
-    el('div', {}, [el('h1', { className: 'page-title' }, ['자율업무']), el('div', { className: 'page-subtitle' }, ['진행상황판'])]),
+    el('div', {}, [el('h1', { className: 'page-title' }, ['자율 작업']), el('div', { className: 'page-subtitle' }, ['진행상황판'])]),
   ]);
 
   const notices: HTMLElement[] = [];
@@ -1852,7 +1852,7 @@ function renderRunHistoryCard(task: AutonomousTask): HTMLElement {
 }
 
 export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
-  const back = el('a', { className: 'back-link', onClick: () => navigate('#/tasks') }, ['← 자율업무']);
+  const back = el('a', { className: 'back-link', onClick: () => navigate('#/tasks') }, ['← 자율 작업']);
   const task = state.autonomousTasks.items.find((t) => t.id === taskId);
 
   if (!task) {
@@ -1863,7 +1863,7 @@ export function renderAutonomousTaskDetailView(taskId: string): HTMLElement {
       const retry = el('button', { className: 'btn', onClick: () => void loadAutonomousTasks() }, ['다시 시도']);
       return el('div', {}, [back, el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.autonomousTasks.error}`]), retry])]);
     }
-    return el('div', {}, [back, el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['자율업무를 찾을 수 없습니다'])])]);
+    return el('div', {}, [back, el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['자율 작업을 찾을 수 없습니다'])])]);
   }
 
   const statusLabel = task.running ? '실행 중' : task.enabled ? '대기 중' : '중지됨';

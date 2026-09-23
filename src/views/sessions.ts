@@ -95,7 +95,7 @@ export function leaveSessionsListView(): void {
 export function renderSessionsListView(): HTMLElement {
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
-      el('h1', { className: 'page-title' }, ['세션목록']),
+      el('h1', { className: 'page-title' }, ['세션']),
       el('div', { className: 'page-subtitle-row' }, [
         el('div', { className: 'page-subtitle' }, ['실행 중·종료된 세션 모두 표시 — 지금 실행 중인 세션만 ● 표시']),
         ...(state.sessions.live ? [liveIndicator()] : []),
@@ -1035,7 +1035,7 @@ function renderChatMetaRow(cwd: string, version: string, kind: string, startedAt
 }
 
 export function renderSessionDetailView(sessionId: string): HTMLElement {
-  const back = el('a', { className: 'back-link', onClick: () => navigate('#/sessions') }, ['← 세션목록']);
+  const back = el('a', { className: 'back-link', onClick: () => navigate('#/sessions') }, ['← 세션']);
   const session = state.sessions.items.find((s) => asString(s.sessionId) === sessionId);
   const chat = state.sessionChat;
   const transcript = chat.sessionId === sessionId ? chat.transcript : null;

@@ -85,7 +85,8 @@
 중복 제거 대상이 없다 — 향후 추가하지 않는다.
 
 ### 2-3. 폭 / 최소창 / 빈 패널
-- 사이드바 폭은 `terminus-design-system.md` §2 그대로: 190px(760px 이하 컨테이너 쿼리에서 150px).
+- 사이드바 폭은 `terminus-design-system.md` §2 그대로: 220px(760px 이하 컨테이너 쿼리에서 175px,
+  배치 D 가독성 조정으로 190/150px에서 상향 — `src/styles.css:108-109`·`:400-402`).
   이번 IA 변경은 폭 자체를 바꾸지 않는다.
 - 900px 최소 창에서도 사이드바는 항상 렌더된다 — 9개 탭 모두 아래 §4에서 사이드바 콘텐츠가 정의돼
   있어(홈 포함) "빈 사이드바"가 발생하는 탭이 없다.
@@ -221,11 +222,15 @@
 | 항목 | 데이터 출처 | 클릭 시 동작 | 활성 판정 |
 |---|---|---|---|
 | 뷰 전환 "목록" / "진행상황판"(정적 nav 행, §3) | — | `navigate('#/tasks')` / `navigate('#/tasks/board')` | `route.kind==='tasks-list'` / `'tasks-board'`(§2-2 이관 — 본문 `autonomousTasks.ts:847-848`의 동일 버튼은 제거) |
-| 작업 큐 행 × N(좁은 폭 목록 행, §3) | `state.autonomousTasks.items.filter(t => t.running \|\| (t.enabled && !t.running))`(`home.ts:195`의 필터 그대로 재사용 — 신규 계산 아님), 표시: `t.projectName`·`t.name`·상태 배지(`home.ts:176-182` `taskQueueRow` 패턴) | `navigate('#/tasks/item/<id>')` | `route.kind==='tasks-detail' && route.taskId===t.id` |
+| 작업 큐 행 × N(좁은 폭 목록 행, §3) | **전체 작업**(PM 확정, §8-③ 대체 — 최초안의 running/waiting
+필터는 채택되지 않았다). `state.autonomousTasks.items`를 `taskGroupOf()`(실행중→활성→비활성)로
+정렬(`sidebar.ts:taskGroupOf/renderTasksSidebar`), 비활성 작업은 `.sidebar-row-dim`으로 흐리게
+표시한다. 표시: `t.projectName`·`t.name`·상태 텍스트("실행 중"/"대기"/"중지됨") | `navigate('#/tasks/item/<id>')` | `route.kind==='tasks-detail' && route.taskId===t.id` |
 
-**로딩/0건/에러**: `autonomousTasks.loading && !loaded` → "불러오는 중…". `loaded && queued.length===0`
-→ "대기 중인 자율 작업이 없습니다"(`home.ts:197` 문구 재사용) — CTA 버튼은 두지 않는다(추가는 본문
-"+ 새 작업"에서, 사이드바-본문 중복 방지). `autonomousTasks.error` → 에러 1행 + 재시도.
+**로딩/0건/에러**: `autonomousTasks.loading && !loaded` → "불러오는 중…". `loaded && items.length===0`
+→ "등록된 자율 작업이 없습니다"(큐가 전체 작업을 보여주므로 0건은 "대기 중인 게 없다"가 아니라
+"등록된 게 없다"는 뜻이다, `sidebar.ts:renderTasksSidebar`) — CTA 버튼은 두지 않는다(추가는 본문
+"+ 새 자율 작업"에서, 사이드바-본문 중복 방지). `autonomousTasks.error` → 에러 1행 + 재시도.
 `tasks-detail`에서는 뷰 전환 두 항목 모두 비활성(목록도 보드도 아닌 제3의 화면), 작업 큐 행 중
 해당 작업만 `.current`.
 

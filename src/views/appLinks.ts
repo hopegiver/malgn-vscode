@@ -274,7 +274,10 @@ function renderAppLinksHeader(): HTMLElement {
   return el('div', { className: 'page-header' }, [
     el('div', {}, [
       el('h1', { className: 'page-title' }, ['앱 링크']),
-      el('div', { className: 'page-subtitle' }, ['사이드바에서 바로 열 수 있는 사내/외부 웹 앱 바로가기']),
+      // m4 수정(리뷰 2026-09-24) — 앱 링크가 전 화면 상시 사이드바에서 이 탭 전용
+      // 사이드바로 좁아졌다(IA §4-8 확정 구조). 문구도 그 새 의미(이 탭 사이드바에서
+      // 바로 열기)에 맞춘다 — 옛 "사이드바에서"는 전 화면 공용 사이드바 시절 문구.
+      el('div', { className: 'page-subtitle' }, ['이 탭 사이드바에서 바로 열 수 있는 사내/외부 웹 앱 바로가기']),
     ]),
   ]);
 }
@@ -314,8 +317,9 @@ export function renderAppLinksPanel(): HTMLElement {
   const disabled = blocked || state.appLinks.saving || atCapacity;
   const addBtn = el('button', { className: 'btn btn-primary btn-sm', disabled, onClick: () => openLinkFormModal(null) }, ['+ 링크 추가']);
   if (atCapacity) addBtn.title = `링크 개수 한도(${status.limits.maxLinks}개)에 도달했습니다. 추가하려면 기존 링크를 먼저 삭제하세요.`;
+  // m4 수정 — "사이드바"가 이 탭 전용 사이드바를 가리킨다는 점을 명확히 한다.
   const countLabel = el('span', { className: 'applink-count-label' }, [
-    `사이드바에 노출할 링크를 켜세요. (${status.links.length} / ${status.limits.maxLinks})`,
+    `이 탭 사이드바에 노출할 링크를 켜세요. (${status.links.length} / ${status.limits.maxLinks})`,
   ]);
   if (atCapacity) countLabel.style.color = 'var(--color-danger)';
 
@@ -326,7 +330,7 @@ export function renderAppLinksPanel(): HTMLElement {
       el('div', { className: 'state-block' }, [
         el('div', { className: 'state-block-title' }, ['아직 등록된 앱링크가 없습니다']),
         el('div', { className: 'state-block-desc' }, [
-          '자주 쓰는 사내 시스템·SaaS 주소를 추가하면 사이드바에서 바로 열 수 있습니다.',
+          '자주 쓰는 사내 시스템·SaaS 주소를 추가하면 이 탭 사이드바에서 바로 열 수 있습니다.',
         ]),
       ])
     );

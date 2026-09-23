@@ -377,7 +377,7 @@ export function renderDevToolsView(): HTMLElement {
 
   const header = el('div', { className: 'page-header' }, [
     el('div', {}, [
-      el('h1', { className: 'page-title' }, ['개발 환경']),
+      el('h1', { className: 'page-title' }, ['개발 도구']),
       el('div', { className: 'page-subtitle' }, ['로컬에 설치된 CLI 도구 — 설치/업데이트도 실제로 실행됩니다']),
     ]),
     el('div', { className: 'devtool-header-actions' }, [

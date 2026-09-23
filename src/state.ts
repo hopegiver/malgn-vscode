@@ -87,10 +87,12 @@ export interface AppState {
     previewError: string | null;
   };
   // Terminus 셸(sidebar.ts) 전용 순수 UI 상태 — 구 아코디언 펼침 플래그
-  // (settingsExpanded 등)는 새 셸에서 사이드바가 워크스페이스 목록 전용으로
-  // 바뀌며(설정/카탈로그 하위탭은 본문 보조탭으로 이동) 더 이상 쓰이지 않아
-  // 제거했다. accountMenuOpen만 새로 남는다 — 탭스트립 계정 칩 드롭다운의
-  // 열림 여부.
+  // (settingsExpanded 등)는 새 셸에서 사이드바가 "선택된 탭의 맥락별 보조
+  // 내비게이션"으로 바뀌며(route.kind별로 완전히 다른 콘텐츠를 그린다,
+  // sidebar.ts §2-1) 더 이상 쓰이지 않아 제거했다 — 설정/카탈로그 하위탭은
+  // 본문 보조탭이 아니라 사이드바 정적 nav 행으로 이관됐다(m5 수정,
+  // 2026-09-24: "본문 보조탭"이라던 이전 주석이 실제 구현과 반대였다).
+  // accountMenuOpen만 새로 남는다 — 탭스트립 계정 칩 드롭다운의 열림 여부.
   sidebar: {
     accountMenuOpen: boolean;
   };

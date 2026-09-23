@@ -248,8 +248,11 @@ function handleNavigation(): void {
   if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
   if (!state.claudeAuth.loaded && !state.claudeAuth.loading) void loadClaudeAuthStatus();
   if (!state.mcpCatalog.loaded && !state.mcpCatalog.loading) void loadMcpCatalog();
-  // 사이드바가 전 화면에 상시 렌더되므로 탭 진입을 기다리지 않고 미리 불러온다
-  // (docs/design-app-links.md §6-3).
+  // m5 수정(2026-09-24) — 이 주석이 "사이드바가 전 화면에 상시 렌더"라고
+  // 적어뒀었지만 실제로는 앱 링크 사이드바가 그 탭(#/settings/applinks)에서만
+  // 렌더된다(sidebar.ts §4-8). 다른 리소스(대시보드·세션·개발도구 등)와 같은
+  // 이유로 로그인 직후 미리 불러올 뿐이다 — 탭에 처음 들어갈 때 로딩 지연이
+  // 보이지 않게 하기 위함(docs/design-app-links.md §6-3).
   if (!state.appLinks.loaded && !state.appLinks.loading) void loadAppLinks();
   // OTel 자동 세팅 — 설정 화면에 한 번도 안 들어간 사용자를 위해 세션당 정확히
   // 한 번만 조건 확인 후 시도한다(조건 3개는 views/settings.ts의
