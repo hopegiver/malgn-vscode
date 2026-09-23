@@ -13,6 +13,11 @@ use std::process::Command;
 
 const GH_CANDIDATES: [&str; 3] = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
 
+/// `gh auth login`에 넘길 argv — 상수로 뽑아 테스트에서 그대로 고정한다(플래그가
+/// 하나라도 빠지면 그 질문만 다시 대화형으로 돌아오므로, 실수로 빠지는 회귀를
+/// 테스트가 잡는다). 각 플래그를 고른 근거는 `github_connect()` 주석 참고.
+const GH_LOGIN_ARGS: [&str; 7] = ["auth", "login", "-h", "github.com", "-p", "https", "-w"];
+
 fn resolve_gh() -> Option<String> {
     resolve_binary(&GH_CANDIDATES, "gh")
 }
@@ -96,7 +101,22 @@ pub fn github_connect() -> Result<TerminalLaunchResult, String> {
     // (`C:\Program Files\...`) 기존 `format!("{gh} auth login")` 문자열 조립이
     // 그대로 깨진다. macOS 출력은 무인용 규칙 덕에 바이트 단위로 동일하다(회귀
     // 없음).
-    open_terminal_program(&gh, &["auth", "login"])?;
+    //
+    // `-h/-p/-w` 세 플래그를 명시해 `gh auth login`이 원래 대화형으로 묻는 세
+    // 질문(호스트 선택 → 프로토콜 선택 → 인증 방식 선택)을 생략시킨다(실측,
+    // `gh auth login --help`, gh 2.100.0):
+    //   -h github.com : 호스트 선택 질문 생략. 이 앱은 GitHub Enterprise를
+    //     지원하지 않으므로(다른 호스트 후보가 코드 어디에도 없다) gh 자체
+    //     기본값과 같은 github.com을 고정한다.
+    //   -p https      : 프로토콜 선택 질문 생략. gh가 인터랙티브 흐름에서도
+    //     먼저 권하는 기본값이며, ssh를 고르면 로컬에 SSH 키가 없을 때 새로
+    //     생성·업로드하겠냐는 추가 프롬프트가 따라붙어 "질문 생략"이라는 이번
+    //     요구를 다시 어긴다.
+    //   -w            : 인증 방식 선택 질문 생략, 바로 브라우저 인증 플로우로
+    //     진입(이 요청의 목표 그 자체).
+    // 이 셋 중 하나라도 빠지면 그 질문만 다시 대화형으로 돌아온다 — 세
+    // 플래그는 서로 독립적이다.
+    open_terminal_program(&gh, &GH_LOGIN_ARGS)?;
     Ok(TerminalLaunchResult {
         opened: true,
         message: "터미널 창에서 GitHub 로그인 절차를 진행해주세요.".to_string(),
@@ -118,4 +138,35 @@ pub fn github_disconnect() -> Result<TerminalLaunchResult, String> {
         opened: true,
         message: "터미널 창에서 GitHub 로그아웃 절차를 진행해주세요.".to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dev_tools::platform::{build_terminal_command_line, Platform};
+
+    /// 세 플래그(`-h`/`-p`/`-w`)가 빠지지 않고 순서대로 조립되는지 고정한다 —
+    /// 나중에 누가 하나를 빼면(예: 리팩터링 중 실수) 이 테스트가 대화형 질문이
+    /// 되살아나는 회귀를 잡는다.
+    #[test]
+    fn gh_login_args_pins_non_interactive_flags() {
+        assert_eq!(
+            GH_LOGIN_ARGS,
+            ["auth", "login", "-h", "github.com", "-p", "https", "-w"]
+        );
+    }
+
+    /// Windows 분기에서도 각 인자가 개별 토큰으로 인용되어 그대로 전달되는지
+    /// 확인한다 — 공백이 있는 gh 경로(`C:\Program Files\GitHub CLI\gh.exe`)를
+    /// 가정해 문자열 조립이 아니라 구조화된 인자 경로를 타는지 검증한다
+    /// (`open_terminal_program`이 내부적으로 위임하는 것과 동일한 순수함수).
+    #[test]
+    fn gh_login_args_survive_windows_quoting_with_spaces_in_program_path() {
+        let program = r"C:\Program Files\GitHub CLI\gh.exe";
+        let line = build_terminal_command_line(Platform::Win, program, &GH_LOGIN_ARGS);
+        assert_eq!(
+            line,
+            "& 'C:\\Program Files\\GitHub CLI\\gh.exe' 'auth' 'login' '-h' 'github.com' '-p' 'https' '-w'"
+        );
+    }
 }
