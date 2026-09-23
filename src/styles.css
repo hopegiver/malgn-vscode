@@ -226,7 +226,19 @@ html, body {
   align-items: stretch;
   padding: 0 var(--space-2);
   gap: 2px;
-  overflow-x: auto; /* 900px 하한에서 9탭+계정 칩 오버플로 대응(IA §7-2) */
+  /* overflow-x는 .tabstrip-tabs(아래)에만 건다 — 여기 걸면 overflow-y가
+     미지정 visible이어도 CSS 스펙상 auto로 함께 계산돼, 계정 드롭다운(32px
+     탭스트립 높이 밖으로 나가는 절대위치 메뉴)이 통째로 잘리는 회귀가 난다
+     (b8507b2 도입, feat/ui-terminus 브랜치 한정 — main엔 없음). */
+}
+.tabstrip-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto; /* 900px 하한에서 9탭 오버플로 대응(IA §7-2) — 계정 칩은 이 스크롤 영역 밖 형제라 항상 우측 고정 */
+  overflow-y: hidden;
 }
 .tab {
   display: flex;

@@ -177,7 +177,13 @@ export function renderTabstrip(route: Route): HTMLElement {
     },
   ];
 
-  return el('div', { className: 'tabstrip' }, [...tabs.map(tabEl), renderAccountChip()]);
+  // 탭 목록만 별도 스크롤 컨테이너(.tabstrip-tabs)로 감싼다 — 계정 드롭다운
+  // 잘림 회귀 수정(styles.css .tabstrip 주석 참고). 계정 칩은 그 컨테이너
+  // 밖의 형제라 overflow-y:hidden의 영향을 받지 않는다.
+  return el('div', { className: 'tabstrip' }, [
+    el('div', { className: 'tabstrip-tabs' }, tabs.map(tabEl)),
+    renderAccountChip(),
+  ]);
 }
 
 // =====================================================================
