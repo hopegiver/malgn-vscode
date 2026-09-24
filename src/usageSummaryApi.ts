@@ -8,14 +8,20 @@ import { invoke } from '@tauri-apps/api/core';
 import type { DailyUsage } from './usageApi';
 
 export interface ModelUsageSummary {
-  /** "opus" | "sonnet" | "haiku" | "unknown"(단가표 키워드에 매칭 안 된 모델). */
-  readonly family: string;
+  /**
+   * 정규 모델 ID(날짜 접미사 제거, 예: "claude-opus-5-5"). family(opus/
+   * sonnet/haiku) 합산이 아니라 모델 버전 단위로 나온다 — 단가표에 없는
+   * 모델은 원본에서 날짜 접미사만 뗀 문자열 그대로.
+   */
+  readonly modelId: string;
+  /** 사람이 읽을 표시명(예: "Opus 5.5", "Sonnet 5"). 단가표에 없으면 modelId와 동일. */
+  readonly displayName: string;
   readonly tokens: number;
   readonly costUsd: number;
   /**
-   * false면 이 family의 costUsd는 모델명이 단가표 키워드(opus/haiku/sonnet)에
-   * 매칭되지 않아 sonnet 단가로 대체 계산한 추정치다("unknown" family에서만
-   * false) — UI에서 "단가 미확인(추정)" 같은 caveat을 붙일 수 있다.
+   * false면 이 모델은 단가표(pricing.rs)에 없어 costUsd=0으로 비용을
+   * 계산하지 않았다 — UI가 이 값이 false인 행의 tokens를 "비용 미산정"으로
+   * 정직하게 표시해야 한다(예전처럼 sonnet 단가로 조용히 대체하지 않는다).
    */
   readonly pricingMatched: boolean;
 }
@@ -42,7 +48,12 @@ export interface UsageSummaryReport {
   readonly outputTokens: number;
   readonly cacheCreationTokens: number;
   readonly cacheReadTokens: number;
-  /** tokens desc 정렬되어 옴. */
+  /**
+   * 단가표에 없는 모델의 토큰 합(=`models`에서 `pricingMatched=false`인
+   * 행들의 tokens 합과 항상 같다). 0이면 30일 비용 전액이 실단가 기준이다.
+   */
+  readonly unpricedTokens: number;
+  /** 모델 ID 단위(계열 합산 아님), tokens desc 정렬되어 옴. */
   readonly models: readonly ModelUsageSummary[];
   /** 토큰 기준 상위 5개, tokens desc 정렬되어 옴. */
   readonly projects: readonly ProjectUsageSummary[];

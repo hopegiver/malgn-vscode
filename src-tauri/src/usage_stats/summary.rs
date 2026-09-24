@@ -11,7 +11,7 @@
 // 새로 만들지 않고 `daily::find_recent_jsonl_files`를 그대로 재사용한다.
 
 use super::daily::{self, parse_iso_timestamp, USAGE_LOOKBACK_DAYS};
-use super::pricing::cost_for_usage;
+use super::pricing::{self, cost_for_usage};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
@@ -25,16 +25,22 @@ const TOP_TOOLS: usize = 5;
 
 #[derive(Serialize, Debug, Clone, Default)]
 pub(crate) struct ModelUsageSummary {
-    /// "opus"/"sonnet"/"haiku" 중 하나, 또는 세 키워드 어디에도 매칭되지
-    /// 않은 모델명은 "unknown"으로 따로 묶는다(=아래 `pricing_matched: false`).
-    family: String,
+    /// 정규 모델 ID(날짜 접미사 제거, 예: "claude-opus-5-5") — family(opus/
+    /// sonnet/haiku) 합산이 아니라 모델 버전 단위로 나온다. 단가표에 없는
+    /// 모델은 원본에서 날짜 접미사만 뗀 문자열 그대로.
+    #[serde(rename = "modelId")]
+    model_id: String,
+    /// 사람이 읽을 표시명(예: "Opus 5.5", "Sonnet 5"). 단가표에 없는 모델은
+    /// `modelId`와 동일한 값 — 추측한 이름을 붙이지 않는다.
+    #[serde(rename = "displayName")]
+    display_name: String,
     tokens: u64,
     #[serde(rename = "costUsd")]
     cost_usd: f64,
-    /// false면 이 버킷의 비용은 `pricing.rs` 단가표의 모델명 매칭에 실패해
-    /// sonnet 단가로 대체 계산한 추정치다 — 프론트는 이 값이 false인 행에
-    /// "단가 미확인(추정)" 같은 표시를 붙일 수 있다. 조용히 다른 family의
-    /// 실측치에 섞이지 않도록 family를 "unknown"으로 분리해 둔다.
+    /// false면 이 모델은 `pricing.rs` 단가표에 없어 비용을 계산하지 않았다
+    /// (costUsd=0) — 프론트가 이 값이 false인 행의 tokens를 "비용 미산정"
+    /// 토큰량으로 정직하게 표시할 수 있다. sonnet 단가 대체 계산 같은 조용한
+    /// 폴백은 하지 않는다(과대청구 버그의 원인이었다).
     #[serde(rename = "pricingMatched")]
     pricing_matched: bool,
 }
@@ -77,7 +83,12 @@ pub(crate) struct UsageSummaryReport {
     cache_creation_tokens: u64,
     #[serde(rename = "cacheReadTokens")]
     cache_read_tokens: u64,
-    /// family(opus/sonnet/haiku/unknown)별 — tokens desc 정렬.
+    /// 단가표에 없는 모델의 토큰 합(=`models`에서 `pricingMatched=false`인
+    /// 행들의 tokens 합과 항상 같다 — 프론트가 매번 다시 더하지 않도록
+    /// 미리 계산해 둔 것). 이 값이 0이면 30일 비용 전액이 실단가 기준이다.
+    #[serde(rename = "unpricedTokens")]
+    unpriced_tokens: u64,
+    /// 모델 ID 단위(계열 합산 아님) — tokens desc 정렬.
     models: Vec<ModelUsageSummary>,
     /// 토큰 기준 상위 `TOP_PROJECTS`개 — tokens desc 정렬.
     projects: Vec<ProjectUsageSummary>,
@@ -99,7 +110,8 @@ struct PartialSummary {
     cache_creation_tokens: u64,
     cache_read_tokens: u64,
     cost_usd: f64,
-    /// key: (family, pricing_matched)
+    unpriced_tokens: u64,
+    /// key: (정규 모델 ID, pricing_matched)
     model_tally: HashMap<(String, bool), (u64, f64)>,
     /// key: projectKey
     project_tally: HashMap<String, (u64, f64)>,
@@ -112,6 +124,7 @@ fn merge_partial(mut a: PartialSummary, b: PartialSummary) -> PartialSummary {
     a.cache_creation_tokens += b.cache_creation_tokens;
     a.cache_read_tokens += b.cache_read_tokens;
     a.cost_usd += b.cost_usd;
+    a.unpriced_tokens += b.unpriced_tokens;
     for (key, (tokens, cost)) in b.model_tally {
         let entry = a.model_tally.entry(key).or_insert((0, 0.0));
         entry.0 += tokens;
@@ -128,23 +141,16 @@ fn merge_partial(mut a: PartialSummary, b: PartialSummary) -> PartialSummary {
     a
 }
 
-/// `model`(원문, 예: "claude-opus-4-8")을 pricing.rs 단가표가 실제로
-/// 구분하는 family로 분류한다. `pricing::model_family`(private)와 키워드는
-/// 같지만, 저 함수는 미매칭 시 조용히 "sonnet"으로 폴백해 비용 계산에만
-/// 쓰기 적합하다 — 여기서는 "어떤 모델이 진짜 sonnet인지 vs 미매칭이라
-/// sonnet 단가로 대체됐는지"를 구분해서 보여줘야 하므로 미매칭은 "unknown"
-/// 이라는 별도 family로 분리하고 `pricing_matched=false`를 반환한다.
-fn model_bucket_key(model: &str) -> (&'static str, bool) {
-    let m = model.to_lowercase();
-    if m.contains("opus") {
-        ("opus", true)
-    } else if m.contains("haiku") {
-        ("haiku", true)
-    } else if m.contains("sonnet") {
-        ("sonnet", true)
-    } else {
-        ("unknown", false)
-    }
+/// `model`(원문, 예: "claude-opus-4-8" 또는 날짜 접미사가 붙은
+/// "claude-haiku-4-5-20251001")을 `pricing.rs` 단가표 기준 정규 모델 ID로
+/// 정확히 매칭한다. family(opus/sonnet/haiku) 키워드로 느슨하게 묶지 않는다
+/// — "claude-opus-5"와 "claude-opus-5-5"는 단가가 달라 반드시 구분돼야
+/// 한다. 반환값 `(정규 모델 ID, pricing_matched)` — 단가표에 없으면
+/// `pricing_matched=false`이고 비용 계산에도 섞이지 않는다.
+fn model_bucket_key(model: &str) -> (String, bool) {
+    let canonical = pricing::canonical_model_id(model);
+    let matched = pricing::price_for_model(model).is_some();
+    (canonical, matched)
 }
 
 /// `daily::scan_file_daily_usage`와 같은 줄 필터·중복 제거 규칙(assistant
@@ -209,20 +215,28 @@ fn scan_file_for_summary(path: &Path, project_key: &str, cutoff_dt: DateTime<Utc
                 .get("cache_read_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            // cache_creation_tokens(토큰 합계, 위와 동일 — daily.rs의
+            // get_daily_usage 합계와 어긋나지 않도록 유지)와 별개로, 비용
+            // 계산에는 TTL별 분해값을 쓴다.
+            let (cache_write_5m, cache_write_1h) = pricing::split_cache_write_tokens(usage);
 
             let tokens = input + output + cache_creation + cache_read;
-            let cost = cost_for_usage(model, input, output, cache_creation, cache_read);
+            let cost_result = cost_for_usage(model, input, output, cache_write_5m, cache_write_1h, cache_read);
+            let cost = cost_result.cost_usd;
 
             summary.input_tokens += input;
             summary.output_tokens += output;
             summary.cache_creation_tokens += cache_creation;
             summary.cache_read_tokens += cache_read;
             summary.cost_usd += cost;
+            if !cost_result.pricing_matched {
+                summary.unpriced_tokens += tokens;
+            }
 
-            let (family, matched) = model_bucket_key(model);
+            let (model_id, matched) = model_bucket_key(model);
             let model_entry = summary
                 .model_tally
-                .entry((family.to_string(), matched))
+                .entry((model_id, matched))
                 .or_insert((0, 0.0));
             model_entry.0 += tokens;
             model_entry.1 += cost;
@@ -325,15 +339,26 @@ pub(crate) fn aggregate_usage_summary() -> UsageSummaryReport {
         + combined.cache_creation_tokens
         + combined.cache_read_tokens;
     report.total_cost_usd = combined.cost_usd;
+    report.unpriced_tokens = combined.unpriced_tokens;
 
     let mut models: Vec<ModelUsageSummary> = combined
         .model_tally
         .into_iter()
-        .map(|((family, matched), (tokens, cost))| ModelUsageSummary {
-            family,
-            tokens,
-            cost_usd: cost,
-            pricing_matched: matched,
+        .map(|((model_id, matched), (tokens, cost))| {
+            let display_name = if matched {
+                pricing::price_for_model(&model_id)
+                    .map(|p| p.display_name.to_string())
+                    .unwrap_or_else(|| model_id.clone())
+            } else {
+                model_id.clone()
+            };
+            ModelUsageSummary {
+                model_id,
+                display_name,
+                tokens,
+                cost_usd: cost,
+                pricing_matched: matched,
+            }
         })
         .collect();
     models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
@@ -442,21 +467,24 @@ mod tests {
     }
 
     // 비용 기대값을 손으로 계산해 주석에 남긴다(pricing.rs 단가표 기준,
-    // 1M 토큰당 USD):
-    //   opus:   input 15.0 / output 75.0 / cache_write 18.75 / cache_read 1.5
-    //   sonnet: input 3.0  / output 15.0 / cache_write 3.75  / cache_read 0.3
+    // 1M 토큰당 USD — 출처: https://platform.claude.com/docs/en/about-claude/pricing.md,
+    // 확인일 2026-09-24):
+    //   claude-opus-4-8:   input 5.0 / output 25.0 / cache_write(5m) 6.25 / cache_read 0.50
+    //   claude-sonnet-4-6: input 3.0 / output 15.0 / cache_write(5m) 3.75 / cache_read 0.30
+    // 두 fixture 모두 cache_creation 분해 객체가 없는 구 로그 형태라
+    // `split_cache_write_tokens`가 전부 5분 캐시쓰기로 취급한다.
     //
-    // opus 메시지 — input=100_000, output=50_000, cache_creation=20_000, cache_read=30_000
-    //   = (100_000/1e6)*15.0 + (50_000/1e6)*75.0 + (20_000/1e6)*18.75 + (30_000/1e6)*1.5
-    //   = 0.1*15.0=1.5 + 0.05*75.0=3.75 + 0.02*18.75=0.375 + 0.03*1.5=0.045
-    //   = 5.67
+    // opus-4-8 메시지 — input=100_000, output=50_000, cache_write_5m=20_000, cache_read=30_000
+    //   = (100_000/1e6)*5.0 + (50_000/1e6)*25.0 + (20_000/1e6)*6.25 + (30_000/1e6)*0.50
+    //   = 0.1*5.0=0.5 + 0.05*25.0=1.25 + 0.02*6.25=0.125 + 0.03*0.50=0.015
+    //   = 1.89
     //
-    // sonnet 메시지 — input=200_000, output=80_000, cache_creation=10_000, cache_read=500_000
-    //   = (200_000/1e6)*3.0 + (80_000/1e6)*15.0 + (10_000/1e6)*3.75 + (500_000/1e6)*0.3
-    //   = 0.2*3.0=0.6 + 0.08*15.0=1.2 + 0.01*3.75=0.0375 + 0.5*0.3=0.15
+    // sonnet-4-6 메시지 — input=200_000, output=80_000, cache_write_5m=10_000, cache_read=500_000
+    //   = (200_000/1e6)*3.0 + (80_000/1e6)*15.0 + (10_000/1e6)*3.75 + (500_000/1e6)*0.30
+    //   = 0.2*3.0=0.6 + 0.08*15.0=1.2 + 0.01*3.75=0.0375 + 0.5*0.30=0.15
     //   = 1.9875
     //
-    // 합계 = 5.67 + 1.9875 = 7.6575
+    // 합계 = 1.89 + 1.9875 = 3.8775
     #[test]
     fn scans_file_and_computes_expected_cost_for_two_models() {
         let now = Utc::now();
@@ -482,25 +510,26 @@ mod tests {
         assert_eq!(summary.cache_creation_tokens, 20_000 + 10_000);
         assert_eq!(summary.cache_read_tokens, 30_000 + 500_000);
         assert!(
-            (summary.cost_usd - 7.6575).abs() < 1e-9,
+            (summary.cost_usd - 3.8775).abs() < 1e-9,
             "합산 비용이 손계산과 다릅니다: {}",
             summary.cost_usd
         );
+        assert_eq!(summary.unpriced_tokens, 0, "두 모델 다 단가표에 있어야 합니다");
 
         let opus_entry = summary
             .model_tally
-            .get(&("opus".to_string(), true))
-            .expect("opus 버킷이 없습니다");
-        assert!((opus_entry.1 - 5.67).abs() < 1e-9, "opus 비용: {}", opus_entry.1);
+            .get(&("claude-opus-4-8".to_string(), true))
+            .expect("opus-4-8 버킷이 없습니다");
+        assert!((opus_entry.1 - 1.89).abs() < 1e-9, "opus-4-8 비용: {}", opus_entry.1);
         assert_eq!(opus_entry.0, 100_000 + 50_000 + 20_000 + 30_000);
 
         let sonnet_entry = summary
             .model_tally
-            .get(&("sonnet".to_string(), true))
-            .expect("sonnet 버킷이 없습니다");
+            .get(&("claude-sonnet-4-6".to_string(), true))
+            .expect("sonnet-4-6 버킷이 없습니다");
         assert!(
             (sonnet_entry.1 - 1.9875).abs() < 1e-9,
-            "sonnet 비용: {}",
+            "sonnet-4-6 비용: {}",
             sonnet_entry.1
         );
 
@@ -515,11 +544,12 @@ mod tests {
         assert_eq!(summary.tool_counts.get("Edit"), Some(&2));
     }
 
-    // 단가표에 없는(family 키워드 어디에도 안 걸리는) 모델명은 "unknown"으로
-    // 따로 묶이고 pricing_matched=false여야 한다 — sonnet 실측치와 조용히
-    // 섞이면 안 된다는 정직성 요구사항의 회귀 방지 테스트.
+    // 단가표에 없는 모델명은 그 모델 ID(정규화) 단위로 따로 묶이고
+    // pricing_matched=false, 비용 0이어야 한다 — sonnet 단가 대체 계산 같은
+    // 조용한 폴백(과대청구 버그의 원인이었다)이 되살아나지 않는지 고정하는
+    // 회귀 방지 테스트.
     #[test]
-    fn unmatched_model_name_is_bucketed_separately_as_unknown() {
+    fn unmatched_model_name_contributes_zero_cost_and_counts_as_unpriced() {
         let now = Utc::now();
         let ts = (now - chrono::Duration::days(1)).to_rfc3339();
         let content = format!(
@@ -531,17 +561,26 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert!(
-            summary.model_tally.contains_key(&("unknown".to_string(), false)),
-            "미매칭 모델이 unknown/false 버킷에 없습니다: {:?}",
+            summary
+                .model_tally
+                .contains_key(&("some-unreleased-model".to_string(), false)),
+            "미매칭 모델이 자기 모델ID/false 버킷에 없습니다: {:?}",
             summary.model_tally.keys().collect::<Vec<_>>()
         );
         assert!(
-            !summary.model_tally.contains_key(&("sonnet".to_string(), true)),
-            "미매칭 모델이 진짜 sonnet 버킷에 섞였습니다"
+            !summary
+                .model_tally
+                .contains_key(&("claude-sonnet-4-6".to_string(), true)),
+            "미매칭 모델이 진짜 sonnet-4-6 버킷에 섞였습니다"
         );
-        // 비용 자체은 pricing.rs 폴백대로 sonnet 단가로 계산된다(3.0/1M input).
-        let (_, cost) = summary.model_tally[&("unknown".to_string(), false)];
-        assert!((cost - 3.0).abs() < 1e-9, "미매칭 모델 비용: {cost}");
+        // 비용은 0이어야 한다(더 이상 sonnet 단가로 대체 계산하지 않는다).
+        let (tokens, cost) = summary.model_tally[&("some-unreleased-model".to_string(), false)];
+        assert_eq!(cost, 0.0, "미매칭 모델 비용은 0이어야 합니다: {cost}");
+        assert_eq!(tokens, 1_000_000);
+        assert_eq!(
+            summary.unpriced_tokens, 1_000_000,
+            "미매칭 모델의 토큰이 unpriced_tokens에 반영돼야 합니다"
+        );
     }
 
     // 30일 컷오프보다 오래된 줄은 세지 않는다(daily.rs와 동일한 계약).
@@ -582,6 +621,35 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(summary.input_tokens, 100, "중복 message.id가 두 번 세어졌습니다");
+    }
+
+    // 실제 JSONL 포맷의 `usage.cache_creation.{ephemeral_5m_input_tokens,
+    // ephemeral_1h_input_tokens}` 분해 객체를 `scan_file_for_summary`가 끝까지
+    // 정확히 반영하는지(JSON 파싱 → split_cache_write_tokens → cost_for_usage
+    // 전체 경로) 확인한다. claude-sonnet-4-6, cache_write_5m=40_000,
+    // cache_write_1h=60_000, 나머지 0.
+    //   = (40_000/1e6)*3.75 + (60_000/1e6)*6.0 = 0.15 + 0.36 = 0.51
+    // (5m/6.0 1h는 pricing.rs 표: sonnet-4-6 cache_write_5m=3.75, cache_write_1h=6.0)
+    #[test]
+    fn scan_reflects_5m_1h_cache_write_breakdown_from_real_json_shape() {
+        let now = Utc::now();
+        let ts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let content = format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"msg_split_1","model":"claude-sonnet-4-6","usage":{{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":100000,"cache_read_input_tokens":0,"cache_creation":{{"ephemeral_5m_input_tokens":40000,"ephemeral_1h_input_tokens":60000}}}}}}}}"#,
+        );
+        let path = write_fixture(&content);
+        let cutoff_dt = now - chrono::Duration::days(30);
+        let summary = scan_file_for_summary(&path, "test-project", cutoff_dt);
+        let _ = std::fs::remove_file(&path);
+
+        // 토큰 합계(cacheCreationTokens)는 분해와 무관하게 top-level 필드 그대로 —
+        // 기존 get_daily_usage 합계 일치 계약을 깨지 않는다.
+        assert_eq!(summary.cache_creation_tokens, 100_000);
+        assert!(
+            (summary.cost_usd - 0.51).abs() < 1e-9,
+            "5m/1h 분해 비용이 손계산과 다릅니다: {}",
+            summary.cost_usd
+        );
     }
 
     // 모델별 합산 + 프로젝트별 합산이 전체 합산과 일치해야 한다(요구사항의

@@ -20,7 +20,7 @@
 // `lib.rs`에 있던 코드를 그대로 옮긴 것이다 — 로직은 한 글자도 바꾸지 않았다.
 
 use super::daily::{local_date_key, local_midnight_as_system_time, parse_iso_timestamp};
-use super::pricing::cost_for_usage;
+use super::pricing::{cost_for_usage, split_cache_write_tokens};
 use crate::session_list::{extract_text_from_content, truncate_title};
 use serde::Serialize;
 use serde_json::Value;
@@ -32,6 +32,9 @@ struct UsageTally {
     turns: u32,
     tokens: u64,
     cost: f64,
+    /// `pricing.rs` 단가표에 없는 모델의 토큰 합 — `summary.rs`의
+    /// `unpricedTokens`와 같은 정직성 요구사항을 detail 화면에도 적용한다.
+    unpriced_tokens: u64,
 }
 
 // 이 시점부터는 프로덕션 경로에서 직접 호출되지 않는다(`get_daily_detail`은
@@ -88,10 +91,16 @@ fn scan_usage_lines(path: &Path, tally: &mut UsageTally) {
             .get("cache_read_input_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
+        let (cache_write_5m, cache_write_1h) = split_cache_write_tokens(usage);
 
+        let tokens = input + output + cache_creation + cache_read;
+        let cost_result = cost_for_usage(model, input, output, cache_write_5m, cache_write_1h, cache_read);
         tally.turns += 1;
-        tally.tokens += input + output + cache_creation + cache_read;
-        tally.cost += cost_for_usage(model, input, output, cache_creation, cache_read);
+        tally.tokens += tokens;
+        tally.cost += cost_result.cost_usd;
+        if !cost_result.pricing_matched {
+            tally.unpriced_tokens += tokens;
+        }
     }
 }
 
@@ -162,6 +171,11 @@ pub(crate) struct DailyDetailReport {
     total_tokens: u64,
     #[serde(rename = "costUsd")]
     cost_usd: f64,
+    /// 단가표(`pricing.rs`)에 없는 모델의 토큰 합 — `summary.rs`의
+    /// `unpricedTokens`와 같은 이유(정직성: costUsd가 실제보다 낮게 잡혔을 수
+    /// 있음을 프론트가 알 수 있게).
+    #[serde(rename = "unpricedTokens")]
+    unpriced_tokens: u64,
 }
 
 /// 상위 개수 제한 없이 툴 사용 랭킹에 올릴 최대 항목 수.
@@ -234,10 +248,16 @@ fn scan_usage_lines_for_date(
                 .get("cache_read_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let (cache_write_5m, cache_write_1h) = split_cache_write_tokens(usage);
 
+            let tokens = input + output + cache_creation + cache_read;
+            let cost_result = cost_for_usage(model, input, output, cache_write_5m, cache_write_1h, cache_read);
             tally.turns += 1;
-            tally.tokens += input + output + cache_creation + cache_read;
-            tally.cost += cost_for_usage(model, input, output, cache_creation, cache_read);
+            tally.tokens += tokens;
+            tally.cost += cost_result.cost_usd;
+            if !cost_result.pricing_matched {
+                tally.unpriced_tokens += tokens;
+            }
         }
 
         if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
@@ -278,6 +298,7 @@ pub(crate) fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
     };
 
     let mut sessions: Vec<SessionDetail> = Vec::new();
+    let mut report_unpriced_tokens: u64 = 0;
 
     let Ok(project_entries) = std::fs::read_dir(&projects_dir) else {
         return report;
@@ -321,6 +342,7 @@ pub(crate) fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
             if is_recent_enough(&session_path) {
                 let mut main_tally = UsageTally::default();
                 scan_usage_lines_for_date(&session_path, date, &mut main_tally, &mut tool_counts);
+                report_unpriced_tokens += main_tally.unpriced_tokens;
                 if main_tally.turns > 0 {
                     agent_accum.insert(
                         "main".to_string(),
@@ -366,6 +388,7 @@ pub(crate) fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
                             &mut agent_tally,
                             &mut tool_counts,
                         );
+                        report_unpriced_tokens += agent_tally.unpriced_tokens;
                         if agent_tally.turns == 0 {
                             continue;
                         }
@@ -426,6 +449,7 @@ pub(crate) fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
     report.total_tokens = sessions.iter().map(|s| s.total_tokens).sum();
     report.cost_usd = sessions.iter().map(|s| s.cost_usd).sum();
     report.sessions = sessions;
+    report.unpriced_tokens = report_unpriced_tokens;
     report
 }
 
@@ -465,6 +489,43 @@ mod tests {
             tally.tokens,
             (2 + 100 + 10000) + (1 + 50 + 5000),
             "중복 제거 후 토큰 합계가 예상과 다릅니다"
+        );
+    }
+
+    // detail.rs가 summary.rs와 같은 단가 로직(pricing.rs)을 쓰는지, 그리고
+    // 단가표에 없는 모델의 토큰이 unpriced_tokens로 잡히는지 확인한다.
+    // claude-opus-5 줄 — input=100_000, output=40_000, cache_creation=0, cache_read=0
+    //   = 0.1*5.0 + 0.04*25.0 = 0.5 + 1.0 = 1.5
+    // 미등록 모델 줄("no-such-model") — 토큰만 세고 비용은 0, unpriced_tokens에 반영.
+    #[test]
+    fn scan_usage_lines_for_date_uses_shared_pricing_and_flags_unpriced_tokens() {
+        let tmp = std::env::temp_dir().join(format!(
+            "malgn-vscode-usage-detail-pricing-test-{}.jsonl",
+            std::process::id()
+        ));
+        let content = concat!(
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:00.000Z","message":{"id":"msg_opus","model":"claude-opus-5","usage":{"input_tokens":100000,"output_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:01.000Z","message":{"id":"msg_unmatched","model":"no-such-model","usage":{"input_tokens":10000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+            "\n",
+        );
+        std::fs::write(&tmp, content).expect("fixture 파일 쓰기 실패");
+
+        let mut tally = UsageTally::default();
+        let mut tool_counts = std::collections::HashMap::new();
+        scan_usage_lines_for_date(&tmp, "2026-09-08", &mut tally, &mut tool_counts);
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(tally.turns, 2);
+        assert_eq!(tally.tokens, 100_000 + 40_000 + 10_000);
+        assert!(
+            (tally.cost - 1.5).abs() < 1e-9,
+            "opus-5 비용만 반영돼야 합니다(미등록 모델은 0): {}",
+            tally.cost
+        );
+        assert_eq!(
+            tally.unpriced_tokens, 10_000,
+            "미등록 모델의 토큰이 unpriced_tokens에 잡혀야 합니다"
         );
     }
 

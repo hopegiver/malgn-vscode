@@ -30,6 +30,11 @@ export interface DailyDetailReport {
   readonly sessions: readonly SessionDetail[]; // totalTokens desc 정렬되어 옴
   readonly totalTokens: number;
   readonly costUsd: number;
+  /**
+   * 단가표(pricing.rs)에 없는 모델의 토큰 합 — 0보다 크면 costUsd가 실제
+   * 비용보다 낮게 잡혔을 수 있다는 뜻이다(그 모델의 비용은 미산정=0으로 처리됨).
+   */
+  readonly unpricedTokens: number;
 }
 
 export async function fetchDailyDetail(date: string): Promise<DailyDetailReport> {
