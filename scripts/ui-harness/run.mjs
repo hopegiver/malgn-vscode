@@ -12,8 +12,8 @@
 // 흐름 id(autonomousTasks/sessions/catalog/settingsMcp/appLinks/
 // formBackgroundRerender/majorReview20260921/updateCheck/home/
 // tabstripOverflow/qaShellNavCoverage/accountMenuAndStatusline/
-// fontPolicyKoreanMonoScan)를, 두 번째 인자로 시나리오 id(golden/empty/large/
-// error/slow 등)를 주면 그 조합만 돈다.
+// fontPolicyKoreanMonoScan/usage)를, 두 번째 인자로 시나리오 id(golden/empty/
+// large/error/slow 등)를 주면 그 조합만 돈다.
 import { chromium } from 'playwright';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -35,6 +35,7 @@ import * as tabstripOverflow from './flows/tabstripOverflow.mjs';
 import * as qaShellNavCoverage from './flows/qaShellNavCoverage.mjs';
 import * as accountMenuAndStatusline from './flows/accountMenuAndStatusline.mjs';
 import * as fontPolicyKoreanMonoScan from './flows/fontPolicyKoreanMonoScan.mjs';
+import * as usage from './flows/usage.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_URL = process.env.UI_HARNESS_BASE_URL || 'http://localhost:1420';
@@ -43,7 +44,7 @@ const SHOTS_DIR =
   '/private/tmp/claude-501/-Users-hopegiver-workspace-malgn-vscode/9682b635-b50a-4778-8416-a05a9cb13e8a/scratchpad/shots';
 const REPORT_PATH = path.join(__dirname, 'last-run-report.json');
 
-const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow, qaShellNavCoverage, accountMenuAndStatusline, fontPolicyKoreanMonoScan];
+const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow, qaShellNavCoverage, accountMenuAndStatusline, fontPolicyKoreanMonoScan, usage];
 
 const [, , flowFilter, scenarioFilter] = process.argv;
 

@@ -87,6 +87,53 @@ function dailyUsageSample() {
   return out;
 }
 
+// "사용량 통계" 확장(2026-09-24) — 프로젝트별/모델·도구 서브뷰가 쓰는 30일 요약.
+// 실제 커맨드는 jsonl 전체를 1회 스캔해 수 초 걸려 하네스에서 재현 불가 —
+// unpricedTokens>0인 모델 1건(pricingMatched=false)을 반드시 섞어 "미산정" 표시
+// 경로도 함께 검증되게 한다. 토큰 합계(models 3건=projects Top5+otherProjects)를
+// 서로 맞춰 뒀다 — 우연히 안 맞는 합성 데이터로 오해를 살 필요가 없어서다.
+function usageSummarySample() {
+  notes.push('get_usage_summary: jsonl 전체 1회 스캔은 Rust 몫이라 재현 불가 — 합성 30일 요약(unpricedTokens>0 모델 1건 포함)');
+  return {
+    days: 30,
+    totalTokens: 4_200_000,
+    totalCostUsd: 128.42,
+    inputTokens: 900_000,
+    outputTokens: 300_000,
+    cacheCreationTokens: 400_000,
+    cacheReadTokens: 2_600_000,
+    unpricedTokens: 300_000,
+    models: [
+      { modelId: 'claude-opus-5-5', displayName: 'Opus 5.5', tokens: 2_400_000, costUsd: 96.1, pricingMatched: true },
+      { modelId: 'claude-sonnet-5', displayName: 'Sonnet 5', tokens: 1_500_000, costUsd: 32.32, pricingMatched: true },
+      { modelId: 'claude-haiku-5-unreleased', displayName: 'claude-haiku-5-unreleased', tokens: 300_000, costUsd: 0, pricingMatched: false },
+    ],
+    projects: [
+      { projectKey: '-Users-hopegiver-workspace-malgn-vscode', displayName: 'malgn-vscode', tokens: 1_800_000, costUsd: 54.2 },
+      { projectKey: '-Users-hopegiver-workspace-malgn-agent', displayName: 'malgn-agent', tokens: 1_200_000, costUsd: 40.1 },
+      { projectKey: '-Users-hopegiver-workspace-malgnai-hub', displayName: 'malgnai-hub', tokens: 700_000, costUsd: 20.5 },
+      { projectKey: '-Users-hopegiver-workspace-malgnsales', displayName: 'malgnsales', tokens: 300_000, costUsd: 8.4 },
+      { projectKey: '-Users-hopegiver-workspace-malgnuniv', displayName: 'malgnuniv', tokens: 150_000, costUsd: 4.1 },
+    ],
+    otherProjectsTokens: 50_000,
+    otherProjectsCostUsd: 1.12,
+    tools: [
+      { toolName: 'Read', count: 420 },
+      { toolName: 'Edit', count: 210 },
+      { toolName: 'Bash', count: 180 },
+      { toolName: 'Write', count: 60 },
+      { toolName: 'Grep', count: 45 },
+    ],
+  };
+}
+
+// "프로젝트별" 서브뷰에서 Top5 프로젝트 행을 클릭했을 때만 호출되는 파고들기
+// 커맨드 — dailyUsageSample과 같은 합성 3일치를 재사용한다(어떤 projectKey를
+// 넘기든 이 하네스는 인자별 분기를 지원하지 않는다, bridge.mjs 주석 참고).
+function projectDailyTrendSample() {
+  return dailyUsageSample();
+}
+
 /**
  * 모든 화면 진입 시 main.ts가 즉시 병렬로 호출하는 커맨드들의 "정상" 기본값을
  * 실제 로컬 데이터로 채운 베이스 픽스처. 개별 시나리오는 이 위에 필요한
@@ -143,6 +190,8 @@ export async function buildBaseFixtures() {
     list_global_catalog: globalCatalog,
     list_known_marketplaces: marketplaces,
     get_daily_usage: dailyUsageSample(),
+    get_usage_summary: usageSummarySample(),
+    get_project_daily_trend: projectDailyTrendSample(),
     autonomy_list: autonomyGroups,
     autonomy_runtime_status: runtimeStatuses,
     // D1③ — 스케줄러 heartbeat. main.ts가 세션당 항상 loadAutonomousTasks()를
@@ -239,7 +288,7 @@ export function withOverrides(base, overrides) {
   return { ...base, ...overrides };
 }
 
-export { historyEntries, mcpCatalogSample, mcpServersSample };
+export { historyEntries, mcpCatalogSample, mcpServersSample, usageSummarySample, projectDailyTrendSample };
 
 // ---------------- 대량(100+) 합성 데이터 생성기 ----------------
 export function manyAutonomyGroups(n) {
