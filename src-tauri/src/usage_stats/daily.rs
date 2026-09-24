@@ -20,7 +20,9 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-const USAGE_LOOKBACK_DAYS: i64 = 30;
+/// `pub(crate)`: `summary.rs`가 요약 집계에서도 같은 룩백 범위를 쓴다(정본
+/// 하나를 공유해야 30일 합계가 서로 어긋나지 않는다).
+pub(crate) const USAGE_LOOKBACK_DAYS: i64 = 30;
 
 #[derive(Serialize, Debug, Default, Clone)]
 pub(crate) struct DailyUsage {
@@ -46,7 +48,10 @@ pub(crate) fn local_date_key(dt: &DateTime<Utc>) -> String {
     local.format("%Y-%m-%d").to_string()
 }
 
-fn find_recent_jsonl_files(dir: &Path, cutoff_mtime: std::time::SystemTime, out: &mut Vec<PathBuf>) {
+/// `pub(crate)`: `summary.rs`가 요약 집계(`get_usage_summary`)와 프로젝트별
+/// 30일 추이(`get_project_daily_trend`)에서 그대로 재사용한다 — 파일 선정
+/// 기준(30일 mtime 컷오프)이 같아야 `get_daily_usage`와 합계가 어긋나지 않는다.
+pub(crate) fn find_recent_jsonl_files(dir: &Path, cutoff_mtime: std::time::SystemTime, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -76,7 +81,10 @@ fn find_recent_jsonl_files(dir: &Path, cutoff_mtime: std::time::SystemTime, out:
 // 독립이라 rayon으로 파일 단위 병렬화하기 좋다). `skip_date`가 있으면 그 날짜
 // 줄은 제외한다 — "오늘"은 매번 별도로 실시간 스캔하므로 과거분 캐시 계산에서는
 // 오늘 줄을 빼서 이중 집계를 막는다.
-fn scan_file_daily_usage(
+/// `pub(crate)`: `summary.rs`의 `get_project_daily_trend`가 특정 프로젝트
+/// 디렉터리에 한정해 같은 줄 단위 필터·중복 제거 규칙으로 일별 추이를
+/// 뽑을 때 그대로 재사용한다(복붙하면 두 곳의 필터 규칙이 갈라질 위험이 있다).
+pub(crate) fn scan_file_daily_usage(
     path: &Path,
     cutoff_dt: DateTime<Utc>,
     skip_date: Option<&str>,
@@ -152,7 +160,9 @@ fn scan_file_daily_usage(
     buckets
 }
 
-fn merge_daily_usage_maps(
+/// `pub(crate)`: `summary.rs`의 `get_project_daily_trend`가 파일 단위 병렬
+/// 스캔 결과를 합칠 때 재사용한다.
+pub(crate) fn merge_daily_usage_maps(
     mut a: std::collections::BTreeMap<String, DailyUsage>,
     b: std::collections::BTreeMap<String, DailyUsage>,
 ) -> std::collections::BTreeMap<String, DailyUsage> {

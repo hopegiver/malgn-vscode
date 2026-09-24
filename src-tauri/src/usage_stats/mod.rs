@@ -7,6 +7,7 @@
 mod daily;
 mod detail;
 mod pricing;
+mod summary;
 
 /// `lib.rs`의 `run()` setup이 앱 시작과 동시에 백그라운드에서 어제까지의
 /// 사용량 캐시를 미리 채워둘 때 쓴다.
@@ -29,4 +30,29 @@ pub async fn get_daily_usage() -> Vec<daily::DailyUsage> {
 #[tauri::command]
 pub fn get_daily_detail(date: String) -> detail::DailyDetailReport {
     detail::aggregate_daily_detail(&date)
+}
+
+/// "사용량 통계" 확장 화면의 30일 요약(최고 사용일·캐시 절대량·입출력비율은
+/// 기존 `get_daily_usage`의 `DailyUsage` 30일치만으로 프론트에서 계산 가능해
+/// 여기서 다시 만들지 않는다) — 모델별/프로젝트별/툴별 비중과 30일 예상
+/// 비용처럼 `DailyUsage`엔 없는 필드만 딱 한 번의 JSONL 스캔으로 추가한다.
+/// `get_daily_usage`와 동일한 이유로 async + `spawn_blocking`.
+#[tauri::command]
+pub async fn get_usage_summary() -> summary::UsageSummaryReport {
+    tauri::async_runtime::spawn_blocking(summary::aggregate_usage_summary)
+        .await
+        .unwrap_or_default()
+}
+
+/// 프로젝트별 Top5 카드에서 프로젝트 하나를 선택했을 때만 호출하는 파고들기
+/// 뷰 — 그 프로젝트 디렉터리 하나로 스캔 범위를 좁혀 30일 일별 추이를 낸다.
+/// 반환 타입은 `get_daily_usage`와 같은 `DailyUsage`라 프론트가 이미 아는
+/// 차트 데이터 모양을 그대로 재사용할 수 있다.
+#[tauri::command]
+pub async fn get_project_daily_trend(project_key: String) -> Vec<daily::DailyUsage> {
+    tauri::async_runtime::spawn_blocking(move || {
+        summary::aggregate_project_daily_trend(&project_key)
+    })
+    .await
+    .unwrap_or_default()
 }
