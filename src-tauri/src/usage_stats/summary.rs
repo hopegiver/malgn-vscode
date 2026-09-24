@@ -723,6 +723,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    // qa-engineer 추가 — `resolve_project_dir`(헬퍼)만이 아니라 프론트가 실제로
+    // 호출하는 `aggregate_project_daily_trend`(엔드투엔드) 자체가 경로
+    // 트래버설·존재하지 않는 project_key 입력에 대해 패닉 없이 빈 결과를
+    // 돌려주는지 확인한다. 이 머신의 실제 `~/.claude/projects`를 그대로 쓰되,
+    // 입력값 자체가 절대 실제 디렉터리명과 같을 수 없는 문자열이라 결과가
+    // 항상 빈 Vec이어야 한다 — 머신 의존 데이터 유무와 무관해 #[ignore] 불필요.
+    #[test]
+    fn aggregate_project_daily_trend_returns_empty_for_traversal_and_missing_keys() {
+        assert!(aggregate_project_daily_trend("../../../../etc/passwd").is_empty());
+        assert!(aggregate_project_daily_trend("..").is_empty());
+        assert!(aggregate_project_daily_trend("").is_empty());
+        assert!(
+            aggregate_project_daily_trend("qa-nonexistent-project-key-zzz-not-real").is_empty()
+        );
+    }
+
+    // qa-engineer 추가 — `aggregate_usage_summary`의 프로젝트 Top5 분할
+    // (`all_projects.len().min(TOP_PROJECTS)` + `split_at`)이 실제 함수를 통해
+    // 5개 미만/정확히 0개인 경우에도 패닉하지 않고 올바르게 처리되는지 확인한다.
+    // `dirs::home_dir()`을 테스트에서 주입할 수 없어 완전한 end-to-end 호출로
+    // 프로젝트 개수를 통제할 수는 없으므로, `aggregate_usage_summary`가 실제로
+    // 쓰는 것과 동일한 정렬+분할 표현식을 `Vec<ProjectUsageSummary>`에 대해
+    // 그대로 실행해 0개/3개(5개 미만)/5개/7개(5개 초과) 네 경계에서 패닉 없이
+    // 합계가 어긋나지 않는지 고정한다(product 코드를 별도 함수로 추출하지 않고
+    // 테스트 쪽에서 동일 표현식을 재사용 — product 코드는 수정하지 않는다).
+    #[test]
+    fn top5_project_split_handles_boundary_counts_without_panicking() {
+        fn make_projects(n: usize) -> Vec<ProjectUsageSummary> {
+            (0..n)
+                .map(|i| ProjectUsageSummary {
+                    project_key: format!("project-{i}"),
+                    display_name: format!("project-{i}"),
+                    tokens: (i as u64 + 1) * 1000,
+                    cost_usd: (i as f64 + 1.0) * 0.1,
+                })
+                .collect()
+        }
+
+        for n in [0usize, 3, TOP_PROJECTS, TOP_PROJECTS + 2] {
+            let mut all_projects = make_projects(n);
+            all_projects.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+            let split_at = all_projects.len().min(TOP_PROJECTS);
+            let (top, rest) = all_projects.split_at(split_at);
+            let other_tokens: u64 = rest.iter().map(|p| p.tokens).sum();
+            let other_cost: f64 = rest.iter().map(|p| p.cost_usd).sum();
+
+            assert_eq!(top.len(), n.min(TOP_PROJECTS), "n={n}일 때 top 개수가 틀렸습니다");
+            assert_eq!(
+                rest.len(),
+                n.saturating_sub(TOP_PROJECTS),
+                "n={n}일 때 rest 개수가 틀렸습니다"
+            );
+            let total_tokens: u64 = top.iter().map(|p| p.tokens).sum::<u64>() + other_tokens;
+            let expected_total: u64 = (1..=n as u64).map(|i| i * 1000).sum();
+            assert_eq!(total_tokens, expected_total, "n={n}일 때 top+other 합이 전체와 다릅니다");
+            assert!(other_cost >= 0.0);
+        }
+    }
+
     // 실제 로컬 데이터로 30일 전체 요약 합계가 `daily::aggregate_daily_usage()`의
     // 30일 합계와 정확히 일치하는지 확인한다(요구사항: "새 요약의 30일 토큰 합
     // = 기존 get_daily_usage 30일 합"). 머신 의존(실제 대화 로그 필요) — CI
