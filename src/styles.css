@@ -1297,10 +1297,26 @@ textarea.settings-input { resize: vertical; }
 /* M3-r 수정(리뷰 2026-09-24 2차) — 단위 라벨("일" 등)은 한글이 섞일 수 있어
    부모 .stat-value의 font-numeric(JetBrains Mono)을 여기서 font-body로 되돌린다. */
 .stat-value small { font-size: var(--font-size-micro); font-weight: 500; color: var(--text-muted-aa); font-family: var(--font-body); } /* 배치 D — 구 11px 하드코딩 편입, 통계 값 옆 단위 라벨이라 micro 유지 */
+/* .stat-value 아래 붙는 보조 줄(예: 최고 사용일 카드의 토큰량) — inline
+   <small>과 달리 자체 줄을 차지해, 좁은 카드에서 값 옆에 붙은 단위 텍스트가
+   중간에 줄바꿈되어 어긋나 보이는 문제(예: "09/22 ·" 다음 줄에 "69.4K")를
+   피한다. 숫자+한글이 섞여 font-body를 쓴다(§ M3-r과 동일 이유). */
+.stat-sub { font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-body); }
 .stat-trend { font-size: var(--font-size-caption); font-variant-numeric: tabular-nums; }
 .stat-trend.up { color: var(--status-good); }
 .stat-trend.warn { color: var(--status-warn); }
 .stat-trend.flat { color: var(--text-muted-aa); }
+/* usage.ts 전용 "세부 지표" 줄(최고 사용일/캐시 생성·읽기/입력·출력 비율/예상
+   비용) — 값이 "2.4K / 156.0K"처럼 두 수치를 슬래시로 이어붙여 .stat-row의
+   130px 최소폭(위 m8 주석, 홈 화면 4타일 전용 튜닝값)로는 줄바꿈된다. 홈
+   화면 등 다른 .stat-row 사용처에 영향을 주지 않도록 별도 클래스로 분리하고,
+   1180(앱 기본 창)·1280(하네스 캡처 폭)에서 4개가 한 줄에, 900(최소 창)에서는
+   2×2로 접히되 각 칸이 항상 값 한 줄을 담을 만큼 넓도록 210px로 잡았다. */
+.stat-row-detail { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--space-2-5); }
+/* 단가 미등록 안내(unpricedNote, daily/projects/models 3개 서브뷰 공용) — 바로
+   위 목록 마지막 행(예: "Top 5 외 나머지")의 부속 설명처럼 붙어 보이던 문제를
+   구분선+안내 기호로 "이 화면 합계 전체에 대한 주석"임을 드러낸다. */
+.unpriced-note { margin-top: var(--space-3); padding-top: var(--space-2-5); border-top: var(--border-width) solid var(--border); font-size: var(--font-size-caption); color: var(--text-muted-aa); }
 
 /* ---- 2단 영역 ---- */
 .split { display: grid; grid-template-columns: 1.6fr 1fr; gap: var(--space-3); align-items: start; }

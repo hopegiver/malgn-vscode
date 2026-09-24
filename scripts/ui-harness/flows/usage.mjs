@@ -21,7 +21,16 @@ export function scenarios(base) {
         if (statCount !== 8) {
           bugs.push({ severity: 'Major', symptom: `daily 탭 통계 타일이 8개(기존 4개+최고 사용일/캐시 절대량/입출력 비율/예상 비용)여야 하는데 ${statCount}개`, file: 'src/views/usage.ts:renderUsageStatCards' });
         }
-        const statText = await page.locator('.stat-row').first().textContent().catch(() => null);
+        // frontend-dev 수정(1280/1180/900폭 값 줄바꿈 정돈, 2026-09-24) — daily
+        // 탭 통계 타일을 "핵심 지표"(.stat-row)/"세부 지표"(.stat-row
+        // .stat-row-detail) 두 줄로 나눴다. "최고 사용일"/"예상 비용"은 세부
+        // 지표 줄에 있어 .first()만 보면 못 찾으므로, 두 .stat-row 텍스트를
+        // 모두 합쳐 검사한다.
+        const statText = await page
+          .locator('.stat-row')
+          .allTextContents()
+          .then((arr) => arr.join(' '))
+          .catch(() => null);
         if (!statText || !statText.includes('최고 사용일') || !statText.includes('예상 비용')) {
           bugs.push({ severity: 'Major', symptom: `daily 탭 통계 타일에 "최고 사용일"/"예상 비용" 라벨이 보이지 않음(실제: ${statText})`, file: 'src/views/usage.ts:renderUsageStatCards' });
         }

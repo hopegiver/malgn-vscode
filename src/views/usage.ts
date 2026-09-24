@@ -37,7 +37,11 @@ interface UsageStat {
   // 여기 넣는다. .stat-value 전체는 JetBrains Mono(font-numeric)인데 한글
   // 단위까지 그 안에서 그대로 렌더되면 모노 폴백으로 나간다(확정 방침 위반).
   // 숫자만 .stat-value에 두고 단위는 별도 <small>로 분리해 font-body를 준다.
+  // unit은 짧은 한 단어(예: "일")에만 쓴다 — 좁은 카드에서 값과 같은 줄에
+  // 붙이려다 중간에 줄바꿈되면 값과 단위가 어긋나 보인다(예: 최고 사용일
+  // 카드의 " · 69.4K"). 그런 보조 수치는 sub로 별도 줄에 둔다.
   readonly unit?: string;
+  readonly sub?: string;
 }
 
 // design-system.md §3.3 — home.ts의 통계 타일(.stat-row/.stat)과 동일한
@@ -47,6 +51,7 @@ function statTile(s: UsageStat): HTMLElement {
   return el('div', { className: 'stat' }, [
     el('div', { className: 'stat-label' }, [s.label]),
     el('div', { className: 'stat-value' }, [s.value, ...(s.unit ? [el('small', {}, [s.unit])] : [])]),
+    ...(s.sub ? [el('div', { className: 'stat-sub' }, [s.sub])] : []),
   ]);
 }
 
@@ -138,9 +143,11 @@ function formatMonthDay(dateKey: string): string {
 }
 
 // 총계에 unpricedTokens(단가 미등록 토큰)가 있을 때만 그리는 정직성 안내 —
-// daily/projects/models 세 서브뷰가 공통으로 쓴다.
+// daily/projects/models 세 서브뷰가 공통으로 쓴다. 바로 위 목록의 마지막
+// 행(예: "Top 5 외 나머지")에 달린 부속 설명처럼 보이지 않도록 구분선(.
+// unpriced-note)과 "※"로 이 화면 합계 전체에 대한 주석임을 드러낸다.
 function unpricedNote(unpricedTokens: number): HTMLElement {
-  return el('div', { className: 'state-block-desc' }, [`${formatTokenCount(unpricedTokens)} 토큰은 단가 미등록으로 비용 미산정`]);
+  return el('div', { className: 'unpriced-note' }, [`※ 이 화면 비용 합계 기준 — ${formatTokenCount(unpricedTokens)} 토큰은 단가 미등록으로 비용 미산정`]);
 }
 
 // ---------------- 일별 사용량 (실제 데이터) ----------------
@@ -388,15 +395,22 @@ function renderUsageStatCards(): HTMLElement {
     return el('div', {}, []);
   }
   const t = computeUsageTotals(state.dailyUsage.items);
-  const stats: UsageStat[] = [
+  // 기존 핵심 지표 줄 — 값이 짧아(퍼센트/정수/축약 토큰량 1개) 기존 .stat-row
+  // (130px 최소폭, 900px 최소 창에서도 4개가 한 줄에 들어가도록 튜닝된 값)를
+  // 그대로 쓴다.
+  const coreStats: UsageStat[] = [
     { label: '최근 30일 총 토큰', value: formatTokenCount(t.totalTokens) },
     { label: '최근 30일 활동일수', value: String(t.activeDays), unit: '일' },
     { label: '일평균 토큰', value: formatTokenCount(t.avgPerDay) },
     { label: '캐시 히트율', value: t.cacheHitRate !== null ? `${t.cacheHitRate}%` : '—' },
+  ];
+  // 세부 지표 줄 — "2.4K / 156.0K"처럼 두 수치를 슬래시로 이어붙인 값이
+  // 섞여 있어 더 넓은 .stat-row-detail(210px 최소폭)을 쓴다(styles.css 참고).
+  const detailStats: UsageStat[] = [
     {
       label: '최고 사용일',
       value: t.peakDay ? formatMonthDay(t.peakDay.date) : '—',
-      unit: t.peakDay ? ` · ${formatTokenCount(t.peakDay.total)}` : undefined,
+      sub: t.peakDay ? `${formatTokenCount(t.peakDay.total)} 토큰` : undefined,
     },
     { label: '캐시 생성 / 읽기(절대량)', value: `${formatTokenCount(t.cacheCreationTokens)} / ${formatTokenCount(t.cacheReadTokens)}` },
     {
@@ -407,7 +421,15 @@ function renderUsageStatCards(): HTMLElement {
   ];
   const summary = state.usageSummary;
   const unpriced = summary.report && summary.report.unpricedTokens > 0 ? unpricedNote(summary.report.unpricedTokens) : null;
-  return el('div', { className: 'col' }, [el('div', { className: 'stat-row' }, stats.map(statTile)), ...(unpriced ? [unpriced] : [])]);
+  return el('div', { className: 'col' }, [
+    el('div', { className: 'stat-row' }, coreStats.map(statTile)),
+    // "stat-row stat-row-detail" — 하네스(usage.mjs)가 `.stat-row .stat` 개수
+    // 8개를 카드 총수 검사로 쓰므로 stat-row 클래스는 유지하고, 더 넓은 최소
+    // 폭은 뒤에 정의된 .stat-row-detail이 grid-template-columns만 덮어써
+    // 적용한다(styles.css).
+    el('div', { className: 'stat-row stat-row-detail' }, detailStats.map(statTile)),
+    ...(unpriced ? [unpriced] : []),
+  ]);
 }
 
 function renderDailyTab(): HTMLElement {
