@@ -31,7 +31,10 @@
 // 참조) 이 함수를 재호출할 필요가 없다.
 
 use tauri::WebviewWindow;
-use windows::Win32::Foundation::{BOOL, COLORREF, HWND};
+// windows-rs 0.60+부터 BOOL은 Win32::Foundation에서 빠지고 windows::core로
+// 옮겨졌다(GitHub Actions windows-latest 빌드에서 E0432로 실측 확인, 2026-09-24).
+use windows::core::BOOL;
+use windows::Win32::Foundation::{COLORREF, HWND};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
     DWMWINDOWATTRIBUTE,
