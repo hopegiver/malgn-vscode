@@ -249,7 +249,7 @@ function renderDailyUsageSection(): HTMLElement {
     }
   }
 
-  return el('div', { className: 'box' }, [boxHead('일별 사용량 (최근 30일)'), el('div', { className: 'box-body' }, [body])]);
+  return el('div', { className: 'box' }, [boxHead('토큰 사용량 (최근 30일)'), el('div', { className: 'box-body' }, [body])]);
 }
 
 function renderUsageStatCards(): HTMLElement {

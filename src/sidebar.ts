@@ -447,7 +447,7 @@ function renderSessionsSidebar(route: Route): HTMLElement {
 // =====================================================================
 function renderUsageSidebar(): HTMLElement {
   const head = el('div', { className: 'sidebar-head' }, ['usage']);
-  const body = el('div', { className: 'sidebar-nav-row current' }, ['일별 사용량']);
+  const body = el('div', { className: 'sidebar-nav-row current' }, ['토큰 사용량']);
   return el('aside', { className: 'sidebar' }, [head, body]);
 }
 
