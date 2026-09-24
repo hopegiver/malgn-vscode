@@ -105,8 +105,10 @@
 
   /* 배치 D — 사이드바가 좁아 긴 프로젝트명/세션 제목/경로가 과도하게
      잘린다는 피드백으로 220px(190px 대비 +30px)로 넓혔다. 900px 하한용
-     축소값(아래 @container 760px 규칙)도 150→175px로 함께 조정. */
-  --sidebar-width: 220px;
+     축소값(아래 @container 760px 규칙)도 150→175px로 함께 조정.
+     v0.3.0 후속 조정 — 여전히 좁다는 피드백으로 260px(220px 대비 +40px)로
+     재확장. 900px 하한용 축소값도 같은 비율로 175→200px로 함께 조정. */
+  --sidebar-width: 260px;
 
   /* ---- 구 토큰(라이트 인디고 테마) → 새 팔레트 호환 별칭 ----
      이번 라운드는 홈+셸만 새 컴포넌트 클래스(.box/.blist/.stat/... §3)로
@@ -420,7 +422,7 @@ html, body {
 .sidebar-version-check-btn:disabled { opacity: 0.55; cursor: default; }
 
 @container (max-width: 760px) {
-  .sidebar { width: 175px; }
+  .sidebar { width: 200px; }
 }
 
 /* ---------------- 메인 콘텐츠 ---------------- */
