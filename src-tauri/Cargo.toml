@@ -75,8 +75,14 @@ tauri-plugin-process = "2"
 # 하므로(피처는 유니온되지만 선언 자체는 각자 몫) 우리 코드가 직접 쓰려면
 # 우리 Cargo.toml에도 명시가 필요하다. `cfg(windows)` 타깃 전용이라 macOS
 # 빌드에는 전혀 관여하지 않는다.
+#
+# `Win32_Graphics_Dwm`은 `window_titlebar.rs`(타이틀바 다크 테마/브랜드 색
+# 적용) 전용으로 추가했다 — `DwmSetWindowAttribute`와 `DWMWA_*` 상수가 이
+# 피처 아래에 있다. tauri 자체도 같은 0.61 계열의 `windows`를 쓰므로
+# (`webview_window.rs`의 `hwnd()`가 반환하는 `HWND`) Cargo.lock에서 버전이
+# 하나로 합쳐진다 — 타입이 크레이트 경계를 넘어가도 호환된다.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Graphics_Dwm"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

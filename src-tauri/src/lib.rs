@@ -19,6 +19,10 @@ mod session_list;
 mod session_watch;
 mod usage_stats;
 mod window_focus;
+// Windows 전용(DWM API로 네이티브 타이틀바를 앱 다크 테마 색에 맞춘다) —
+// macOS 빌드는 이 모듈 자체가 존재하지 않는다.
+#[cfg(target_os = "windows")]
+mod window_titlebar;
 mod workspace;
 
 // `autonomy`/`session_chat`이 이 크레이트 루트 경로(`crate::resolve_validated_project_root`,
@@ -54,6 +58,20 @@ pub fn run() {
         // 이 기능에 불필요해 제외.
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Windows 네이티브 타이틀바를 앱 다크 테마 색으로 맞춘다(설계
+            // 배경·색상값은 `window_titlebar.rs` 문서 주석 참조). 메인
+            // 윈도우는 `tauri.conf.json`의 `app.windows` 설정으로 이 setup
+            // 훅이 실행되기 전 이미 생성돼 있다 — 생성 직후 1회 호출로
+            // 충분하다. macOS는 이 블록 자체가 컴파일되지 않는다.
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                if let Some(main_window) = app.get_webview_window(window_focus::MAIN_WINDOW_LABEL)
+                {
+                    window_titlebar::apply_dark_titlebar(&main_window);
+                }
+            }
+
             let sessions_handle = app.handle().clone();
             std::thread::spawn(move || {
                 session_watch::watch_claude_sessions_dir(sessions_handle);

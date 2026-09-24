@@ -7,7 +7,11 @@
 // 창 라벨: `tauri.conf.json`의 `app.windows`에 label을 지정하지 않았다 —
 // Tauri는 이 경우 첫 창에 기본 라벨 "main"을 부여한다(이 앱은 창이 하나뿐인
 // 구조). 창을 늘려 라벨 체계가 바뀌면 이 상수도 반드시 같이 바꿔야 한다.
-const MAIN_WINDOW_LABEL: &str = "main";
+//
+// `pub(crate)`: `lib.rs`의 setup 훅(Windows 타이틀바 다크 테마 적용,
+// `window_titlebar.rs`)도 같은 메인 창을 조회해야 해서 라벨 문자열을
+// 두 번째 사본으로 흩어두지 않도록 공유한다.
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 /// 창을 보이게 하고(최소화 해제 포함) 포커스를 요청한다.
 ///
