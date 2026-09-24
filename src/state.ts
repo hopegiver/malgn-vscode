@@ -7,6 +7,7 @@ import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devTo
 import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } from './catalogApi';
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport } from './dailyDetailApi';
+import type { UsageSummaryReport } from './usageSummaryApi';
 import type { GithubStatus, CloudflareStatus } from './integrationsApi';
 import type { AutonomyRunStatus, AutonomyScheduleMode } from './autonomyApi';
 import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
@@ -19,6 +20,8 @@ export type DashboardFilter = 'all' | 'active' | 'archived';
 export type DashboardSort = 'updated' | 'name';
 export type SettingsTab = 'otel' | 'github' | 'cloudflare' | 'marketplace' | 'mcp' | 'applinks' | 'devtools';
 export type CatalogTab = 'plugins' | 'global';
+// 사용량 통계 탭의 서브 라우트 3종(2026-09-24 확장) — daily가 기본값.
+export type UsageTab = 'daily' | 'projects' | 'models';
 
 // "자율업무" 화면 전용 표시 타입 — autonomyApi.ts의 두 조회를 (projectPath, id)
 // 키로 병합한 결과다. id~enabled까지는 설정(autonomy.json, upsert 대상 그대로),
@@ -210,6 +213,26 @@ export interface AppState {
   dailyDetail: {
     selectedDate: string | null;
     report: DailyDetailReport | null;
+    loading: boolean;
+    error: string | null;
+  };
+  // 사용량 통계의 "프로젝트별"/"모델·도구" 서브뷰가 함께 쓰는 30일 요약(모델·
+  // 프로젝트·툴·비용) — usageSummaryApi.ts의 get_usage_summary()는 jsonl 전체를
+  // 1회 스캔해 수 초 걸릴 수 있어, "사용량" 탭에 새로 진입할 때만 다시 불러오고
+  // daily/projects/models 서브뷰 사이를 옮겨 다닐 때는 캐시된 값을 그대로 쓴다
+  // (views/usage.ts loadUsageSummary, main.ts handleNavigation 참고).
+  usageSummary: {
+    report: UsageSummaryReport | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+  };
+  // "프로젝트별" 서브뷰에서 Top5 프로젝트 행 하나를 클릭했을 때만 펼치는 30일
+  // 일별 추이(get_project_daily_trend) — dailyDetail과 같은 "선택 1건만 보관"
+  // 패턴(다른 프로젝트를 클릭하면 이전 선택은 버려진다).
+  usageProjectTrend: {
+    projectKey: string | null;
+    items: DailyUsage[];
     loading: boolean;
     error: string | null;
   };
@@ -436,6 +459,8 @@ function createInitialState(): AppState {
   claudeAuth: { status: null, loading: false, error: null, loaded: false, loggingOut: false },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
+  usageSummary: { report: null, loading: false, error: null, loaded: false },
+  usageProjectTrend: { projectKey: null, items: [], loading: false, error: null },
   autonomousTasks: { items: [], loading: false, error: null, loaded: false },
   github: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },
   cloudflare: { status: null, loading: false, error: null, loaded: false, connecting: false, disconnecting: false },

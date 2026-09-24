@@ -18,7 +18,7 @@ import type { Route } from './route';
 import { asBoolean, asString, asNumber, sortedSessions, sessionTitle, projectNameFromCwd, openNewSessionModal, loadSessions } from './views/sessions';
 import type { ClaudeSessionRecord } from './sessionsApi';
 import { sortedProjectsByRecency } from './views/projects';
-import { loadDailyUsage } from './views/usage';
+import { loadDailyUsage, loadUsageSummary } from './views/usage';
 import { highlightDevTool } from './views/devTools';
 import type { DevToolStatus } from './devToolsApi';
 import type { AutonomousTask } from './state';
@@ -243,10 +243,14 @@ export function renderTabstrip(route: Route): HTMLElement {
       active: route.kind === 'usage',
       onClick: () => {
         navigate('#/usage');
-        // 실시간 감시가 없어 이 탭을 누를 때마다 새로 불러온다(이미 #/usage에
-        // 있으면 해시가 안 바뀌어 라우팅만으로는 재로딩이 안 트리거된다) —
-        // 구 sidebar.ts의 동일 동작을 그대로 승계.
+        // 실시간 감시가 없어 이 탭을 누를 때마다 새로 불러온다(이미 #/usage나
+        // 그 서브뷰에 있으면 '#/usage'로 해시가 바뀌지 않을 수 있어 라우팅만
+        // 으로는 재로딩이 안 트리거된다) — 구 sidebar.ts의 동일 동작을 그대로
+        // 승계. 30일 요약(usageSummary)도 같은 시점에 함께 새로 불러온다 —
+        // main.ts handleNavigation()의 "사용량 탭에 새로 진입할 때"와 동일한
+        // 트리거를, 해시가 안 바뀌어 그 경로를 타지 않는 이 케이스에서 보강한다.
         if (!state.dailyUsage.loading) void loadDailyUsage();
+        if (!state.usageSummary.loading) void loadUsageSummary();
       },
     },
     { label: '개발 도구', active: route.kind === 'settings' && route.tab === 'devtools', onClick: () => navigate('#/settings/devtools') },
@@ -440,15 +444,22 @@ function renderSessionsSidebar(route: Route): HTMLElement {
 }
 
 // =====================================================================
-// §4-4 — 사용량: "일별 사용량" 단일 항목(PM 결정, 2026-09-24) — 예전의
-// 기간 토글(7일/30일)과 "최근 활동일" 퀵점프 목록은 폐기됐다. 이 탭
-// 본문(usage.ts)이 곧 "일별 사용량" 전체이므로 사이드바는 그 사실을 알려주는
-// 정적 nav 행 하나만 둔다(다른 목적지가 없어 클릭 동작은 없다).
+// §4-4 — 사용량: 서브 라우트 3개(통계 종류 축, 2026-09-24 확장) — 예전의
+// 기간 토글(7일/30일)·"최근 활동일" 퀵점프 목록(PM 결정, 2026-09-24 폐기)을
+// 되살리는 게 아니라, "일별 사용량" 단일 항목이었던 이전 구성을 카탈로그·설정
+// 탭과 같은 navRow(label, active, onClick) + route.tab 패턴으로 재구성한
+// 것이다. 3개 항목 모두 usage.ts 안의 서로 다른 집계(daily/projects/models)로
+// 이어진다.
 // =====================================================================
-function renderUsageSidebar(): HTMLElement {
-  const head = el('div', { className: 'sidebar-head' }, ['usage']);
-  const body = el('div', { className: 'sidebar-nav-row current' }, ['토큰 사용량']);
-  return el('aside', { className: 'sidebar' }, [head, body]);
+type UsageRoute = Extract<Route, { kind: 'usage' }>;
+
+function renderUsageSidebar(route: UsageRoute): HTMLElement {
+  return el('aside', { className: 'sidebar' }, [
+    el('div', { className: 'sidebar-head' }, ['usage']),
+    navRow('토큰 사용량', route.tab === 'daily', () => navigate('#/usage/daily')),
+    navRow('프로젝트별', route.tab === 'projects', () => navigate('#/usage/projects')),
+    navRow('모델·도구', route.tab === 'models', () => navigate('#/usage/models')),
+  ]);
 }
 
 // =====================================================================
@@ -618,7 +629,7 @@ export function renderSidebar(route: Route): HTMLElement {
     case 'sessions-draft':
       return renderSessionsSidebar(route);
     case 'usage':
-      return renderUsageSidebar();
+      return renderUsageSidebar(route);
     case 'settings':
       if (route.tab === 'devtools') return renderDevToolsSidebar();
       if (route.tab === 'applinks') return renderAppLinksSidebar();

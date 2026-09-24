@@ -6,14 +6,14 @@
 //   '#/project/<path>'   -> projects-detail
 //   '#/catalog[/<tab>]'  -> catalog (탭: plugins 기본값 | global)
 //   '#/settings[/<tab>]' -> settings (탭 devtools = 로컬 CLI 도구 버전 — 실제 조회)
-//   '#/usage'            -> usage
+//   '#/usage[/<tab>]'    -> usage (탭: daily 기본값 | projects | models)
 //   '#/sessions'         -> sessions-list (실제 ~/.claude/sessions/*.json)
 //   '#/sessions/new/<projectPath>' -> sessions-draft (프로젝트 카드 "새 세션" — session_id 배정 전)
 //   '#/sessions/<id>'    -> sessions-detail
 //   '#/tasks'            -> tasks-list (자율업무 목록 탭, 목업)
 //   '#/tasks/board'      -> tasks-board (자율업무 진행상황판 탭)
 //   '#/tasks/item/<id>'  -> tasks-detail
-import type { SettingsTab, CatalogTab } from './state';
+import type { SettingsTab, CatalogTab, UsageTab } from './state';
 
 export type Route =
   | { readonly kind: 'home' }
@@ -21,7 +21,7 @@ export type Route =
   | { readonly kind: 'projects-detail'; readonly path: string }
   | { readonly kind: 'catalog'; readonly tab: CatalogTab }
   | { readonly kind: 'settings'; readonly tab: SettingsTab }
-  | { readonly kind: 'usage' }
+  | { readonly kind: 'usage'; readonly tab: UsageTab }
   | { readonly kind: 'sessions-list' }
   | { readonly kind: 'sessions-draft'; readonly projectPath: string }
   | { readonly kind: 'sessions-detail'; readonly sessionId: string }
@@ -31,6 +31,7 @@ export type Route =
 
 const SETTINGS_TABS: readonly SettingsTab[] = ['otel', 'github', 'cloudflare', 'marketplace', 'mcp', 'applinks', 'devtools'];
 const CATALOG_TABS: readonly CatalogTab[] = ['plugins', 'global'];
+const USAGE_TABS: readonly UsageTab[] = ['daily', 'projects', 'models'];
 
 export function parseRoute(): Route {
   const hash = window.location.hash;
@@ -59,7 +60,9 @@ export function parseRoute(): Route {
   }
 
   if (hash.startsWith('#/usage')) {
-    return { kind: 'usage' };
+    const seg = hash.split('/')[2] as UsageTab | undefined;
+    const tab = seg && USAGE_TABS.includes(seg) ? seg : 'daily';
+    return { kind: 'usage', tab };
   }
 
   if (hash.startsWith('#/sessions/new/')) {

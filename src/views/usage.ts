@@ -1,15 +1,28 @@
-// 사용량 통계 — "일별 사용량"은 실제 ~/.claude/projects/**/*.jsonl 집계(최근
-// 30일)이고, 날짜 막대를 클릭하면 그 날짜 하루만 세션/에이전트/툴 단위로
-// 재집계한 상세를 그 자리에 펼친다(dailyDetailApi.ts 참고). 카드 통계(최근 30일
-// 총 토큰/활동일수/일평균 토큰/캐시 히트율)도 이 데이터만으로 계산한 실제 값이다
-// — 비교할 이전 기간 데이터가 없어 전월 대비 등 증감 배지는 두지 않는다. 실시간
-// 감시는 하지 않는다 — "사용량 통계" 메뉴를 클릭할 때마다 새로 불러온다(sidebar.ts).
+// 사용량 통계 — 사이드바 서브 라우트 3개(daily/projects/models, route.ts
+// UsageTab)를 공유하는 화면이다.
+//   - 토큰 사용량(daily, 기본): 실제 ~/.claude/projects/**/*.jsonl 집계(최근
+//     30일)이고, 날짜 막대를 클릭하면 그 날짜 하루만 세션/에이전트/툴 단위로
+//     재집계한 상세를 그 자리에 펼친다(dailyDetailApi.ts 참고). 카드 통계(총
+//     토큰/활동일수/일평균/캐시 히트율/최고 사용일/캐시 절대량/입출력 비율)는
+//     usageApi.ts의 DailyUsage[]만으로 계산한 실제 값이다 — 비교할 이전 기간
+//     데이터가 없어 전월 대비 등 증감 배지는 두지 않는다.
+//   - 프로젝트별(projects): 30일 요약(usageSummaryApi.ts)의 Top5 랭킹 + 나머지
+//     합. 프로젝트를 클릭하면 그 프로젝트만의 30일 일별 추이를 펼친다.
+//   - 모델·도구(models): 30일 요약의 모델별 비중·비용 + 자주 쓴 툴 Top5.
+// 30일 요약(get_usage_summary)은 jsonl 전체를 1회 스캔해 수 초 걸릴 수 있다 —
+// main.ts handleNavigation()이 "사용량" 탭에 새로 진입할 때만 불러오고,
+// daily/projects/models 서브뷰 사이를 옮겨 다닐 때는 state.usageSummary 캐시를
+// 그대로 쓴다(재스캔하지 않는다). 실시간 감시는 하지 않는다 — "사용량" 탭에
+// 새로 진입할 때마다 다시 불러온다(sidebar.ts).
 import { el, clickable } from '../dom';
 import { state, notifyChange } from '../state';
+import type { UsageTab } from '../state';
 import { fetchDailyUsage } from '../usageApi';
 import type { DailyUsage } from '../usageApi';
 import { fetchDailyDetail } from '../dailyDetailApi';
 import type { AgentUsage, SessionDetail, ToolUsage } from '../dailyDetailApi';
+import { fetchUsageSummary, fetchProjectDailyTrend } from '../usageSummaryApi';
+import type { ModelUsageSummary, ProjectUsageSummary, UsageSummaryReport } from '../usageSummaryApi';
 
 function barFillEl(pct: number): HTMLElement {
   const fill = el('div', { className: 'bar-fill' }, []);
@@ -60,23 +73,74 @@ export interface UsageTotals {
   readonly activeDays: number;
   readonly avgPerDay: number;
   readonly cacheHitRate: number | null; // 캐시 생성/읽기 토큰이 전혀 없으면 null
+  readonly cacheCreationTokens: number;
+  readonly cacheReadTokens: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly peakDay: { readonly date: string; readonly total: number } | null;
+  readonly inputOutputRatio: { readonly inputPct: number; readonly outputPct: number } | null;
 }
 
 export function computeUsageTotals(items: readonly DailyUsage[]): UsageTotals {
-  if (items.length === 0) return { totalTokens: 0, activeDays: 0, avgPerDay: 0, cacheHitRate: null };
+  if (items.length === 0) {
+    return {
+      totalTokens: 0,
+      activeDays: 0,
+      avgPerDay: 0,
+      cacheHitRate: null,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      peakDay: null,
+      inputOutputRatio: null,
+    };
+  }
   let totalTokens = 0;
   let cacheRead = 0;
   let cacheCreate = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let peakDay: { date: string; total: number } | null = null;
   for (const d of items) {
-    totalTokens += dailyUsageTotal(d);
+    const total = dailyUsageTotal(d);
+    totalTokens += total;
     cacheRead += d.cacheReadTokens;
     cacheCreate += d.cacheCreationTokens;
+    inputTokens += d.inputTokens;
+    outputTokens += d.outputTokens;
+    if (!peakDay || total > peakDay.total) peakDay = { date: d.date, total };
   }
   const activeDays = items.length;
   const avgPerDay = Math.round(totalTokens / activeDays);
   const cacheDenom = cacheRead + cacheCreate;
   const cacheHitRate = cacheDenom > 0 ? Math.round((cacheRead / cacheDenom) * 100) : null;
-  return { totalTokens, activeDays, avgPerDay, cacheHitRate };
+  const ioDenom = inputTokens + outputTokens;
+  const inputOutputRatio =
+    ioDenom > 0 ? { inputPct: Math.round((inputTokens / ioDenom) * 100), outputPct: Math.round((outputTokens / ioDenom) * 100) } : null;
+  return {
+    totalTokens,
+    activeDays,
+    avgPerDay,
+    cacheHitRate,
+    cacheCreationTokens: cacheCreate,
+    cacheReadTokens: cacheRead,
+    inputTokens,
+    outputTokens,
+    peakDay,
+    inputOutputRatio,
+  };
+}
+
+function formatMonthDay(dateKey: string): string {
+  const parts = dateKey.split('-');
+  return parts.length === 3 ? `${parts[1]}/${parts[2]}` : dateKey;
+}
+
+// 총계에 unpricedTokens(단가 미등록 토큰)가 있을 때만 그리는 정직성 안내 —
+// daily/projects/models 세 서브뷰가 공통으로 쓴다.
+function unpricedNote(unpricedTokens: number): HTMLElement {
+  return el('div', { className: 'state-block-desc' }, [`${formatTokenCount(unpricedTokens)} 토큰은 단가 미등록으로 비용 미산정`]);
 }
 
 // ---------------- 일별 사용량 (실제 데이터) ----------------
@@ -94,6 +158,59 @@ export async function loadDailyUsage(): Promise<void> {
     state.dailyUsage.loading = false;
     notifyChange();
   }
+}
+
+// ---------------- 30일 요약 (프로젝트별/모델·도구 서브뷰) ----------------
+
+export async function loadUsageSummary(): Promise<void> {
+  state.usageSummary.loading = true;
+  state.usageSummary.error = null;
+  notifyChange();
+  try {
+    state.usageSummary.report = await fetchUsageSummary();
+    state.usageSummary.loaded = true;
+  } catch (err) {
+    state.usageSummary.error = err instanceof Error ? err.message : '30일 요약 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+  } finally {
+    state.usageSummary.loading = false;
+    notifyChange();
+  }
+}
+
+// ---------------- 프로젝트별 30일 추이 (Top5 행 클릭 시에만) ----------------
+
+async function loadProjectTrend(projectKey: string): Promise<void> {
+  state.usageProjectTrend.loading = true;
+  state.usageProjectTrend.error = null;
+  notifyChange();
+  try {
+    const items = await fetchProjectDailyTrend(projectKey);
+    // 응답이 오는 사이 사용자가 다른 프로젝트를 클릭했으면(=선택이 바뀌었으면)
+    // 이 늦게 도착한 응답은 버린다.
+    if (state.usageProjectTrend.projectKey !== projectKey) return;
+    state.usageProjectTrend.items = items;
+  } catch (err) {
+    if (state.usageProjectTrend.projectKey !== projectKey) return;
+    state.usageProjectTrend.error = err instanceof Error ? err.message : '프로젝트별 추이를 불러오지 못했습니다.';
+  } finally {
+    if (state.usageProjectTrend.projectKey === projectKey) state.usageProjectTrend.loading = false;
+    notifyChange();
+  }
+}
+
+function toggleProjectTrend(projectKey: string): void {
+  if (state.usageProjectTrend.projectKey === projectKey) {
+    state.usageProjectTrend.projectKey = null;
+    state.usageProjectTrend.items = [];
+    state.usageProjectTrend.error = null;
+    notifyChange();
+    return;
+  }
+  state.usageProjectTrend.projectKey = projectKey;
+  state.usageProjectTrend.items = [];
+  state.usageProjectTrend.error = null;
+  notifyChange();
+  void loadProjectTrend(projectKey);
 }
 
 export function dailyUsageTotal(d: DailyUsage): number {
@@ -252,6 +369,17 @@ function renderDailyUsageSection(): HTMLElement {
   return el('div', { className: 'box' }, [boxHead('토큰 사용량 (최근 30일)'), el('div', { className: 'box-body' }, [body])]);
 }
 
+// 최근 30일 예상 비용 타일 — usageApi.ts가 아니라 별도 로딩 사이클인
+// state.usageSummary에서 값을 가져오므로(30일 요약, jsonl 1회 스캔) 다른
+// 타일과 로딩/에러 상태가 독립적이다. 라벨의 "예상"이 비용이 실측이 아니라
+// 단가표 기반 추정임을 드러낸다(정직성 원칙).
+function costStat(): UsageStat {
+  const s = state.usageSummary;
+  if (s.loading && !s.loaded) return { label: '최근 30일 예상 비용', value: '계산 중…' };
+  if (s.error || !s.report) return { label: '최근 30일 예상 비용', value: '—' };
+  return { label: '최근 30일 예상 비용', value: formatUsd(s.report.totalCostUsd) };
+}
+
 function renderUsageStatCards(): HTMLElement {
   if (state.dailyUsage.loading && !state.dailyUsage.loaded) {
     return el('div', { className: 'state-block-desc' }, ['불러오는 중…']);
@@ -265,25 +393,184 @@ function renderUsageStatCards(): HTMLElement {
     { label: '최근 30일 활동일수', value: String(t.activeDays), unit: '일' },
     { label: '일평균 토큰', value: formatTokenCount(t.avgPerDay) },
     { label: '캐시 히트율', value: t.cacheHitRate !== null ? `${t.cacheHitRate}%` : '—' },
+    {
+      label: '최고 사용일',
+      value: t.peakDay ? formatMonthDay(t.peakDay.date) : '—',
+      unit: t.peakDay ? ` · ${formatTokenCount(t.peakDay.total)}` : undefined,
+    },
+    { label: '캐시 생성 / 읽기(절대량)', value: `${formatTokenCount(t.cacheCreationTokens)} / ${formatTokenCount(t.cacheReadTokens)}` },
+    {
+      label: '입력 / 출력 비율',
+      value: t.inputOutputRatio ? `${t.inputOutputRatio.inputPct}% / ${t.inputOutputRatio.outputPct}%` : '—',
+    },
+    costStat(),
   ];
-  return el('div', { className: 'stat-row' }, stats.map(statTile));
+  const summary = state.usageSummary;
+  const unpriced = summary.report && summary.report.unpricedTokens > 0 ? unpricedNote(summary.report.unpricedTokens) : null;
+  return el('div', { className: 'col' }, [el('div', { className: 'stat-row' }, stats.map(statTile)), ...(unpriced ? [unpriced] : [])]);
 }
 
 function renderDailyTab(): HTMLElement {
   return el('div', { className: 'col' }, [renderUsageStatCards(), renderDailyUsageSection()]);
 }
 
-// ---------------- 화면 진입점 ----------------
+// ---------------- 프로젝트별 (Top5 랭킹 + 클릭 시 30일 추이) ----------------
 
-export function renderUsageView(): HTMLElement {
-  const header = el('div', { className: 'page-header' }, [
-    el('div', {}, [
-      el('h1', { className: 'page-title' }, ['사용량 통계']),
-      el('div', { className: 'page-subtitle' }, [
-        '날짜를 클릭하면 그날의 세션·에이전트·툴 상세를 볼 수 있습니다',
+function projectMaxTokens(projects: readonly ProjectUsageSummary[]): number {
+  return Math.max(1, ...projects.map((p) => p.tokens));
+}
+
+function renderProjectTrendPanel(): HTMLElement {
+  const pt = state.usageProjectTrend;
+  if (pt.loading && pt.items.length === 0) {
+    return el('div', { className: 'daily-detail-panel state-block-desc' }, ['불러오는 중…']);
+  }
+  if (pt.error) {
+    return el('div', { className: 'daily-detail-panel alert' }, [
+      el('span', {}, [`⚠ ${pt.error}`]),
+      el('button', { className: 'btn', onClick: () => { if (pt.projectKey) void loadProjectTrend(pt.projectKey); } }, ['다시 시도']),
+    ]);
+  }
+  if (pt.items.length === 0) {
+    return el('div', { className: 'daily-detail-panel state-block-desc' }, ['이 프로젝트의 최근 30일 사용 기록이 없습니다.']);
+  }
+  const days = [...pt.items].sort((a, b) => b.date.localeCompare(a.date));
+  const maxTotal = Math.max(1, ...days.map(dailyUsageTotal));
+  const rows = days.map((d) => {
+    const total = dailyUsageTotal(d);
+    const pct = maxTotal > 0 ? Math.round((total / maxTotal) * 100) : 0;
+    return el('div', { className: 'bar-row' }, [
+      el('div', { className: 'bar-row-label' }, [d.date]),
+      el('div', { className: 'bar-track' }, [barFillEl(pct)]),
+      el('div', { className: 'bar-row-value' }, [el('span', { className: 'bar-row-value-num' }, [total.toLocaleString('ko-KR')]), ' 토큰']),
+    ]);
+  });
+  return el('div', { className: 'daily-detail-panel' }, [el('div', { className: 'bar-list' }, rows)]);
+}
+
+function renderProjectRankingRow(p: ProjectUsageSummary, maxTokens: number): HTMLElement {
+  const pct = maxTokens > 0 ? Math.round((p.tokens / maxTokens) * 100) : 0;
+  const selected = state.usageProjectTrend.projectKey === p.projectKey;
+  return clickable(
+    el('div', { className: `bar-row bar-row-clickable${selected ? ' selected' : ''}` }, [
+      el('div', { className: 'bar-row-label' }, [`${selected ? '▾' : '▸'} ${p.displayName}`]),
+      el('div', { className: 'bar-track' }, [barFillEl(pct)]),
+      el('div', { className: 'bar-row-value' }, [
+        el('span', { className: 'bar-row-value-num' }, [formatTokenCount(p.tokens)]),
+        ` 토큰 · ${formatUsd(p.costUsd)}`,
       ]),
     ]),
+    () => toggleProjectTrend(p.projectKey)
+  );
+}
+
+function renderOtherProjectsRow(report: UsageSummaryReport, maxTokens: number): HTMLElement | null {
+  if (report.otherProjectsTokens <= 0) return null;
+  const pct = maxTokens > 0 ? Math.round((report.otherProjectsTokens / maxTokens) * 100) : 0;
+  return el('div', { className: 'bar-row' }, [
+    el('div', { className: 'bar-row-label' }, ['Top 5 외 나머지']),
+    el('div', { className: 'bar-track' }, [barFillEl(pct)]),
+    el('div', { className: 'bar-row-value' }, [
+      el('span', { className: 'bar-row-value-num' }, [formatTokenCount(report.otherProjectsTokens)]),
+      ` 토큰 · ${formatUsd(report.otherProjectsCostUsd)}`,
+    ]),
+  ]);
+}
+
+function renderProjectsTab(): HTMLElement {
+  const s = state.usageSummary;
+  if (s.loading && !s.loaded) {
+    return el('div', { className: 'col' }, [
+      el('div', { className: 'state-block-desc' }, ['불러오는 중… (최근 30일 전체를 훑어 집계하는 중이라 몇 초 걸릴 수 있습니다)']),
+    ]);
+  }
+  if (s.error) {
+    return el('div', { className: 'col' }, [
+      el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${s.error}`]), el('button', { className: 'btn', onClick: () => void loadUsageSummary() }, ['다시 시도'])]),
+    ]);
+  }
+  if (!s.report || s.report.projects.length === 0) {
+    return el('div', { className: 'col' }, [el('div', { className: 'state-block-desc' }, ['최근 30일 이내 프로젝트별 사용 기록이 없습니다.'])]);
+  }
+  const maxTokens = projectMaxTokens(s.report.projects);
+  const rows: HTMLElement[] = [];
+  for (const p of s.report.projects) {
+    rows.push(renderProjectRankingRow(p, maxTokens));
+    if (state.usageProjectTrend.projectKey === p.projectKey) rows.push(renderProjectTrendPanel());
+  }
+  const otherRow = renderOtherProjectsRow(s.report, maxTokens);
+  if (otherRow) rows.push(otherRow);
+  const unpriced = s.report.unpricedTokens > 0 ? unpricedNote(s.report.unpricedTokens) : null;
+  return el('div', { className: 'col' }, [
+    el('div', { className: 'box' }, [
+      boxHead('프로젝트별 사용량 Top 5 (최근 30일)'),
+      el('div', { className: 'box-body' }, [el('div', { className: 'bar-list' }, rows), ...(unpriced ? [unpriced] : [])]),
+    ]),
+  ]);
+}
+
+// ---------------- 모델·도구 (모델별 비중/비용 + 자주 쓴 툴 Top5) ----------------
+
+function renderModelUsageTable(models: readonly ModelUsageSummary[], totalTokens: number): HTMLElement {
+  if (models.length === 0) return el('div', { className: 'state-block-desc' }, ['모델 사용 기록이 없습니다.']);
+  const header = el('div', { className: 'thief-table-row thief-table-row-3 thief-table-head' }, [
+    el('span', {}, ['모델']),
+    el('span', {}, ['비중']),
+    el('span', {}, ['토큰']),
+    el('span', {}, ['비용']),
+  ]);
+  const rows = models.map((m) => {
+    const pct = totalTokens > 0 ? Math.round((m.tokens / totalTokens) * 100) : 0;
+    return el('div', { className: 'thief-table-row thief-table-row-3' }, [
+      el('span', { className: 'thief-table-title' }, [m.displayName]),
+      el('span', {}, [`${pct}%`]),
+      el('span', {}, [formatTokenCount(m.tokens)]),
+      // pricingMatched=false면 단가표에 없는 모델이다 — sonnet 단가로 조용히
+      // 대체하지 않고 "미산정"으로 정직하게 표시한다(usageSummaryApi.ts 계약).
+      el('span', {}, [m.pricingMatched ? formatUsd(m.costUsd) : '미산정']),
+    ]);
+  });
+  return el('div', { className: 'thief-table' }, [header, ...rows]);
+}
+
+function renderModelsTab(): HTMLElement {
+  const s = state.usageSummary;
+  if (s.loading && !s.loaded) {
+    return el('div', { className: 'col' }, [
+      el('div', { className: 'state-block-desc' }, ['불러오는 중… (최근 30일 전체를 훑어 집계하는 중이라 몇 초 걸릴 수 있습니다)']),
+    ]);
+  }
+  if (s.error) {
+    return el('div', { className: 'col' }, [
+      el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${s.error}`]), el('button', { className: 'btn', onClick: () => void loadUsageSummary() }, ['다시 시도'])]),
+    ]);
+  }
+  if (!s.report) {
+    return el('div', { className: 'col' }, [el('div', { className: 'state-block-desc' }, ['최근 30일 이내 사용 기록이 없습니다.'])]);
+  }
+  const unpriced = s.report.unpricedTokens > 0 ? unpricedNote(s.report.unpricedTokens) : null;
+  return el('div', { className: 'col' }, [
+    el('div', { className: 'box' }, [
+      boxHead('모델별 사용 비중 (최근 30일)'),
+      el('div', { className: 'box-body' }, [renderModelUsageTable(s.report.models, s.report.totalTokens), ...(unpriced ? [unpriced] : [])]),
+    ]),
+    el('div', { className: 'box' }, [boxHead('자주 쓴 툴 Top 5 (최근 30일)'), el('div', { className: 'box-body' }, [renderToolUsageList(s.report.tools)])]),
+  ]);
+}
+
+// ---------------- 화면 진입점 ----------------
+
+const SUBTITLES: Record<UsageTab, string> = {
+  daily: '날짜를 클릭하면 그날의 세션·에이전트·툴 상세를 볼 수 있습니다',
+  projects: '프로젝트를 클릭하면 그 프로젝트의 최근 30일 일별 추이를 볼 수 있습니다',
+  models: '모델별 사용 비중·비용과 자주 쓴 툴을 확인할 수 있습니다',
+};
+
+export function renderUsageView(tab: UsageTab): HTMLElement {
+  const header = el('div', { className: 'page-header' }, [
+    el('div', {}, [el('h1', { className: 'page-title' }, ['사용량 통계']), el('div', { className: 'page-subtitle' }, [SUBTITLES[tab]])]),
   ]);
 
-  return el('div', {}, [header, renderDailyTab()]);
+  const body = tab === 'daily' ? renderDailyTab() : tab === 'projects' ? renderProjectsTab() : renderModelsTab();
+  return el('div', {}, [header, body]);
 }

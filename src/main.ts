@@ -54,7 +54,7 @@ import {
   ensureOtelAutoConfigured,
   leaveMcpSettingsView,
 } from './views/settings';
-import { renderUsageView, loadDailyUsage } from './views/usage';
+import { renderUsageView, loadDailyUsage, loadUsageSummary } from './views/usage';
 import {
   renderSessionsListView,
   renderSessionDetailView,
@@ -116,7 +116,7 @@ function renderApp(): void {
       content = renderSettingsView(route.tab);
       break;
     case 'usage':
-      content = renderUsageView();
+      content = renderUsageView(route.tab);
       break;
     case 'sessions-list':
       content = renderSessionsListView();
@@ -186,6 +186,12 @@ let otelAutoSetupChecked = false;
 // 커버되고, 세션당 정확히 한 번만 실행되도록 플래그로 막는다.
 let updateCheckStarted = false;
 
+// 사용량 통계 3개 서브뷰(daily/projects/models)는 모두 route.kind==='usage'를
+// 공유한다 — "사용량" 탭에 새로 진입할 때만 다시 불러오고, 그 안에서 서브뷰만
+// 옮겨 다닐 때(해시는 바뀌지만 kind는 계속 'usage')는 재요청하지 않기 위해
+// 직전 라우트 kind를 기억해둔다(30일 요약은 jsonl 전체 1회 스캔이라 무겁다).
+let lastRouteKind: ReturnType<typeof parseRoute>['kind'] | null = null;
+
 function handleNavigation(): void {
   renderApp();
 
@@ -202,6 +208,8 @@ function handleNavigation(): void {
   // (로그인 화면에서 새 IPC 왕복을 열 이유가 없다 — leaveSessionChatView()로
   // 정리만 하고 재진입은 하지 않는다).
   const route = parseRoute();
+  const enteringUsageTab = route.kind === 'usage' && lastRouteKind !== 'usage';
+  lastRouteKind = route.kind;
   if (route.kind === 'sessions-detail') {
     if (state.sessionChat.sessionId !== route.sessionId) {
       leaveSessionChatView();
@@ -274,10 +282,13 @@ function handleNavigation(): void {
   if (route.kind === 'projects-detail' && state.projectTree.projectPath !== route.path && !state.projectTree.loading) {
     void loadProjectTree(route.path);
   }
-  if (route.kind === 'usage') {
-    // 실시간 감시 대신 메뉴 클릭(=이 라우트 진입) 시점마다 새로 불러온다 — 이미
-    // 불러오는 중이면 겹쳐 쌓이지 않게 건너뛴다.
+  if (enteringUsageTab) {
+    // 실시간 감시 대신 "사용량" 탭에 새로 진입하는 시점마다 새로 불러온다 —
+    // daily/projects/models 서브뷰 사이 이동(kind는 계속 'usage')은 여기 걸리지
+    // 않는다(enteringUsageTab 정의 참고). 이미 불러오는 중이면 겹쳐 쌓이지
+    // 않게 건너뛴다.
     if (!state.dailyUsage.loading) void loadDailyUsage();
+    if (!state.usageSummary.loading) void loadUsageSummary();
   }
 }
 
