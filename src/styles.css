@@ -304,7 +304,16 @@ html, body {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  /* v0.3.0 후속 조정 — 휠/트랙패드 스크롤은 유지하되 스크롤바 자체는 얇고
+     은은하게(완전히 안 보이게 숨기지는 않음). 트랙은 투명, 썸은 기존
+     --border 톤(#25272f, --sidebar-bg #0f1014 대비 은은한 명도차)만 사용해
+     새 색상 토큰을 추가하지 않는다. */
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--border) transparent;
 }
+.sidebar::-webkit-scrollbar { width: 4px; } /* Chrome/Safari/WebView(Tauri) */
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .sidebar-head {
   font-size: var(--font-size-caption);
   letter-spacing: var(--letter-spacing-eyebrow);
@@ -426,7 +435,15 @@ html, body {
 }
 
 /* ---------------- 메인 콘텐츠 ---------------- */
-.content { flex: 1; min-width: 0; height: 100%; overflow-y: auto; padding: var(--space-6) var(--space-7) var(--space-5); }
+.content {
+  flex: 1; min-width: 0; height: 100%; overflow-y: auto; padding: var(--space-6) var(--space-7) var(--space-5);
+  /* 사이드바(위)와 톤을 맞춘 thin 스크롤바 — 완전히 숨기지 않고 은은하게. */
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--border) transparent;
+}
+.content::-webkit-scrollbar { width: 4px; } /* Chrome/Safari/WebView(Tauri) */
+.content::-webkit-scrollbar-track { background: transparent; }
+.content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 /* 세션 상세(채팅) 전용 — 이 라우트에서만 main.ts가 얹는 보조 클래스. 페이지 전체
    스크롤 대신 헤더/입력창은 고정하고 메시지 목록(.chat-thread)만 자체 스크롤한다.
    다른 화면(.content 단독)의 스크롤 동작에는 영향 없다. */
