@@ -209,6 +209,10 @@ function handleNavigation(): void {
   // 정리만 하고 재진입은 하지 않는다).
   const route = parseRoute();
   const enteringUsageTab = route.kind === 'usage' && lastRouteKind !== 'usage';
+  // 프로젝트 목록·상세·홈은 세션 파생 지표(실행 중 N)를 보여준다 — FS 이벤트를 놓쳐
+  // (비정상 종료 등) 남은 "실행 중"을 라우트 진입 시 1회 재로딩으로 보정한다(폴링 아님).
+  const enteringActivityRoute =
+    (route.kind === 'home' || route.kind === 'projects-list' || route.kind === 'projects-detail') && lastRouteKind !== route.kind;
   lastRouteKind = route.kind;
   if (route.kind === 'sessions-detail') {
     if (state.sessionChat.sessionId !== route.sessionId) {
@@ -282,6 +286,7 @@ function handleNavigation(): void {
   if (route.kind === 'projects-detail' && state.projectTree.projectPath !== route.path && !state.projectTree.loading) {
     void loadProjectTree(route.path);
   }
+  if (enteringActivityRoute && !state.sessions.loading) void loadSessions();
   if (enteringUsageTab) {
     // 실시간 감시 대신 "사용량" 탭에 새로 진입하는 시점마다 새로 불러온다 —
     // daily/projects/models 서브뷰 사이 이동(kind는 계속 'usage')은 여기 걸리지

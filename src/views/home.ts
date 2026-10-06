@@ -15,8 +15,9 @@ import { state, notifyChange } from '../state';
 import { navigate } from '../route';
 import { computeTodayTokens, computeUsageTotals, dailyUsageTotal, formatTokenCount, loadDailyUsage } from './usage';
 import type { DailyUsage } from '../usageApi';
-import { asBoolean, asNumber, asString, loadSessions, handleClaudeAuthLoginStart, projectNameFromCwd, sessionTitle, sortedSessions } from './sessions';
-import type { ClaudeSessionRecord } from '../sessionsApi';
+import { loadSessions, handleClaudeAuthLoginStart, sortedSessions } from './sessions';
+import { sessionBlistRow, shortId } from '../sessionRow';
+import { portfolioSummary } from '../projectActivity';
 import { loadCatalog } from './catalog';
 import type { AutonomousTask } from '../state';
 import { loadAutonomousTasks } from './autonomousTasks';
@@ -72,8 +73,14 @@ function renderGreeting(): HTMLElement {
     subParts.push(el('b', {}, [String(state.dashboard.projects.length)]), '개 워크스페이스 연결됨 · ');
   }
   if (state.sessions.loaded) {
-    const running = state.sessions.items.filter((s) => asBoolean(s.running)).length;
-    subParts.push('실행 중 세션 ', el('b', {}, [String(running)]), '개');
+    // 워크스페이스 내 세션만 집계된다(백엔드가 워크스페이스 밖 cwd를 목록에서 제외) —
+    // 과소집계로 오해하지 않게 툴팁으로 밝힌다.
+    const { activeProjects, runningSessions } = portfolioSummary(state.sessions.items);
+    const summary = el('span', {}, [
+      '활동 중 ', el('b', {}, [String(activeProjects)]), '개 프로젝트 · 실행 중 세션 ', el('b', {}, [String(runningSessions)]), '개',
+    ]);
+    summary.setAttribute('title', '워크스페이스 내 세션 기준');
+    subParts.push(summary);
   }
 
   return el('div', { className: 'greet' }, [
@@ -96,7 +103,10 @@ function renderStatRow(): HTMLElement {
   const activeValue = dash.loaded ? `${dash.projects.filter((p) => p.archiveStatus === 'active').length}` : '—';
   const totalValue = dash.loaded ? ` / ${dash.projects.length}` : '';
 
-  const runningSessions = state.sessions.loaded ? String(state.sessions.items.filter((s) => asBoolean(s.running)).length) : '—';
+  const portfolio = portfolioSummary(state.sessions.items);
+  const runningSessions = state.sessions.loaded ? String(portfolio.runningSessions) : '—';
+  const runningTrend =
+    state.sessions.loaded && portfolio.activeProjects > 0 ? { text: `${portfolio.activeProjects}개 프로젝트`, tone: 'flat' as const } : undefined;
 
   const usageTotals = computeUsageTotals(state.dailyUsage.items);
   const todayTokens = state.dailyUsage.loaded ? formatTokenCount(computeTodayTokens(state.dailyUsage.items)) : '—';
@@ -111,7 +121,7 @@ function renderStatRow(): HTMLElement {
 
   return el('div', { className: 'stat-row' }, [
     statTile('활성 프로젝트', `${activeValue}${totalValue}`),
-    statTile('실행 중 세션', runningSessions),
+    statTile('실행 중 세션', runningSessions, runningTrend),
     statTile('오늘 토큰 사용량', todayTokens, cacheHitTrend),
     statTile('자율 작업 대기열', queuedTasks),
   ]);
@@ -120,43 +130,6 @@ function renderStatRow(): HTMLElement {
 // ---------------- 박스 공용 헤더 ----------------
 function boxHead(title: string, right: Node | string): HTMLElement {
   return el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, [title]), right]);
-}
-
-// m2 수정(리뷰 2026-09-24) — 자율 작업 id(crypto.randomUUID(), 36자)를
-// 그대로 넣으면 좁은 .blist-id 열에서 식별 불가 수준으로 잘린다. 세션 ID와
-// 같은 8자+말줄임 규칙을 공유해, .blist-row--tasks의 minmax(64px, max-content)
-// 열 폭만으로 항상 온전히 보이게 한다(원래 이름 shortSessionId를 범용으로
-// 승격 — 세션/작업 두 곳 모두 같은 "#앞8자…" 표기를 쓴다).
-function shortId(id: string): string {
-  return id.length <= 8 ? `#${id}` : `#${id.slice(0, 8)}…`;
-}
-
-function formatCompactElapsed(ms: number): string {
-  const diffMin = Math.floor((Date.now() - ms) / 60000);
-  if (diffMin < 1) return '방금';
-  if (diffMin < 60) return `${diffMin}m`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) {
-    const remMin = diffMin % 60;
-    return remMin > 0 ? `${diffHour}h ${String(remMin).padStart(2, '0')}m` : `${diffHour}h`;
-  }
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay === 1) return '어제';
-  return `${diffDay}일 전`;
-}
-
-function sessionBlistRow(s: ClaudeSessionRecord): HTMLElement {
-  const sessionId = asString(s.sessionId);
-  const running = asBoolean(s.running);
-  const updatedAt = asNumber(s.updatedAt) ?? asNumber(s.startedAt);
-  const row = el('div', { className: 'blist-row blist-row--sessions' }, [
-    el('span', { className: 'blist-id' }, [shortId(sessionId)]),
-    el('span', { className: 'blist-accent' }, [projectNameFromCwd(asString(s.cwd))]),
-    el('span', { className: 'blist-body' }, [sessionTitle(s)]),
-    el('span', { className: `blist-status ${running ? 'status-run' : 'status-done'}` }, [el('span', { className: 'dot' }, []), running ? '실행 중' : '완료']),
-    el('span', { className: 'blist-time' }, [updatedAt !== null ? formatCompactElapsed(updatedAt) : '-']),
-  ]);
-  return clickable(row, () => navigate(`#/sessions/${encodeURIComponent(sessionId)}`));
 }
 
 function recentSessionsBox(): HTMLElement {
@@ -173,7 +146,7 @@ function recentSessionsBox(): HTMLElement {
     if (items.length === 0) {
       body = el('div', { className: 'state-block-desc' }, ['최근 세션이 없습니다.']);
     } else {
-      body = el('div', { className: 'blist' }, items.map(sessionBlistRow));
+      body = el('div', { className: 'blist' }, items.map((it) => sessionBlistRow(it)));
       countLabel = `${items.length}건 표시 · 전체 보기 →`;
     }
   }

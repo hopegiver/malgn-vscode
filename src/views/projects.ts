@@ -2,7 +2,7 @@
 // 이 화면은 이제 목업이 아니다 — Rust 커맨드 list_workspace_projects()가 실제
 // ~/workspace 아래를 스캔한 결과를 그대로 쓴다(workspaceApi.ts, src-tauri/src/lib.rs
 // 주석 참고). "세션목록"에 이은 이 앱의 두 번째 실동작 화면.
-import { el, clickable, showToast, createModalOverlay, boundField, restoreModalFocus } from '../dom';
+import { el, clickable, showToast, createModalOverlay, boundField, restoreModalFocus, runningDot, loadingBlock, errorBlock } from '../dom';
 import { state, notifyChange } from '../state';
 import type { ArchiveStatus } from '../state';
 import { fetchWorkspaceProjects, fetchProjectTree, fetchFilePreview } from '../workspaceApi';
@@ -12,6 +12,9 @@ import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi
 import { loadMalgnAgentConfigStatus } from './autonomousTasks';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 import { navigate } from '../route';
+import { groupSessionsByProject } from '../projectActivity';
+import { sessionBlistRow } from '../sessionRow';
+import { loadSessions } from './sessions';
 
 const BADGE_META: Readonly<Record<ArchiveStatus, { readonly label: string; readonly cls: string }>> = {
   active: { label: '진행', cls: 'badge-active' },
@@ -85,12 +88,17 @@ function renderSkeletonGrid(): HTMLElement {
 // 걷어냈다) — "상세 보기"와 "새 세션"을 각각 독립된 형제 버튼으로 두어 중첩
 // 인터랙티브 요소(카드 안에 버튼)를 만들지 않는다. 두 버튼 모두 네이티브
 // <button>이라 Tab으로 각각 개별 접근되고 Enter/Space로 각각 독립 실행된다.
-function renderProjectCard(project: WorkspaceProject): HTMLElement {
+function renderProjectCard(project: WorkspaceProject, runningCount: number): HTMLElement {
   const goToProject = (): void => navigate(`#/project/${encodeURIComponent(project.path)}`);
   const goToNewSession = (): void => navigate(`#/sessions/new/${encodeURIComponent(project.path)}`);
 
   return el('div', { className: 'project-card' }, [
-    el('div', { className: 'project-card-top' }, [el('span', { className: 'project-card-name' }, [project.name]), badge(project.archiveStatus)]),
+    el('div', { className: 'project-card-top' }, [
+      el('span', { className: 'project-card-name' }, [project.name]),
+      // 실행 중일 때만 표시한다(0건/미로딩/에러면 생략 — 거짓 0 금지, 끝난 상태가 기본값).
+      ...(runningCount > 0 ? [el('span', { className: 'project-card-running' }, [runningDot(), `실행 중 ${runningCount}`])] : []),
+      badge(project.archiveStatus),
+    ]),
     el('div', { className: 'project-card-desc' }, [project.path]),
     el('div', { className: 'project-card-footer' }, [
       el('button', { className: 'project-card-link', onClick: goToProject }, ['상세 보기 →']),
@@ -332,7 +340,10 @@ export function renderProjectsListView(): HTMLElement {
     body.push(el('div', { className: 'alert' }, [el('span', {}, [`⚠ ${state.dashboard.error}`]), retry]));
   } else if (list.length > 0) {
     const grid = el('div', { className: 'project-grid' });
-    for (const p of list) grid.appendChild(renderProjectCard(p));
+    // 세션 미로딩이면 빈 맵 — 인디케이터 없이 카드만 그린다. 로드 실패 시에는
+    // state.sessions.items가 마지막 성공값으로 남아 있어 그 값을 그대로 쓴다.
+    const activity = groupSessionsByProject(state.sessions.loaded ? state.sessions.items : []);
+    for (const p of list) grid.appendChild(renderProjectCard(p, activity.get(p.path)?.running.length ?? 0));
     body.push(grid);
   } else if (state.dashboard.projects.length > 0) {
     body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['해당 조건의 프로젝트가 없습니다'])]));
@@ -402,7 +413,46 @@ export function renderProjectsDetailView(path: string): HTMLElement {
     );
   }
 
-  return el('div', {}, [back, header, ...statusEls, renderProjectTreeSection(projectPath)]);
+  return el('div', {}, [back, header, ...statusEls, renderProjectSessionsBox(projectPath), renderProjectTreeSection(projectPath)]);
+}
+
+// ---------------- 프로젝트 상세 "세션" 섹션 (실행 중 → 최근 순, 최대 10행) ----------------
+const PROJECT_SESSIONS_LIMIT = 10;
+
+function renderProjectSessionsBox(projectPath: string): HTMLElement {
+  const sessions = state.sessions;
+  let countLabel: string | null = null;
+  let body: HTMLElement;
+
+  if (sessions.error) {
+    body = errorBlock(sessions.error, () => void loadSessions());
+  } else if (!sessions.loaded) {
+    body = loadingBlock();
+  } else {
+    const activity = groupSessionsByProject(sessions.items).get(projectPath);
+    const running = activity?.running ?? [];
+    const recent = activity?.recent ?? [];
+    const rows = [...running, ...recent].slice(0, PROJECT_SESSIONS_LIMIT);
+    if (rows.length === 0) {
+      body = el('div', {}, [
+        el('div', { className: 'state-block-desc' }, ['최근 세션이 없습니다. (전체 최근 100건 범위 기준)']),
+        el('div', { className: 'project-sessions-empty-action' }, [
+          el('button', { className: 'btn btn-sm', onClick: () => navigate(`#/sessions/new/${encodeURIComponent(projectPath)}`) }, ['+ 새 세션']),
+        ]),
+      ]);
+    } else {
+      body = el('div', { className: 'blist' }, rows.map((r) => sessionBlistRow(r, { showProject: false })));
+      countLabel = `${running.length > 0 ? `실행 중 ${running.length} · ` : ''}최근 ${recent.length}`;
+    }
+  }
+
+  return el('div', { className: 'box project-sessions-box' }, [
+    el('div', { className: 'box-head' }, [
+      el('span', { className: 'box-title' }, ['세션']),
+      ...(countLabel ? [el('span', { className: 'count' }, [countLabel])] : []),
+    ]),
+    el('div', { className: 'box-body' }, [body]),
+  ]);
 }
 
 // ---------------- 폴더 구조 + 파일 미리보기 (실제 로컬 파일, 읽기 전용) ----------------

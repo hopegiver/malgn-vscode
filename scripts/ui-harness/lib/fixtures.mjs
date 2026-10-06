@@ -153,6 +153,9 @@ export async function buildBaseFixtures() {
   const sessions = sessionSamples.map((s, i) => ({
     sessionId: s.sessionId,
     cwd: s.cwd,
+    // 백엔드가 붙이는 projectPath(프로젝트 path 원문) 스텁 — 실 데이터의 cwd는
+    // 디렉터리명 역변환이라 정확하지 않으므로 첫 프로젝트 path로 고정한다.
+    projectPath: projects[0]?.path ?? s.cwd,
     title: s.title,
     name: `${s.cwd.split('/').pop() ?? 'project'}-${i}`,
     version: '2.1.0',

@@ -518,6 +518,9 @@ html, body {
    않는다 — 실제 클릭 타깃인 .project-card-link 쪽에 press 피드백을 둔다. */
 .project-card:hover { border-color: var(--accent); }
 .project-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-2); margin-bottom: var(--space-2); }
+.project-card-running { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: var(--font-size-caption); color: var(--status-good); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.project-sessions-box { margin-bottom: var(--space-4); }
+.project-sessions-empty-action { margin-top: var(--space-2); }
 .project-card-name { font-weight: 600; font-size: var(--font-size-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-card-desc { color: var(--text-secondary); font-size: var(--font-size-caption); margin-bottom: var(--space-2); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .project-card-footer {
@@ -1359,6 +1362,7 @@ textarea.settings-input { resize: vertical; }
    minmax(…, max-content)로 내용(홈 컴포넌트가 이미 8자+말줄임로 잘라 넣는
    짧은 문자열)만큼은 항상 보이게 하고, 도구명 열은 auto로 내용에 맞춘다. */
 .blist-row--sessions { grid-template-columns: minmax(64px, max-content) 96px 1fr 74px 56px; }
+.blist-row--sessions-noproj { grid-template-columns: minmax(64px, max-content) 1fr 74px 56px; } /* 프로젝트명 열 없는 변형(프로젝트 상세 세션 섹션) */
 .blist-row--tasks { grid-template-columns: minmax(64px, max-content) 1fr 60px; }
 .blist-row--devtools { grid-template-columns: 20px auto 1fr auto; }
 .blist-id { color: var(--text-muted-aa); font-variant-numeric: tabular-nums; font-family: var(--font-numeric); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
