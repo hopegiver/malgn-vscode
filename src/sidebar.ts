@@ -17,7 +17,8 @@ import { navigate } from './route';
 import type { Route } from './route';
 import { asBoolean, asString, asNumber, sortedSessions, sessionTitle, sessionProjectName, openNewSessionModal, loadSessions } from './views/sessions';
 import type { ClaudeSessionRecord } from './sessionsApi';
-import { sortedProjectsByRecency } from './views/projects';
+import { sortedProjectsByRecency, BADGE_META } from './views/projects';
+import { groupSessionsByProject } from './projectActivity';
 import { loadDailyUsage, loadUsageSummary } from './views/usage';
 import { highlightDevTool } from './views/devTools';
 import type { DevToolStatus } from './devToolsApi';
@@ -344,16 +345,20 @@ function sidebarEmpty(text: string): HTMLElement {
 // =====================================================================
 // §4-1/§4-2 — 홈·프로젝트: 워크스페이스 목록(기존 컴포넌트 그대로 재사용)
 // =====================================================================
-function dotClassFor(p: WorkspaceProject): 'good' | 'idle' {
-  return p.archiveStatus === 'active' ? 'good' : 'idle';
+// 앱 전체에서 초록 점(good)은 "지금 실행 중" 한 가지 의미만 갖는다 — 프로젝트 행 점도
+// 그 프로젝트에 실행 중 세션이 있을 때만 초록이고, 진행/보관 구분은 meta 텍스트가 맡는다.
+// 세션 미로딩이면 빈 집합(거짓 실행 중 금지), 로드 실패면 state.sessions.items가 마지막
+// 성공값으로 남아 있어 카드 인디케이터와 같은 값을 쓴다.
+function dotClassFor(runningCount: number): 'good' | 'idle' {
+  return runningCount > 0 ? 'good' : 'idle';
 }
 
-function wsRow(p: WorkspaceProject, route: Route): HTMLElement {
+function wsRow(p: WorkspaceProject, route: Route, runningCount: number): HTMLElement {
   const current = route.kind === 'projects-detail' && route.path === p.path;
   return narrowRow({
-    dotClass: dotClassFor(p),
+    dotClass: dotClassFor(runningCount),
     name: p.name,
-    meta: formatDaysAgo(p.updatedAt),
+    meta: `${BADGE_META[p.archiveStatus].label} · ${formatDaysAgo(p.updatedAt)}`,
     current,
     onClick: () => navigate(`#/project/${encodeURIComponent(p.path)}`),
   });
@@ -380,7 +385,8 @@ function renderWorkspaceSidebar(route: Route): HTMLElement {
   } else if (projects.length === 0) {
     body = sidebarEmpty('워크스페이스가 없습니다');
   } else {
-    body = el('div', {}, projects.map((p) => wsRow(p, route)));
+    const activity = groupSessionsByProject(state.sessions.loaded ? state.sessions.items : []);
+    body = el('div', {}, projects.map((p) => wsRow(p, route, activity.get(p.path)?.running.length ?? 0)));
   }
 
   const foot = clickable(el('div', { className: 'sidebar-foot' }, ['워크스페이스 경로 관리']), openWorkspacesManager);

@@ -70,18 +70,30 @@ export function formatTimestamp(ms: number | null): string {
   }
 }
 
+// 요청 순번 — FS 이벤트 경로와 라우트 진입 경로가 겹쳐 호출돼도 화면에 남는 값은
+// 항상 "가장 나중에 시작한" 요청의 결과다. 이전 요청의 응답(성공/에러)은 버리고,
+// loading도 마지막 요청이 끝났을 때만 내린다(늦게 도착한 옛 스냅숏이 "실행 중"을
+// 되살리는 것을 막는다).
+let sessionsSeq = 0;
+
 export async function loadSessions(): Promise<void> {
+  const seq = ++sessionsSeq;
   state.sessions.loading = true;
   state.sessions.error = null;
   notifyChange();
   try {
-    state.sessions.items = await fetchClaudeSessions();
+    const items = await fetchClaudeSessions();
+    if (seq !== sessionsSeq) return;
+    state.sessions.items = items;
     state.sessions.loaded = true;
   } catch (err) {
+    if (seq !== sessionsSeq) return;
     state.sessions.error = err instanceof Error ? err.message : '세션 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
   } finally {
-    state.sessions.loading = false;
-    notifyChange();
+    if (seq === sessionsSeq) {
+      state.sessions.loading = false;
+      notifyChange();
+    }
   }
 }
 

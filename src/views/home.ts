@@ -76,8 +76,10 @@ function renderGreeting(): HTMLElement {
     // 워크스페이스 내 세션만 집계된다(백엔드가 워크스페이스 밖 cwd를 목록에서 제외) —
     // 과소집계로 오해하지 않게 툴팁으로 밝힌다.
     const { activeProjects, runningSessions } = portfolioSummary(state.sessions.items);
+    // 타일과 같은 규칙 — 활동 프로젝트가 0이면 "· N개 프로젝트에서" 꼬리를 붙이지 않는다.
     const summary = el('span', {}, [
-      '실행 중 세션 ', el('b', {}, [String(runningSessions)]), '개 · ', el('b', {}, [String(activeProjects)]), '개 프로젝트에서',
+      '실행 중 세션 ', el('b', {}, [String(runningSessions)]), '개',
+      ...(activeProjects > 0 ? [' · ', el('b', {}, [String(activeProjects)]), '개 프로젝트에서'] : []),
     ]);
     summary.setAttribute('title', '워크스페이스 내 세션 기준');
     subParts.push(summary);

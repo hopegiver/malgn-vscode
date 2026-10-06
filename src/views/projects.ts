@@ -16,7 +16,7 @@ import { groupSessionsByProject } from '../projectActivity';
 import { sessionBlistRow } from '../sessionRow';
 import { loadSessions } from './sessions';
 
-const BADGE_META: Readonly<Record<ArchiveStatus, { readonly label: string; readonly cls: string }>> = {
+export const BADGE_META: Readonly<Record<ArchiveStatus, { readonly label: string; readonly cls: string }>> = {
   active: { label: '진행', cls: 'badge-active' },
   archived: { label: '보관', cls: 'badge-archived' },
   unknown: { label: '상태 없음', cls: 'badge-unknown' },
@@ -286,6 +286,18 @@ export function renderProjectsListView(): HTMLElement {
   const warningsBanner = renderWorkspaceWarningsBanner();
   if (warningsBanner) body.push(warningsBanner);
 
+  if (!state.dashboard.loading && !state.dashboard.error && state.dashboard.projects.length > 0 && state.sessions.error) {
+    // 세션 로드 실패 신호 — 카드 인디케이터는 마지막 성공값을 유지하므로(첫 로드 실패면
+    // 값 자체가 없다) "실행 0"과 "모름"을 구분할 수 있게 목록 상단에 따로 알린다.
+    const stale = state.sessions.loaded ? ' 실행 중 표시는 마지막으로 확인된 값입니다.' : ' 실행 중 표시를 확인할 수 없습니다.';
+    body.push(
+      el('div', { className: 'alert project-sessions-error' }, [
+        el('span', {}, [`⚠ 세션 상태를 불러오지 못했습니다.${stale} (${state.sessions.error})`]),
+        el('button', { className: 'btn', onClick: () => void loadSessions() }, ['다시 시도']),
+      ])
+    );
+  }
+
   if (!state.dashboard.loading && !state.dashboard.error && state.dashboard.projects.length > 0) {
     const filterGroup = el('div', { className: 'filter-group' });
     const filters: readonly { readonly key: typeof state.dashboard.filter; readonly label: string }[] = [
@@ -442,7 +454,10 @@ function renderProjectSessionsBox(projectPath: string): HTMLElement {
       ]);
     } else {
       body = el('div', { className: 'blist' }, rows.map((r) => sessionBlistRow(r, { showProject: false })));
-      countLabel = `${running.length > 0 ? `실행 중 ${running.length} · ` : ''}최근 ${recent.length}`;
+      // 표시 행은 상한(10)이 있어 전체 수와 다를 수 있다 — 잘렸으면 상한을 함께 드러낸다.
+      const total = running.length + recent.length;
+      const shown = total > rows.length ? ` (${rows.length}건 표시)` : '';
+      countLabel = `${running.length > 0 ? `실행 중 ${running.length} · ` : ''}최근 ${recent.length}${shown}`;
     }
   }
 
