@@ -1,7 +1,8 @@
 // 홈 대시보드 — 로그인 직후 첫 화면. Terminus 목업(docs/design/terminus-mockup.html)
 // 구조를 그대로 옮긴다: 인사말 → 통계 타일 4개 → 2단(최근 세션/자율 작업 큐 |
-// 개발 도구/이번 주 토큰 사용량). 데이터 매핑은 docs/design/terminus-shell-ia.md
-// §6이 정본이다.
+// 이번 주 토큰 사용량). 데이터 매핑은 docs/design/terminus-shell-ia.md §6이
+// 정본이다. 개발 도구 상태는 설정 > 개발 도구 탭에서 확인한다 — 홈에는 안
+// 띄운다.
 //
 // claude CLI 로그인/malgnai-hub 연동/카탈로그 위젯은 목업에 없던 요소지만
 // 실제 기능(특히 Anthropic 계정 로그인/로그아웃, MCP 상태)이라 삭제하지
@@ -21,8 +22,6 @@ import { portfolioSummary } from '../projectActivity';
 import { loadCatalog } from './catalog';
 import type { AutonomousTask } from '../state';
 import { loadAutonomousTasks } from './autonomousTasks';
-import { loadDevTools } from './devTools';
-import type { DevToolStatus } from '../devToolsApi';
 import { loadMcp } from './settings';
 import { ensureAppVersionLoaded } from '../sidebar';
 import { checkClaudeAuthStatus, openClaudeLoginTerminal, logoutClaudeAuth } from '../sessionsApi';
@@ -47,7 +46,7 @@ export function renderHomeView(): HTMLElement {
     renderStatRow(),
     el('div', { className: 'split' }, [
       el('div', { className: 'col' }, [recentSessionsBox(), taskQueueBox()]),
-      el('div', { className: 'col' }, [devToolsBox(), weeklyUsageBox()]),
+      el('div', { className: 'col' }, [weeklyUsageBox()]),
     ]),
     el('div', { className: 'home-extra-grid' }, [claudeAuthWidget(), mcpHubWidget(), catalogWidget()]),
   ]);
@@ -198,39 +197,6 @@ function taskQueueBox(): HTMLElement {
 
   return el('div', { className: 'box' }, [
     boxHead('자율 작업 큐', clickable(el('span', { className: 'count' }, [countLabel]), () => navigate('#/tasks'))),
-    el('div', { className: 'box-body' }, [body]),
-  ]);
-}
-
-// ---------------- 개발 도구 ----------------
-function devToolBlistRow(t: DevToolStatus): HTMLElement {
-  const flag = t.installed
-    ? el('span', { className: 'blist-devtool-flag ok' }, ['✓ 설치됨'])
-    : el('span', { className: `blist-devtool-flag ${t.required ? 'bad' : 'missing'}` }, ['미설치']);
-  return el('div', { className: 'blist-row blist-row--devtools' }, [
-    el('span', { className: 'blist-devtool-sym' }, ['$']),
-    el('span', { className: 'blist-body' }, [t.name]),
-    el('span', { className: 'blist-devtool-ver' }, [t.version ?? '-']),
-    flag,
-  ]);
-}
-
-function devToolsBox(): HTMLElement {
-  const devTools = state.devTools;
-  let body: HTMLElement;
-
-  if (devTools.error) {
-    body = errorBlock(devTools.error, () => void loadDevTools());
-  } else if (!devTools.loaded) {
-    body = loadingBlock();
-  } else if (devTools.items.length === 0) {
-    body = el('div', { className: 'state-block-desc' }, ['조회된 개발 도구가 없습니다.']);
-  } else {
-    body = el('div', { className: 'blist' }, devTools.items.map(devToolBlistRow));
-  }
-
-  return el('div', { className: 'box' }, [
-    boxHead('개발 도구', clickable(el('span', { className: 'count' }, ['전체 보기 →']), () => navigate('#/settings/devtools'))),
     el('div', { className: 'box-body' }, [body]),
   ]);
 }

@@ -1364,7 +1364,6 @@ textarea.settings-input { resize: vertical; }
 .blist-row--sessions { grid-template-columns: minmax(64px, max-content) 96px 1fr 74px 56px; }
 .blist-row--sessions-noproj { grid-template-columns: minmax(64px, max-content) 1fr 74px 56px; } /* 프로젝트명 열 없는 변형(프로젝트 상세 세션 섹션) */
 .blist-row--tasks { grid-template-columns: minmax(64px, max-content) 1fr 60px; }
-.blist-row--devtools { grid-template-columns: 20px auto 1fr auto; }
 .blist-id { color: var(--text-muted-aa); font-variant-numeric: tabular-nums; font-family: var(--font-numeric); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .blist-accent { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-small); } /* 배치 D — 구 11px 하드코딩 편입, 강조 표시된 프로젝트/작업명이라 small로 */
 .blist-body { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1392,14 +1391,6 @@ textarea.settings-input { resize: vertical; }
    (.badge-active, --status-good)·세션 실행중 표시와 같은 green으로 통일한다
    (이전엔 accent(cyan)라 화면마다 색이 달랐다). */
 .blist-badge.run { color: var(--status-good); }
-
-/* ---- 개발 도구 행 ---- */
-.blist-devtool-sym { color: var(--text-muted-aa); }
-.blist-devtool-ver { color: var(--text-primary); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-numeric); }
-.blist-devtool-flag { font-size: var(--font-size-caption); white-space: nowrap; }
-.blist-devtool-flag.ok { color: var(--status-good); }
-.blist-devtool-flag.bad { color: var(--status-bad); }
-.blist-devtool-flag.missing { color: var(--text-muted-aa); }
 
 /* ---- 이번 주 토큰 사용량 스파크라인 ---- */
 .usage-figures { display: flex; gap: var(--space-4); margin-bottom: var(--space-2-5); flex-wrap: wrap; }
