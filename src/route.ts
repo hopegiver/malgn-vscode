@@ -15,6 +15,12 @@
 //   '#/tasks/item/<id>'  -> tasks-detail
 import type { SettingsTab, CatalogTab, UsageTab } from './state';
 
+// 세션 상세의 "← 세션" 뒤로가기 목적지. 세션 상세로 들어오는 진입점이
+// 세션 목록/홈/프로젝트 상세 3군데라 뒤로가기도 그 진입점으로 되돌아가야 한다.
+// 해시 쿼리스트링(`?back=home` | `?back=project:<encodedPath>`)으로 인코딩하며,
+// 생략 시 기본값은 'sessions-list'(기존 동작과 동일, 하위호환).
+export type SessionBackTarget = { readonly kind: 'sessions-list' } | { readonly kind: 'home' } | { readonly kind: 'projects-detail'; readonly path: string };
+
 export type Route =
   | { readonly kind: 'home' }
   | { readonly kind: 'projects-list' }
@@ -24,7 +30,7 @@ export type Route =
   | { readonly kind: 'usage'; readonly tab: UsageTab }
   | { readonly kind: 'sessions-list' }
   | { readonly kind: 'sessions-draft'; readonly projectPath: string }
-  | { readonly kind: 'sessions-detail'; readonly sessionId: string }
+  | { readonly kind: 'sessions-detail'; readonly sessionId: string; readonly backTo: SessionBackTarget }
   | { readonly kind: 'tasks-list' }
   | { readonly kind: 'tasks-board' }
   | { readonly kind: 'tasks-detail'; readonly taskId: string };
@@ -74,7 +80,11 @@ export function parseRoute(): Route {
   }
   if (hash.startsWith('#/sessions/')) {
     try {
-      return { kind: 'sessions-detail', sessionId: decodeURIComponent(hash.slice('#/sessions/'.length)) };
+      const rest = hash.slice('#/sessions/'.length);
+      const qIdx = rest.indexOf('?');
+      const idPart = qIdx === -1 ? rest : rest.slice(0, qIdx);
+      const queryPart = qIdx === -1 ? '' : rest.slice(qIdx + 1);
+      return { kind: 'sessions-detail', sessionId: decodeURIComponent(idPart), backTo: parseSessionBackTarget(queryPart) };
     } catch {
       return { kind: 'sessions-list' };
     }
@@ -98,6 +108,38 @@ export function parseRoute(): Route {
   }
 
   return { kind: 'home' };
+}
+
+// '?back=home' | '?back=project:<encodedPath>' 형태의 쿼리스트링(선행 '?' 제외,
+// 빈 문자열 포함)을 파싱한다. 모르는 kind·빈 path 등 잘못된 입력은 전부
+// 'sessions-list' 기본값으로 안전하게 폴백한다 — 여기서 에러를 던지지 않는다.
+function parseSessionBackTarget(queryPart: string): SessionBackTarget {
+  if (!queryPart) return { kind: 'sessions-list' };
+  const eqIdx = queryPart.indexOf('=');
+  if (eqIdx === -1) return { kind: 'sessions-list' };
+  const key = queryPart.slice(0, eqIdx);
+  const value = queryPart.slice(eqIdx + 1);
+  if (key !== 'back') return { kind: 'sessions-list' };
+  if (value === 'home') return { kind: 'home' };
+  if (value.startsWith('project:')) {
+    const encodedPath = value.slice('project:'.length);
+    if (!encodedPath) return { kind: 'sessions-list' };
+    try {
+      const path = decodeURIComponent(encodedPath);
+      return path ? { kind: 'projects-detail', path } : { kind: 'sessions-list' };
+    } catch {
+      return { kind: 'sessions-list' };
+    }
+  }
+  return { kind: 'sessions-list' };
+}
+
+// 세션 상세 뒤로가기 목적지를 해시 쿼리스트링으로 인코딩한다. 기본값
+// (sessions-list, 또는 미지정)이면 쿼리스트링을 붙이지 않아 기존 동작과 동일하다.
+export function encodeSessionBackTarget(backTo?: SessionBackTarget): string {
+  if (!backTo || backTo.kind === 'sessions-list') return '';
+  if (backTo.kind === 'home') return '?back=home';
+  return `?back=project:${encodeURIComponent(backTo.path)}`;
 }
 
 export function navigate(hash: string): void {

@@ -388,5 +388,40 @@ export function scenarios(base) {
         }
       },
     },
+    // ⑨ 홈 "최근 세션" 박스에서 행 클릭 → 세션 상세 → 뒤로가기 = 홈.
+    // src/sessionRow.ts의 sessionBlistRow()가 항상 '#/sessions'로만 돌아가던
+    // 라우팅 버그의 세 번째 진입점(사용자는 projects-detail만 보고했지만 같은
+    // 컴포넌트를 쓰는 홈도 동일 결함이 있었다) — 고정 회귀 시나리오.
+    {
+      id: 'recent-session-back-nav',
+      fixtures: base,
+      async run(page, { shot, bugs }) {
+        const row = page.locator('.blist-row--sessions').first();
+        if ((await row.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: 'recent-session-back-nav 시나리오: 홈 "최근 세션" 박스에 행이 없음(기본 픽스처 확인 필요)', file: 'scripts/ui-harness/flows/home.mjs' });
+          return;
+        }
+        await shot('01-home-recent-sessions');
+        await row.click();
+        await page.waitForTimeout(150);
+        const hash = await page.evaluate(() => window.location.hash);
+        if (!hash.startsWith('#/sessions/')) {
+          bugs.push({ severity: 'Major', symptom: `홈 최근 세션 행 클릭이 세션 상세로 이동하지 않음(hash=${hash})`, file: 'src/sessionRow.ts' });
+        }
+        if (!hash.includes('back=home')) {
+          bugs.push({ severity: 'Critical', symptom: `홈에서 세션 클릭 시 뒤로가기 목적지(back=home)가 해시에 인코딩되지 않음(실제: ${hash})`, file: 'src/sessionRow.ts / src/views/home.ts' });
+        }
+        await page.waitForSelector('.chat-page');
+        await shot('02-session-detail-from-home');
+        await page.locator('.back-link', { hasText: '← 세션' }).click();
+        await page.waitForTimeout(150);
+        const backHash = await page.evaluate(() => window.location.hash);
+        if (backHash !== '#/' && backHash !== '') {
+          bugs.push({ severity: 'Critical', symptom: `홈→최근 세션→상세→뒤로가기가 홈(#/)으로 가지 않음(실제: ${backHash})`, file: 'src/views/sessions.ts:renderSessionDetailView' });
+        }
+        await page.waitForSelector('.greet-sub');
+        await shot('03-back-to-home');
+      },
+    },
   ];
 }

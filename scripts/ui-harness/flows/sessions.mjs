@@ -101,6 +101,16 @@ export function scenarios(base) {
             bugs.push({ severity: 'Major', symptom: '배경 클릭으로 세션 메타데이터 모달이 닫히지 않음', file: 'src/views/sessions.ts:renderMetaModal' });
           }
         }
+
+        // ---- 뒤로가기 시나리오 ① 세션 목록에서 행 클릭 → 뒤로가기 = 세션 목록
+        // (src/sessionRow.ts를 쓰지 않는 자체 .session-row 렌더러라 backTo
+        // 쿼리스트링 없이 기본값 'sessions-list'로 떨어져야 한다) ----
+        await page.locator('.back-link', { hasText: '← 세션' }).click();
+        await page.waitForTimeout(150);
+        const backFromListHash = await page.evaluate(() => window.location.hash);
+        if (backFromListHash !== '#/sessions') {
+          bugs.push({ severity: 'Major', symptom: `세션 목록→상세→뒤로가기가 세션 목록(#/sessions)이 아님(실제: ${backFromListHash})`, file: 'src/views/sessions.ts:renderSessionDetailView' });
+        }
       },
     },
     {

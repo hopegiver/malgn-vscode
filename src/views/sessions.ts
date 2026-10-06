@@ -24,6 +24,7 @@ import type { ClaudeSessionRecord, ChatMessageKind, SessionTranscript } from '..
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { navigate } from '../route';
+import type { SessionBackTarget } from '../route';
 import { loadProjects, sortedProjectsByRecency } from './projects';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 
@@ -1054,8 +1055,10 @@ function renderChatMetaRow(projectName: string, version: string, kind: string, s
   return el('div', { className: 'chat-meta-row' }, children);
 }
 
-export function renderSessionDetailView(sessionId: string): HTMLElement {
-  const back = el('a', { className: 'back-link', onClick: () => navigate('#/sessions') }, ['← 세션']);
+export function renderSessionDetailView(sessionId: string, backTo: SessionBackTarget): HTMLElement {
+  const backHash =
+    backTo.kind === 'home' ? '#/' : backTo.kind === 'projects-detail' ? `#/project/${encodeURIComponent(backTo.path)}` : '#/sessions';
+  const back = el('a', { className: 'back-link', onClick: () => navigate(backHash) }, ['← 세션']);
   const session = state.sessions.items.find((s) => asString(s.sessionId) === sessionId);
   const chat = state.sessionChat;
   const transcript = chat.sessionId === sessionId ? chat.transcript : null;

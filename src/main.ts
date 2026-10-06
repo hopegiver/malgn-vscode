@@ -122,7 +122,7 @@ function renderApp(): void {
       content = renderSessionsListView();
       break;
     case 'sessions-detail':
-      content = renderSessionDetailView(route.sessionId);
+      content = renderSessionDetailView(route.sessionId, route.backTo);
       break;
     case 'sessions-draft':
       content = renderSessionDraftView(route.projectPath);

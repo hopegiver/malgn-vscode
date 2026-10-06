@@ -2,7 +2,8 @@
 // 상세 "세션" 섹션이 같은 마크업을 쓰도록 한 곳에 둔다(사본 금지). 프로젝트 상세는
 // 이미 한 프로젝트 안이라 프로젝트명 열이 중복이므로 showProject:false로 뺀다.
 import { el, clickable } from './dom';
-import { navigate } from './route';
+import { encodeSessionBackTarget, navigate } from './route';
+import type { SessionBackTarget } from './route';
 import { asBoolean, asNumber, asString, sessionProjectName, sessionTitle } from './views/sessions';
 import type { ClaudeSessionRecord } from './sessionsApi';
 
@@ -32,7 +33,10 @@ function accentEl(s: ClaudeSessionRecord): HTMLElement {
   return e;
 }
 
-export function sessionBlistRow(s: ClaudeSessionRecord, opts: { readonly showProject?: boolean } = {}): HTMLElement {
+// backTo 생략 시 기존 동작과 동일하게 뒤로가기 목적지가 세션 목록(기본값)이 된다
+// — home 박스/projects-detail 세션 섹션은 각각 { kind: 'home' } /
+// { kind: 'projects-detail', path }를 넘겨 그 화면으로 되돌아가게 한다.
+export function sessionBlistRow(s: ClaudeSessionRecord, opts: { readonly showProject?: boolean; readonly backTo?: SessionBackTarget } = {}): HTMLElement {
   const showProject = opts.showProject !== false;
   const sessionId = asString(s.sessionId);
   const running = asBoolean(s.running);
@@ -44,5 +48,5 @@ export function sessionBlistRow(s: ClaudeSessionRecord, opts: { readonly showPro
     el('span', { className: `blist-status ${running ? 'status-run' : 'status-done'}` }, [el('span', { className: 'dot' }, []), running ? '실행 중' : '완료']),
     el('span', { className: 'blist-time' }, [updatedAt !== null ? formatCompactElapsed(updatedAt) : '-']),
   ]);
-  return clickable(row, () => navigate(`#/sessions/${encodeURIComponent(sessionId)}`));
+  return clickable(row, () => navigate(`#/sessions/${encodeURIComponent(sessionId)}${encodeSessionBackTarget(opts.backTo)}`));
 }

@@ -453,7 +453,7 @@ function renderProjectSessionsBox(projectPath: string): HTMLElement {
         ]),
       ]);
     } else {
-      body = el('div', { className: 'blist' }, rows.map((r) => sessionBlistRow(r, { showProject: false })));
+      body = el('div', { className: 'blist' }, rows.map((r) => sessionBlistRow(r, { showProject: false, backTo: { kind: 'projects-detail', path: projectPath } })));
       // 표시 행은 상한(10)이 있어 전체 수와 다를 수 있다 — 잘렸으면 상한을 함께 드러낸다.
       const total = running.length + recent.length;
       const shown = total > rows.length ? ` (${rows.length}건 표시)` : '';

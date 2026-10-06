@@ -103,6 +103,24 @@ export function scenarios(base) {
         await page.waitForTimeout(150);
         const hash = await page.evaluate(() => window.location.hash);
         if (!hash.startsWith('#/sessions/')) bugs.push({ severity: 'Major', symptom: `행 클릭이 세션 상세로 이동하지 않음(hash=${hash})`, file: 'src/sessionRow.ts' });
+        // 뒤로가기 목적지(back=project:<path>)가 해시 쿼리스트링에 인코딩됐는지 확인.
+        if (!hash.includes('back=project:')) {
+          bugs.push({ severity: 'Critical', symptom: `프로젝트 상세 세션 섹션에서 세션 클릭 시 뒤로가기 목적지(back=project:)가 해시에 인코딩되지 않음(실제: ${hash})`, file: 'src/sessionRow.ts / src/views/projects.ts' });
+        }
+
+        // 사용자 보고 버그(가장 중요) — 프로젝트 상세→세션 클릭→상세→뒤로가기는
+        // 세션 목록이 아니라 그 프로젝트 상세로 가야 한다.
+        await page.waitForSelector('.chat-page');
+        await shot('02b-session-detail-from-project');
+        await page.locator('.back-link', { hasText: '← 세션' }).click();
+        await page.waitForTimeout(150);
+        const backHash = await page.evaluate(() => window.location.hash);
+        const expectedBackHash = `#/project/${encodeURIComponent(ALPHA)}`;
+        if (backHash !== expectedBackHash) {
+          bugs.push({ severity: 'Critical', symptom: `프로젝트 상세→세션 클릭→상세→뒤로가기가 그 프로젝트 상세(${expectedBackHash})로 가지 않음(실제: ${backHash}) — 사용자 보고 버그`, file: 'src/views/sessions.ts:renderSessionDetailView' });
+        }
+        await page.waitForSelector('.project-sessions-box');
+        await shot('02c-back-to-project-detail');
 
         // (C) 홈
         await page.evaluate(() => { window.location.hash = '#/'; });

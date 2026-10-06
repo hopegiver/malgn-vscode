@@ -148,7 +148,7 @@ function recentSessionsBox(): HTMLElement {
     if (items.length === 0) {
       body = el('div', { className: 'state-block-desc' }, ['최근 세션이 없습니다.']);
     } else {
-      body = el('div', { className: 'blist' }, items.map((it) => sessionBlistRow(it)));
+      body = el('div', { className: 'blist' }, items.map((it) => sessionBlistRow(it, { backTo: { kind: 'home' } })));
       countLabel = `${items.length}건 표시 · 전체 보기 →`;
     }
   }
