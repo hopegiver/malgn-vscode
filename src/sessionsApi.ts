@@ -2,7 +2,8 @@
 // 보여주는 기능 중 하나. Rust 커맨드 list_claude_sessions()의 정본 데이터 소스는
 // registry(지금 실행 중인 프로세스) → jsonl 대화 이력이다(대화 전문 자체는 상세
 // 화면에서 read_session_transcript()로 따로 읽는다). 각 행에는 반드시 sessionId·
-// cwd·title·startedAt·updatedAt·running(지금 실행 중인지)이 있고, version·pid·
+// cwd·projectPath(속한 워크스페이스 프로젝트의 path 원문)·title·startedAt·updatedAt·
+// running(지금 실행 중인지)이 있고, version·pid·
 // name·kind·entrypoint·bridgeSessionId는 있을 수도 없을 수도 있다. 백엔드가 최근
 // 30일/최대 100건으로 windowing하므로 그 범위 밖 세션은 이 목록에 나타나지 않는다.
 //
