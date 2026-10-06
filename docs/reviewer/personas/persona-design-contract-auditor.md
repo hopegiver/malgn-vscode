@@ -84,3 +84,6 @@
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 3차(축소 — 4인 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r3.md`
   — 재사용 사유: M3 잔존 2곳의 해소와 design-system §1 표 개정(데이터 종류 기준)이 구현과 조항 단위로 맞는지 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: 접두 분리 폴백 경로(`devTools.ts:255`·`:582-584`) 도달 가능성, `command_display`/`copyable_command` 원천의 한글 유입 가능성, 수정 전 트리 대비 스캔 흐름 실패 재현.
+- 2026-10-06 / target_id `project-agent-progress-v1` / 1차(최초, 약식 2인 — Standard) / `docs/reviewer/review-project-agent-progress-v1-2026-10-06.md`
+  — 재사용 사유: 설계 정본 `docs/design/project-agent-progress.md`의 §2-1 매칭 규칙·§2-2 갱신·§3 화면 조항이 구현에 조항 단위로 반영됐는지 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: `match_workspace_project` 4규칙·불변식("목록 행 = projectPath 보유") 실데이터 단언, 게이트 의미 보존(`#[cfg(test)]` 전환), 홈 문구·타일 라벨의 설계 대비 드리프트.
