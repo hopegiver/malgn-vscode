@@ -26,6 +26,8 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { navigate } from '../route';
 import { loadProjects, sortedProjectsByRecency } from './projects';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
+import { fetchSessionDetail } from '../dailyDetailApi';
+import { renderAgentUsageTable, renderToolUsageList, formatTokenCount, formatUsd } from './usage';
 
 export function asString(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -256,6 +258,20 @@ function detachMetaModalEscHandler(): void {
   }
 }
 
+// "에이전트 실행 이력" 모달 — 메타데이터 모달과 같은 이유로 로컬 UI 상태로
+// 둔다(배경 클릭/ESC/닫기 버튼 3경로로 닫힌다). 데이터 자체(state.
+// sessionAgentHistory)는 IPC 왕복이 필요해 전역 상태에 두지만, "지금 모달이
+// 떠 있는지"는 이 화면 안에서만 의미 있는 값이라 metaModalOpen과 동일 패턴.
+let agentHistoryModalOpen = false;
+let agentHistoryModalEscHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function detachAgentHistoryModalEscHandler(): void {
+  if (agentHistoryModalEscHandler) {
+    window.removeEventListener('keydown', agentHistoryModalEscHandler);
+    agentHistoryModalEscHandler = null;
+  }
+}
+
 // "새 세션" 프로젝트 선택 모달 — 세션목록 화면 우측 상단 버튼으로 연다. 프로젝트
 // 화면의 카드 "새 세션" 버튼과 최종 목적지(라우트)는 같지만, 이 화면에서는
 // 먼저 어느 프로젝트인지 골라야 하므로 프로젝트 목록을 모달로 띄운다(metaModal과
@@ -367,6 +383,51 @@ function closeMetaModal(): void {
   notifyChange();
 }
 
+// get_session_detail IPC 왕복 — dailyDetail(usage.ts loadDailyDetail)과 같은
+// "선택이 바뀌면 늦게 도착한 응답은 버린다" 가드를 쓴다(사용자가 모달을
+// 닫고 다른 세션을 열어볼 수 있으므로).
+async function loadSessionAgentHistory(sessionId: string): Promise<void> {
+  state.sessionAgentHistory.loading = true;
+  state.sessionAgentHistory.error = null;
+  notifyChange();
+  try {
+    const detail = await fetchSessionDetail(sessionId);
+    if (state.sessionAgentHistory.sessionId !== sessionId) return;
+    // null = 이 세션의 jsonl을 찾지 못함("자료 없음") — found로 구분하고
+    // detail.agents/tools가 빈 배열인 "정상 조회 + 사용 기록 0건"과 섞지 않는다.
+    state.sessionAgentHistory.detail = detail;
+    state.sessionAgentHistory.found = detail !== null;
+  } catch (err) {
+    if (state.sessionAgentHistory.sessionId !== sessionId) return;
+    state.sessionAgentHistory.error =
+      err instanceof Error ? err.message : '에이전트 실행 이력을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+  } finally {
+    if (state.sessionAgentHistory.sessionId === sessionId) state.sessionAgentHistory.loading = false;
+    notifyChange();
+  }
+}
+
+function openAgentHistoryModal(sessionId: string): void {
+  agentHistoryModalOpen = true;
+  // 이미 같은 세션 결과를 들고 있으면 재조회하지 않는다(모달을 여닫기만
+  // 반복해도 매번 IPC를 다시 부르지 않음).
+  if (state.sessionAgentHistory.sessionId !== sessionId) {
+    state.sessionAgentHistory.sessionId = sessionId;
+    state.sessionAgentHistory.detail = null;
+    state.sessionAgentHistory.found = false;
+    state.sessionAgentHistory.error = null;
+    void loadSessionAgentHistory(sessionId);
+  }
+  notifyChange();
+}
+
+function closeAgentHistoryModal(): void {
+  agentHistoryModalOpen = false;
+  detachAgentHistoryModalEscHandler();
+  restoreModalFocus(closeAgentHistoryModal); // C3: 열기 직전 포커스로 복원
+  notifyChange();
+}
+
 // preserveError: 직전에 session-chat-done이 이미 채워놓은 턴 실패 에러(원문 +
 // authError)를 이 조회가 지우지 않게 한다. 발견 경위(하네스 auth-error
 // 시나리오 디버깅) — done 핸들러는 성공/실패 관계없이 "done 후 전체 재조회"
@@ -412,6 +473,8 @@ function resetChatLocalUiState(): void {
   chatNearBottom = true; // 새로 진입하면 항상 하단(최신)에서 시작한다
   metaModalOpen = false;
   detachMetaModalEscHandler();
+  agentHistoryModalOpen = false;
+  detachAgentHistoryModalEscHandler();
   draftSending = false; // 이전 draft 화면에서 남았을 수 있는 잠금을 새 진입 시 초기화
 }
 
@@ -532,6 +595,8 @@ export function leaveSessionChatView(): void {
   chatViewGeneration++; // m4: 아직 listen() 대기 중이던 진입 콜을 무효화
   metaModalOpen = false;
   detachMetaModalEscHandler();
+  agentHistoryModalOpen = false;
+  detachAgentHistoryModalEscHandler();
   if (unlistenChatDelta) {
     unlistenChatDelta();
     unlistenChatDelta = null;
@@ -1059,6 +1124,9 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     el('div', { className: 'chat-header-row' }, [
       titleEl,
       ...(session ? [el('button', { className: 'btn chat-meta-btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
+      // registry 레코드(session)와 달리 sessionId만 있으면 조회 가능하다(P2
+      // 원칙과 동일 — 부가 정보일 뿐 session 존재에 의존하지 않는다).
+      el('button', { className: 'btn chat-meta-btn', onClick: () => openAgentHistoryModal(sessionId) }, ['📊 에이전트 실행 이력']),
     ]),
     renderChatMetaRow(cwd, version, kind, startedAt, updatedAt),
   ]);
@@ -1131,6 +1199,18 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
     detachMetaModalEscHandler();
   }
 
+  if (agentHistoryModalOpen) {
+    if (!agentHistoryModalEscHandler) {
+      agentHistoryModalEscHandler = (e) => {
+        if (e.key === 'Escape') closeAgentHistoryModal();
+      };
+      window.addEventListener('keydown', agentHistoryModalEscHandler);
+    }
+    body.push(renderAgentHistoryModal(sessionId));
+  } else {
+    detachAgentHistoryModalEscHandler();
+  }
+
   return el('div', { className: 'chat-page' }, body);
 }
 
@@ -1193,6 +1273,53 @@ function renderMetaModal(session: ClaudeSessionRecord): HTMLElement {
   // 오버레이 생성(배경 클릭 시 닫힘, 드래그로 바깥에 나가도 안 닫힘)은 dom.ts의
   // createModalOverlay로 공용화했다.
   return createModalOverlay(modalBox, closeMetaModal);
+}
+
+// "에이전트 실행 이력" 모달 — 이 세션 안에서 main/서브에이전트 타입별 턴·
+// 토큰·비용, 툴별 사용 횟수를 보여준다. renderAgentUsageTable/
+// renderToolUsageList(views/usage.ts, "일별 사용량" 상세 패널과 동일 렌더)를
+// 그대로 재사용한다 — 로딩/에러/자료없음/빈 집계 4가지 상태를 각각 구분해
+// 보여준다(메타데이터 모달과 시각적으로 분리된 별도 모달).
+function renderAgentHistoryModal(sessionId: string): HTMLElement {
+  const h = state.sessionAgentHistory;
+  let bodyChildren: HTMLElement[];
+
+  if (h.loading && h.sessionId === sessionId && !h.detail) {
+    bodyChildren = [el('div', { className: 'state-block-desc' }, ['불러오는 중…'])];
+  } else if (h.error && h.sessionId === sessionId) {
+    bodyChildren = [
+      el('div', { className: 'alert' }, [
+        el('span', {}, [`⚠ ${h.error}`]),
+        el('button', { className: 'btn', onClick: () => void loadSessionAgentHistory(sessionId) }, ['다시 시도']),
+      ]),
+    ];
+  } else if (h.sessionId !== sessionId || !h.found || !h.detail) {
+    // found=false — 이 세션에 대응하는 jsonl을 찾지 못했다(아직 메시지가
+    // 없는 draft 승격 직후 등). "집계했지만 0건"과 다른 문구를 쓴다.
+    bodyChildren = [el('div', { className: 'state-block-desc' }, ['이 세션의 에이전트 실행 이력을 찾을 수 없습니다. 아직 대화가 시작되지 않았을 수 있습니다.'])];
+  } else if (h.detail.agents.length === 0 && h.detail.tools.length === 0) {
+    bodyChildren = [el('div', { className: 'state-block-desc' }, ['집계할 에이전트·툴 사용 기록이 없습니다.'])];
+  } else {
+    bodyChildren = [
+      el('div', { className: 'overview-label-row' }, [
+        el('div', { className: 'overview-label' }, ['전체 합계']),
+        el('span', { className: 'bar-row-value' }, [`${formatTokenCount(h.detail.totalTokens)} · ${formatUsd(h.detail.costUsd)}`]),
+      ]),
+      el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, ['에이전트별 사용량'])]),
+      renderAgentUsageTable(h.detail.agents),
+      el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, ['툴 사용 횟수'])]),
+      renderToolUsageList(h.detail.tools),
+    ];
+  }
+
+  const modalBox = el('div', { className: 'modal-box' }, [
+    el('div', { className: 'modal-header' }, [
+      el('h2', { className: 'modal-title' }, ['에이전트 실행 이력']),
+      el('button', { className: 'modal-close-btn', onClick: closeAgentHistoryModal }, ['✕']),
+    ]),
+    el('div', { className: 'modal-body' }, bodyChildren),
+  ]);
+  return createModalOverlay(modalBox, closeAgentHistoryModal);
 }
 
 // sessionId(세션 상세)와 projectPath(draft — 아직 세션이 없음) 양쪽에서

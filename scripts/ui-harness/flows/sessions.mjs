@@ -7,10 +7,26 @@
 // 더 이상 유일하지 않아 이 파일의 모든 클릭을 `getByRole('main')`으로 좁혀
 // 원래 의도(본문 헤더 버튼)만 정확히 겨냥하게 했다 — 검증 대상 자체는 이관
 // 전과 동일(본문 버튼 클릭 → 모달 열림)하고 약화되지 않았다.
-import { manySessions } from '../lib/fixtures.mjs';
+import { manySessions, sessionDetailSample } from '../lib/fixtures.mjs';
 
 export const flowId = 'sessions';
 export const startHash = '#/sessions';
+
+// base.read_session_transcript 기본값이 null이라(fixtures.mjs) 세션 상세
+// 화면에 진입만 해도 loadSessionTranscript가 "Cannot read properties of
+// null (reading 'activeTurnId')"로 깨진다(이 흐름과 무관한 기존 한계) — 이
+// 파일의 "에이전트 실행 이력" 시나리오 3종은 그 화면 배경 잡음과 모달 검증을
+// 분리하려고 정상 트랜스크립트로 override한다.
+function sessionTranscriptSample(sessionId) {
+  return {
+    sessionId,
+    cwd: '/Users/hopegiver/workspace/malgn-vscode',
+    transcriptPath: '/dev/null',
+    messages: [{ kind: 'user', text: '테스트 메시지입니다', toolCount: 0, at: new Date().toISOString() }],
+    truncated: false,
+    activeTurnId: null,
+  };
+}
 
 export function scenarios(base) {
   return [
@@ -20,6 +36,7 @@ export function scenarios(base) {
         ...base,
         start_new_session_message: { sessionId: 'harness-new-session-1', turnId: 'harness-turn-1' },
         read_session_transcript: { sessionId: base.list_claude_sessions[0]?.sessionId ?? 'none', cwd: '/Users/hopegiver/workspace/malgn-vscode', transcriptPath: '/dev/null', messages: [{ kind: 'user', text: '테스트 메시지입니다', toolCount: 0, at: new Date().toISOString() }], truncated: false, activeTurnId: null },
+        get_session_detail: sessionDetailSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
       },
       async run(page, { shot, bugs, getListenerCount }) {
         await shot('01-list');
@@ -99,6 +116,103 @@ export function scenarios(base) {
           const stillOpen = await page.locator('.modal-overlay').count();
           if (stillOpen > 0) {
             bugs.push({ severity: 'Major', symptom: '배경 클릭으로 세션 메타데이터 모달이 닫히지 않음', file: 'src/views/sessions.ts:renderMetaModal' });
+          }
+        }
+
+        // ---- 세션 상세: 에이전트 실행 이력 모달(기록 있음) ----
+        const historyBtn = page.getByRole('button', { name: /에이전트 실행 이력/ });
+        await historyBtn.click();
+        await page.waitForSelector('.modal-overlay');
+        await page.waitForTimeout(150); // get_session_detail invoke 왕복
+        await shot('07-agent-history-modal');
+        const historyRows = await page.locator('.modal-overlay .thief-table-row').count();
+        if (historyRows !== sessionDetailSample('x').agents.length + 1) {
+          bugs.push({ severity: 'Major', symptom: `에이전트 실행 이력 표 행 개수가 헤더+에이전트 ${sessionDetailSample('x').agents.length}건=${sessionDetailSample('x').agents.length + 1}이어야 하는데 ${historyRows}`, file: 'src/views/sessions.ts:renderAgentHistoryModal' });
+        }
+        const historyText = await page.locator('.modal-overlay').textContent().catch(() => null);
+        if (!historyText || !historyText.includes('backend-dev') || !historyText.includes('Read')) {
+          bugs.push({ severity: 'Major', symptom: `에이전트 실행 이력 모달에 agentType/toolName이 보이지 않음(실제: ${historyText})`, file: 'src/views/sessions.ts:renderAgentHistoryModal' });
+        }
+        await page.locator('.modal-overlay').click({ position: { x: 5, y: 5 } });
+        if ((await page.locator('.modal-overlay').count()) > 0) {
+          bugs.push({ severity: 'Major', symptom: '배경 클릭으로 에이전트 실행 이력 모달이 닫히지 않음', file: 'src/views/sessions.ts:renderAgentHistoryModal' });
+        }
+      },
+    },
+    {
+      // "없는 세션" — jsonl은 찾았지만 집계할 에이전트/툴 사용 기록이 0건인
+      // 경우(found=true, agents/tools 빈 배열). "자료 없음"과 다른 문구를
+      // 써야 한다(renderAgentHistoryModal 분기).
+      id: 'agent-history-empty',
+      fixtures: {
+        ...base,
+        read_session_transcript: sessionTranscriptSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
+        get_session_detail: { sessionId: base.list_claude_sessions[0]?.sessionId ?? 'none', projectKey: 'test', title: '빈 세션', totalTokens: 0, costUsd: 0, agents: [], tools: [] },
+      },
+      async run(page, { shot, bugs }) {
+        if (base.list_claude_sessions.length === 0) return;
+        await page.locator('.session-row').first().click();
+        await page.waitForSelector('.chat-page');
+        await page.getByRole('button', { name: /에이전트 실행 이력/ }).click();
+        await page.waitForSelector('.modal-overlay');
+        await page.waitForTimeout(150);
+        await shot('01-agent-history-empty');
+        const text = await page.locator('.modal-overlay').textContent().catch(() => null);
+        if (!text || !text.includes('집계할 에이전트')) {
+          bugs.push({ severity: 'Major', symptom: `에이전트/툴 기록이 0건인데 "집계할 에이전트·툴 사용 기록이 없습니다" 안내가 없음(실제: ${text})`, file: 'src/views/sessions.ts:renderAgentHistoryModal' });
+        }
+      },
+    },
+    {
+      // get_session_detail이 null을 돌려주는 경우 — 세션 jsonl 자체를 못 찾음
+      // (아직 메시지가 없는 draft 등). "집계했지만 0건"과 다른 문구여야 한다.
+      id: 'agent-history-not-found',
+      fixtures: {
+        ...base,
+        read_session_transcript: sessionTranscriptSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
+        get_session_detail: null,
+      },
+      async run(page, { shot, bugs }) {
+        if (base.list_claude_sessions.length === 0) return;
+        await page.locator('.session-row').first().click();
+        await page.waitForSelector('.chat-page');
+        await page.getByRole('button', { name: /에이전트 실행 이력/ }).click();
+        await page.waitForSelector('.modal-overlay');
+        await page.waitForTimeout(150);
+        await shot('01-agent-history-not-found');
+        const text = await page.locator('.modal-overlay').textContent().catch(() => null);
+        if (!text || !text.includes('찾을 수 없습니다')) {
+          bugs.push({ severity: 'Major', symptom: `get_session_detail=null인데 "찾을 수 없습니다" 자료없음 안내가 없음(실제: ${text})`, file: 'src/views/sessions.ts:renderAgentHistoryModal' });
+        }
+      },
+    },
+    {
+      // 로드 실패 — 에러와 "자료 없음"/"빈 집계"를 섞지 않아야 한다(다른 문구 +
+      // 재시도 버튼).
+      id: 'agent-history-error',
+      fixtures: {
+        ...base,
+        read_session_transcript: sessionTranscriptSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
+        get_session_detail: { __throw: '에이전트 실행 이력 조회 실패(테스트)' },
+      },
+      async run(page, { shot, bugs }) {
+        if (base.list_claude_sessions.length === 0) return;
+        await page.locator('.session-row').first().click();
+        await page.waitForSelector('.chat-page');
+        await page.getByRole('button', { name: /에이전트 실행 이력/ }).click();
+        await page.waitForSelector('.modal-overlay');
+        await page.waitForTimeout(150);
+        await shot('01-agent-history-error');
+        const retryBtn = page.locator('.modal-overlay button', { hasText: '다시 시도' });
+        if ((await retryBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '에이전트 실행 이력 로드 실패 시 "다시 시도" 버튼이 없음', file: 'src/views/sessions.ts:renderAgentHistoryModal' });
+        } else {
+          const before = await page.evaluate(() => window.__invokeLog?.filter((e) => e.cmd === 'get_session_detail').length ?? 0);
+          await retryBtn.click();
+          await page.waitForTimeout(150);
+          const after = await page.evaluate(() => window.__invokeLog?.filter((e) => e.cmd === 'get_session_detail').length ?? 0);
+          if (after <= before) {
+            bugs.push({ severity: 'Major', symptom: '"다시 시도" 버튼을 눌러도 get_session_detail이 다시 호출되지 않음', file: 'src/views/sessions.ts:renderAgentHistoryModal' });
           }
         }
       },

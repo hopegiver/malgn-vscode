@@ -269,7 +269,10 @@ function toggleDailyDetail(date: string): void {
   void loadDailyDetail(date);
 }
 
-function renderAgentUsageTable(agents: readonly AgentUsage[]): HTMLElement {
+// 세션 상세 화면("에이전트 실행 이력" 섹션, views/sessions.ts)도 이 두 렌더
+// 함수를 그대로 재사용한다 — 같은 AgentUsage/ToolUsage 모양이라 새 렌더를
+// 따로 만들지 않는다.
+export function renderAgentUsageTable(agents: readonly AgentUsage[]): HTMLElement {
   if (agents.length === 0) return el('div', { className: 'state-block-desc' }, ['에이전트 사용 기록이 없습니다.']);
   const header = el('div', { className: 'thief-table-row thief-table-row-3 thief-table-head' }, [
     el('span', {}, ['에이전트']),
@@ -288,7 +291,7 @@ function renderAgentUsageTable(agents: readonly AgentUsage[]): HTMLElement {
   return el('div', { className: 'thief-table' }, [header, ...rows]);
 }
 
-function renderToolUsageList(tools: readonly ToolUsage[]): HTMLElement {
+export function renderToolUsageList(tools: readonly ToolUsage[]): HTMLElement {
   if (tools.length === 0) return el('div', { className: 'state-block-desc' }, ['툴 사용 기록이 없습니다.']);
   return el(
     'div',

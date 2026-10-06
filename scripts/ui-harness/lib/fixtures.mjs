@@ -134,6 +134,28 @@ function projectDailyTrendSample() {
   return dailyUsageSample();
 }
 
+// 세션 상세 화면 "에이전트 실행 이력" 모달이 get_session_detail(sessionId)에
+// 쓰는 fixture — main + 서브에이전트 1종, 툴 2종을 섞어 renderAgentUsageTable/
+// renderToolUsageList(views/usage.ts, 세션 상세에서 재사용) 양쪽 렌더 경로가
+// 실제로 지나가게 한다.
+function sessionDetailSample(sessionId) {
+  return {
+    sessionId,
+    projectKey: '-Users-hopegiver-workspace-malgn-vscode',
+    title: '테스트 세션',
+    totalTokens: 48_000,
+    costUsd: 0.62,
+    agents: [
+      { agentType: 'main', turns: 6, totalTokens: 30_000, costUsd: 0.4 },
+      { agentType: 'backend-dev', turns: 2, totalTokens: 18_000, costUsd: 0.22 },
+    ],
+    tools: [
+      { toolName: 'Read', count: 5 },
+      { toolName: 'Edit', count: 2 },
+    ],
+  };
+}
+
 /**
  * 모든 화면 진입 시 main.ts가 즉시 병렬로 호출하는 커맨드들의 "정상" 기본값을
  * 실제 로컬 데이터로 채운 베이스 픽스처. 개별 시나리오는 이 위에 필요한
@@ -288,7 +310,7 @@ export function withOverrides(base, overrides) {
   return { ...base, ...overrides };
 }
 
-export { historyEntries, mcpCatalogSample, mcpServersSample, usageSummarySample, projectDailyTrendSample };
+export { historyEntries, mcpCatalogSample, mcpServersSample, usageSummarySample, projectDailyTrendSample, sessionDetailSample };
 
 // ---------------- 대량(100+) 합성 데이터 생성기 ----------------
 export function manyAutonomyGroups(n) {

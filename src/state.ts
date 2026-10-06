@@ -6,7 +6,7 @@ import type { WorkspaceProject, WorkspaceSkippedEntry, ProjectTreeNode, FilePrev
 import type { DevToolStatus, DevToolPreview, DevToolActionResult } from './devToolsApi';
 import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } from './catalogApi';
 import type { DailyUsage } from './usageApi';
-import type { DailyDetailReport } from './dailyDetailApi';
+import type { DailyDetailReport, SessionDetail } from './dailyDetailApi';
 import type { UsageSummaryReport } from './usageSummaryApi';
 import type { GithubStatus, CloudflareStatus } from './integrationsApi';
 import type { AutonomyRunStatus, AutonomyScheduleMode } from './autonomyApi';
@@ -213,6 +213,20 @@ export interface AppState {
   dailyDetail: {
     selectedDate: string | null;
     report: DailyDetailReport | null;
+    loading: boolean;
+    error: string | null;
+  };
+  // 세션 상세 화면("에이전트 실행 이력" 섹션, views/sessions.ts)이 세션 하나를
+  // 골라 get_session_detail을 부를 때 쓴다 — dailyDetail과 같은 "선택 1건만
+  // 보관" 패턴이지만 키가 날짜가 아니라 sessionId다. 백엔드가 `null`을 돌려주면
+  // (해당 세션의 jsonl을 못 찾음 — 아직 메시지가 없는 draft 등) `found=false`로
+  // "자료 없음"을 표시한다. `found=true`인데 detail.agents/tools가 빈 배열이면
+  // 세션은 찾았지만 집계할 사용 기록이 0건인 정상 상태다 — 이 둘을 같은 문구로
+  // 섞어 보여주지 않는다.
+  sessionAgentHistory: {
+    sessionId: string | null;
+    detail: SessionDetail | null;
+    found: boolean;
     loading: boolean;
     error: string | null;
   };
@@ -459,6 +473,7 @@ function createInitialState(): AppState {
   claudeAuth: { status: null, loading: false, error: null, loaded: false, loggingOut: false },
   dailyUsage: { items: [], loading: false, error: null, loaded: false },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
+  sessionAgentHistory: { sessionId: null, detail: null, found: false, loading: false, error: null },
   usageSummary: { report: null, loading: false, error: null, loaded: false },
   usageProjectTrend: { projectKey: null, items: [], loading: false, error: null },
   autonomousTasks: { items: [], loading: false, error: null, loaded: false },
