@@ -9,7 +9,7 @@
 // 안전장치 ②: `crate::scan_workspace_projects()` 결과에 있는 프로젝트로
 // 한정. 2단계로 나뉜다 — (a) `dir_name` 문자열 접두사로 거르는 싼 프리필터
 // (`is_allowed_project_dir`, 아래), (b) 프리필터를 통과한 파일에 한해 실제
-// `cwd`를 경로 컴포넌트 단위로 대조하는 권위 검사(`is_cwd_within_allowed_workspace`).
+// `cwd`를 경로 컴포넌트 단위로 대조하는 권위 검사(`match_workspace_project`).
 // (a)만으로는 `sanitize_cwd_for_project_dir`가 `/`를 `-`로 뭉개 정보를 버리는
 // 탓에 `foo`가 허용이면 `foo-bar`(별개 디렉터리)까지 문자열 접두사로 통과시키는
 // 결함이 있다 — 그래서 (b)가 최종 권위를 가진다.
@@ -47,7 +47,7 @@ fn starts_with_ignore_case(dir_name: &str, prefix: &str) -> bool {
 /// 프로젝트 경로를 이 파일이 이미 쓰는 `sanitize_cwd_for_project_dir` 규칙으로
 /// 치환해 접두사 목록을 만든다. `crate::scan_workspace_projects()`를 그대로
 /// 재사용한다(복붙하지 않는다) — `WorkspaceProject::path`는 이미 `pub(crate)`로
-/// 열려 있다. 최종 권위는 `is_cwd_within_allowed_workspace`(실제 `cwd` 컴포넌트
+/// 열려 있다. 최종 권위는 `match_workspace_project`(실제 `cwd` 컴포넌트
 /// 대조)에 있다.
 pub(super) fn allowed_project_dir_prefixes() -> Vec<String> {
     crate::scan_workspace_projects()
@@ -64,7 +64,7 @@ pub(super) fn allowed_project_dir_prefixes() -> Vec<String> {
 ///
 /// **이 함수만으로는 최종 판정이 아니다.** 문자열 접두사 검사라 `foo`가
 /// 허용이면 `foo-bar`(별개 디렉터리)까지 통과시킨다 — 상한을 통과한 파일에
-/// 한해서만 `is_cwd_within_allowed_workspace`(실제 `cwd`를 경로 컴포넌트
+/// 한해서만 `match_workspace_project`(실제 `cwd`를 경로 컴포넌트
 /// 단위로 대조하는 권위 검사)가 최종 판정을 내린다.
 pub(super) fn is_allowed_project_dir(dir_name: &str, allowed_prefixes: &[String]) -> bool {
     if starts_with_ignore_case(dir_name, PRIVATE_TMP_PROJECT_DIR_PREFIX)
@@ -86,13 +86,14 @@ pub(super) fn is_allowed_project_dir(dir_name: &str, allowed_prefixes: &[String]
 /// 문자열만으로는 `foo-bar`와 `foo/bar`를 구분할 수 없기 때문이다.
 /// `Path::starts_with`는 컴포넌트 경계를 지키므로(`foo-bar`는 `foo`의
 /// 컴포넌트 하위가 아니다) 이 역전을 막는다.
+/// 테스트 전용 bool 래퍼 — 운영 게이트는 아래 `match_workspace_project`다.
 #[cfg(test)]
 pub(super) fn is_cwd_within_allowed_workspace(cwd: &str, allowed_roots: &[PathBuf]) -> bool {
     match_workspace_project(cwd, allowed_roots).is_some()
 }
 
 /// `cwd`가 속한 워크스페이스 프로젝트 경로를 돌려주는 순수 함수(fs 접근 없음).
-/// 게이트(`is_cwd_within_allowed_workspace`)와 `projectPath` 부여가 같은 판정을
+/// 게이트(`match_workspace_project`, 운영 게이트)와 `projectPath` 부여가 같은 판정을
 /// 쓰도록 한 곳에 둔다. 컴포넌트 단위 `starts_with`로 자신/하위를 매칭하고,
 /// 여러 프로젝트에 걸리면(루트가 겹치는 경우) 컴포넌트 수가 가장 많은 가장
 /// 구체적인 경로가 이긴다. 반환 참조는 `roots` 원소 그대로라 `to_str()`하면
@@ -105,7 +106,7 @@ pub(super) fn match_workspace_project<'a>(cwd: &str, roots: &'a [PathBuf]) -> Op
         .max_by_key(|root| root.components().count())
 }
 
-/// `is_cwd_within_allowed_workspace`가 대조할 실제 워크스페이스 프로젝트 경로
+/// `match_workspace_project`가 대조할 실제 워크스페이스 프로젝트 경로
 /// 목록. `crate::scan_workspace_projects()`를 그대로 재사용한다(복붙하지
 /// 않는다).
 pub(super) fn allowed_workspace_roots() -> Vec<PathBuf> {
@@ -157,7 +158,7 @@ mod tests {
     // 디렉터리명은 제외된다. 프로젝트 루트 자신과 그 하위 디렉터리(cwd가
     // 서브폴더인 세션)는 모두 허용되어야 한다. **이 단계만으로는 `foo-bar`
     // (별개 디렉터리)가 `foo` 허용에 의해 통과된다** — 그 결함은 아래
-    // `is_cwd_within_allowed_workspace`(권위 검사) 테스트가 고정한다.
+    // 권위 검사 테스트(`match_workspace_project`의 테스트 전용 bool 래퍼 경유)가 고정한다.
     #[test]
     fn only_dirs_matching_scanned_workspace_projects_are_allowed() {
         let allowed = vec!["-Users-hopegiver-workspace-malgn-vscode".to_string()];
@@ -178,7 +179,7 @@ mod tests {
     // M1 완료 판정: `foo`가 허용일 때 `foo-bar`(별개 디렉터리) 유래 세션은
     // 권위 검사에서 거부되어야 한다 — 프리필터(`is_allowed_project_dir`)는
     // 문자열 접두사라 이 역전을 막지 못하지만, 실제 `cwd`를 경로 컴포넌트
-    // 단위로 대조하는 `is_cwd_within_allowed_workspace`는 막는다.
+    // 단위로 대조하는 권위 검사(`match_workspace_project`, 테스트는 bool 래퍼 `is_cwd_within_allowed_workspace` 경유)는 막는다.
     #[test]
     fn cwd_authority_check_rejects_sibling_dir_with_shared_prefix() {
         let allowed_roots = vec![PathBuf::from("/Users/hopegiver/workspace/foo")];

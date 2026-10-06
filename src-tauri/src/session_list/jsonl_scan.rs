@@ -149,7 +149,7 @@ fn read_jsonl_head_meta(path: &Path) -> (Option<i64>, Option<String>) {
 /// depth-1 jsonl 파일 하나를 목록 행 하나로 바꾼다. `cwd`를 못 구하면(파일이
 /// 깨졌거나 cwd 필드가 끝까지 없음) 이 행은 만들 수 없으므로 `None` — 호출자가
 /// 그 파일만 건너뛰고 전체 스캔은 계속한다. M1: 실제 `cwd`가
-/// `is_cwd_within_allowed_workspace`(권위 검사, `allowed_roots` 기준)를
+/// `match_workspace_project`(권위 검사, `allowed_roots` 기준)를
 /// 통과하지 못하면(디렉터리명 프리필터는 통과했지만 실제로는 다른 프로젝트인
 /// 경우, 예: `foo` 허용인데 `foo-bar` 유래) 마찬가지로 `None`을 반환해 이 행을
 /// 만들지 않는다.

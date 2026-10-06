@@ -141,7 +141,7 @@ fn read_raw_registry_sessions() -> Vec<Value> {
 /// (`~/.claude/sessions/*.json`)는 `filter_and_dedup_sessions()`(순서 고정:
 /// 자식 제외 → 죽은 pid 필터 → sessionId dedup, 본체·시그니처 변경 금지)를
 /// 통과한 뒤 `build_live_registry()`로 신규 세션(우리 자식만 등록된 세션,
-/// M2)의 표시를 되살리고, m3: 그 결과를 `is_cwd_within_allowed_workspace`로도
+/// M2)의 표시를 되살리고, m3: 그 결과를 `match_workspace_project`로도
 /// 걸러(registry 오버레이 경로도 안전장치 ②를 통과해야 한다) `overlay_running_state`로
 /// "지금 실행 중" 오버레이를 얹는다.
 fn read_claude_sessions() -> Vec<Value> {
@@ -156,7 +156,7 @@ fn read_claude_sessions() -> Vec<Value> {
     // m3: registry 오버레이 경로(특히 위에서 되살린 신규 세션 항목과, jsonl이
     // 아직 없어 폴백 행이 될 항목)는 이전에 안전장치 ①②를 전혀 거치지 않았다
     // — 워크스페이스 밖 cwd(예: 스크래치패드)가 목록에 새어나갈 수 있었다.
-    // `is_cwd_within_allowed_workspace`(M1의 권위 검사, 실제 워크스페이스
+    // `match_workspace_project`(M1의 권위 검사, 실제 워크스페이스
     // 루트만 통과)로 게이트를 추가해 닫는다. `cwd` 필드가 없는 항목은 판단
     // 근거가 없으므로 보수적으로 제외한다(다른 안전장치들과 반대로 여기는
     // fail-closed다 — 이 경로는 "새로 추가하는 게이트"라 기존 관용구를
@@ -264,12 +264,18 @@ mod tests {
                 .is_some_and(|p| !p.is_empty())),
             "projectPath가 비어 있거나 없는 행이 있습니다"
         );
+        // 특정 날짜의 고정 sessionId 대신 성질로 단언한다: registry(`~/.claude/sessions/`)에
+        // 현재 없는(= 끝난) 세션이 jsonl 소스로 목록에 하나 이상 보여야 한다.
+        let registry_ids: std::collections::HashSet<String> = read_raw_registry_sessions()
+            .iter()
+            .filter_map(|v| v.get("sessionId").and_then(|x| x.as_str()).map(String::from))
+            .collect();
         assert!(
             sessions.iter().any(|s| s
                 .get("sessionId")
                 .and_then(|v| v.as_str())
-                == Some("7b57eff2-8ea4-450d-b3b7-45510a499bf3")),
-            "이전에 registry에서 사라져 목록에 안 보이던 끝난 세션이 여전히 보이지 않습니다"
+                .is_some_and(|id| !registry_ids.contains(id))),
+            "registry에 없는 끝난 세션이 목록에 하나도 보이지 않습니다"
         );
     }
 }
