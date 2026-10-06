@@ -86,9 +86,23 @@ pub(super) fn is_allowed_project_dir(dir_name: &str, allowed_prefixes: &[String]
 /// 문자열만으로는 `foo-bar`와 `foo/bar`를 구분할 수 없기 때문이다.
 /// `Path::starts_with`는 컴포넌트 경계를 지키므로(`foo-bar`는 `foo`의
 /// 컴포넌트 하위가 아니다) 이 역전을 막는다.
+#[cfg(test)]
 pub(super) fn is_cwd_within_allowed_workspace(cwd: &str, allowed_roots: &[PathBuf]) -> bool {
+    match_workspace_project(cwd, allowed_roots).is_some()
+}
+
+/// `cwd`가 속한 워크스페이스 프로젝트 경로를 돌려주는 순수 함수(fs 접근 없음).
+/// 게이트(`is_cwd_within_allowed_workspace`)와 `projectPath` 부여가 같은 판정을
+/// 쓰도록 한 곳에 둔다. 컴포넌트 단위 `starts_with`로 자신/하위를 매칭하고,
+/// 여러 프로젝트에 걸리면(루트가 겹치는 경우) 컴포넌트 수가 가장 많은 가장
+/// 구체적인 경로가 이긴다. 반환 참조는 `roots` 원소 그대로라 `to_str()`하면
+/// `WorkspaceProject.path` 원문 문자열이다.
+pub(super) fn match_workspace_project<'a>(cwd: &str, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
     let cwd_path = Path::new(cwd);
-    allowed_roots.iter().any(|root| cwd_path.starts_with(root))
+    roots
+        .iter()
+        .filter(|root| cwd_path.starts_with(root))
+        .max_by_key(|root| root.components().count())
 }
 
 /// `is_cwd_within_allowed_workspace`가 대조할 실제 워크스페이스 프로젝트 경로
@@ -188,5 +202,58 @@ mod tests {
             "foo-bar는 foo의 컴포넌트 하위가 아니므로 거부되어야 하는데 통과했습니다 — \
              문자열 접두사와 경로 컴포넌트를 혼동했을 가능성이 있습니다"
         );
+    }
+
+    #[test]
+    fn match_project_root_itself_and_subdir() {
+        let roots = vec![PathBuf::from("/Users/h/workspace/foo")];
+        assert_eq!(
+            match_workspace_project("/Users/h/workspace/foo", &roots),
+            Some(&roots[0])
+        );
+        assert_eq!(
+            match_workspace_project("/Users/h/workspace/foo/src-tauri", &roots),
+            Some(&roots[0])
+        );
+        assert_eq!(match_workspace_project("/tmp/x", &roots), None);
+    }
+
+    #[test]
+    fn match_project_rejects_shared_prefix_sibling() {
+        let roots = vec![PathBuf::from("/Users/h/workspace/foo")];
+        assert_eq!(match_workspace_project("/Users/h/workspace/foo-bar", &roots), None);
+    }
+
+    #[test]
+    fn match_project_picks_longest_among_overlapping_roots() {
+        let roots = vec![
+            PathBuf::from("/Users/h/workspace/clients"),
+            PathBuf::from("/Users/h/workspace/clients/acme"),
+        ];
+        let m = match_workspace_project("/Users/h/workspace/clients/acme/src", &roots);
+        assert_eq!(m, Some(&roots[1]));
+        // 순서가 뒤바뀌어도 동일
+        let rev: Vec<PathBuf> = roots.iter().rev().cloned().collect();
+        let m = match_workspace_project("/Users/h/workspace/clients/acme", &rev);
+        assert_eq!(m, Some(&rev[0]));
+        let m = match_workspace_project("/Users/h/workspace/clients/other", &roots);
+        assert_eq!(m, Some(&roots[0]));
+    }
+
+    #[test]
+    fn match_project_returns_original_string() {
+        let original = "/Users/h/workspace/foo".to_string();
+        let roots = vec![PathBuf::from(&original)];
+        let m = match_workspace_project("/Users/h/workspace/foo/sub", &roots).unwrap();
+        assert_eq!(m.to_str(), Some(original.as_str()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn match_project_handles_backslash_separators() {
+        let roots = vec![PathBuf::from(r"C:\Users\h\workspace\foo")];
+        assert!(match_workspace_project(r"C:\Users\h\workspace\foo\sub", &roots).is_some());
+        assert!(match_workspace_project(r"C:\Users\h\workspace\foo-bar", &roots).is_none());
+        assert!(match_workspace_project("C:/Users/h/workspace/foo/sub", &roots).is_some());
     }
 }

@@ -12,7 +12,7 @@ mod path_filter;
 mod registry;
 
 use jsonl_scan::build_jsonl_rows;
-use path_filter::{allowed_workspace_roots, is_cwd_within_allowed_workspace};
+use path_filter::{allowed_workspace_roots, match_workspace_project};
 use registry::{build_live_registry, filter_and_dedup_sessions, overlay_running_state};
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
@@ -162,11 +162,21 @@ fn read_claude_sessions() -> Vec<Value> {
     // fail-closed다 — 이 경로는 "새로 추가하는 게이트"라 기존 관용구를
     // 그대로 따를 이유가 없다).
     let allowed_roots = allowed_workspace_roots();
-    live_registry.retain(|value| {
-        value
+    // 게이트와 projectPath 부여가 같은 판정(`match_workspace_project`)에서 나온다.
+    live_registry.retain_mut(|value| {
+        let Some(project_path) = value
             .get("cwd")
             .and_then(|c| c.as_str())
-            .is_some_and(|cwd| is_cwd_within_allowed_workspace(cwd, &allowed_roots))
+            .and_then(|cwd| match_workspace_project(cwd, &allowed_roots))
+            .and_then(|root| root.to_str())
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        if let Value::Object(map) = value {
+            map.insert("projectPath".to_string(), Value::String(project_path));
+        }
+        true
     });
 
     for value in live_registry.iter_mut() {
@@ -246,6 +256,13 @@ mod tests {
             sessions.len() < 1_000,
             "서브에이전트 유령 세션이 섞였을 가능성이 있습니다: {}건",
             sessions.len()
+        );
+        assert!(
+            sessions.iter().all(|s| s
+                .get("projectPath")
+                .and_then(|v| v.as_str())
+                .is_some_and(|p| !p.is_empty())),
+            "projectPath가 비어 있거나 없는 행이 있습니다"
         );
         assert!(
             sessions.iter().any(|s| s

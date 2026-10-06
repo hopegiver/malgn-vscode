@@ -1,7 +1,7 @@
 use super::find_session_title;
 use super::path_filter::{
     allowed_project_dir_prefixes, allowed_workspace_roots, is_allowed_project_dir,
-    is_cwd_within_allowed_workspace,
+    match_workspace_project,
 };
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
@@ -159,9 +159,9 @@ fn read_jsonl_head_meta(path: &Path) -> (Option<i64>, Option<String>) {
 fn build_jsonl_row(path: &Path, allowed_roots: &[PathBuf]) -> Option<Value> {
     let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
     let cwd = crate::session_chat::read_cwd_from_transcript(path).ok()?;
-    if !is_cwd_within_allowed_workspace(&cwd, allowed_roots) {
-        return None;
-    }
+    let project_path = match_workspace_project(&cwd, allowed_roots)?
+        .to_str()?
+        .to_string();
     let (started_at, version) = read_jsonl_head_meta(path);
     let updated_at = jsonl_mtime_millis(path).unwrap_or(0);
     let title = find_session_title(&serde_json::json!({
@@ -180,6 +180,7 @@ fn build_jsonl_row(path: &Path, allowed_roots: &[PathBuf]) -> Option<Value> {
         "title": title,
         "startedAt": started_at,
         "updatedAt": updated_at,
+        "projectPath": project_path,
     });
     if let Some(version) = version {
         if let Value::Object(map) = &mut row {
