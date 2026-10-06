@@ -114,6 +114,7 @@ pub fn run() {
             workspace::read_project_file,
             usage_stats::get_daily_usage,
             usage_stats::get_daily_detail,
+            usage_stats::get_session_detail,
             usage_stats::get_usage_summary,
             usage_stats::get_project_daily_trend,
             google_oauth::google_oauth_login,

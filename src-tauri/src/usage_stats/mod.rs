@@ -32,6 +32,21 @@ pub fn get_daily_detail(date: String) -> detail::DailyDetailReport {
     detail::aggregate_daily_detail(&date)
 }
 
+/// 세션 상세 화면의 "에이전트 실행 이력" 섹션 — 날짜가 아니라 세션 하나만
+/// 골라 그 세션 전체 기간의 agentType별 턴/토큰/비용과 toolName별 사용
+/// 횟수를 돌려준다. `get_daily_detail`과 핵심 집계 로직을 공유하지만(
+/// `detail::aggregate_session_agents_and_tools`) 날짜 필터는 걸지 않는다.
+/// 세션에 대응하는 jsonl을 못 찾으면(아직 메시지가 없는 draft 등) `None` —
+/// 에러가 아니라 "자료 없음"으로 프론트가 구분해야 한다. `get_daily_usage`와
+/// 동일한 이유(jsonl 재귀 스캔이 메인 스레드를 막지 않게)로 async +
+/// `spawn_blocking`.
+#[tauri::command]
+pub async fn get_session_detail(session_id: String) -> Option<detail::SessionDetail> {
+    tauri::async_runtime::spawn_blocking(move || detail::aggregate_session_detail(&session_id))
+        .await
+        .unwrap_or(None)
+}
+
 /// "사용량 통계" 확장 화면의 30일 요약(최고 사용일·캐시 절대량·입출력비율은
 /// 기존 `get_daily_usage`의 `DailyUsage` 30일치만으로 프론트에서 계산 가능해
 /// 여기서 다시 만들지 않는다) — 모델별/프로젝트별/툴별 비중과 30일 예상

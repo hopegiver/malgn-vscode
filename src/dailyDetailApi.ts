@@ -40,3 +40,13 @@ export interface DailyDetailReport {
 export async function fetchDailyDetail(date: string): Promise<DailyDetailReport> {
   return invoke<DailyDetailReport>('get_daily_detail', { date });
 }
+
+// 세션 상세 화면의 "에이전트 실행 이력" 섹션 전용 — 날짜가 아니라 세션 하나만
+// 골라 그 세션 전체 기간(날짜 필터 없음)의 agentType/toolName 집계를 받는다.
+// `get_daily_detail`과 백엔드 집계 로직을 공유하되(usage_stats::detail::
+// aggregate_session_agents_and_tools) 날짜로 자르지 않는다는 점만 다르다.
+// 세션에 대응하는 jsonl을 못 찾으면(아직 메시지가 없는 draft 세션 등) `null`
+// — 호출 자체가 실패한 에러와 "자료 없음"을 프론트가 구분해야 한다.
+export async function fetchSessionDetail(sessionId: string): Promise<SessionDetail | null> {
+  return invoke<SessionDetail | null>('get_session_detail', { sessionId });
+}
