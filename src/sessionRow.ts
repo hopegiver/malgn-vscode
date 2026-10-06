@@ -3,7 +3,7 @@
 // 이미 한 프로젝트 안이라 프로젝트명 열이 중복이므로 showProject:false로 뺀다.
 import { el, clickable } from './dom';
 import { navigate } from './route';
-import { asBoolean, asNumber, asString, projectNameFromCwd, sessionTitle } from './views/sessions';
+import { asBoolean, asNumber, asString, sessionProjectName, sessionTitle } from './views/sessions';
 import type { ClaudeSessionRecord } from './sessionsApi';
 
 // m2 수정(리뷰 2026-09-24) — 세션/자율 작업 id를 같은 "#앞8자…" 표기로 줄인다.
@@ -25,6 +25,13 @@ export function formatCompactElapsed(ms: number): string {
   return `${diffDay}일 전`;
 }
 
+function accentEl(s: ClaudeSessionRecord): HTMLElement {
+  const e = el('span', { className: 'blist-accent' }, [sessionProjectName(s)]);
+  const cwd = asString(s.cwd);
+  if (cwd) e.setAttribute('title', cwd); // 하위 디렉터리 세션의 실제 cwd 확인용
+  return e;
+}
+
 export function sessionBlistRow(s: ClaudeSessionRecord, opts: { readonly showProject?: boolean } = {}): HTMLElement {
   const showProject = opts.showProject !== false;
   const sessionId = asString(s.sessionId);
@@ -32,7 +39,7 @@ export function sessionBlistRow(s: ClaudeSessionRecord, opts: { readonly showPro
   const updatedAt = asNumber(s.updatedAt) ?? asNumber(s.startedAt);
   const row = el('div', { className: `blist-row blist-row--sessions${showProject ? '' : ' blist-row--sessions-noproj'}` }, [
     el('span', { className: 'blist-id' }, [shortId(sessionId)]),
-    ...(showProject ? [el('span', { className: 'blist-accent' }, [projectNameFromCwd(asString(s.cwd))])] : []),
+    ...(showProject ? [accentEl(s)] : []),
     el('span', { className: 'blist-body' }, [sessionTitle(s)]),
     el('span', { className: `blist-status ${running ? 'status-run' : 'status-done'}` }, [el('span', { className: 'dot' }, []), running ? '실행 중' : '완료']),
     el('span', { className: 'blist-time' }, [updatedAt !== null ? formatCompactElapsed(updatedAt) : '-']),

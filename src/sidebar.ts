@@ -15,7 +15,7 @@ import { el, clickable } from './dom';
 import { state, notifyChange, resetStateForLogout } from './state';
 import { navigate } from './route';
 import type { Route } from './route';
-import { asBoolean, asString, asNumber, sortedSessions, sessionTitle, projectNameFromCwd, openNewSessionModal, loadSessions } from './views/sessions';
+import { asBoolean, asString, asNumber, sortedSessions, sessionTitle, sessionProjectName, openNewSessionModal, loadSessions } from './views/sessions';
 import type { ClaudeSessionRecord } from './sessionsApi';
 import { sortedProjectsByRecency } from './views/projects';
 import { loadDailyUsage, loadUsageSummary } from './views/usage';
@@ -399,7 +399,7 @@ function sessionNarrowRow(s: ClaudeSessionRecord, route: Route): HTMLElement {
   return narrowRow({
     dotClass: running ? 'good' : 'idle',
     name: sessionTitle(s),
-    meta: `${projectNameFromCwd(asString(s.cwd))} · ${updatedAt !== null ? formatDaysAgo(updatedAt) : '-'}`,
+    meta: `${sessionProjectName(s)} · ${updatedAt !== null ? formatDaysAgo(updatedAt) : '-'}`,
     current,
     onClick: () => navigate(`#/sessions/${encodeURIComponent(sessionId)}`),
   });

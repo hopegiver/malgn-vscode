@@ -41,8 +41,17 @@ export function asBoolean(v: unknown): boolean {
 
 export function projectNameFromCwd(cwd: string): string {
   if (!cwd) return '(알 수 없음)';
-  const parts = cwd.split('/').filter(Boolean);
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : cwd;
+}
+
+// 세션이 화면 어디에 표시되든 프로젝트 이름은 귀속 프로젝트(projectPath)의 이름이다 —
+// 하위 디렉터리에서 띄운 세션도 cwd 마지막 조각이 아니라 프로젝트명으로 보인다.
+// projectPath가 없는 레코드(목록에 없는 세션 등)만 cwd로 폴백한다.
+export function sessionProjectName(session: ClaudeSessionRecord | undefined, fallbackCwd = ''): string {
+  const projectPath = session ? asString(session.projectPath) : '';
+  if (projectPath) return projectNameFromCwd(projectPath);
+  return projectNameFromCwd(session ? asString(session.cwd) : fallbackCwd);
 }
 
 // Rust가 대화 로그(jsonl) 첫 사용자 메시지에서 뽑아낸 title을 우선 쓴다. jsonl을
@@ -150,7 +159,6 @@ export function renderSessionsListView(): HTMLElement {
 function renderSessionRow(session: ClaudeSessionRecord): HTMLElement {
   const sessionId = asString(session.sessionId);
   const title = sessionTitle(session);
-  const cwd = asString(session.cwd);
   const name = asString(session.name);
   const version = asString(session.version);
   const running = asBoolean(session.running);
@@ -169,7 +177,7 @@ function renderSessionRow(session: ClaudeSessionRecord): HTMLElement {
     [
       el('div', { className: 'session-row-main' }, [
         el('div', { className: 'session-row-name' }, [title]),
-        el('div', { className: 'session-row-cwd' }, [name ? `${projectNameFromCwd(cwd)} · ${name}` : projectNameFromCwd(cwd)]),
+        el('div', { className: 'session-row-cwd' }, [name ? `${sessionProjectName(session)} · ${name}` : sessionProjectName(session)]),
       ]),
       el('div', { className: 'session-row-meta' }, [
         el('span', { className: 'badge badge-unknown' }, [version || '버전 없음']),
@@ -1017,9 +1025,9 @@ function deriveTitleFromTranscript(transcript: SessionTranscript | null): string
 // U-20: 세션 레코드가 없을 때(kind/startedAt/updatedAt이 전부 빈 값) 각 세그먼트를
 // 무조건 '-'로 채우면 "· - · 시작 - · 갱신 -"처럼 '-'가 겹쳐 나온다. 빈 세그먼트는
 // filter로 걷어내고 '·' 구분자는 남은 세그먼트 사이에만 join으로 생성한다.
-function renderChatMetaRow(cwd: string, version: string, kind: string, startedAt: string, updatedAt: string): HTMLElement {
+function renderChatMetaRow(projectName: string, version: string, kind: string, startedAt: string, updatedAt: string): HTMLElement {
   const parts = [
-    projectNameFromCwd(cwd),
+    projectName,
     version ? `v${version}` : '버전 정보 없음',
     kind,
     startedAt !== '-' ? `시작 ${startedAt}` : '',
@@ -1060,7 +1068,7 @@ export function renderSessionDetailView(sessionId: string): HTMLElement {
       titleEl,
       ...(session ? [el('button', { className: 'btn chat-meta-btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
     ]),
-    renderChatMetaRow(cwd, version, kind, startedAt, updatedAt),
+    renderChatMetaRow(sessionProjectName(session, cwd), version, kind, startedAt, updatedAt),
   ]);
 
   const body: HTMLElement[] = [header];

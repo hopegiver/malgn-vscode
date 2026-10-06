@@ -77,7 +77,7 @@ function renderGreeting(): HTMLElement {
     // 과소집계로 오해하지 않게 툴팁으로 밝힌다.
     const { activeProjects, runningSessions } = portfolioSummary(state.sessions.items);
     const summary = el('span', {}, [
-      '활동 중 ', el('b', {}, [String(activeProjects)]), '개 프로젝트 · 실행 중 세션 ', el('b', {}, [String(runningSessions)]), '개',
+      '실행 중 세션 ', el('b', {}, [String(runningSessions)]), '개 · ', el('b', {}, [String(activeProjects)]), '개 프로젝트에서',
     ]);
     summary.setAttribute('title', '워크스페이스 내 세션 기준');
     subParts.push(summary);
@@ -106,7 +106,7 @@ function renderStatRow(): HTMLElement {
   const portfolio = portfolioSummary(state.sessions.items);
   const runningSessions = state.sessions.loaded ? String(portfolio.runningSessions) : '—';
   const runningTrend =
-    state.sessions.loaded && portfolio.activeProjects > 0 ? { text: `${portfolio.activeProjects}개 프로젝트`, tone: 'flat' as const } : undefined;
+    state.sessions.loaded && portfolio.activeProjects > 0 ? { text: `${portfolio.activeProjects}개 프로젝트에서`, tone: 'flat' as const } : undefined;
 
   const usageTotals = computeUsageTotals(state.dailyUsage.items);
   const todayTokens = state.dailyUsage.loaded ? formatTokenCount(computeTodayTokens(state.dailyUsage.items)) : '—';
@@ -120,7 +120,7 @@ function renderStatRow(): HTMLElement {
     : '—';
 
   return el('div', { className: 'stat-row' }, [
-    statTile('활성 프로젝트', `${activeValue}${totalValue}`),
+    statTile('진행 프로젝트', `${activeValue}${totalValue}`),
     statTile('실행 중 세션', runningSessions, runningTrend),
     statTile('오늘 토큰 사용량', todayTokens, cacheHitTrend),
     statTile('자율 작업 대기열', queuedTasks),

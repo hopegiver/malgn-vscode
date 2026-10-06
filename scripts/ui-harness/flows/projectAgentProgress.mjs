@@ -9,6 +9,7 @@ export const startHash = '#/projects';
 const ALPHA = '/Users/hopegiver/workspace/ha-alpha';
 const BETA = '/Users/hopegiver/workspace/ha-beta';
 const GAMMA = '/Users/hopegiver/workspace/ha-gamma';
+const WIN = 'C:\\Users\\x\\workspace\\ha-win';
 
 function project(name, p) {
   return { name, path: p, hasStatus: true, archiveStatus: 'active', sections: null, updatedAt: Date.now() };
@@ -28,6 +29,9 @@ const SESSIONS_RUNNING = [
   session('aaaaaaaa-0003', ALPHA, ALPHA, '알파 끝난 세션', { minAgo: 90 }),
   session('bbbbbbbb-0001', BETA, BETA, '베타 끝난 세션', { minAgo: 30 }),
 ];
+
+// Windows 경로 projectPath — 구분자가 \\여도 이름은 마지막 조각(ha-win)이어야 한다.
+const SESSIONS_WIN = [session('cccccccc-0001', WIN, `${WIN}\\src`, '윈도우 하위 디렉터리 세션', { running: true, minAgo: 1 })];
 
 const SESSIONS_NONE_RUNNING = SESSIONS_RUNNING.map((s) => ({ ...s, running: false }));
 
@@ -78,12 +82,17 @@ export function scenarios(base) {
         await page.waitForTimeout(200);
         await shot('03-home-tile');
         const sub = await page.locator('.greet-sub').textContent();
-        if (!sub || !sub.includes('활동 중 1개 프로젝트 · 실행 중 세션 2개')) bugs.push({ severity: 'Critical', symptom: `홈 인사말 요약 불일치(실제: ${sub})`, file: 'src/views/home.ts:renderGreeting' });
+        if (!sub || !sub.includes('실행 중 세션 2개 · 1개 프로젝트에서')) bugs.push({ severity: 'Critical', symptom: `홈 인사말 요약 불일치(실제: ${sub})`, file: 'src/views/home.ts:renderGreeting' });
         const tip = await page.locator('.greet-sub [title]').getAttribute('title');
         if (!tip || !tip.includes('워크스페이스')) bugs.push({ severity: 'Minor', symptom: '"워크스페이스 기준" 툴팁 없음', file: 'src/views/home.ts' });
+        // 귀속 프로젝트명 — 하위 디렉터리(src-tauri) 세션도 홈 최근 세션에서 ha-alpha여야 한다.
+        const accents = await page.locator('.blist-row--sessions .blist-accent').allTextContents();
+        if (accents.length === 0 || accents.some((a) => a !== 'ha-alpha' && a !== 'ha-beta')) bugs.push({ severity: 'Critical', symptom: `홈 최근 세션 프로젝트명이 귀속 프로젝트가 아님: ${JSON.stringify(accents)}`, file: 'src/sessionRow.ts' });
         const tile = page.locator('.stat', { hasText: '실행 중 세션' });
+        const st = await page.locator('.stat', { hasText: '진행 프로젝트' }).count();
+        if (st !== 1) bugs.push({ severity: 'Major', symptom: '"진행 프로젝트" 타일 라벨 없음', file: 'src/views/home.ts' });
         const tt = await tile.textContent();
-        if (!tt || !tt.includes('2') || !tt.includes('1개 프로젝트')) bugs.push({ severity: 'Critical', symptom: `홈 타일 값/트렌드 불일치(실제: ${tt})`, file: 'src/views/home.ts:renderStatRow' });
+        if (!tt || !tt.includes('2') || !tt.includes('1개 프로젝트에서')) bugs.push({ severity: 'Critical', symptom: `홈 타일 값/트렌드 불일치(실제: ${tt})`, file: 'src/views/home.ts:renderStatRow' });
         if ((await page.locator('.stat', { hasText: '실행 중 세션' }).count()) !== 1) bugs.push({ severity: 'Major', symptom: '실행 중 세션 타일 중복', file: 'src/views/home.ts' });
       },
     },
@@ -111,9 +120,20 @@ export function scenarios(base) {
         await page.waitForTimeout(200);
         await shot('03-home-zero');
         const tile = await page.locator('.stat', { hasText: '실행 중 세션' }).textContent();
-        if (tile && tile.includes('개 프로젝트')) bugs.push({ severity: 'Major', symptom: `0건인데 타일 trend가 표시됨(실제: ${tile})`, file: 'src/views/home.ts' });
+        if (tile && tile.includes('개 프로젝트에서')) bugs.push({ severity: 'Major', symptom: `0건인데 타일 trend가 표시됨(실제: ${tile})`, file: 'src/views/home.ts' });
         const sub = await page.locator('.greet-sub').textContent();
-        if (!sub || !sub.includes('활동 중 0개 프로젝트 · 실행 중 세션 0개')) bugs.push({ severity: 'Major', symptom: `0건 인사말 불일치(실제: ${sub})`, file: 'src/views/home.ts' });
+        if (!sub || !sub.includes('실행 중 세션 0개 · 0개 프로젝트에서')) bugs.push({ severity: 'Major', symptom: `0건 인사말 불일치(실제: ${sub})`, file: 'src/views/home.ts' });
+      },
+    },
+    {
+      id: 'windows-path',
+      fixtures: { ...base, list_workspace_projects: { projects: [project('ha-win', WIN)], skipped: [] }, list_claude_sessions: SESSIONS_WIN, list_project_tree: [] },
+      async run(page, { shot, bugs }) {
+        await page.evaluate(() => { window.location.hash = '#/'; });
+        await page.waitForSelector('.blist-row--sessions .blist-accent');
+        await shot('01-home-windows');
+        const a = await page.locator('.blist-row--sessions .blist-accent').first().textContent();
+        if (a !== 'ha-win') bugs.push({ severity: 'Critical', symptom: `Windows projectPath 이름 불일치(실제: ${a})`, file: 'src/views/sessions.ts:projectNameFromCwd' });
       },
     },
     {
