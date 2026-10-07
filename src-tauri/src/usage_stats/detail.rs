@@ -149,6 +149,29 @@ struct AgentUsage {
     cost_usd: f64,
 }
 
+/// 서브에이전트 위임 1건(사용자가 원한 "에이전트들이 실제로 어떤 작업을 했는지
+/// 목록" — `AgentUsage`의 agentType별 합계와 달리 호출 1건당 1개 항목이다).
+/// 메인 에이전트 자신의 턴은 다루지 않는다(description 같은 짧은 라벨이
+/// 원래 없다 — `collect_agent_work_items` 참고).
+#[derive(Serialize, Debug, Clone)]
+struct AgentWorkItem {
+    description: String,
+    #[serde(rename = "agentType")]
+    agent_type: String,
+    /// 위임 tool_use가 기록된 메인 트랜스크립트 줄의 RFC3339 timestamp.
+    #[serde(rename = "startedAt")]
+    started_at: String,
+    /// 매칭되는 서브에이전트 트랜스크립트(`subagents/<stem>.jsonl`)를 찾았을
+    /// 때만 "시작~그 파일의 마지막 줄" 간격으로 계산한다 — 못 찾으면 억지로
+    /// 만들지 않고 `None`("정직하게 계산 가능한 지표만" 원칙).
+    #[serde(rename = "durationSeconds")]
+    duration_seconds: Option<i64>,
+    #[serde(rename = "totalTokens")]
+    total_tokens: Option<u64>,
+    #[serde(rename = "costUsd")]
+    cost_usd: Option<f64>,
+}
+
 // `get_session_detail`(세션 상세 화면 "에이전트 실행 이력")이 날짜별 상세와
 // 같은 모양을 돌려줘야 해서 `pub(crate)`로 연다 — 필드는 이 모듈 안에서만
 // 채우므로(생성자가 여기 없다) 그대로 private 필드로 둔다.
@@ -165,6 +188,13 @@ pub(crate) struct SessionDetail {
     cost_usd: f64,
     agents: Vec<AgentUsage>,
     tools: Vec<ToolUsage>,
+    /// 서브에이전트 위임 목록(호출 1건당 1개 항목, startedAt desc 정렬) —
+    /// `get_session_detail`(세션 상세의 "에이전트 실행 이력")에서만 채운다.
+    /// `get_daily_detail`(날짜 하루 전체, 세션이 여러 개)은 세션마다 메인
+    /// 트랜스크립트를 다시 훑는 비용을 피하려고 항상 빈 배열로 둔다 — 그
+    /// 화면은 이 필드를 쓰지 않는다.
+    #[serde(rename = "workItems")]
+    work_items: Vec<AgentWorkItem>,
 }
 
 #[derive(Serialize, Debug, Clone, Default)]
@@ -490,6 +520,7 @@ pub(crate) fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
                 cost_usd,
                 agents,
                 tools,
+                work_items: Vec::new(),
             });
         }
     }
@@ -501,6 +532,217 @@ pub(crate) fn aggregate_daily_detail(date: &str) -> DailyDetailReport {
     report.sessions = sessions;
     report.unpriced_tokens = report_unpriced_tokens;
     report
+}
+
+/// 메인 트랜스크립트 안에서 "서브에이전트에 위임했다"는 사실 하나를 담는
+/// 중간 표현 — `find_delegations_in_transcript`가 만들고
+/// `collect_agent_work_items`가 `AgentWorkItem`으로 보강한다.
+struct PendingDelegation {
+    tool_use_id: String,
+    description: String,
+    subagent_type: String,
+    started_at: String,
+}
+
+/// 메인 세션 트랜스크립트에서 서브에이전트 위임 호출을 찾는다. tool_use의
+/// `name`이 "Agent"인지 "Task"인지는 Claude Code 버전/설정에 따라 다를 수
+/// 있어(PM이 요청에서 지적한 대로) 실데이터로 이 머신을 직접 확인했다 — 이
+/// 머신(`~/.claude/projects/-Users-hopegiver-workspace-malgn-vscode/*.jsonl`)은
+/// "Agent"를 쓴다. 두 이름 다 지원한다. `input.description`이 없거나 빈
+/// 문자열이면 위임으로 보지 않고 건너뛴다(짧은 라벨이 없는데 억지로 만들지
+/// 않는다 — "정직하게 계산 가능한 지표만" 원칙). 메인 에이전트 자신의 턴은
+/// 애초에 tool_use가 아니므로 이 스캔에 걸리지 않는다(요구사항: "서브에이전트
+/// 위임 목록만").
+fn find_delegations_in_transcript(path: &Path) -> Vec<PendingDelegation> {
+    let mut out = Vec::new();
+    let Ok(f) = std::fs::File::open(path) else {
+        return out;
+    };
+    for line in BufReader::new(f).lines() {
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(ts) = value.get("timestamp").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let Some(content) = value
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+        for item in content {
+            if item.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                continue;
+            }
+            let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if name != "Agent" && name != "Task" {
+                continue;
+            }
+            let Some(input) = item.get("input") else { continue };
+            let description = input
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if description.is_empty() {
+                continue;
+            }
+            let Some(tool_use_id) = item.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let subagent_type = input
+                .get("subagent_type")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            out.push(PendingDelegation {
+                tool_use_id: tool_use_id.to_string(),
+                description,
+                subagent_type,
+                started_at: ts.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// `<sessionId>/subagents/*.meta.json`을 전부 읽어 `toolUseId → (그 서브에이전트
+/// 자신의 jsonl 경로, meta의 agentType)` 매핑을 만든다 — 위임 목록 항목을 실제
+/// 서브에이전트 트랜스크립트와 연결해 소요시간·토큰을 보강할 때 쓴다. 매칭되는
+/// meta가 없는 toolUseId는 이 맵에 없다(보강 없이 tool_use.input만으로 항목을
+/// 만들게 된다 — `aggregate_session_agents_and_tools`가 agentType을 meta.json
+/// 쪽을 신뢰하는 것과 같은 이유로, 찾으면 meta의 agentType이 tool_use.input의
+/// subagent_type을 덮어쓴다).
+fn index_subagent_meta_by_tool_use_id(subagents_dir: &Path) -> HashMap<String, (std::path::PathBuf, String)> {
+    let mut map = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(subagents_dir) else {
+        return map;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(stem) = file_name.strip_suffix(".meta.json") else {
+            continue;
+        };
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        let Some(tool_use_id) = meta.get("toolUseId").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let agent_type = meta
+            .get("agentType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let jsonl_path = subagents_dir.join(format!("{stem}.jsonl"));
+        map.insert(tool_use_id.to_string(), (jsonl_path, agent_type));
+    }
+    map
+}
+
+/// 파일의 첫 줄과 마지막 줄에서 "timestamp" 필드를 읽는다(소요시간 계산용) —
+/// 완전히 빈 파일이거나 timestamp가 하나도 없으면 `(None, None)`.
+fn first_and_last_timestamps(path: &Path) -> (Option<String>, Option<String>) {
+    let Ok(f) = std::fs::File::open(path) else {
+        return (None, None);
+    };
+    let mut first: Option<String> = None;
+    let mut last: Option<String> = None;
+    for line in BufReader::new(f).lines() {
+        let Ok(line) = line else { continue };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(ts) = value.get("timestamp").and_then(|t| t.as_str()) {
+            if first.is_none() {
+                first = Some(ts.to_string());
+            }
+            last = Some(ts.to_string());
+        }
+    }
+    (first, last)
+}
+
+/// 세션 하나의 서브에이전트 위임 목록을 만든다 — `get_session_detail`(세션
+/// 상세의 "에이전트 실행 이력") 전용. 메인 트랜스크립트에서 위임 호출을 모두
+/// 찾은 뒤(`find_delegations_in_transcript`), `subagents/*.meta.json`으로
+/// 보강 가능하면(agentType 확정 + 소요시간 + 토큰·비용) 보강하고, 그 서브
+/// 에이전트의 트랜스크립트를 못 찾으면 tool_use.input만으로 만든 항목을 그대로
+/// 둔다(완료 여부·소요시간을 억지로 만들지 않는다). startedAt 내림차순(최신
+/// 위임이 먼저)으로 정렬한다.
+fn collect_agent_work_items(session_path: &Path, project_path: &Path, session_id: &str) -> Vec<AgentWorkItem> {
+    let delegations = find_delegations_in_transcript(session_path);
+    if delegations.is_empty() {
+        return Vec::new();
+    }
+
+    let subagents_dir = project_path.join(session_id).join("subagents");
+    let meta_index = if subagents_dir.is_dir() {
+        index_subagent_meta_by_tool_use_id(&subagents_dir)
+    } else {
+        HashMap::new()
+    };
+
+    let mut items: Vec<AgentWorkItem> = delegations
+        .into_iter()
+        .map(|d| {
+            let mut agent_type = d.subagent_type;
+            let mut duration_seconds = None;
+            let mut total_tokens = None;
+            let mut cost_usd = None;
+
+            if let Some((agent_jsonl_path, meta_agent_type)) = meta_index.get(&d.tool_use_id) {
+                agent_type = meta_agent_type.clone();
+
+                let (_first_ts, last_ts) = first_and_last_timestamps(agent_jsonl_path);
+                if let (Some(start), Some(end)) = (
+                    parse_iso_timestamp(&d.started_at),
+                    last_ts.as_deref().and_then(parse_iso_timestamp),
+                ) {
+                    duration_seconds = Some((end - start).num_seconds().max(0));
+                }
+
+                let mut tally = UsageTally::default();
+                let mut tool_counts: HashMap<String, u32> = HashMap::new();
+                scan_usage_lines_matching(agent_jsonl_path, None, &mut tally, &mut tool_counts);
+                if tally.turns > 0 {
+                    total_tokens = Some(tally.tokens);
+                    cost_usd = Some(tally.cost);
+                }
+            }
+
+            AgentWorkItem {
+                description: d.description,
+                agent_type,
+                started_at: d.started_at,
+                duration_seconds,
+                total_tokens,
+                cost_usd,
+            }
+        })
+        .collect();
+
+    items.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    items
 }
 
 /// 날짜가 아니라 세션 하나만 골라 집계한다 — 세션 상세 화면의 "에이전트 실행
@@ -554,6 +796,7 @@ pub(crate) fn aggregate_session_detail(session_id: &str) -> Option<SessionDetail
         let total_tokens: u64 = agents.iter().map(|a| a.total_tokens).sum();
         let cost_usd: f64 = agents.iter().map(|a| a.cost_usd).sum();
         let title = first_user_title_from_file(&session_path);
+        let work_items = collect_agent_work_items(&session_path, &project_path, session_id);
 
         return Some(SessionDetail {
             session_id: session_id.to_string(),
@@ -567,6 +810,7 @@ pub(crate) fn aggregate_session_detail(session_id: &str) -> Option<SessionDetail
             cost_usd,
             agents,
             tools,
+            work_items,
         });
     }
     None
@@ -814,6 +1058,190 @@ mod tests {
         assert!(
             detail.tools.len() <= 10,
             "tools 상위 개수 제한이 지켜지지 않았습니다"
+        );
+    }
+
+    // "에이전트 실행 이력" 확장 — 서브에이전트 위임 목록(AgentWorkItem). 실데이터
+    // 확인 결과 이 머신은 tool_use.name이 "Agent"지만 다른 Claude Code
+    // 버전/설정은 "Task"를 쓸 수 있어 둘 다 지원해야 한다(요구사항) — 한 트랜스
+    // 크립트에 두 이름을 섞어 넣어 모두 파싱되는지 고정한다. description이 없는
+    // tool_use(여기선 평범한 Read 호출)는 위임으로 보지 않고 무시해야 한다.
+    #[test]
+    fn find_delegations_in_transcript_parses_both_agent_and_task_names_and_skips_missing_description() {
+        let tmp = std::env::temp_dir().join(format!(
+            "malgn-vscode-delegation-names-test-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &tmp,
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-10-01T00:00:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"/tmp/x"}}]}}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-10-01T00:01:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_agent1","name":"Agent","input":{"description":"Visual design concept 1 — dark technical","subagent_type":"malgn-agent:visual-designer"}}]}}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-10-01T00:02:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_task1","name":"Task","input":{"description":"Fix review findings","subagent_type":"malgn-agent:backend-dev"}}]}}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-10-01T00:03:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_agent2","name":"Agent","input":{"subagent_type":"malgn-agent:qa-engineer"}}]}}"#,
+                "\n",
+            ),
+        )
+        .expect("fixture 파일 쓰기 실패");
+
+        let delegations = find_delegations_in_transcript(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(
+            delegations.len(),
+            2,
+            "Read(위임 아님)와 description 없는 Agent는 제외하고 Agent 1건 + Task 1건만 남아야 합니다"
+        );
+        assert_eq!(delegations[0].tool_use_id, "toolu_agent1");
+        assert_eq!(delegations[0].description, "Visual design concept 1 — dark technical");
+        assert_eq!(delegations[0].subagent_type, "malgn-agent:visual-designer");
+        assert_eq!(delegations[1].tool_use_id, "toolu_task1");
+        assert_eq!(delegations[1].description, "Fix review findings");
+        assert_eq!(delegations[1].subagent_type, "malgn-agent:backend-dev");
+    }
+
+    // 메인 트랜스크립트의 위임 호출(Agent tool_use) + `subagents/*.meta.json` +
+    // 그 서브에이전트 자신의 jsonl(토큰/비용/완료시각)을 조합해
+    // `collect_agent_work_items`가 올바른 AgentWorkItem을 만드는지 확인한다 —
+    // agentType은 tool_use.input의 subagent_type이 아니라 meta.json 쪽을
+    // 신뢰해야 하고(여기선 둘을 다르게 둬서 구분), durationSeconds는 위임
+    // timestamp~서브에이전트 jsonl 마지막 줄 timestamp 차이여야 한다.
+    #[test]
+    fn collect_agent_work_items_enriches_from_matching_subagent_transcript() {
+        let base = std::env::temp_dir().join(format!(
+            "malgn-vscode-work-items-test-{}",
+            std::process::id()
+        ));
+        let session_id = "sess-work-items-test";
+        let subagents_dir = base.join(session_id).join("subagents");
+        std::fs::create_dir_all(&subagents_dir).expect("fixture 디렉터리 생성 실패");
+
+        let session_path = base.join(format!("{session_id}.jsonl"));
+        std::fs::write(
+            &session_path,
+            r#"{"type":"assistant","timestamp":"2026-10-01T10:00:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_enrich_1","name":"Agent","input":{"description":"Add agent work-item list","subagent_type":"malgn-agent:backend-dev-raw"}}]}}"#,
+        )
+        .expect("main fixture 쓰기 실패");
+
+        let agent_path = subagents_dir.join("agent-y.jsonl");
+        std::fs::write(
+            &agent_path,
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-10-01T10:00:00.050Z","message":{"id":"msg_1","model":"claude-sonnet-4-6","usage":{"input_tokens":200,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-10-01T10:05:00.050Z","message":{"id":"msg_2","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+                "\n",
+            ),
+        )
+        .expect("subagent fixture 쓰기 실패");
+        std::fs::write(
+            subagents_dir.join("agent-y.meta.json"),
+            r#"{"agentType":"malgn-agent:backend-dev","toolUseId":"toolu_enrich_1"}"#,
+        )
+        .expect("meta fixture 쓰기 실패");
+
+        let items = collect_agent_work_items(&session_path, &base, session_id);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.description, "Add agent work-item list");
+        assert_eq!(
+            item.agent_type, "malgn-agent:backend-dev",
+            "meta.json의 agentType이 tool_use.input의 subagent_type을 덮어써야 합니다"
+        );
+        assert_eq!(item.started_at, "2026-10-01T10:00:00.000Z");
+        // 2026-10-01T10:00:00.000Z ~ 2026-10-01T10:05:00.050Z = 300초(소수점 버림).
+        assert_eq!(item.duration_seconds, Some(300));
+        assert_eq!(item.total_tokens, Some(200 + 200 + 100 + 100));
+        assert!((item.cost_usd.unwrap() - ((300.0 / 1e6) * 3.0 + (300.0 / 1e6) * 15.0)).abs() < 1e-9);
+    }
+
+    // 매칭되는 subagents/*.meta.json이 없으면(서브에이전트 트랜스크립트를 아직
+    // 못 찾음) 억지로 소요시간·토큰을 만들지 않고 tool_use.input 값만으로
+    // 항목을 돌려줘야 한다("정직하게 계산 가능한 지표만" 원칙).
+    #[test]
+    fn collect_agent_work_items_falls_back_to_raw_input_when_no_subagent_transcript_found() {
+        let base = std::env::temp_dir().join(format!(
+            "malgn-vscode-work-items-no-meta-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&base).expect("fixture 디렉터리 생성 실패");
+        let session_id = "sess-no-meta-test";
+        let session_path = base.join(format!("{session_id}.jsonl"));
+        std::fs::write(
+            &session_path,
+            r#"{"type":"assistant","timestamp":"2026-10-01T11:00:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_no_meta","name":"Task","input":{"description":"Unmatched delegation","subagent_type":"malgn-agent:reviewer"}}]}}"#,
+        )
+        .expect("main fixture 쓰기 실패");
+
+        let items = collect_agent_work_items(&session_path, &base, session_id);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].agent_type, "malgn-agent:reviewer");
+        assert_eq!(items[0].duration_seconds, None);
+        assert_eq!(items[0].total_tokens, None);
+        assert_eq!(items[0].cost_usd, None);
+    }
+
+    // 여러 위임이 있을 때 startedAt 내림차순(최신 먼저)으로 일관되게 정렬되는지
+    // 확인한다.
+    #[test]
+    fn collect_agent_work_items_sorts_by_started_at_descending() {
+        let base = std::env::temp_dir().join(format!(
+            "malgn-vscode-work-items-sort-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&base).expect("fixture 디렉터리 생성 실패");
+        let session_id = "sess-sort-test";
+        let session_path = base.join(format!("{session_id}.jsonl"));
+        std::fs::write(
+            &session_path,
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-10-01T09:00:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_early","name":"Agent","input":{"description":"first delegation","subagent_type":"malgn-agent:backend-dev"}}]}}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-10-01T12:00:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_late","name":"Agent","input":{"description":"second delegation","subagent_type":"malgn-agent:frontend-dev"}}]}}"#,
+                "\n",
+            ),
+        )
+        .expect("main fixture 쓰기 실패");
+
+        let items = collect_agent_work_items(&session_path, &base, session_id);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].description, "second delegation", "더 늦은 위임이 먼저 와야 합니다");
+        assert_eq!(items[1].description, "first delegation");
+    }
+
+    // 이 세션 자신의 malgn-vscode 프로젝트 jsonl에 실제로 들어있는 위임 작업
+    // ("Visual design concept 1 — dark technical" — PM이 jsonl을 직접 읽어
+    // 확인한 실제 description, subagent_type: "malgn-agent:visual-designer")을
+    // `aggregate_session_detail`이 찾아내는지 확인한다. 세션 ID가 고정돼 있어
+    // 머신·세션 의존 — CI 러너에는 없어 #[ignore]. 로컬 실행: cargo test --
+    // --ignored usage_stats::detail::tests::aggregate_session_detail_finds_known_real_delegation
+    #[test]
+    #[ignore]
+    fn aggregate_session_detail_finds_known_real_delegation() {
+        let session_id = "e7a78815-e395-43d1-89fd-e10c6d5b1fb8";
+        let detail = aggregate_session_detail(session_id)
+            .expect("실제로 존재하는 세션인데 None이 돌아왔습니다 — 머신이 바뀌었을 수 있습니다");
+
+        assert!(
+            detail.work_items.iter().any(|w| {
+                w.description == "Visual design concept 1 — dark technical"
+                    && w.agent_type == "malgn-agent:visual-designer"
+            }),
+            "실제 jsonl의 알려진 위임 작업을 찾지 못했습니다(work_items {}건)",
+            detail.work_items.len()
+        );
+        assert!(
+            detail.work_items.windows(2).all(|w| w[0].started_at >= w[1].started_at),
+            "work_items가 startedAt 내림차순으로 정렬돼 있지 않습니다"
         );
     }
 }

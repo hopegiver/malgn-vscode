@@ -28,6 +28,7 @@ import type { SessionBackTarget } from '../route';
 import { loadProjects, sortedProjectsByRecency } from './projects';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 import { fetchSessionDetail } from '../dailyDetailApi';
+import type { AgentWorkItem } from '../dailyDetailApi';
 import { renderAgentUsageTable, renderToolUsageList, formatTokenCount, formatUsd } from './usage';
 
 export function asString(v: unknown): string {
@@ -1305,11 +1306,63 @@ function renderMetaModal(session: ClaudeSessionRecord): HTMLElement {
   return createModalOverlay(modalBox, closeMetaModal);
 }
 
+// 서브에이전트 위임 시각(ISO) → "3시간 전" — sidebar.ts formatDaysAgo/
+// autonomousTasks.ts formatRelativeFromNow와 같은 로직이지만 sidebar.ts가
+// 이미 이 파일(views/sessions.ts)을 가져다 쓰고 있어 역참조(순환 import)를
+// 피하려고 이 파일에 독립 복사본을 둔다.
+function formatRelativeTime(atMs: number): string {
+  const diffMs = Date.now() - atMs;
+  const diffMin = Math.round(diffMs / 60000);
+  if (diffMin < 1) return '방금 전';
+  if (diffMin < 60) return `${diffMin}분 전`;
+  const diffHour = Math.round(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}시간 전`;
+  const diffDay = Math.round(diffHour / 24);
+  if (diffDay < 7) return `${diffDay}일 전`;
+  return `${Math.round(diffDay / 7)}주 전`;
+}
+
+// 소요시간(초) → "5분"/"1시간 23분" — durationSeconds가 null이면(매칭되는
+// 서브에이전트 트랜스크립트를 못 찾음) 호출하지 않는다.
+function formatDurationShort(seconds: number): string {
+  if (seconds < 60) return `${seconds}초`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}분`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes > 0 ? `${hours}시간 ${remMinutes}분` : `${hours}시간`;
+}
+
+// 서브에이전트 위임 목록(AgentWorkItem) 렌더 — 통계(에이전트별 사용량 표)와
+// 별개로 "실제로 어떤 작업을 했는지"를 호출 1건당 1행으로 보여준다. 목록이
+// 길어질 수 있어 자체 스크롤 영역을 둔다(styles.css .agent-work-item-list).
+function renderAgentWorkItemList(items: readonly AgentWorkItem[]): HTMLElement {
+  if (items.length === 0) {
+    return el('div', { className: 'state-block-desc' }, ['이 세션에서 위임한 작업이 없습니다.']);
+  }
+  return el(
+    'div',
+    { className: 'agent-work-item-list' },
+    items.map((item) => {
+      const metaParts = [item.agentType, formatRelativeTime(new Date(item.startedAt).getTime())];
+      if (item.durationSeconds !== null) metaParts.push(formatDurationShort(item.durationSeconds));
+      if (item.totalTokens !== null) metaParts.push(formatTokenCount(item.totalTokens));
+      return el('div', { className: 'agent-work-item' }, [
+        el('div', { className: 'agent-work-item-desc' }, [item.description]),
+        el('div', { className: 'agent-work-item-meta' }, [metaParts.join(' · ')]),
+      ]);
+    })
+  );
+}
+
 // "에이전트 실행 이력" 모달 — 이 세션 안에서 main/서브에이전트 타입별 턴·
-// 토큰·비용, 툴별 사용 횟수를 보여준다. renderAgentUsageTable/
+// 토큰·비용, 툴별 사용 횟수(집계 통계)에 더해, 서브에이전트에 위임한 작업
+// 목록(호출 1건당 1행, workItems)을 함께 보여준다. renderAgentUsageTable/
 // renderToolUsageList(views/usage.ts, "일별 사용량" 상세 패널과 동일 렌더)를
 // 그대로 재사용한다 — 로딩/에러/자료없음/빈 집계 4가지 상태를 각각 구분해
-// 보여준다(메타데이터 모달과 시각적으로 분리된 별도 모달).
+// 보여준다(메타데이터 모달과 시각적으로 분리된 별도 모달). "집계했지만 0건"
+// (agents/tools 전부 빈 배열)과 "통계는 있는데 위임 목록만 0건"은 서로 다른
+// 상태라 각자 자리에서 따로 빈 상태를 보여준다(renderAgentWorkItemList).
 function renderAgentHistoryModal(sessionId: string): HTMLElement {
   const h = state.sessionAgentHistory;
   let bodyChildren: HTMLElement[];
@@ -1339,6 +1392,11 @@ function renderAgentHistoryModal(sessionId: string): HTMLElement {
       renderAgentUsageTable(h.detail.agents),
       el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, ['툴 사용 횟수'])]),
       renderToolUsageList(h.detail.tools),
+      el('div', { className: 'box-head' }, [
+        el('span', { className: 'box-title' }, ['위임한 작업 목록']),
+        el('span', { className: 'count' }, [`${h.detail.workItems.length}건`]),
+      ]),
+      renderAgentWorkItemList(h.detail.workItems),
     ];
   }
 

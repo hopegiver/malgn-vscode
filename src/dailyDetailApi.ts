@@ -15,6 +15,22 @@ export interface AgentUsage {
   readonly costUsd: number;
 }
 
+// 서브에이전트 위임 1건(사용자가 "에이전트들이 실제로 어떤 작업을 했는지
+// 목록"을 원해서 추가됨) — AgentUsage(agentType별 턴/토큰/비용 합계)와 달리
+// 위임 호출 1건당 1개 항목이다. 메인 에이전트 자신의 턴은 포함되지 않는다
+// (description 같은 짧은 라벨이 원래 없다).
+export interface AgentWorkItem {
+  readonly description: string;
+  readonly agentType: string;
+  readonly startedAt: string; // RFC3339 — 위임 tool_use가 기록된 시각
+  // 매칭되는 서브에이전트 트랜스크립트를 찾았을 때만 채워진다. 못 찾으면
+  // 억지로 만들지 않고 null("정직하게 계산 가능한 지표만" 원칙) — 세
+  // 필드가 함께 null/non-null이다(같은 보강 단계에서 함께 채워짐).
+  readonly durationSeconds: number | null;
+  readonly totalTokens: number | null;
+  readonly costUsd: number | null;
+}
+
 export interface SessionDetail {
   readonly sessionId: string;
   readonly projectKey: string;
@@ -23,6 +39,10 @@ export interface SessionDetail {
   readonly costUsd: number;
   readonly agents: readonly AgentUsage[]; // totalTokens desc 정렬되어 옴
   readonly tools: readonly ToolUsage[]; // count desc 정렬되어 옴
+  // startedAt desc(최신 위임 먼저) 정렬되어 옴. get_session_detail(세션 상세
+  // "에이전트 실행 이력")에서만 채워진다 — get_daily_detail(날짜별 상세)의
+  // sessions 배열에서는 항상 빈 배열이다(그 화면은 이 필드를 쓰지 않는다).
+  readonly workItems: readonly AgentWorkItem[];
 }
 
 export interface DailyDetailReport {

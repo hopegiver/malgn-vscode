@@ -864,6 +864,15 @@ textarea.settings-input { resize: vertical; }
    컬럼(이름)만 제외하고 숫자 leaf 규칙(JetBrains Mono+tabular-nums)을 적용. */
 .thief-table-row > span:not(:first-child) { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 
+/* "에이전트 실행 이력" 모달의 서브에이전트 위임 목록(AgentWorkItem) — 목록이
+   길어질 수 있어 자체 스크롤 영역을 둔다(.modal-body 전체 스크롤과 별개로
+   통계 표는 항상 보이게). */
+.agent-work-item-list { display: flex; flex-direction: column; max-height: 280px; overflow-y: auto; margin-top: var(--space-1); }
+.agent-work-item { padding: var(--space-1-5) var(--space-1); border-bottom: 1px solid var(--color-hairline); }
+.agent-work-item:last-child { border-bottom: none; }
+.agent-work-item-desc { font-size: var(--font-size-small); color: var(--text-primary); }
+.agent-work-item-meta { font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-body); margin-top: 2px; }
+
 /* ---------------- 홈 대시보드 위젯 ----------------
    .home-widget-grid(구 래퍼)는 renderHomeView()가 이제 .home-extra-grid를
    쓰면서 사용처가 없어져 제거했다(grep 전수 확인 완료, 배치 C).

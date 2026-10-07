@@ -137,7 +137,9 @@ function projectDailyTrendSample() {
 // 세션 상세 화면 "에이전트 실행 이력" 모달이 get_session_detail(sessionId)에
 // 쓰는 fixture — main + 서브에이전트 1종, 툴 2종을 섞어 renderAgentUsageTable/
 // renderToolUsageList(views/usage.ts, 세션 상세에서 재사용) 양쪽 렌더 경로가
-// 실제로 지나가게 한다.
+// 실제로 지나가게 한다. workItems는 서브에이전트 위임 목록(호출 1건당 1행) —
+// 소요시간/토큰을 보강 못한 항목(durationSeconds/totalTokens: null)도 하나
+// 섞어 "정직하게 계산 가능한 지표만" 분기가 렌더되는지 함께 본다.
 function sessionDetailSample(sessionId) {
   return {
     sessionId,
@@ -152,6 +154,24 @@ function sessionDetailSample(sessionId) {
     tools: [
       { toolName: 'Read', count: 5 },
       { toolName: 'Edit', count: 2 },
+    ],
+    workItems: [
+      {
+        description: 'Add agent work-item list to session detail',
+        agentType: 'malgn-agent:backend-dev',
+        startedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+        durationSeconds: 383,
+        totalTokens: 18_000,
+        costUsd: 0.22,
+      },
+      {
+        description: 'Visual design concept 1 — dark technical',
+        agentType: 'malgn-agent:visual-designer',
+        startedAt: new Date(Date.now() - 3 * 3600_000).toISOString(),
+        durationSeconds: null,
+        totalTokens: null,
+        costUsd: null,
+      },
     ],
   };
 }
