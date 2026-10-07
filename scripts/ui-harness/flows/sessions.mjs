@@ -157,7 +157,7 @@ export function scenarios(base) {
       fixtures: {
         ...base,
         read_session_transcript: sessionTranscriptSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
-        get_session_detail: { sessionId: base.list_claude_sessions[0]?.sessionId ?? 'none', projectKey: 'test', title: '빈 세션', totalTokens: 0, costUsd: 0, agents: [], tools: [] },
+        get_session_detail: { sessionId: base.list_claude_sessions[0]?.sessionId ?? 'none', projectKey: 'test', title: '빈 세션', totalTokens: 0, costUsd: 0, agents: [], tools: [], workItems: [] },
       },
       async run(page, { shot, bugs }) {
         if (base.list_claude_sessions.length === 0) return;
@@ -224,6 +224,63 @@ export function scenarios(base) {
           if (after <= before) {
             bugs.push({ severity: 'Major', symptom: '"다시 시도" 버튼을 눌러도 get_session_detail이 다시 호출되지 않음', file: 'src/views/sessions.ts:renderAgentHistoryModal' });
           }
+        }
+      },
+    },
+    {
+      // 위임 목록(workItems)이 있는 정상 케이스 — description/agentType/상대
+      // 시간이 보이고, 소요시간·토큰을 보강하지 못한 항목(durationSeconds 등이
+      // null)도 에러 없이 렌더되는지 확인한다.
+      id: 'agent-history-work-items',
+      fixtures: {
+        ...base,
+        read_session_transcript: sessionTranscriptSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
+        get_session_detail: sessionDetailSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
+      },
+      async run(page, { shot, bugs }) {
+        if (base.list_claude_sessions.length === 0) return;
+        await page.locator('.session-row').first().click();
+        await page.waitForSelector('.chat-page');
+        await page.getByRole('button', { name: /에이전트 실행 이력/ }).click();
+        await page.waitForSelector('.modal-overlay');
+        await page.waitForTimeout(150);
+        await shot('01-agent-history-work-items');
+        const expected = sessionDetailSample('x').workItems.length;
+        const items = await page.locator('.modal-overlay .agent-work-item').count();
+        if (items !== expected) {
+          bugs.push({ severity: 'Major', symptom: `위임 목록 항목 수가 ${expected}건이어야 하는데 ${items}건`, file: 'src/views/sessions.ts:renderAgentWorkItemList' });
+        }
+        const text = await page.locator('.modal-overlay').textContent().catch(() => null);
+        if (!text || !text.includes('Add agent work-item list to session detail') || !text.includes('Visual design concept 1')) {
+          bugs.push({ severity: 'Major', symptom: `위임 작업 설명(description)이 모달에 보이지 않음(실제: ${text})`, file: 'src/views/sessions.ts:renderAgentWorkItemList' });
+        }
+      },
+    },
+    {
+      // 통계(agents/tools)는 있지만 위임 목록(workItems)은 0건인 경우 —
+      // "집계할 에이전트·툴 사용 기록이 없습니다"(통계까지 전부 빈 집계)와는
+      // 다른 상태라 위임 목록 자리에만 별도 빈 상태 문구를 써야 하고, 통계
+      // 표는 그대로 남아 있어야 한다.
+      id: 'agent-history-work-items-empty',
+      fixtures: {
+        ...base,
+        read_session_transcript: sessionTranscriptSample(base.list_claude_sessions[0]?.sessionId ?? 'none'),
+        get_session_detail: { ...sessionDetailSample(base.list_claude_sessions[0]?.sessionId ?? 'none'), workItems: [] },
+      },
+      async run(page, { shot, bugs }) {
+        if (base.list_claude_sessions.length === 0) return;
+        await page.locator('.session-row').first().click();
+        await page.waitForSelector('.chat-page');
+        await page.getByRole('button', { name: /에이전트 실행 이력/ }).click();
+        await page.waitForSelector('.modal-overlay');
+        await page.waitForTimeout(150);
+        await shot('01-agent-history-work-items-empty');
+        const text = await page.locator('.modal-overlay').textContent().catch(() => null);
+        if (!text || !text.includes('위임한 작업이 없습니다')) {
+          bugs.push({ severity: 'Major', symptom: `통계는 있는데 위임 목록이 0건인데 "위임한 작업이 없습니다" 안내가 없음(실제: ${text})`, file: 'src/views/sessions.ts:renderAgentHistoryModal' });
+        }
+        if (!text || !text.includes('backend-dev')) {
+          bugs.push({ severity: 'Major', symptom: '위임 목록만 0건인 상태에서 에이전트별 사용량 통계가 함께 사라짐', file: 'src/views/sessions.ts:renderAgentHistoryModal' });
         }
       },
     },
