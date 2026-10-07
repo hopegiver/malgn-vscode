@@ -1146,10 +1146,17 @@ export function renderSessionDetailView(sessionId: string, backTo: SessionBackTa
     back,
     el('div', { className: 'chat-header-row' }, [
       titleEl,
-      ...(session ? [el('button', { className: 'btn chat-meta-btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
-      // registry 레코드(session)와 달리 sessionId만 있으면 조회 가능하다(P2
-      // 원칙과 동일 — 부가 정보일 뿐 session 존재에 의존하지 않는다).
-      el('button', { className: 'btn chat-meta-btn', onClick: () => openAgentHistoryModal(sessionId) }, ['📊 에이전트 실행 이력']),
+      // m1 수정(2026-10-07) — 버튼 2개를 .chat-header-row의 flex 자식으로 바로
+      // 두면 justify-content:space-between이 title/메타데이터/에이전트이력
+      // 셋을 각각 벌려놔서 메타데이터 버튼이 가운데로 밀렸다. 버튼을 한
+      // 그룹으로 묶어 자식을 2개(제목 vs 버튼 그룹)로 줄이면 제목은 왼쪽,
+      // 버튼은 그룹째로 오른쪽에 붙는다.
+      el('div', { className: 'chat-header-actions' }, [
+        ...(session ? [el('button', { className: 'btn chat-meta-btn', onClick: openMetaModal }, ['ⓘ 메타데이터'])] : []),
+        // registry 레코드(session)와 달리 sessionId만 있으면 조회 가능하다(P2
+        // 원칙과 동일 — 부가 정보일 뿐 session 존재에 의존하지 않는다).
+        el('button', { className: 'btn chat-meta-btn', onClick: () => openAgentHistoryModal(sessionId) }, ['📊 에이전트 실행 이력']),
+      ]),
     ]),
     renderChatMetaRow(sessionProjectName(session, cwd), version, kind, startedAt, updatedAt),
   ]);

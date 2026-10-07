@@ -1120,6 +1120,7 @@ textarea.settings-input { resize: vertical; }
    축소되지 않는 함정) + ellipsis로 1줄 고정, 버튼 쪽은 flex-shrink:0으로
    자기 크기를 지킨다. 전체 제목은 title 속성(sessions.ts)으로 hover 시 확인. */
 .chat-header-row .chat-title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-header-actions { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
 .chat-header-row .chat-meta-btn { flex-shrink: 0; white-space: nowrap; }
 /* 헤딩 크기 통일(P1) — .page-title/.detail-title/.stat-value와 동일한 22px로 맞춘다(구 21px). */
 .chat-title { font-size: var(--font-size-h1); font-weight: 700; margin: 10px 0 8px 0; }
