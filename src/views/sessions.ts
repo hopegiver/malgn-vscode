@@ -1384,6 +1384,14 @@ function renderAgentHistoryModal(sessionId: string): HTMLElement {
     bodyChildren = [el('div', { className: 'state-block-desc' }, ['집계할 에이전트·툴 사용 기록이 없습니다.'])];
   } else {
     bodyChildren = [
+      // m2 수정(2026-10-08) — 사용자 요청으로 위임한 작업 목록을 맨 위로
+      // 올렸다. "무슨 작업을 했는지"가 통계보다 먼저 눈에 들어와야 한다는
+      // 피드백.
+      el('div', { className: 'box-head' }, [
+        el('span', { className: 'box-title' }, ['위임한 작업 목록']),
+        el('span', { className: 'count' }, [`${h.detail.workItems.length}건`]),
+      ]),
+      renderAgentWorkItemList(h.detail.workItems),
       el('div', { className: 'overview-label-row' }, [
         el('div', { className: 'overview-label' }, ['전체 합계']),
         el('span', { className: 'bar-row-value' }, [`${formatTokenCount(h.detail.totalTokens)} · ${formatUsd(h.detail.costUsd)}`]),
@@ -1392,11 +1400,6 @@ function renderAgentHistoryModal(sessionId: string): HTMLElement {
       renderAgentUsageTable(h.detail.agents),
       el('div', { className: 'box-head' }, [el('span', { className: 'box-title' }, ['툴 사용 횟수'])]),
       renderToolUsageList(h.detail.tools),
-      el('div', { className: 'box-head' }, [
-        el('span', { className: 'box-title' }, ['위임한 작업 목록']),
-        el('span', { className: 'count' }, [`${h.detail.workItems.length}건`]),
-      ]),
-      renderAgentWorkItemList(h.detail.workItems),
     ];
   }
 

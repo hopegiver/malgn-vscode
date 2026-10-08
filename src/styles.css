@@ -521,7 +521,15 @@ html, body {
 .project-card-running { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: var(--font-size-caption); color: var(--status-good); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .project-sessions-box { margin-bottom: var(--space-4); }
 .project-sessions-empty-action { margin-top: var(--space-2); }
-.project-card-name { font-weight: 600; font-size: var(--font-size-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 버튼으로 바뀌었지만(2026-10-08) 제목처럼 보여야 한다 — .project-card-link
+   같은 accent 링크색이 아니라 기본 텍스트색을 유지하고, hover에서만 밑줄로
+   클릭 가능함을 알린다. */
+.project-card-name {
+  background: none; border: none; padding: 0; margin: 0; text-align: left; cursor: pointer;
+  font-weight: 600; font-size: var(--font-size-body); color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.project-card-name:hover { text-decoration: underline; }
 .project-card-desc { color: var(--text-secondary); font-size: var(--font-size-caption); margin-bottom: var(--space-2); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .project-card-footer {
   margin-top: auto; padding-top: var(--space-3); border-top: var(--border-width) solid var(--border-soft);

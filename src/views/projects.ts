@@ -94,7 +94,10 @@ function renderProjectCard(project: WorkspaceProject, runningCount: number): HTM
 
   return el('div', { className: 'project-card' }, [
     el('div', { className: 'project-card-top' }, [
-      el('span', { className: 'project-card-name' }, [project.name]),
+      // m3 수정(2026-10-08) — 사용자 요청으로 프로젝트명 자체도 클릭해 상세로
+      // 갈 수 있게 했다. 카드 비-인터랙티브 원칙(위 주석)은 유지 — 이것도
+      // "상세 보기"와 동일한 독립 형제 버튼일 뿐, 카드 전체 onClick이 아니다.
+      el('button', { className: 'project-card-name', onClick: goToProject }, [project.name]),
       // 실행 중일 때만 표시한다(0건/미로딩/에러면 생략 — 거짓 0 금지, 끝난 상태가 기본값).
       ...(runningCount > 0 ? [el('span', { className: 'project-card-running' }, [runningDot(), `실행 중 ${runningCount}`])] : []),
       badge(project.archiveStatus),
