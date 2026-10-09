@@ -23,6 +23,7 @@ import { loadCatalog } from './catalog';
 import type { AutonomousTask } from '../state';
 import { loadAutonomousTasks } from './autonomousTasks';
 import { loadMcp } from './settings';
+import { describeHubAuth } from '../hubAuthApi';
 import { ensureAppVersionLoaded } from '../sidebar';
 import { checkClaudeAuthStatus, openClaudeLoginTerminal, logoutClaudeAuth } from '../sessionsApi';
 
@@ -345,19 +346,18 @@ function mcpHubWidget(): HTMLElement {
       ? [el('div', { className: 'home-widget-breakdown' }, [el('span', {}, [`⚠ 미연결 MCP ${disconnectedCount}개`])])]
       : [];
 
+  // 허브 인증은 앱이 관리하는 기기 토큰(설계 device-token-auth §7)이 정본이다 — 위젯의
+  // 주 배지는 그 연결 상태이고, MCP 서버 등록(플러그인) 상태는 보조 줄로 덧붙인다.
+  const hubAuthView = describeHubAuth(state.hubAuth.status);
   const hub = state.mcp.items.find((s) => s.name === MALGNAI_HUB_MCP_NAME);
-  if (!hub) {
-    return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
-      el('span', { className: 'badge badge-unknown' }, ['미설정']),
-      el('div', { className: 'home-widget-desc' }, ['malgnai-hub MCP 서버가 등록되어 있지 않습니다.']),
-      ...disconnectedBreakdown,
-      el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
-    ]);
-  }
+  const mcpLine = hub
+    ? [el('div', { className: 'home-widget-breakdown' }, [el('span', {}, [`MCP 서버: ${hub.statusLabel}`])])]
+    : [el('div', { className: 'home-widget-breakdown' }, [el('span', {}, ['⚠ malgn-agent 플러그인 미설치 — MCP 서버가 등록되어 있지 않습니다'])])];
 
   return widgetShell('malgnai-hub 연동', () => navigate('#/settings/mcp'), [
-    el('span', { className: `badge ${hub.connected ? 'badge-active' : 'badge-archived'}` }, [hub.connected ? '연결됨' : '미연결']),
-    el('div', { className: 'home-widget-desc' }, [hub.statusLabel]),
+    el('span', { className: `badge badge-${hubAuthView.tone}` }, [hubAuthView.label]),
+    el('div', { className: 'home-widget-desc' }, [hubAuthView.detail]),
+    ...mcpLine,
     ...disconnectedBreakdown,
     el('div', { className: 'home-widget-link' }, ['MCP 관리 보기 →']),
   ]);
