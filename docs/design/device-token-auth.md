@@ -44,7 +44,7 @@
 | 사용량 수집 에이전트의 토큰 저장 | 페어링으로 발급받아 `~/.claude/malgnai-hub/usage-agent-credentials.json`에 **평문 JSON(chmod 600)**으로 저장한다. Windows에서는 OS 기본 권한에 맡긴다. | `[P] malgn-agent/bin/pair-usage-device.mjs:132`, `[P] malgn-agent/bin/usage-agent-lib.mjs:69-90` |
 | headersHelper 환경변수 제거 대상: TOKEN/KEY/SECRET/AUTH | 공식 문서에는 **PASSWORD도 포함**된다. 이름에 해당 문자열이 들어가면 대소문자와 무관하게 제거한다. | code.claude.com/docs/en/mcp (2026-10-09 열람) |
 | 플러그인 mcpServers의 headersHelper는 미검증이다 | **문서상으로는 지원한다.** 플러그인 http 서버에서 `${CLAUDE_PLUGIN_ROOT}`가 `headersHelper` 안에서 치환되고, 같은 이름의 환경변수도 설정된다. cwd는 플러그인 루트다. `${user_config.*}`는 거부된다. 실제 동작은 실측해야 한다(§15). | `[P] docs/anthropic/plugins/plugins-reference.md:598-602,704`, code.claude.com/docs/en/mcp |
-| (추가, PM 확인) helper 실행 환경 | Claude Code는 helper에 `CLAUDE_CODE_MCP_SERVER_NAME`, `CLAUDE_CODE_MCP_SERVER_URL`을 설정하고, 플러그인 제공 서버면 `CLAUDE_PLUGIN_ROOT`도 설정한다. 플러그인 서버 helper에서는 이름에 TOKEN/SECRET/PASSWORD/KEY/AUTH가 들어간 환경변수가 제거되고, url에 그 제거 변수의 값이 들어 있으면 `CLAUDE_CODE_MCP_SERVER_URL`의 해당 부분이 `REDACTED`로 바뀐다. 이 설계의 url(`https://malgnai-hub.apiserver.kr/mcp`)에는 변수가 없으므로 원문 그대로 전달된다. 타임아웃은 10초이고, **연결마다 새로 실행하며 캐시하지 않는다.** | code.claude.com/docs/en/mcp headersHelper 절(PM 확인, 2026-10-09) |
+| (추가, PM 확인) helper 실행 환경 | Claude Code는 helper에 `CLAUDE_CODE_MCP_SERVER_NAME`, `CLAUDE_CODE_MCP_SERVER_URL`을 설정하고, 플러그인 제공 서버면 `CLAUDE_PLUGIN_ROOT`도 설정한다. 이름에 TOKEN/SECRET/PASSWORD/KEY/AUTH가 들어간(대소문자 무관) 환경변수와 고정 목록의 자격증명 변수(`ANTHROPIC_CUSTOM_HEADERS` 등)는 **프로젝트 `.mcp.json`, 플러그인 제공 서버, 프로젝트(또는 `--add-dir`) 에이전트 파일의 인라인 서버**의 helper에서 제거된다. user·local 범위, managed MCP, claude.ai 커넥터, SDK·`--mcp-config`, `~/.claude/agents/`·managed·`--agents` 인라인 서버의 helper에서는 제거되지 않는다. 제거가 적용되는 서버의 url에 제거 변수의 값이 들어 있으면 `CLAUDE_CODE_MCP_SERVER_URL`의 해당 부분이 `REDACTED`로 바뀐다. 또한 headersHelper는 **셸에서 실행되는 임의 명령**이며, 프로젝트 `.mcp.json`·local 범위 서버의 helper는 폴더 신뢰 대화상자를 수락한 뒤에만 실행된다. 이 설계의 url(`https://malgnai-hub.apiserver.kr/mcp`)에는 변수가 없으므로 원문 그대로 전달된다. 타임아웃은 10초이고, **연결마다 새로 실행하며 캐시하지 않는다.** | code.claude.com/docs/en/mcp headersHelper 절(PM 확인, 2026-10-09) |
 | oauth와 headers가 함께 있을 때의 우선순위는 문서에 없다 | 일부는 문서에 있다. "helper 출력에 `Authorization`이 **있으면** OAuth로 폴백하지 않는다." **연결 시** 서버가 helper 자격증명을 거부하면 "needs auth"가 아니라 **연결 실패**로 표시하고 OAuth 플로우로 가지 않는다. **도구 호출 중** 401/403이면 helper를 다시 실행해 1회 재시도하고, 그래도 실패하면 `/mcp`에 "needs authentication"으로 표시한다(PM 확인). helper가 0이 아닌 코드로 끝나거나 `Authorization` 없이 끝날 때의 동작은 여전히 문서에 없다. 그래서 D8에서는 oauth를 함께 두지 않는다. | code.claude.com/docs/en/mcp "Interaction with OAuth" |
 | 서버 저장소의 `docs/design/` 규약 | 원본 경로에는 규약이 있다. 그러나 **`docs/` 전체가 `.gitignore` 대상**이라 워크트리에 없고 커밋할 수도 없다. 그래서 서버 저장소에는 포인터를 커밋하지 못했다(§18). | `[S] .gitignore:20`, `[S] CLAUDE.md`의 "docs/는 .gitignore 대상" 항목 |
 | (추가) macOS 앱 서명 상태 | **ad-hoc 서명이거나 무서명**이고 공증하지 않는다. 키체인 ACL 위험의 원인이다(§12 R3). | `[A] .github/workflows/tauri-release-build.yml:32-33` |
@@ -151,7 +151,7 @@ Claude Code가 세션을 시작하거나 재연결하거나 401/403을 받으면
 
 | 안 | 장점 | 단점 |
 |---|---|---|
-| **새 행 발급 + 1회 갱신 + 직전 토큰 24h 유예 + 재갱신 시 계열 폐기 (채택)** | 키체인 저장에 실패해도 24시간 동안 기존 토큰이 유효하다. 탈취자가 갱신하든 정상 앱이 갱신하든, 두 번째 시도가 계열 전체를 폐기한다. 단일 엔드포인트다. | 컬럼 1개(`replaced_by_id`)가 추가된다. 저장 실패 후 24시간 안에 복구하지 못하면 재연결해야 한다. |
+| **새 행 발급 + 1회 갱신 + 직전 토큰 24h 유예 + 재갱신 시 계열 폐기 (채택)** | 키체인 저장에 실패해도 **같은 앱 프로세스가 살아 있는 동안만** 24시간 동안 기존 토큰이 유효하다(재시작·두 번째 인스턴스의 갱신은 재사용 판정으로 즉시 계열 폐기, §7.2). 탈취자가 갱신하든 정상 앱이 갱신하든, 두 번째 시도가 계열 전체를 폐기한다. 단일 엔드포인트다. | 컬럼 1개(`replaced_by_id`)가 추가된다. 저장 실패 후 24시간 안에 복구하지 못하거나, 그 전에 앱이 재시작되면 재연결해야 한다. |
 | 같은 행에서 hash 회전(OAuth refresh 방식) | 행 수가 늘지 않는다. | 응답을 받은 뒤 저장에 실패하면 즉시 토큰을 잃는다. 이를 막으려면 prev_hash와 grace 컬럼, 조회 경로 2개가 필요하다. |
 | 클라이언트가 새 토큰 해시를 제출 | 크래시에 가장 안전하다. | 엔트로피를 서버가 검증할 수 없어 "클라이언트 신뢰"에 해당한다. 불허한다. |
 | renew와 confirm 2단계 | 미확인 자식 토큰을 정리할 수 있다. | 엔드포인트와 상태가 늘어난다. 50인 도구에는 과하다. |
@@ -427,7 +427,7 @@ UPDATE device_tokens
 | CONNECTED | 항목 있음, `self` 200 | 연결됨, 만료일 표시 | now≥renew_after → RENEW_DUE. 401 → (self 확인 후) REVOKED. 409 ALREADY_RENEWED → REVOKED |
 | RENEW_DUE | 갱신 창 진입 | (표시 없음, 백그라운드 처리) | 성공 → CONNECTED. 네트워크 실패 → RENEW_RETRYING |
 | RENEW_RETRYING | 오프라인이나 5xx | "갱신 대기 중(만료 D-n)" | 1h마다 재시도. now≥expires_at → EXPIRED |
-| SAVE_FAILED | 갱신은 성공했지만 키체인 쓰기나 read-back이 실패 | "키체인 저장 실패. 24시간 안에 해결하지 않으면 다시 연결해야 합니다" | 새 토큰을 메모리에 들고 1분마다 저장을 재시도(앱 실행 중에만). 성공 → CONNECTED |
+| SAVE_FAILED | 갱신은 성공했지만 키체인 쓰기나 read-back이 실패 | "키체인 저장에 실패했습니다. 앱을 끄거나 다시 시작하면 연결이 해제되어 다시 연결해야 합니다" (재시작·두 번째 인스턴스는 키체인의 직전 토큰으로 renew해 §5.0 재사용 판정으로 즉시 계열이 폐기된다. 보안 재검토 N2) | 새 토큰을 메모리에 들고 1분마다 저장을 재시도(앱 실행 중에만). 성공 → CONNECTED |
 | EXPIRED / REVOKED | 만료, 401, ALREADY_RENEWED | "다시 연결하세요" + 사유 | connect → CONNECTED |
 | KEYCHAIN_DENIED | 읽기 거부나 잠김 | "키체인 접근이 거부되었습니다" + [다시 시도] + 해결 안내 | 재시도 성공 → 직전 상태 |
 
@@ -445,15 +445,16 @@ UPDATE device_tokens
 - 호출: `<exe> --hub-auth-header` (인자 없음, stdin 무시)
 - **대상 서버(audience) 확인 — 키체인을 읽기 전에 한다(보안 검토 M3)**
   - 위협: 악성 저장소의 `.mcp.json`, 서드파티 플러그인, 복사·붙여넣기 실수로 다른 MCP 서버의 `headersHelper`에 이 CLI가 지정되면, Claude Code가 365일 hub 토큰을 그 서버의 `Authorization`에 실어 보낸다. "회사 공식 앱의 정상 플래그"로 보여 승인 대화상자에서 의심하기 어렵다.
+  - 목적과 효력(보안 재검토 N1): 이 확인은 **오설정과 단순 악용**으로 hub 토큰이 다른 서버로 나가는 것을 막는다. headersHelper는 셸에서 실행되는 임의 명령이므로, 설정 문자열 안에서 환경변수를 지정하거나 지우는 의도적 악성 설정(예: `CLAUDE_CODE_MCP_SERVER_URL=https://malgnai-hub.apiserver.kr/mcp <exe> --hub-auth-header`, `env -u CLAUDE_CODE_MCP_SERVER_URL …`)은 막지 못한다. 그런 설정 작성자는 이미 임의 명령을 실행할 수 있어 §12 R2에 속한다. 비용 대비 가치가 있으므로 통제는 유지한다.
   - 규칙: 환경변수 `CLAUDE_CODE_MCP_SERVER_URL`이 **설정되어 있으면** `url::Url::parse` 결과가 다음을 모두 만족할 때만 진행한다. 하나라도 어긋나면 stdout을 비우고 종료코드 **14 `WRONG_AUDIENCE`**로 끝낸다.
     - `origin().ascii_serialization() == HUB_ORIGIN`(scheme·host·port 정규화 비교. 호스트 대소문자와 기본 포트 `:443` 표기는 같은 서버로 본다. 다른 포트는 거부)
     - `path() == "/mcp"`(정확일치. `/mcp/`, `/MCP`, `/mcp/x` 거부)
     - query와 fragment가 없음
     - 빈 문자열, 파싱 실패, `REDACTED`가 섞인 값도 위 비교에서 떨어지므로 14가 된다(fail-closed).
-  - 변수가 **없으면** 허용한다. 사람이 터미널에서 직접 실행하는 경우(실측 E3)다. Claude Code가 helper로 실행하면 이 변수는 항상 설정되므로(§2, PM 확인), 설정 파일만으로는 이 확인을 우회할 수 없다.
+  - 변수가 **없으면** 허용한다. 사람이 터미널에서 직접 실행하는 경우(실측 E3)다. Claude Code가 helper로 실행하면 이 변수가 설정된다(§2, PM 확인. E15로 실측).
   - `HUB_ORIGIN`은 `consts.rs`의 값이다. debug 빌드에서 `MALGN_HUB_ORIGIN` 오버라이드를 쓰면 그 값과 비교한다(§7.1, release에서는 오버라이드 불가).
   - `CLAUDE_CODE_MCP_SERVER_NAME`은 검사하지 않는다. 서버 이름은 설정 파일 작성자가 마음대로 정할 수 있어(`malgnai-hub`로 지어도 된다) 신뢰 근거가 되지 못한다.
-  - 한계: 이미 같은 사용자 권한으로 코드를 실행할 수 있는 공격자는 환경변수를 직접 설정해 우회할 수 있다. 그 경우는 §12 R2(수용한 잔여 위험)에 해당한다. 이 통제는 **설정 파일만으로 토큰이 유출되는 경로**를 닫는 것이 목적이다.
+  - 한계: 같은 사용자 권한으로 코드를 실행할 수 있는 공격자는 환경변수를 직접 설정해 우회할 수 있고, headersHelper 문자열을 정할 수 있는 설정 작성자도 같다(위 "목적과 효력"). 둘 다 §12 R2(수용한 잔여 위험)에 해당한다. 1차 방어는 Claude Code의 폴더 신뢰·서버 승인 대화상자다. 우회 변형은 실제 토큰 유출 시험이 되므로 E14에서 시험하지 않고 문서상 한계로만 기록한다.
 - stdout: 성공했을 때만 정확히 한 줄 `{"Authorization":"Bearer mhd_…"}\n`을 쓴다. 실패하면 stdout에 **아무것도 쓰지 않는다.**
 - stderr: 실패하거나 경고할 때 `malgn-agent: <CODE>: <한국어 안내>` 한 줄을 쓴다. **토큰과 그 일부를 절대 포함하지 않는다.**
 - 종료코드
@@ -559,9 +560,9 @@ UPDATE device_tokens
 | 발급 후 키체인 저장 실패 | 받은 토큰으로 즉시 `DELETE /self`(best-effort)를 호출하고 실패를 표시. 고아 토큰을 남기지 않는다 | `connect.rs` |
 | 갱신 중 네트워크 단절 | 기존 토큰을 유지하고 1h 후 재시도. 서버가 커밋했는데 응답만 유실된 경우, 다음 시도는 ALREADY_RENEWED가 되어 계열이 폐기되고 재연결해야 한다(드문 경우로 수용, 보안 검토 m10 동의). 재사용 판정이 유예와 무관해졌으므로(§5.0) 앱이 24h 넘게 꺼져 있다 켜져도 결과는 같다(self 409 → 재연결) | `renew.rs`, §12 R8 |
 | 탈취자가 먼저 갱신, 정상 앱은 24h 넘게 꺼져 있음 | 앱이 켜지면 키체인의 부모 토큰으로 self 호출 → 유예 경과 교체 토큰 → 409 + `device_id` 계열 폐기(탈취 자식 포함) → 앱은 재연결 안내 | §5.0, §7.2 |
-| 다른 MCP 서버 설정이 CLI를 headersHelper로 지정 | CLI가 `CLAUDE_CODE_MCP_SERVER_URL` 불일치로 14, 키체인을 읽지 않음. 래퍼도 사전 차단 | §7.3, §8.2 |
+| 다른 MCP 서버 설정이 CLI를 headersHelper로 지정(오설정) | CLI가 `CLAUDE_CODE_MCP_SERVER_URL` 불일치로 14, 키체인을 읽지 않음. 래퍼도 사전 차단 | §7.3, §8.2 |
 | 저장된 `expires_at`이 파싱 불가 | 검증 미들웨어가 401(fail-closed). DAO는 그런 값을 쓰지 못함 | §4 D3 |
-| 갱신 응답 후 키체인 쓰기 실패 | SAVE_FAILED 상태, 메모리 보관과 1분 재시도. 직전 토큰은 24h 유효 | §7.2 |
+| 갱신 응답 후 키체인 쓰기 실패 | SAVE_FAILED 상태, 메모리 보관과 1분 재시도. 직전 토큰의 24h 유효는 **같은 앱 프로세스가 살아 있는 동안만** 의미가 있다. 재시작하거나 두 번째 인스턴스가 키체인의 직전 토큰으로 renew하면 §5.0이 재사용으로 판정해 409, 계열 폐기 → 즉시 재연결(fail-safe, 의도된 동작. 보안 재검토 N2) | §7.2 |
 | 앱 동시 실행 | 프로세스 간 락과 락 획득 후 재확인 | §7.2 |
 | 오프라인 상태에서 Claude 세션 시작 | CLI는 네트워크가 필요 없어 헤더를 정상 출력한다. MCP 연결 자체는 네트워크 문제로 실패 | — |
 | 기기 시계 오차 | 판정은 서버 시계로 한다. 앱의 `renew_after` 판정만 로컬 시계를 쓰고, 오차가 있어도 TOO_EARLY 응답으로 교정된다 | — |
@@ -591,7 +592,7 @@ UPDATE device_tokens
 | R2 | 같은 사용자 권한의 악성 프로세스 | 별도 통제 없음(구조상 불가). 대신 **탐지와 짧은 폐기 경로**로 대응한다: §5.0 재사용 탐지(탈취자가 갱신하면 정상 앱의 다음 self/renew에서 계열 폐기), 웹 `/keys`의 last_used_at과 종류 열, 앱 [연결 해제]와 웹 폐기, 계정 비활성화 캐스케이드. 호출 부모 프로세스 검사는 우회가 쉽고 오탐이 많아 도입하지 않는다(§4 D6) | **macOS와 Windows 모두, 같은 사용자 권한의 코드는 CLI(`malgn-agent --hub-auth-header`)를 실행해 프롬프트 없이 토큰을 얻을 수 있다.** macOS 키체인 ACL은 그 바이너리를 신뢰하고, 그 바이너리는 호출자를 가리지 않기 때문이다. 키체인 ACL이 실제로 보호하는 것은 저장 데이터(백업, 디스크, 다른 사용자 계정)뿐이다. Windows CredMan은 앱별 ACL도 없다. 수용한다. 같은 권한의 악성코드는 Claude 세션 자체를 조종할 수도 있어, headersHelper 구조를 택한 이상 피할 수 없는 성질이다 |
 | R3 | macOS ad-hoc 서명이라 업데이트하면 cdhash가 바뀌고 키체인 ACL이 불일치 | 업데이트 뒤 GUI가 처음 시작할 때 "키체인 접근 확인"을 미리 실행한다. 사용자에게 사유를 먼저 보여 주고, 프롬프트에서 "항상 허용"을 누르도록 안내한다. CLI는 5s 데드라인을 넘기면 12로 끝내고 안내한다 | 업데이트 직후 앱을 켜지 않은 채 Claude만 쓰면 hub 연결이 실패할 수 있다. 실측 E9로 확정한다. 근본 해결책은 Developer ID 서명이다(미결 U3) |
 | R4 | 로그나 출력에 토큰 노출 | CLI는 stdout 한 줄만 쓰고 stderr에는 토큰을 쓰지 않는다. 래퍼는 stdout을 그대로 전달하기만 하고 로그를 남기지 않으며, 앱 stderr를 전달할 때 `mhd_…`를 마스킹한다(m5). 앱 GUI 쪽은 토큰 원문이 Rust 경계를 넘지 않는다(§7.1 M4 계약, WebView XSS로 `invoke`해도 토큰을 얻을 수 없음). `mhd_` 접두사로 마스킹 대상을 쉽게 식별한다 | Claude Code 내부 디버그 로그에서의 헤더 취급은 우리가 통제할 수 없다 |
-| R4b | 다른 MCP 서버로 hub 토큰 전송(오디언스 혼동) | CLI가 `CLAUDE_CODE_MCP_SERVER_URL`을 허브 `/mcp`와 대조하고 불일치면 14(§7.3). 래퍼도 사전 차단(§8.2) | 같은 사용자 권한으로 환경변수를 직접 조작하는 경우는 R2에 포함 |
+| R4b | 다른 MCP 서버로 hub 토큰 전송(오디언스 혼동) | CLI가 `CLAUDE_CODE_MCP_SERVER_URL`을 허브 `/mcp`와 대조하고 불일치면 14(§7.3). 래퍼도 사전 차단(§8.2) | 의도적 악성 설정(helper 문자열에서 변수 지정·제거)은 막지 못한다. headersHelper가 임의 셸 명령이라 R2와 같다. 1차 방어는 Claude Code의 폴더 신뢰·서버 승인 대화상자다. 같은 사용자 권한으로 환경변수를 직접 조작하는 경우도 R2에 포함 |
 | R5 | desktop client_id 사칭(로컬 악성 앱이 동의를 유도) | PKCE와 루프백, 사용자의 명시적 동의, 동의 화면 경고 문구(§5.5), 감사 기록 `device_token.issued` | 사용자가 무심코 허용할 수 있다. 수용한다(현행 OAuth 90d refresh와 같은 수준) |
 | R6 | 탈취한 토큰으로 MCP나 email_send 악용 | 수신자를 사내로 제한(§11), 레이트리밋, 즉시 폐기(웹/앱), 계정 비활성화 캐스케이드 | 폐기하기 전까지 최대 365일 동안 유효하다. 탐지는 갱신이 끼어든 경우 §5.0이 자동으로, 그 밖에는 사람이 last_used_at을 보는 수준이다 |
 | R7 | locator 파일이나 `MALGN_AGENT_EXE` 조작으로 다른 실행파일 실행 | 근거: **같은 사용자 권한이면 CLI를 직접 호출해 토큰을 얻는 편이 더 쉬우므로** 새 공격 표면이 아니다(R2). 절대경로·파일명 검사는 오설정 방지용이지 보안 통제가 아니다. 다중 사용자 PC 대비 Minor 방어로, 다른 사용자가 쓸 수 있는 후보 경로는 거부하고(POSIX 권한 검사), `MALGN_AGENT_EXE` 사용 시 매번 stderr 경고, 일시 경로는 locator에 기록하지 않는다(§4 D7, m4) | 같은 사용자 권한 공격은 R2와 같다 |
@@ -790,6 +791,14 @@ Skill `domain-backend-api-security`의 "언제 정하는가 (a)" 항목과 하�
 | m10 | ALREADY_RENEWED 안내에 "반복되면 관리자에게 알리세요" | **반영** | §5.2 오류표, §7.2, §10 |
 | m10 부속 / U11 (b) | "이 계정의 다른 데스크톱 연결 n개" 앱 표시 | **보류** | 보고서도 선택 사항으로 분류했다. M1(c)이 갱신 개입형 탈취를 자동으로 잡으므로 사람이 숫자를 보고 알아채기를 기대하는 장치의 한계 효용이 작고, self 응답 필드·앱 UI가 늘어난다. 웹 `/keys`의 종류·만료 열(§5.5)로 같은 정보를 이미 볼 수 있다 |
 | U11 (a) | 재연결 시 같은 사용자의 다른 desktop 토큰 일괄 폐기 | **기각** | 정상적인 다른 기기를 함께 끊고 확인 UI가 필요하다. (c)가 더 단순하고 정확하다(보고서 §2 M1 평가와 동일) |
+
+### 20.2b 재검토(1차) 신규 항목 (보고서 "재검토(1차)" R-2·R-3)
+
+| 보고서 ID | 요지 | 상태 | 반영 위치 |
+|---|---|---|---|
+| N1 | audience 확인은 headersHelper 설정 문자열(변수 지정·`env -u`)로 우회된다. 효력 과장 서술 정정. 통제는 오설정·단순 악용 방지용으로 유지 | **반영(문구)** | §2 helper 행(임의 셸 명령, 신뢰 대화상자), §7.3 "목적과 효력" 추가·"설정 파일만으로는 우회할 수 없다" 삭제·한계 재작성, §10 행 "(오설정)", §12 R4b 잔여. E14는 변경 없음(우회 변형 미시험) |
+| N2 | SAVE_FAILED에서 재시작·두 번째 인스턴스 갱신은 재사용 판정으로 즉시 계열 폐기. 동작은 유지하고 안내만 사실대로 | **반영(문구)** | §7.2 SAVE_FAILED 안내, §4 D4 장점·단점 칸, §10 행 |
+| N1 참고 | §2 자격증명 변수 제거 범위를 공식 문서대로 정정 | **반영** | §2 helper 행. 원문 확인 결과 제거 대상은 프로젝트 `.mcp.json`·플러그인·프로젝트 에이전트 인라인 서버이고 **local 범위는 제거 대상이 아니다**(보고서의 "local도 제거" 서술과 다름). 이 설계의 url에는 변수가 없어 판단 불변 |
 
 ### 20.3 기각한 항목
 
