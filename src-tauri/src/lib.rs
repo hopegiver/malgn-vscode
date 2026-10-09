@@ -10,6 +10,7 @@ mod fs_atomic;
 mod github_integration;
 mod global_cwd;
 mod google_oauth;
+mod loopback_oauth;
 mod mcp_manager;
 mod otel_settings;
 mod plugins;
