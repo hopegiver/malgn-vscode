@@ -80,5 +80,15 @@ fn main() {
         }
     }
 
+    // MALGN_HUB_DESKTOP_CLIENT_ID(허브 기기 토큰 발급용 desktop OAuth client_id,
+    // hub_auth/consts.rs의 DESKTOP_CLIENT_ID)도 같은 방식으로 주입한다. 공개값이지만 이
+    // 저장소는 public이라 소스에 리터럴을 두지 않는다. 값이 없으면(포크·secret 없는 CI)
+    // None으로 남아 [허브 연결]이 NotConfigured 오류를 돌려줄 뿐 컴파일·테스트는 통과한다.
+    // 서버 env TRUSTED_MALGN_DESKTOP_CLIENT_ID와 같은 값이어야 한다(설계 §19).
+    println!("cargo:rerun-if-env-changed=MALGN_HUB_DESKTOP_CLIENT_ID");
+    if let Ok(client_id) = std::env::var("MALGN_HUB_DESKTOP_CLIENT_ID") {
+        println!("cargo:rustc-env=MALGN_HUB_DESKTOP_CLIENT_ID={client_id}");
+    }
+
     tauri_build::build()
 }
