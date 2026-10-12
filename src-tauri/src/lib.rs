@@ -2,6 +2,8 @@ mod app_links;
 mod autonomy;
 mod claude_auth;
 mod cli_launcher;
+// CLI 모드(`--hub-auth-header`) — `main.rs`가 Tauri 초기화 전에 호출하므로 pub.
+pub mod cli_mode;
 mod cloudflare_integration;
 mod config;
 mod dev_auto_login;
@@ -10,6 +12,8 @@ mod fs_atomic;
 mod github_integration;
 mod global_cwd;
 mod google_oauth;
+mod hub_auth;
+mod loopback_oauth;
 mod mcp_manager;
 mod otel_settings;
 mod plugins;
@@ -86,6 +90,15 @@ pub fn run() {
             // 리로드가 곧 tick 본체다(설계 §1) — 별도 워처 없이 설정 변경에
             // 최대 10초 안에 반응한다.
             autonomy::spawn_scheduler(app.handle().clone());
+            // 허브 기기 토큰 — CLI 경로 locator 기록과 만료 30일 전 자동 갱신 스케줄러.
+            // 설정 디렉터리는 Tauri `app_config_dir()`(identifier 기준)이라 플러그인
+            // 래퍼가 읽는 locator 위치와 일치한다(설계 §4 D7).
+            {
+                use tauri::Manager;
+                if let Ok(config_dir) = app.path().app_config_dir() {
+                    hub_auth::init(config_dir);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -118,6 +131,10 @@ pub fn run() {
             usage_stats::get_usage_summary,
             usage_stats::get_project_daily_trend,
             google_oauth::google_oauth_login,
+            hub_auth::hub_auth_status,
+            hub_auth::hub_auth_connect,
+            hub_auth::hub_auth_disconnect,
+            hub_auth::hub_auth_renew_now,
             dev_auto_login::dev_auto_login,
             github_integration::github_status,
             github_integration::github_connect,

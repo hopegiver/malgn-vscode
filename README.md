@@ -21,6 +21,13 @@
 
 ---
 
+## 허브 연결(기기 토큰)
+
+앱의 설정 > MCP 관리에서 [허브 연결]을 누르면 브라우저(PKCE 루프백)로 malgnai-hub 기기 토큰(최대 365일)을 발급받아 OS 키체인(macOS Keychain / Windows 자격 증명 관리자)에만 저장하고, 만료 30일 전부터 자동 갱신한다. Claude Code는 플러그인의 `headersHelper`가 `malgn-agent --hub-auth-header`(CLI 모드, 창 없이 키체인만 읽고 종료)를 실행해 토큰을 받는다. 토큰 원문은 WebView로 가지 않는다. 설계 정본: `docs/design/device-token-auth.md`.
+
+- 빌드에 `MALGN_HUB_DESKTOP_CLIENT_ID`(서버 `TRUSTED_MALGN_DESKTOP_CLIENT_ID`와 같은 공개값)가 필요하다. 로컬은 `src-tauri/.env`(gitignored), CI는 repo secret으로 주입한다. 없으면 [허브 연결]이 설정 오류를 돌려줄 뿐 빌드·테스트는 통과한다.
+- 디버그 빌드에서만 환경변수 `MALGN_HUB_ORIGIN=http://127.0.0.1:<port>`로 허브 주소를 로컬 서버로 바꿀 수 있다(release 빌드는 무시). 주의: 키체인 항목 이름은 같으므로 로컬 시험 연결이 같은 PC의 실제 연결을 덮어쓴다.
+
 ## ⚠️ `site/site.json` — 백업은 사람의 몫이다
 
 `compat/compatibility.json`의 사내 인프라 값(수집기 authority·도메인·keychain 항목명)은

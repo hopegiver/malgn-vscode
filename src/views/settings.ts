@@ -17,6 +17,14 @@ import {
 } from '../integrationsApi';
 import { fetchMcpServers, addMcpServer, removeMcpServer, loginMcpServer, logoutMcpServer, fetchMcpCatalog, installMcpCatalogEntry } from '../mcpApi';
 import type { McpTransport, McpServerSummary, McpCatalogEntry } from '../mcpApi';
+import {
+  fetchHubAuthStatus,
+  connectHub,
+  disconnectHub,
+  renewHubNow,
+  describeHubAuth,
+} from '../hubAuthApi';
+import type { HubAuthStatus } from '../hubAuthApi';
 import { navigate } from '../route';
 import { renderDevToolsView } from './devTools';
 
@@ -832,6 +840,104 @@ export async function loadMcp(): Promise<void> {
   }
 }
 
+// ---------------- 허브 연결(기기 토큰) ----------------
+// 토큰은 Rust(키체인)에서만 다룬다 — 이 화면은 상태 메타데이터(hubAuthApi.ts)만 본다.
+// 로그인 직후 한 번 미리 불러온다(홈 위젯이 바로 값을 보여줘야 한다).
+
+export async function loadHubAuth(): Promise<void> {
+  state.hubAuth.loading = true;
+  state.hubAuth.error = null;
+  notifyChange();
+  try {
+    state.hubAuth.status = await fetchHubAuthStatus();
+    state.hubAuth.loaded = true;
+  } catch (err) {
+    state.hubAuth.error = err instanceof Error ? err.message : String(err);
+  } finally {
+    state.hubAuth.loading = false;
+    notifyChange();
+  }
+}
+
+async function runHubAuthAction(
+  kind: 'connect' | 'disconnect' | 'renew',
+  action: () => Promise<HubAuthStatus>,
+  failLabel: string
+): Promise<void> {
+  if (state.hubAuth.busy) return;
+  state.hubAuth.busy = kind;
+  notifyChange();
+  try {
+    state.hubAuth.status = await action();
+    state.hubAuth.loaded = true;
+    state.hubAuth.error = null;
+    if (kind === 'connect') showToast('허브에 연결했습니다.');
+    if (kind === 'disconnect') {
+      showToast(state.hubAuth.status.reason === 'SERVER_REVOKE_FAILED' ? '연결을 해제했지만 서버 폐기에 실패했습니다. 웹 /keys에서 폐기하세요.' : '허브 연결을 해제했습니다.');
+    }
+  } catch (err) {
+    // Tauri invoke 오류는 Rust가 만든 문자열(토큰 없음)이다.
+    showToast(`${failLabel}: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    state.hubAuth.busy = null;
+    notifyChange();
+  }
+}
+
+async function handleConnectHub(): Promise<void> {
+  showToast('브라우저에서 허브 로그인·허용을 마쳐 주세요(최대 5분).');
+  await runHubAuthAction('connect', connectHub, '허브 연결에 실패했습니다');
+}
+
+async function handleDisconnectHub(): Promise<void> {
+  const ok = await confirmDialog('이 PC의 허브 연결을 해제할까요? 해제하면 Claude Code에서 malgnai-hub를 쓰려면 다시 연결해야 합니다.', {
+    confirmLabel: '해제',
+    danger: true,
+  });
+  if (!ok) return;
+  await runHubAuthAction('disconnect', disconnectHub, '허브 연결 해제에 실패했습니다');
+}
+
+async function handleRenewHub(): Promise<void> {
+  await runHubAuthAction('renew', renewHubNow, '허브 상태 확인에 실패했습니다');
+}
+
+// "허브 연결" 행 — malgnai-hub는 이 행 하나로 인증한다(OAuth `claude mcp login` 경로를
+// 쓰지 않으므로 아래 MCP 행의 인증/재인증/해제 버튼은 숨긴다, 설계 §7.1).
+function renderHubAuthRow(): HTMLElement {
+  const status = state.hubAuth.status;
+  const busy = state.hubAuth.busy;
+  const view = describeHubAuth(status);
+
+  const actions: HTMLElement[] = [];
+  const connected = status?.connected ?? false;
+  const keychainProblem = status?.state === 'KEYCHAIN_DENIED';
+  if (keychainProblem) {
+    // 키체인 재시도는 갱신 요청이 아니라 상태 재조회(키체인 다시 읽기)다.
+    actions.push(el('button', { className: 'btn', disabled: busy !== null || state.hubAuth.loading, onClick: () => void loadHubAuth() }, [state.hubAuth.loading ? '확인 중…' : '다시 시도']));
+  } else if (!connected) {
+    const label = status && (status.state === 'EXPIRED' || status.state === 'REVOKED') ? '다시 연결' : '허브 연결';
+    actions.push(el('button', { className: 'btn btn-primary', disabled: busy !== null, onClick: () => void handleConnectHub() }, [busy === 'connect' ? '브라우저에서 허용 대기 중…' : label]));
+  } else {
+    actions.push(el('button', { className: 'btn', disabled: busy !== null, onClick: () => void handleRenewHub() }, [busy === 'renew' ? '확인 중…' : '지금 확인·갱신']));
+    const disconnectBtn = el('button', { className: 'btn', disabled: busy !== null, onClick: () => void handleDisconnectHub() }, [busy === 'disconnect' ? '해제 중…' : '연결 해제']);
+    disconnectBtn.style.color = 'var(--color-danger)';
+    actions.push(disconnectBtn);
+  }
+
+  return el('div', { className: 'mcp-row' }, [
+    el('div', { className: 'mcp-row-main' }, [
+      el('div', { className: 'mcp-row-top' }, [
+        el('span', { className: 'mcp-row-name' }, ['허브 연결(기기 토큰)']),
+        el('span', { className: `badge badge-${view.tone}` }, [view.label]),
+        el('span', { className: 'badge badge-active' }, ['필수']),
+      ]),
+      el('div', { className: 'mcp-row-status-label' }, [view.detail]),
+    ]),
+    el('div', { className: 'mcp-row-actions' }, actions),
+  ]);
+}
+
 // ---------------- MCP 카탈로그 (잘 알려진 공개 MCP 서버 원클릭 설치) ----------------
 // 넷 다 OAuth 로그인이 필요해서 이 앱이 로그인을 대신 처리하지 않는다 — GitHub/
 // Cloudflare 연동과 동일한 정책으로, "설치" 버튼은 백엔드가 `claude mcp add`+
@@ -1125,7 +1231,8 @@ function renderMcpRow(server: McpServerSummary, opts?: { readonly locked?: boole
   const actions: HTMLElement[] = [];
   // stdio 서버는 OAuth 로그인 개념이 없다 — http/sse에만 노출한다. 이미 연결된
   // 서버든 아니든(재로그인 필요할 수 있다) 항상 보여준다.
-  if (server.transport !== 'stdio') {
+  // malgnai-hub는 위 "허브 연결" 행(기기 토큰)으로 인증하므로 `claude mcp login` 버튼을 숨긴다.
+  if (server.transport !== 'stdio' && server.name !== MALGNAI_HUB_MCP_NAME) {
     const loggingIn = state.mcp.loggingInName === server.name;
     // 라벨만 연결 여부에 따라 "인증"/"재인증"으로 구분한다 — 동작(claude mcp
     // login 재실행)은 동일하다. "연결됨"은 CLI 헬스체크일 뿐 토큰 유효성을
@@ -1263,7 +1370,7 @@ function buildRegisteredMcpRows(): HTMLElement[] {
   const otherServers = state.mcp.items.filter((s) => s.name !== MALGNAI_HUB_MCP_NAME);
   const otherRows = sortMalgnAgentFirst(otherServers.map((server) => ({ name: server.name, el: renderMcpRow(server) }))).map((r) => r.el);
   const pinnedRow = hubServer ? renderMcpRow(hubServer, { locked: true }) : renderMalgnaiHubMissingRow();
-  return [pinnedRow, ...otherRows];
+  return [renderHubAuthRow(), pinnedRow, ...otherRows];
 }
 
 function buildInstallableMcpRows(): HTMLElement[] {
@@ -1532,7 +1639,7 @@ function renderMcpPanel(): HTMLElement {
   const mcpRefreshing = state.mcp.loading || state.mcpCatalog.loading;
   const refreshBtn = el(
     'button',
-    { className: 'btn', disabled: mcpRefreshing, onClick: () => { void loadMcp(); void loadMcpCatalog(); } },
+    { className: 'btn', disabled: mcpRefreshing, onClick: () => { void loadMcp(); void loadMcpCatalog(); void loadHubAuth(); } },
     [mcpRefreshing ? '새로고침 중…' : '↻ 새로고침']
   );
   const addToggleBtn = el('button', { className: 'btn btn-primary btn-sm', onClick: () => openMcpAddModal(null) }, ['+ 새 MCP 서버']);

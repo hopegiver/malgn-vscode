@@ -97,3 +97,24 @@ DWM API(`DwmSetWindowAttribute`)로 네이티브 타이틀바를 앱 다크 테�
 ## 8. 세션↔프로젝트 매칭 (projectPath)
 
 - [ ] 세션 `cwd`의 드라이브 문자 대소문자가 워크스페이스 프로젝트 경로와 달라도(`c:\...` vs `C:\...`) 프로젝트 카드에 세션이 붙는다 — `Path::starts_with`의 드라이브 접두 대소문자 처리는 미검증이며, 탈락하면 세션 목록에서 빠진다(`docs/design/project-agent-progress.md` §2-1)
+
+## 9. 허브 연결(기기 토큰) — 신규
+
+설계: `docs/design/device-token-auth.md` §16. 앱이 허브(malgnai-hub) 기기 토큰을 Windows 자격 증명 관리자에 저장하고, Claude Code가 `malgn-agent.exe --hub-auth-header`(CLI 모드)로 읽어 간다. CI는 컴파일과 단위 테스트(메모리 저장소)까지만 보증한다 — 실제 자격 증명 관리자·GUI 서브시스템 stdout은 실기에서만 확인된다.
+
+- [ ] (W1) 설치 경로가 `%LOCALAPPDATA%\malgn-agent\malgn-agent.exe`인가? 아니면 실제 경로를 기록
+- [ ] (W2) PowerShell에서 `& "$env:LOCALAPPDATA\malgn-agent\malgn-agent.exe" --hub-auth-header | Out-String` 실행 시
+      JSON 한 줄이 출력되고 **창·콘솔이 뜨지 않는다**(GUI 서브시스템 stdout 파이프 동작 확인)
+      - 허브에 연결하지 않은 상태에서는 stdout이 비어 있고 종료코드 10이다(`$LASTEXITCODE`) — stderr 안내는 `2>&1`로 확인
+      - 출력이 비어 있으면(연결된 상태인데도) 결과를 기록 — 콘솔 헬퍼 바이너리 대안으로 전환한다
+- [ ] (W3) 앱에서 [허브 연결] → 브라우저 동의 → 앱이 "연결됨"으로 바뀐다(방화벽이 127.0.0.1 루프백을 막지 않는가)
+- [ ] (W4) 제어판 → 자격 증명 관리자 → Windows 자격 증명에 `com.malgnsoft.agent.hub` 항목이 있다(값은 열지 않는다)
+      - 항목 상세의 **지속성이 "로컬 컴퓨터"**인가? "엔터프라이즈"면 도메인 로밍 프로필에서 다른 PC로 로밍되어 "기기 단위" 전제가 깨진다 — 결과를 기록(m6)
+      - 구현 시 확인한 사실(U13): 이 앱이 쓰는 keyring 3.6.3의 Windows 백엔드는 항상 `CRED_PERSIST_ENTERPRISE`로 저장한다(설정 불가). 로밍 프로필을 쓰지 않는 PC에서는 무관하지만, 쓰는 PC가 있으면 알려 달라
+- [ ] (W5) Claude Code에서 `/mcp` → malgnai-hub "connected", 도구 호출 성공
+      - helper가 cmd/PowerShell 중 어느 셸로 실행되는지와 무관하게 `node "…\hub-auth-header.mjs"`가 동작하는가
+- [ ] (W6) 업데이트 설치 후에도(재설치 포함) 자격 증명이 유지되고 CLI가 동작한다
+- [ ] (W7) 앱 [연결 해제] 후 자격 증명 관리자에서 항목이 사라지고, Claude에 "앱에서 허브에 연결하세요" 안내가 뜬다(안 보이면 어디에 나타나는지 기록 — U12)
+- [ ] (W8) 사용자 계정 이름에 한글·공백이 있어도 locator(`%APPDATA%\com.malgnsoft.agent\cli-path.json`) 경로가 동작한다
+      - 앱을 한 번 실행한 뒤 이 파일이 생기고 `exe`가 실제 설치 경로와 일치하는지 확인
+- [ ] (W9) 백신(Defender 등)이 `--hub-auth-header` 실행을 차단·지연시키지 않는다(10초 내 완료)

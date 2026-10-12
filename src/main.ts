@@ -50,6 +50,7 @@ import {
   loadGithubStatus,
   loadCloudflareStatus,
   loadMcp,
+  loadHubAuth,
   loadMcpCatalog,
   ensureOtelAutoConfigured,
   leaveMcpSettingsView,
@@ -258,6 +259,7 @@ function handleNavigation(): void {
   if (!state.dailyUsage.loaded && !state.dailyUsage.loading) void loadDailyUsage();
   if (!state.autonomousTasks.loaded && !state.autonomousTasks.loading) void loadAutonomousTasks();
   if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
+  if (!state.hubAuth.loaded && !state.hubAuth.loading) void loadHubAuth();
   if (!state.claudeAuth.loaded && !state.claudeAuth.loading) void loadClaudeAuthStatus();
   if (!state.mcpCatalog.loaded && !state.mcpCatalog.loading) void loadMcpCatalog();
   // m5 수정(2026-09-24) — 이 주석이 "사이드바가 전 화면에 상시 렌더"라고

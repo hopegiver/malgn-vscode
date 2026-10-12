@@ -11,6 +11,7 @@ import type { UsageSummaryReport } from './usageSummaryApi';
 import type { GithubStatus, CloudflareStatus } from './integrationsApi';
 import type { AutonomyRunStatus, AutonomyScheduleMode } from './autonomyApi';
 import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
+import type { HubAuthStatus } from './hubAuthApi';
 import type { OtelSettings } from './otelApi';
 import type { MalgnAgentConfigStatus } from './configApi';
 import type { AppLinksStatus } from './appLinksApi';
@@ -378,6 +379,16 @@ export interface AppState {
     loggingInName: string | null;
     loggingOutName: string | null;
   };
+  // 허브 연결(기기 토큰) — Rust hub_auth_* 커맨드가 돌려주는 상태 메타데이터만 담는다
+  // (hubAuthApi.ts). 토큰 원문은 WebView로 오지 않으므로 이 슬라이스에도 없다.
+  // busy는 연결(브라우저 대기 최대 5분)·해제·갱신 확인 중 버튼 잠금용이다.
+  hubAuth: {
+    status: HubAuthStatus | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+    busy: 'connect' | 'disconnect' | 'renew' | null;
+  };
   // MCP 카탈로그 — 잘 알려진 공개 MCP 서버(Gmail 등)를 원클릭 등록하는 목록
   // (mcp_catalog_list). "설치"는 백엔드가 터미널 창을 열어 로그인까지 안내할
   // 뿐이다 — installingId는 그 터미널을 여는 동안만 해당 항목 버튼을 잠그는
@@ -509,6 +520,7 @@ function createInitialState(): AppState {
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
   malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editingAutonomy: false, editingWorkspaces: false, saving: false },
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },
+  hubAuth: { status: null, loading: false, error: null, loaded: false, busy: null },
   mcpCatalog: { items: [], loading: false, error: null, loaded: false, installingId: null },
   appLinks: { status: null, loading: false, error: null, loaded: false, saving: false },
     update: { available: false, version: null, installing: false, checking: false },
