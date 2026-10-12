@@ -111,7 +111,13 @@ mod tests {
     #[test]
     fn writes_json_atomically_and_skips_transient() {
         let dir = tmp_dir("locator");
-        let exe = Path::new("/Applications/malgn-agent.app/Contents/MacOS/malgn-agent");
+        // write()는 절대경로만 받는다 — Windows에서는 "/Applications/…"가 절대경로가 아니므로
+        // 플랫폼별 리터럴을 쓴다.
+        let exe = if cfg!(windows) {
+            Path::new(r"C:\Program Files\malgn-agent\malgn-agent.exe")
+        } else {
+            Path::new("/Applications/malgn-agent.app/Contents/MacOS/malgn-agent")
+        };
         assert_eq!(
             write(&dir, exe, "0.9.9", Path::new("/nonexistent-tmp")).unwrap(),
             true
@@ -122,11 +128,18 @@ mod tests {
         assert_eq!(v["version"], "0.9.9");
 
         let dir2 = tmp_dir("locator2");
-        let dmg = Path::new("/Volumes/x/malgn-agent.app/Contents/MacOS/malgn-agent");
-        assert_eq!(
-            write(&dir2, dmg, "0.9.9", Path::new("/nonexistent-tmp")).unwrap(),
-            false
-        );
+        let (transient, temp) = if cfg!(windows) {
+            (
+                Path::new(r"C:\Users\me\AppData\Local\Temp\x\malgn-agent.exe"),
+                Path::new(r"C:\Users\me\AppData\Local\Temp"),
+            )
+        } else {
+            (
+                Path::new("/Volumes/x/malgn-agent.app/Contents/MacOS/malgn-agent"),
+                Path::new("/nonexistent-tmp"),
+            )
+        };
+        assert_eq!(write(&dir2, transient, "0.9.9", temp).unwrap(), false);
         assert!(!locator_path(&dir2).exists());
     }
 
