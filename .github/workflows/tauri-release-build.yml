@@ -279,8 +279,8 @@ jobs:
             echo "args=" >> "$GITHUB_OUTPUT"
           fi
 
-      # (지적 1) build.rs가 컴파일 시점에 읽는 4개 값(GOOGLE_OAUTH_CLIENT_SECRET,
-      # GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET, MALGN_OTEL_COLLECTOR_BASE)과 Tauri CLI
+      # (지적 1) build.rs가 컴파일 시점에 읽는 3개 값(GOOGLE_OAUTH_CLIENT_SECRET,
+      # GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET)과 Tauri CLI
       # 코어가 updater 서명 시 읽는 2개 값(TAURI_SIGNING_PRIVATE_KEY(_PASSWORD))은
       # 전부 이 스텝이 내부적으로 실행하는 `tauri build`(=cargo build) 동안에만
       # 필요하다. 이전에는 job-level env:로 올려져 있어 체크아웃·pnpm install·
@@ -291,7 +291,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
-          MALGN_OTEL_COLLECTOR_BASE: ${{ secrets.MALGN_OTEL_COLLECTOR_BASE }}
           # 허브 기기 토큰 발급용 desktop OAuth client_id(공개값). build.rs가 컴파일 시점에 읽는다.
           # 서버 TRUSTED_MALGN_DESKTOP_CLIENT_ID와 같은 값이어야 하며, 미등록이면 빈 문자열로 들어가
           # [허브 연결]이 설정 오류를 돌려줄 뿐 빌드는 깨지지 않는다.

@@ -17,13 +17,6 @@ fn main() {
         println!("cargo:rustc-env=GOOGLE_OAUTH_CLIENT_SECRET={secret}");
     }
 
-    // MALGN_OTEL_COLLECTOR_BASE(otel_settings.rs의 사내 collector 기본 주소)도
-    // 같은 방식으로 주입한다. 값이 없으면(포크·secret 없는 CI) None으로 남아
-    // endpoint_defaults_injected: false가 되고, UI가 빈 값 + placeholder로 렌더한다.
-    if let Ok(otel_base) = std::env::var("MALGN_OTEL_COLLECTOR_BASE") {
-        println!("cargo:rustc-env=MALGN_OTEL_COLLECTOR_BASE={otel_base}");
-    }
-
     // GOOGLE_MCP_OAUTH_CLIENT_ID/SECRET(mcp_manager/catalog.rs의 gmail/
     // google-drive/google-calendar 카탈로그 3개 항목이 공유)도 같은 방식으로
     // 주입한다. Google Cloud OAuth 클라이언트는 API별이 아니라 애플리케이션

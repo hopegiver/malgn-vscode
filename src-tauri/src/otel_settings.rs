@@ -36,16 +36,18 @@ const READ_ONLY_KEYS: [&str; 4] = [
     "OTEL_LOG_RAW_API_BODIES",
 ];
 
-/// (b) `option_env!()`로 주입하는 사내 collector 주소 — 소스에 리터럴로 넣지
-/// 않는다(이 저장소는 public). `build.rs`가 `.env`(로컬)나 CI repo secret에서
-/// 읽어 컴파일타임 상수로 굳힌다. 값이 없으면(포크·secret 없는 CI 빌드)
-/// `endpoint_defaults_injected: false`가 그 신호가 되고, UI가 빈 값 +
-/// placeholder로 렌더한다.
-const OTEL_COLLECTOR_BASE: Option<&str> = option_env!("MALGN_OTEL_COLLECTOR_BASE");
+/// (b) 허브(malgnai-hub)의 OTLP 수신 엔드포인트 — 기본값으로 소스에 고정한다.
+/// 허브 주소는 공개값이라(플러그인 매니페스트·`hub_auth`에도 이미 있다) 빌드 시점
+/// 주입(`option_env!`)이 필요 없다. 빌드 환경변수로 덮어쓰는 경로를 두지 않는 것은
+/// 의도다 — CI에 옛 collector 주소 secret이 남아 있어도 릴리스가 그것을 따르지 않게 한다.
+const DEFAULT_METRICS_ENDPOINT: &str = "https://malgnai-hub.apiserver.kr/v1/metrics";
+const DEFAULT_LOGS_ENDPOINT: &str = "https://malgnai-hub.apiserver.kr/v1/logs";
 
-fn endpoint_defaults() -> Option<(String, String)> {
-    let base = OTEL_COLLECTOR_BASE?.trim_end_matches('/');
-    Some((format!("{base}/v1/metrics"), format!("{base}/v1/logs")))
+fn endpoint_defaults() -> (String, String) {
+    (
+        DEFAULT_METRICS_ENDPOINT.to_string(),
+        DEFAULT_LOGS_ENDPOINT.to_string(),
+    )
 }
 
 /// (a) 소스에 하드코딩하는 범용 기본값 — 사내 정보가 전혀 없는 프로토콜·
@@ -74,17 +76,14 @@ fn build_defaults() -> (std::collections::BTreeMap<String, String>, bool) {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    let injected = if let Some((metrics_ep, logs_ep)) = endpoint_defaults() {
-        map.insert(
-            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT".to_string(),
-            metrics_ep,
-        );
-        map.insert("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT".to_string(), logs_ep);
-        true
-    } else {
-        false
-    };
-    (map, injected)
+    let (metrics_ep, logs_ep) = endpoint_defaults();
+    map.insert(
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT".to_string(),
+        metrics_ep,
+    );
+    map.insert("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT".to_string(), logs_ep);
+    // 엔드포인트 기본값은 이제 항상 존재한다 — 프론트 계약(endpointDefaultsInjected)은 유지한다.
+    (map, true)
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -413,6 +412,21 @@ mod tests {
                 .collect(),
             identity: None,
         }
+    }
+
+    // 엔드포인트 기본값은 빌드 환경과 무관하게 허브 주소로 고정된다.
+    #[test]
+    fn endpoint_defaults_point_to_hub() {
+        let (defaults, injected) = build_defaults();
+        assert!(injected);
+        assert_eq!(
+            defaults["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"],
+            "https://malgnai-hub.apiserver.kr/v1/metrics"
+        );
+        assert_eq!(
+            defaults["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"],
+            "https://malgnai-hub.apiserver.kr/v1/logs"
+        );
     }
 
     // 신규(최소) — MANAGED_OTEL_KEYS 밖 키 저장 거부.
