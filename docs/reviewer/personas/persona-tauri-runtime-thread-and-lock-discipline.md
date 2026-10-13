@@ -58,3 +58,6 @@ Tauri v1→v2 데스크톱 앱을 3년 운영하며 "버튼 하나 눌렀더니 
 - 2026-10-13 / target_id `devtools-l1-l2-l4` / 1차(최초, Standard) / `docs/reviewer/review-2026-10-13-devtools-l1-l2-l4.md`
   — 재사용 사유: EXECUTION_LOCK 보유 시간 상한·poison 회복·PREVIEW_LOCK 신설이 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 락 보유 최악 합계, poison 회복(release panic=abort로 dev 한정 — RV-003), PREVIEW_LOCK과 전체 업데이트 루프·사용자 동시 조작(RV-002), 테스트 spawn 락 비참여(RV-005).
+- 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 1차(최초, 풀패널) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13.md`
+  — 재사용 사유: wait/done/drain 순서 변경과 앱 종료 경로 스레드 병렬화가 역할개념(블로킹·직렬화 대체) 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: claude_auth 워치독-done 순서 경합, autonomy Windows pid별 스레드 join의 앱 종료 최악 지연, SPAWN_LOCK 공유화.

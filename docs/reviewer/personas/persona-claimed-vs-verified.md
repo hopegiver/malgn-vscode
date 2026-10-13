@@ -122,3 +122,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-13 / target_id `r9-rv008-anomaly-today-pending` / 2차(재검토, Standard 경량) / `docs/reviewer/review-r9-rv008-anomaly-today-pending-2026-10-13-r2.md`
   — 재사용 사유: RV-011(문구가 계산보다 넓게 단정)·RV-012(잔존 옛 용어)가 이 역할개념의 지적이었다. 6대 요소 무수정.
   — 이번 라운드 집중: 좁힌 문구 2줄을 detectAnomalies와 전수 대조(최근 17일 사용 패턴 2^17 x 사용량 2종), r1 재현 입력 S1~S5 재실행, 하네스 80/80.
+- 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 1차(최초, 풀패널) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13.md`
+  — 재사용 사유: "남은 무상한 대기 일원화" 커밋 주장과 실제 보장 범위, 신규 테스트의 실효성 대조가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 주석·커밋 메시지 주장 vs 코드, cargo test 205건·하네스 3시나리오·경계값 26/26 재실행, 테스트 공백(turn/auth/settings).

@@ -131,3 +131,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-13 / target_id `r9-rv008-anomaly-today-pending` / 2차(재검토, Standard 경량) / `docs/reviewer/review-r9-rv008-anomaly-today-pending-2026-10-13-r2.md`
   — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
   — 이번 라운드 집중: RT-4(reason 집계 문구) 미채택 상태 유지 확인, 좁힌 문구에서 정보 손실(사용 없는 날 사유)이 규칙 줄로만 남는 점.
+- 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 1차(최초, 풀패널) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 사람용 문장 파싱 대신 구조화 필드(RT-1), 호출부별 수거 대신 공용 "자식 실행+수거" 한 함수(RT-2).
