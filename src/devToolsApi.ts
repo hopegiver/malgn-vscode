@@ -36,6 +36,11 @@ export interface DevToolStatus {
   // DevTool.required(src-tauri/src/dev_tools/mod.rs DEV_TOOLS 테이블) 하나뿐이다.
   // 프론트는 이 값을 그대로 배지 표시에만 쓴다(별도 id 목록을 두지 않는다).
   readonly required: boolean;
+  // 이 도구를 새로 설치하기 전에 설치돼 있어야 하는 도구 id — 정본은 백엔드
+  // DevTool.install_depends_on. "전체 업데이트" 배치가 이 값으로 실행 순서(선행
+  // 먼저)와 건너뜀을 정한다(devToolsOrder.ts). 이미 설치된 도구의 업데이트에는
+  // 적용하지 않는다. 누락 시 의존 없음.
+  readonly installDependsOn?: readonly string[];
 }
 
 export interface DevToolPreview {

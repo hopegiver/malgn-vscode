@@ -468,6 +468,26 @@ mod tests {
         }
     }
 
+    // P2-2: Node 의존의 정본(DevTool.install_depends_on)이 설치 러너 사실과 어긋나지
+    // 않게 고정한다 — npm/pnpm 러너로 설치되는 도구는 전부 Node.js가 선행이어야
+    // 한다. 새 npm 기반 도구를 install_candidates에 추가하고 install_depends_on을
+    // 빠뜨리면 여기서 실패한다(두 곳이 갈라지는 것을 막는 가드).
+    #[test]
+    fn tools_installed_via_npm_or_pnpm_declare_node_as_install_dependency() {
+        for def in super::super::DEV_TOOLS.iter() {
+            let needs_node = install_candidates(def.id)
+                .iter()
+                .any(|c| matches!(c.runner, Runner::Npm | Runner::Pnpm));
+            if needs_node {
+                assert!(
+                    def.install_depends_on.contains(&ToolId::Node),
+                    "{}은(는) npm/pnpm 러너로 설치되는데 install_depends_on에 Node가 없습니다",
+                    def.key
+                );
+            }
+        }
+    }
+
     // devtools-install-matrix §1.2/§2.1: install_candidates()가 machine 상태와
     // 무관하게 정적으로 "run 후보 있음/없음"을 결정한다는 정책 자체를 검증한다
     // (G1~G4 게이트 결과). 실제 브루/npm 해석 여부와 독립적이라 이 머신에

@@ -27,14 +27,19 @@
 // 주장하지 않는다(verified=false는 명령이 성공을 보고했지만 버전 재조회로 확인하지
 // 못했다는 뜻이며, 성공으로 표시하지 않는다).
 // required(DevToolStatus.required)는 이 도구 없이는 앱/업무가 돌아가지 않는
-// 전제조건인지를 나타낸다(현재 Node.js/Git) — 정본은 백엔드 하나뿐이고(위
+// 전제조건인지를 나타낸다(현재 Node.js/Git/Claude Code) — 정본은 백엔드 하나뿐이고(위
 // devToolsApi.ts 주석 참고), 이 화면은 그 값을 "필수" 배지로만 반영한다.
+// installDependsOn(DevToolStatus.installDependsOn)도 같은 방식으로 백엔드가 정본이다:
+// "전체 업데이트" 배치는 이 값으로 선행 도구(Node.js)를 먼저 실행하고, 선행 도구가
+// 설치 확인되지 않은 채 끝나면 그에 의존하는 미설치 도구는 실행하지 않고 사유와
+// 함께 건너뛴다(handleUpdateAll, 순서/판정 로직은 devToolsOrder.ts).
 import { el, showToast, confirmDialog } from '../dom';
 import { errorMessage, sanitizeBackendText, maskLogText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 import { parseRoute } from '../route';
+import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, skipReasonForUnmet } from '../devToolsOrder';
 
 // IA §4-5(§7-6): 개발 도구 사이드바 행을 클릭하면 본문의 해당 행으로 스크롤 +
 // 일시 강조한다(새 라우트·API 없음, 순수 클라이언트 동작). 강조는 영속 상태가
@@ -172,10 +177,17 @@ function notifyOutcome(tool: DevToolStatus, result: DevToolActionResult): void {
   }
 }
 
+// 배치("전체 업데이트")가 선행 도구 미확인으로 건너뛴 도구의 사유. 전역 state
+// 계약(state.ts)을 건드리지 않으려고 manualPendingCommand와 같은 방식으로 이 화면
+// 모듈 스코프에 둔다. 다음 배치 시작·해당 도구의 개별 실행(미리보기/실행)·설치가
+// 확인되어 목록이 갱신될 때 지워진다.
+const batchSkipReason: Record<string, string | null> = {};
+
 // dry-run 프리뷰를 가져온다. "run" actionKind 도구는 설치든 업데이트든 실제 명령
 // 실행 전에 반드시 이 단계를 거친다(부록 A). 미리보기 전용 커맨드가
 // preview_dev_tool_update 하나뿐이라 설치 흐름에도 그대로 재사용한다.
 async function handleRequestPreview(tool: DevToolStatus): Promise<void> {
+  batchSkipReason[tool.id] = null;
   state.devTools.previewLoading[tool.id] = true;
   notifyChange();
   try {
@@ -193,14 +205,19 @@ function cancelPreview(toolId: string): void {
   notifyChange();
 }
 
-async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<void> {
+// 반환값: 실행이 끝나 결과를 받았으면 그 결과, 예외로 결과를 못 받았으면 null —
+// 배치(handleUpdateAll)가 "선행 도구 설치가 확인됐는지" 판정에 쓴다.
+async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<DevToolActionResult | null> {
   state.devTools.updating[tool.id] = true;
   state.devTools.lastResult[tool.id] = null;
+  batchSkipReason[tool.id] = null;
   clearResultClearTimer(tool.id);
   startElapsedTimer(tool.id);
   notifyChange();
+  let outcome: DevToolActionResult | null = null;
   try {
     const result = tool.installed ? await updateDevTool(tool.id, preview.planId) : await installDevTool(tool.id, preview.planId);
+    outcome = result;
     state.devTools.lastResult[tool.id] = result;
     notifyOutcome(tool, result);
     if (result.outcome === 'updated' || result.outcome === 'alreadyLatest') {
@@ -215,6 +232,7 @@ async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<vo
     state.devTools.updating[tool.id] = false;
     notifyChange();
   }
+  return outcome;
 }
 
 async function handleConfirmRun(tool: DevToolStatus): Promise<void> {
@@ -311,6 +329,14 @@ function toggleLog(toolId: string): void {
 // "N개를 설치합니다" 요약 확인 1회를 받은 뒤에만 같은 배치에 포함시킨다 —
 // 개별 확인 0회(이전 버그)와 도구 수만큼의 확인(N회) 사이에서, 신규 머신
 // 셋업 편의와 비가역 실행의 동의 범위를 절충한 값이다.
+//
+// P2-2(의존 순서): 배치는 백엔드가 내려주는 installDependsOn 순서(선행 도구 먼저,
+// 곧 Node.js → Claude Code/pnpm/Wrangler)로 실행한다. 아직 설치되지 않은 도구는
+// 선행 도구의 설치가 "확인"(이미 설치돼 있거나 이번 배치에서 updated/alreadyLatest)
+// 되지 않았으면 미리보기·실행 없이 건너뛰고 사유를 항목에 남긴다 — 선행 도구가
+// 실패/unknownAfter/timedOut이거나 개별 확인 대기(previewReliable=false 등)로
+// 남았을 때도 마찬가지다. 동의 모델(미설치 N개 요약 확인, 미리보기 신뢰성/다중
+// 영향 제외)은 그대로이고 순서와 건너뜀만 바뀐다.
 async function handleUpdateAll(): Promise<void> {
   const runnable = state.devTools.items.filter((t) => t.actionKind === 'run');
   const updateTargets = runnable.filter((t) => t.installed);
@@ -325,13 +351,38 @@ async function handleUpdateAll(): Promise<void> {
     }
   }
 
-  const targets = [...updateTargets, ...confirmedInstallTargets];
+  // P2-2: 실행 순서는 의존 순서(선행 도구 먼저)를 따른다 — 정본은 백엔드
+  // installDependsOn이고 정렬은 devToolsOrder.ts. 업데이트/설치 구분 없이 한 줄로
+  // 세워 Node.js가 Claude Code·pnpm·Wrangler보다 항상 먼저 실행된다.
+  const targets = orderByInstallDependency([...updateTargets, ...confirmedInstallTargets]);
   if (targets.length === 0) return;
+
+  // "설치가 확인된 도구" — 배치 시작 전부터 설치돼 있던 도구 + 이번 배치에서 설치
+  // 재조회까지 통과한(updated/alreadyLatest) 도구. 선행 도구가 이 집합에 없으면
+  // (실패·unknownAfter·timedOut·개별 확인 대기·미설치) 그에 의존하는 도구는
+  // 실행하지 않는다.
+  const confirmedInstalled = new Set(state.devTools.items.filter((t) => t.installed).map((t) => t.id));
+  const nameById = new Map(state.devTools.items.map((t) => [t.id, t.name]));
+  for (const t of state.devTools.items) batchSkipReason[t.id] = null;
+  let skippedCount = 0;
 
   state.devTools.updatingAll = true;
   notifyChange();
 
   for (const tool of targets) {
+    // 선행 도구 의존은 "새로 설치"에만 적용한다(백엔드 install_depends_on 주석):
+    // 이미 설치된 도구의 업데이트는 선행 도구와 무관하게 기존대로 진행한다.
+    if (!tool.installed) {
+      const unmet = unmetInstallDependencies(tool, confirmedInstalled);
+      if (unmet.length > 0) {
+        batchSkipReason[tool.id] = skipReasonForUnmet(unmet.map((id) => nameById.get(id) ?? id));
+        state.devTools.lastResult[tool.id] = null;
+        skippedCount += 1;
+        notifyChange();
+        continue;
+      }
+    }
+
     state.devTools.previewLoading[tool.id] = true;
     notifyChange();
     let preview: DevToolPreview | null = null;
@@ -358,10 +409,14 @@ async function handleUpdateAll(): Promise<void> {
       continue;
     }
 
-    await runPlan(tool, preview);
+    const result = await runPlan(tool, preview);
+    if (result && isInstallConfirmedOutcome(result.outcome)) confirmedInstalled.add(tool.id);
   }
 
   state.devTools.updatingAll = false;
+  if (skippedCount > 0) {
+    showToast(`${skippedCount}개 도구는 선행 도구 설치가 확인되지 않아 건너뛰었습니다 — 각 항목에서 사유를 확인하세요`);
+  }
   notifyChange();
 }
 
@@ -458,6 +513,9 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   if (updating) panels.push(renderRunningPanel(tool));
   if (pendingPreview) panels.push(renderPreviewPanel(tool, pendingPreview));
   if (!updating && !pendingPreview && lastResult) panels.push(renderResultPanel(tool, lastResult));
+  // 설치가 확인된 도구에는 지난 배치의 건너뜀 사유가 더 이상 맞지 않는다.
+  const skipReason = batchSkipReason[tool.id];
+  if (skipReason && !tool.installed && !updating && !pendingPreview && !lastResult) panels.push(renderSkipPanel(tool, skipReason));
   if (tool.actionKind === 'manual' && state.devTools.manualOpen[tool.id]) panels.push(renderManualPanel(tool));
 
   return el('div', { className: 'devtool-item' }, [row, ...panels]);
@@ -610,6 +668,16 @@ function renderManualPanel(tool: DevToolStatus): HTMLElement {
     ]),
   ];
   return el('div', { className: 'devtool-panel' }, children);
+}
+
+// 배치가 선행 도구 미확인으로 실행하지 않은 도구 — 결과 패널과 같은 어휘(제목에
+// 도구명 + warn 톤)로 사유를 보여준다. 실행 결과가 아니므로 verified 줄은 없다.
+function renderSkipPanel(tool: DevToolStatus, reason: string): HTMLElement {
+  return el('div', { className: 'devtool-panel devtool-panel-warn devtool-panel-skipped' }, [
+    el('div', { className: 'devtool-panel-title' }, [`${tool.name} — 건너뜀`]),
+    el('div', {}, [reason]),
+    el('div', { className: 'devtool-panel-notes' }, ['선행 도구를 먼저 설치한 뒤 이 항목의 "설치"를 눌러 개별로 진행하거나 "전체 업데이트"를 다시 실행하세요.']),
+  ]);
 }
 
 function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HTMLElement {

@@ -18,6 +18,10 @@ pub struct DevToolStatus {
     /// "필수" UI 배지(devTools.ts)의 근거 — 정본은 `DevTool.required`(mod.rs
     /// DEV_TOOLS 테이블) 하나뿐이다.
     pub required: bool,
+    /// 이 도구를 새로 설치하기 전에 설치돼 있어야 하는 도구의 key 목록 —
+    /// 정본은 `DevTool.install_depends_on`(mod.rs). 일괄 설치/전체 업데이트가
+    /// 실행 순서와 건너뜀 판정에 쓴다.
+    pub install_depends_on: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

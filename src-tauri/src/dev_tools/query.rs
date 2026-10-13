@@ -17,7 +17,7 @@ use super::install_resolver::{
 use super::plan_table::{install_manual_plan, manual_display_message, Runner, MANUAL_XCODE_CLT};
 use super::locks::{try_acquire_lock, PREVIEW_BUSY_MESSAGE, PREVIEW_LOCK};
 use super::process::{build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout};
-use super::{resolve_tool_path, tool_definition, tool_path_candidates, DevTool, ToolId, DEV_TOOLS};
+use super::{install_depends_on_keys, resolve_tool_path, tool_definition, tool_path_candidates, DevTool, ToolId, DEV_TOOLS};
 use std::time::Duration;
 
 /// Windows 완전 지원(devtools-windows-parity.md Phase 1): macOS 전용 게이트를
@@ -55,6 +55,7 @@ pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
                     action_kind,
                     manual_hint,
                     required: def.required,
+                    install_depends_on: install_depends_on_keys(def),
                 }
             }
             Some(resolved_path) => {
@@ -74,6 +75,7 @@ pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
                         action_kind: "manual".to_string(),
                         manual_hint: Some(manual_display_message(&MANUAL_XCODE_CLT)),
                         required: def.required,
+                        install_depends_on: install_depends_on_keys(def),
                     };
                 }
 
@@ -95,6 +97,7 @@ pub(crate) fn check_dev_tools_blocking() -> Vec<DevToolStatus> {
                     action_kind,
                     manual_hint,
                     required: def.required,
+                    install_depends_on: install_depends_on_keys(def),
                 }
             }
         })

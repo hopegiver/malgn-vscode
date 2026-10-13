@@ -82,10 +82,21 @@ pub(crate) struct DevTool {
     /// 이유: label/path_candidates 등 도구 메타데이터가 이미 이 테이블
     /// 하나에 모여 있고(단일 정본), "필수 여부"도 도구 자체에 귀속되는 같은
     /// 성격의 정적 사실이라 프런트가 별도 id 목록을 유지하면 ToolId가 바뀔 때
-    /// 드리프트할 위험이 생긴다. Claude Code는 이번 결정(Node/Git 자동설치
-    /// 전환)의 대상이 아니라서 포함하지 않았다 — 필요하면 별도 판단으로
-    /// 추가한다.
+    /// 드리프트할 위험이 생긴다. Claude Code는 P2-2에서 필수로 추가했다 — 이
+    /// 앱의 핵심 가치가 Claude 사용이라 Claude 없이는 앱을 설치한 목적이
+    /// 성립하지 않는다(사용자 결정이 아니라 제품 방향 판단).
     pub(crate) required: bool,
+    /// 이 도구를 **새로 설치**하려면 먼저 설치돼 있어야 하는 도구(P2-2).
+    /// 일괄 설치/전체 업데이트(devTools.ts handleUpdateAll)가 이 값으로 실행
+    /// 순서(선행 도구 먼저)와 건너뜀(선행 도구가 설치 확인되지 않으면 이 도구는
+    /// 실행하지 않음)을 정한다 — 의존 관계의 단일 정본은 이 필드뿐이고 프런트는
+    /// `DevToolStatus.install_depends_on`으로 받아 쓴다(별도 id 목록 없음).
+    /// 이미 설치된 도구의 업데이트에는 적용하지 않는다: 네이티브 설치본 Claude
+    /// 처럼 Node 없이 이미 존재하는 도구의 업데이트를 막으면 오히려 회귀다.
+    /// 값의 근거는 install_resolver.rs `install_candidates`의 러너 — npm/pnpm
+    /// 러너로 설치되는 도구(Claude/pnpm/Wrangler)는 전부 Node를 요구한다(그
+    /// 일치는 install_resolver.rs 테스트가 고정한다).
+    pub(crate) install_depends_on: &'static [ToolId],
 }
 
 // docker는 완전 삭제(부록 C 프론트 변경 메모, 7→6).
@@ -113,7 +124,8 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%APPDATA%\npm\claude.cmd",
             r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
         ],
-        required: false,
+        required: true,
+        install_depends_on: &[ToolId::Node],
     },
     DevTool {
         id: ToolId::Node,
@@ -142,6 +154,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%LOCALAPPDATA%\Microsoft\WinGet\Links\node.exe",
         ],
         required: true,
+        install_depends_on: &[],
     },
     DevTool {
         id: ToolId::Gh,
@@ -157,6 +170,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%LOCALAPPDATA%\Microsoft\WinGet\Links\gh.exe",
         ],
         required: false,
+        install_depends_on: &[],
     },
     DevTool {
         id: ToolId::Git,
@@ -183,6 +197,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe",
         ],
         required: true,
+        install_depends_on: &[],
     },
     DevTool {
         id: ToolId::Pnpm,
@@ -202,6 +217,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%APPDATA%\npm\pnpm.cmd",
         ],
         required: false,
+        install_depends_on: &[ToolId::Node],
     },
     DevTool {
         id: ToolId::Wrangler,
@@ -226,6 +242,7 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             r"%APPDATA%\npm\wrangler.cmd",
         ],
         required: false,
+        install_depends_on: &[ToolId::Node],
     },
 ];
 
@@ -233,6 +250,14 @@ impl ToolId {
     pub(crate) fn from_key(key: &str) -> Option<Self> {
         DEV_TOOLS.iter().find(|d| d.key == key).map(|d| d.id)
     }
+}
+
+/// 프론트 계약용 — `install_depends_on`을 도구 key 목록으로 바꾼다(DevToolStatus).
+pub(crate) fn install_depends_on_keys(def: &DevTool) -> Vec<String> {
+    def.install_depends_on
+        .iter()
+        .map(|dep| tool_definition(*dep).key.to_string())
+        .collect()
 }
 
 pub(crate) fn tool_definition(id: ToolId) -> &'static DevTool {
@@ -377,17 +402,66 @@ mod tests {
         }
     }
 
-    // hub decisionId 01m2wse823xcszvn7km3vap0qs: "필수" 정의의 단일 정본이 이
-    // 테이블이라는 계약 자체를 고정한다 — Node/Git만 true, 나머지는 false.
+    // "필수" 정의의 단일 정본이 이 테이블이라는 계약 자체를 고정한다 —
+    // Node/Git(hub decisionId 01m2wse823xcszvn7km3vap0qs) + Claude Code(P2-2,
+    // 앱의 핵심 가치가 Claude 사용). 나머지(gh/pnpm/wrangler)는 false.
     #[test]
-    fn only_node_and_git_are_marked_required() {
+    fn only_node_git_and_claude_are_marked_required() {
         for def in DEV_TOOLS.iter() {
-            let expected = matches!(def.id, ToolId::Node | ToolId::Git);
+            let expected = matches!(def.id, ToolId::Node | ToolId::Git | ToolId::Claude);
             assert_eq!(
                 def.required, expected,
                 "{}의 required 플래그가 기대값과 다릅니다",
                 def.key
             );
         }
+    }
+
+    // P2-2: 설치 의존 그래프가 일괄 설치 순서/건너뜀의 정본으로 쓰일 수 있는
+    // 형태인지 — 자기 참조·중복·순환이 없어야 프론트의 위상 정렬이 항상 끝난다.
+    #[test]
+    fn install_dependencies_are_well_formed_and_acyclic() {
+        for def in DEV_TOOLS.iter() {
+            assert!(
+                !def.install_depends_on.contains(&def.id),
+                "{}이(가) 자기 자신에 의존합니다",
+                def.key
+            );
+            for (i, dep) in def.install_depends_on.iter().enumerate() {
+                assert!(
+                    !def.install_depends_on[..i].contains(dep),
+                    "{}의 install_depends_on에 중복이 있습니다",
+                    def.key
+                );
+            }
+        }
+        // 순환 탐지: 의존이 남지 않은 도구를 반복해 제거(Kahn). 모두 제거되면 비순환.
+        let mut remaining: Vec<&DevTool> = DEV_TOOLS.iter().collect();
+        while !remaining.is_empty() {
+            let before = remaining.len();
+            let ids: Vec<ToolId> = remaining.iter().map(|d| d.id).collect();
+            remaining.retain(|d| d.install_depends_on.iter().any(|dep| ids.contains(dep)));
+            assert!(remaining.len() < before, "install_depends_on에 순환이 있습니다");
+        }
+    }
+
+    #[test]
+    fn node_precedes_the_tools_installed_through_it() {
+        for id in [ToolId::Claude, ToolId::Pnpm, ToolId::Wrangler] {
+            assert_eq!(
+                tool_definition(id).install_depends_on,
+                &[ToolId::Node],
+                "{}은(는) npm/pnpm 러너로 설치되므로 Node.js가 선행이어야 합니다",
+                tool_definition(id).key
+            );
+        }
+        for id in [ToolId::Node, ToolId::Git, ToolId::Gh] {
+            assert!(
+                tool_definition(id).install_depends_on.is_empty(),
+                "{}은(는) 선행 도구가 없어야 합니다",
+                tool_definition(id).key
+            );
+        }
+        assert_eq!(install_depends_on_keys(tool_definition(ToolId::Claude)), vec!["node"]);
     }
 }
