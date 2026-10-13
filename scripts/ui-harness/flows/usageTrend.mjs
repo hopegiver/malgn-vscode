@@ -2,7 +2,7 @@
 // src/views/usage.ts renderUsageTrend(daily 탭).
 //
 // 검증 범위: TS/DOM/CSS 층만(하네스 공통 한계). 합성 픽스처(실사용 로그 아님)로 정상/급증·급락/
-// 데이터 부족/직전 7일 비교 불가/전주 0 상태를 만들고, 화면에 나온 숫자를 이 파일이 독립적으로
+// 데이터 부족/그 전 7일 비교 불가/그 전 7일 0 상태를 만들고, 화면에 나온 숫자를 이 파일이 독립적으로
 // 다시 계산한 기대값과 대조한다. 순수 함수 경계값은 lib/trendBoundary.mjs를 Vite가 서빙하는
 // 실제 모듈에 대해 실행한다(boundary 시나리오).
 import { usageSummarySample } from '../lib/fixtures.mjs';

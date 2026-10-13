@@ -645,10 +645,10 @@ function renderAnomalies(trend: UsageTrend): HTMLElement {
   if (a.judgedCount === 0 && a.points.some((p) => p.reason === 'today-partial')) {
     // 판정할 수 있는 날이 오늘뿐이고 오늘은 급증이 아니라 판정을 미룬 경우 — 사유는 기준선 부족이 아니라 하루가 끝나지 않은 것이다.
     state = 'today-pending';
-    body = el('div', { className: 'state-block-desc' }, [`오늘은 하루가 끝나지 않아 판정을 미뤘습니다 — 어제까지는 직전 ${T.baselineLookbackDays}일 안에 사용한 날이 ${T.minBaselineActiveDays}일 이상인 날이 없어 판정한 날이 없습니다. 이상치가 없다는 뜻이 아닙니다.`]);
+    body = el('div', { className: 'state-block-desc' }, [`오늘은 하루가 끝나지 않아 판정을 미뤘습니다 — 어제까지 사용한 날 중에는 직전 ${T.baselineLookbackDays}일 안에 사용한 날이 ${T.minBaselineActiveDays}일 이상 있는 날이 없어 판정한 날이 없습니다. 이상치가 없다는 뜻이 아닙니다.`]);
   } else if (a.judgedCount === 0) {
     state = 'insufficient';
-    body = el('div', { className: 'state-block-desc' }, [`판정하지 않았습니다 — 날짜마다 직전 ${T.baselineLookbackDays}일 안에 사용한 날이 ${T.minBaselineActiveDays}일 이상 있어야 하는데, 그런 날이 아직 없습니다. 이상치가 없다는 뜻이 아닙니다.`]);
+    body = el('div', { className: 'state-block-desc' }, [`판정하지 않았습니다 — 사용한 날마다 직전 ${T.baselineLookbackDays}일 안에 사용한 날이 ${T.minBaselineActiveDays}일 이상 있어야 하는데, 사용한 날 중에는 그런 날이 아직 없습니다. 이상치가 없다는 뜻이 아닙니다.`]);
   } else if (a.anomalies.length === 0) {
     state = 'none';
     body = el('div', { className: 'state-block-desc' }, [`판정한 ${a.judgedCount}일 모두 기준 이내입니다.`]);

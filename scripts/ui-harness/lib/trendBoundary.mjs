@@ -253,6 +253,28 @@ export function runTrendBoundaryChecks(mod) {
     check('판정 가능일이 오늘뿐: 어제까지 사용한 날은 모두 insufficient-baseline', past.length === 5 && past.every((x) => x.reason === 'insufficient-baseline'), JSON.stringify(past.map((x) => x.reason)));
   }
   {
+    // 사용 없는 날은 기준선 검사보다 먼저 zero-day로 빠진다: 기준선 5일을 갖춘 날도 사용이 없으면 judgedCount에 안 든다.
+    // 뷰 문구는 "사용한 날 중에는 기준선을 갖춘 날이 없다"만 단정해야 한다(날짜 전체를 단정하면 거짓).
+    // 주말 공백 + 오늘 사용(오늘−7~−3 사용, −2·−1 미사용, 오늘 300K): today-pending 분기로 가는 조합.
+    const t = trendOf([7, 6, 5, 4, 3, 0].map((o) => rec(o, 300_000)));
+    const pts = t.anomalies.points;
+    const todayPt = pts[pts.length - 1];
+    const used = pts.filter((x) => x.total > 0 && x.date !== TODAY);
+    const gap = [day(2), day(1)].map((d) => pts.find((x) => x.date === d));
+    check('주말 공백: 사용 없는 날은 기준선 5일을 갖춰도 zero-day(judgedCount 0)', t.anomalies.judgedCount === 0 && gap.every((x) => x.reason === 'zero-day' && x.baselineDays >= T.minBaselineActiveDays), JSON.stringify(gap));
+    check('주말 공백: 어제까지 사용한 날은 모두 insufficient-baseline, 오늘은 today-partial', used.length === 5 && used.every((x) => x.reason === 'insufficient-baseline' && x.baselineDays < T.minBaselineActiveDays) && todayPt.reason === 'today-partial', JSON.stringify([used.map((x) => x.reason), todayPt.reason]));
+  }
+  {
+    // 같은 공백에서 오늘도 미사용(오늘−7~−3 사용, 오늘−2~오늘 미사용): insufficient 분기로 가는 조합.
+    // 사용한 날은 전부 기준선 부족이지만 사용 없는 날 중에는 기준선을 갖춘 날이 있다.
+    const t = trendOf([7, 6, 5, 4, 3].map((o) => rec(o, 300_000)));
+    const pts = t.anomalies.points;
+    const used = pts.filter((x) => x.total > 0);
+    const gap = [day(2), day(1), day(0)].map((d) => pts.find((x) => x.date === d));
+    check('연속 공백(오늘까지): judgedCount 0이고 today-partial 없음, 사용한 날은 모두 insufficient-baseline', t.anomalies.judgedCount === 0 && !pts.some((x) => x.reason === 'today-partial') && used.length === 5 && used.every((x) => x.reason === 'insufficient-baseline'), JSON.stringify(pts.map((x) => x.reason)));
+    check('연속 공백(오늘까지): 사용 없는 3일은 기준선 5일을 갖췄어도 zero-day', gap.every((x) => x.reason === 'zero-day' && x.baselineDays >= T.minBaselineActiveDays), JSON.stringify(gap));
+  }
+  {
     const t = trendOf([rec(1, 500_000)]);
     const p = t.anomalies.points.find((x) => x.date === day(1));
     check('사용 없는 날은 판정하지 않음(zero-day), 사용 있는 날도 기준선 없으면 unjudged', t.anomalies.points[0].reason === 'zero-day' && p.kind === 'unjudged' && p.reason === 'insufficient-baseline', JSON.stringify(p));
