@@ -100,3 +100,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
   — 이번 라운드 집중: "버튼별 플래그 + 고정 상한" 구조 대신 단일 플러그인 작업 큐·사용자 취소의 대안.
 - 2026-10-13 / target_id `r2-p1-stability-batch` / 2차(증분) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13-r2.md`
   — 이번 라운드 집중: 백엔드 busy 상태를 프론트 공유 상태로 노출(R3).
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 1차(최초, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13.md`
+  — 재사용 사유: 역할개념("지운다면 무엇부터 다시 만들 것인가")이 그대로 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: "파이프 EOF = 출력 끝" 전제 자체를 지우는 대안(임시 파일 캡처, Windows Job Object).
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
+  — 재사용 사유: 역할개념("지운다면 무엇부터 다시 만들 것인가") 그대로 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 국소 테스트 락 대신 장수 자손 테스트의 프로세스 격리(R2).

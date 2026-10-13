@@ -49,3 +49,9 @@ Tauri v1→v2 데스크톱 앱을 3년 운영하며 "버튼 하나 눌렀더니 
   — 이번 라운드 집중: plugins 5개 커맨드 async 전환으로 생긴 동시 실행 쌍, claude_auth 제출 락 밖 write, get_daily_detail JoinError 매핑.
 - 2026-10-13 / target_id `r2-p1-stability-batch` / 2차(증분) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13-r2.md`
   — 이번 라운드 집중: PLUGIN_OP_LOCK(try_lock) 공통 경로·가드 수명·poison, EXECUTION_LOCK 비공유 근거. #1 해소 확인.
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 1차(최초, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13.md`
+  — 재사용 사유: 역할개념("블로킹을 락 밖으로 뺐는가, 사라진 직렬화를 누가 대신하는가")이 그대로 과녁이다 — 이번 변경은 `PLUGIN_OP_LOCK` 가드 수명을 결정하는 마지막 무상한 블로킹(리더 join)을 없앤다. 6대 요소 무수정.
+  — 이번 라운드 집중: T2(락 구간 블로킹) 관점에서 가드 수명의 새 상한 계산, 병렬 spawn 사이 파이프 fd 상속 경쟁(macOS 비원자 CLOEXEC), 앱 종료 `max_wait`와 drain 상한의 합산.
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
+  — 재사용 사유: 플레이크의 해법이 "테스트 전용 락으로 직렬화"다 — 그 락이 무엇을 직렬화하고 무엇을 놓치는지가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: TEST_SPAWN_LOCK 범위 밖 spawn과의 역방향 fd 상속(N2), Windows PLUGIN_OP_LOCK 가드 수명의 유한화.

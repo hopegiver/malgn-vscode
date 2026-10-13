@@ -77,3 +77,9 @@
   — 이번 라운드 집중: S5(타임아웃·그룹 kill·리더 스레드)가 plugins 전 경로에 닿는지, 리더 join의 상한, 로그인 stdin 4경로 EOF.
 - 2026-10-13 / target_id `r2-p1-stability-batch` / 2차(증분) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13-r2.md`
   — 이번 라운드 집중: 가드가 타임아웃 kill/wait를 덮는지, 직전 #3(join 상한 부재)과 락 결합 시 영구 Busy(N1).
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 1차(최초, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13.md`
+  — 재사용 사유: 역할개념("argv·셸·env·프로세스 수명이 안전한가")의 관심사 4(프로세스 수명)·S5가 이번 변경의 정중앙이다. 6대 요소 무수정.
+  — 이번 라운드 집중: S5의 "리더 스레드"가 상한을 갖게 된 뒤의 출력 보존·스레드 누수, Windows `taskkill /T /F`의 S1·S3(셸 없음·절대경로) 유지, taskkill 자체의 무상한 `.output()`, PID 재사용.
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
+  — 재사용 사유: 새 코드 `wait_or_kill`·taskkill spawn 경로가 S1(셸 없음·절대경로)·S5(수명)의 직접 대상. 6대 요소 무수정.
+  — 이번 라운드 집중: taskkill 5초 상한의 S1 유지·호출부 의미 보존, 공유 헬퍼를 쓰지 않는 autonomy taskkill 사본(N1).

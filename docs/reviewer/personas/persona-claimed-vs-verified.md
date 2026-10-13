@@ -94,3 +94,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-09-21 / target_id `malgn-vscode-v025-idle-review` / 1차(최초, 풀패널) / `docs/reviewer/review-v0.2.5-whole-app-2026-09-21.md`
   — 재사용 사유: 역할개념("'성공'이라 말하는 근거가 주장인가 관측인가")이 그대로 과녁이다. 이번 라운드의 대조 상대는 코드 주석이 아니라 **검증 장치 자체**다 — UI 하네스 35시나리오가 bugs=0을 보고하는데 같은 앱에서 입력 유실 6건이 실측됐다. "0 bugs"가 무엇을 근거로 한 0인지를 묻는 자리. 6대 요소 무수정.
   — 이번 라운드 집중: `last-run-report.json`의 bugs=0이 성립하는 이유(배경 이벤트를 전경 작업 도중 발화시키는 시나리오 부재), 하네스 픽스처와 실제 백엔드 반환값의 양방향 괴리(`real-data.mjs:44,48`은 frontmatter description을 채우지만 `installed.rs:74,122`는 항상 빈 문자열 / `real-data.mjs:164`는 archiveStatus를 항상 `unknown`으로 고정), `dom.ts:130-131`의 `aria-modal="true"` 단언 대 실제 포커스 거동, `lib.rs:71`에 등록만 되고 호출부가 0인 `greet` 커맨드.
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 1차(최초, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13.md`
+  — 재사용 사유: 역할개념("성공 근거가 주장인가 관측인가, 코드가 자기 주석과 일치하는가")이 그대로 유효 — 커밋 메시지·테스트 이름·호출부 주석이 바뀐 동작과 맞는지가 이번 쟁점이다. 6대 요소 무수정.
+  — 이번 라운드 집중: 새 테스트 4개의 전제 검증 여부(공허한 통과 가능성), 반복 실행으로 관측한 기존 테스트 간헐 실패, 다른 모듈에 남은 낡은 Windows kill 서술, cross `cargo check` 주장 재현.
+- 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
+  — 재사용 사유: "원인 확정(스크래치 재현)" 주장을 관측으로 바꾸는 것이 핵심. 6대 요소 무수정.
+  — 이번 라운드 집중: 독립 재현(락 없음 5/4500 대 락 0/4500), 반복 실행의 판별력 한계, 현장 진단 주석 대 배포물 stderr 부재(N3), 직전 리뷰 자신의 "4개 호출부" 오류 정정.
