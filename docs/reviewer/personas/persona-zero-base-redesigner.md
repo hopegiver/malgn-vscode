@@ -95,3 +95,8 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-09-24 / target_id `ui-terminus-overhaul` / 3차(축소 — 4인 재사용, Refactor 등급) / `docs/reviewer/review-ui-terminus-overhaul-r3.md`
   — 재사용 사유: 발산형 게이트. 접두 문자열 비교로 Rust 문구를 쪼개는 방식 자체(문자열 계약)가 맞는 구조인가를 본다. 6대 요소 무수정.
   — 이번 라운드 집중: 프론트-백엔드 간 한국어 문장 접두 계약, R5 후속.
+- 2026-10-13 / target_id `r2-p1-stability-batch` / 1차(최초, Standard 약식 패널) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13.md`
+  — 재사용 사유: 역할개념("지운다면 무엇부터 다시 만들 것인가")이 그대로 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: "버튼별 플래그 + 고정 상한" 구조 대신 단일 플러그인 작업 큐·사용자 취소의 대안.
+- 2026-10-13 / target_id `r2-p1-stability-batch` / 2차(증분) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13-r2.md`
+  — 이번 라운드 집중: 백엔드 busy 상태를 프론트 공유 상태로 노출(R3).

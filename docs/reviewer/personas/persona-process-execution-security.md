@@ -72,3 +72,8 @@
 - 2026-09-21 / target_id `malgn-vscode-v025-idle-review` / 1차(최초, 풀패널) / `docs/reviewer/review-v0.2.5-whole-app-2026-09-21.md`
   — 재사용 사유: 역할개념 4요소 중 **"프로세스 수명"** 과 **IPC 커맨드 표면**이 이번 라운드의 과녁이다. 이전 라운드들은 argv·셸 인용을 봤고, 이번은 앱이 스스로 띄운 장수 스레드(자율업무 스케줄러)가 조용히 죽을 수 있는지와, 호출부 0인 커맨드가 IPC 표면에 남아 있는지를 본다. 6대 요소 무수정.
   — 이번 라운드 집중: `autonomy/mod.rs:347-352`의 무방비 `loop { tick(); sleep(); }`가 패닉/뮤텍스 poisoning 시 영구 정지하는 경로(`lock().unwrap()` 54곳, 같은 크레이트에 `catch_unwind` 선례 존재), 그리고 `lib.rs:27-30,71`의 템플릿 잔재 `greet` 커맨드가 "권한 표면을 의도적으로 좁게 유지한다"는 CLAUDE.md 원칙과 어긋나는지.
+- 2026-10-13 / target_id `r2-p1-stability-batch` / 1차(최초, Standard 약식 패널) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13.md`
+  — 재사용 사유: 역할개념("argv·셸·env·프로세스 수명이 안전한가")이 그대로 유효 — 이번 변경은 plugins의 claude 실행을 기존 S5 4종 헬퍼로 옮긴 것과 로그인 stdin 수명 변경이다. 6대 요소 무수정.
+  — 이번 라운드 집중: S5(타임아웃·그룹 kill·리더 스레드)가 plugins 전 경로에 닿는지, 리더 join의 상한, 로그인 stdin 4경로 EOF.
+- 2026-10-13 / target_id `r2-p1-stability-batch` / 2차(증분) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13-r2.md`
+  — 이번 라운드 집중: 가드가 타임아웃 kill/wait를 덮는지, 직전 #3(join 상한 부재)과 락 결합 시 영구 Busy(N1).
