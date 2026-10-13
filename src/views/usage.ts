@@ -78,13 +78,19 @@ export interface UsageTotals {
   readonly totalTokens: number;
   readonly activeDays: number;
   readonly avgPerDay: number;
-  readonly cacheHitRate: number | null; // 캐시 생성/읽기 토큰이 전혀 없으면 null
+  readonly cacheHitRate: number | null; // 분모(input+cache_creation+cache_read)가 0이면 null
   readonly cacheCreationTokens: number;
   readonly cacheReadTokens: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly peakDay: { readonly date: string; readonly total: number } | null;
   readonly inputOutputRatio: { readonly inputPct: number; readonly outputPct: number } | null;
+}
+
+// 캐시 히트율(%) = cache_read / (input + cache_creation + cache_read) — 앱 전체에서 이 정의 하나만 쓴다. 분모 0이면 null.
+export function computeCacheHitRate(input: number, cacheCreation: number, cacheRead: number): number | null {
+  const denom = input + cacheCreation + cacheRead;
+  return denom > 0 ? Math.round((cacheRead / denom) * 100) : null;
 }
 
 export function computeUsageTotals(items: readonly DailyUsage[]): UsageTotals {
@@ -119,8 +125,7 @@ export function computeUsageTotals(items: readonly DailyUsage[]): UsageTotals {
   }
   const activeDays = items.length;
   const avgPerDay = Math.round(totalTokens / activeDays);
-  const cacheDenom = cacheRead + cacheCreate;
-  const cacheHitRate = cacheDenom > 0 ? Math.round((cacheRead / cacheDenom) * 100) : null;
+  const cacheHitRate = computeCacheHitRate(inputTokens, cacheCreate, cacheRead);
   const ioDenom = inputTokens + outputTokens;
   const inputOutputRatio =
     ioDenom > 0 ? { inputPct: Math.round((inputTokens / ioDenom) * 100), outputPct: Math.round((outputTokens / ioDenom) * 100) } : null;
