@@ -60,3 +60,9 @@
 - 2026-10-06 / target_id `project-agent-progress-v1` / 1차(최초, 약식 2인 — Standard) / `docs/reviewer/review-project-agent-progress-v1-2026-10-06.md`
   — 재사용 사유: 리뷰 목표의 "에러 시 거짓 0 미표시"·"데이터로 뒷받침되지 않는 상태 표시 금지"가 역할개념(로딩·빈 상태·에러를 구분해 정직하게 말하는가)의 과녁 그 자체다. 6대 요소 무수정.
   — 이번 라운드 집중: 카드 인디케이터의 0/미상/에러 구분, 상세 세션 섹션 상태 4종, 라우트 진입 재로딩과 FS 이벤트 재로딩의 경쟁으로 stale "실행 중"이 남는지.
+- 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 1차(최초, Standard) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13.md`
+  — 재사용 사유: 로딩/에러를 완료·미완료로 단정하지 않는다는 P2-1 요구와 표본 부족을 '문제 없음'과 구분하는 P2-7 요구가 역할개념과 일치. 6대 요소 무수정.
+  — 이번 라운드 집중: claudeInstallState의 'missing' 확정 조건(installed=false + path 존재), 효율 가이드 insufficient/clear 구분, 건너뜀 패널의 stale 사유.
+- 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 2차(축소, 재사용) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13-r2.md`
+  — 재사용 사유: RV-003(미설치 확정 조건)·RV-005(stale 건너뜀 사유)가 이 역할개념의 지적이었다. 6대 요소 무수정.
+  — 이번 라운드 집중: path 있음+버전 실패 시 '?'(확인 불가) 표시와 로그인 버튼 유지, 재조회 뒤 건너뜀 패널 소거, 배치 종료 토스트 잔존.

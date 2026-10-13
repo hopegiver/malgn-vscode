@@ -104,3 +104,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
   — 재사용 사유: 미설치 안내 문구가 가리키는 화면 이름을 실제 라벨과 대조하는 일이 "코드가 자기 주석·주장과 일치하는가"에 해당. 6대 요소 무수정.
   — 이번 라운드 집중: '개발 환경' 문구 vs 실제 라벨, Windows 실기 원인 미확정 상태에서 이슈 해소 주장 가능 여부.
 - 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 2차(증분, 재사용) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13-r2.md`
+- 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 1차(최초, Standard) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13.md`
+  — 재사용 사유: 하네스 스텁이 백엔드가 실제로 낼 수 있는 상태인지, 주석·커밋 메시지의 주장이 실제 도달 경로와 맞는지가 핵심. 6대 요소 무수정.
+  — 이번 라운드 집중: P2-2 의존 건너뜀 경로의 실기 도달 가능성(mac Node=manual, Win winget preview 불신뢰, npm 없으면 Claude=manual), home.mjs 픽스처의 required 값이 P2-2 이후 stale인지, 임계값 근거 주석(analyze-usage.mjs <0.5) 실물 대조.
+- 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 2차(축소, 재사용) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13-r2.md`
+  — 재사용 사유: 픽스처가 실제 백엔드 모양으로 바뀌었는지, RV-002 후속 이월이 주장 정정으로 충분한지가 이 역할개념의 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: home.mjs claude required=true·installDependsOn 반영, real-shape 시나리오가 query.rs 미설치 분기(path None·actionKind=resolve_install_plan)와 일치하는지, WBS P2-9 실재.

@@ -113,3 +113,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-13 / target_id `devtools-l1-l2-l4` / 1차(최초, Standard) / `docs/reviewer/review-2026-10-13-devtools-l1-l2-l4.md`
   — 재사용 사유: 역할개념 그대로 유효. 6대 요소 무수정.
   — 이번 라운드 집중: 멈추는 프로브에 상한을 다는 대신 macOS도 Windows처럼 PATH 정적 스캔으로 프로브 자체를 제거(RV-006).
+- 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 1차(최초, Standard) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13.md`
+  — 재사용 사유: 역할개념 그대로 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 정적 배치 순서 대신 '선행 확인 후 재평가' 배치, 온보딩 체크리스트를 셋업의 1차 진입점으로 삼는 구조, 고정 임계값 대신 본인 기준선 비교.
+- 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 2차(축소, 재사용) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13-r2.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: P2-9(재조회 연쇄 설치)가 mac에서 Node=manual이라 단독으로는 신규 머신 1회 셋업을 만들지 못한다는 의존(P2-3).

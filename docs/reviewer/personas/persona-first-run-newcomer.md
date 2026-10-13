@@ -54,3 +54,6 @@
 - 2026-09-14 / target_id `malgn-vscode-uiux-round1` / 3차(축소 모드 — 신규 페르소나 0) / `docs/reviewer/round3-uiux-review.md`
   — 재사용 사유: N3(설명 문장 복원)·N4(목업 0)·N5(개발자 어휘)가 라운드1~2에 걸쳐 오르내린 항목이라 최종 상태 판정이 필요하다. 6대 요소 무수정.
   — 이번 라운드 집중: 마켓플레이스 탭 설명문 복원 후 이 탭의 역할이 한 문장으로 읽히는지(R-05 재판정의 전제), MCP 2섹션 분리 후 "등록 vs 설치 가능"이 신입에게 이해되는지, V-08 잔여 영문 라벨.
+- 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 1차(최초, Standard) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13.md`
+  — 재사용 사유: 홈 온보딩 체크리스트(P2-1)는 "신입이 첫 실행에서 다음 행동을 찾는가"의 과녁 그 자체. 6대 요소 무수정.
+  — 이번 라운드 집중: Claude 미설치 신규 머신에서 체크리스트 단계가 중복 없이 한 방향을 가리키는지(P2-2의 required=true와 교차), 건너뜀 사유 패널이 다음 행동을 알려주는지.
