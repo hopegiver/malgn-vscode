@@ -26,8 +26,10 @@ use std::time::Duration;
 // 이 모듈이 띄우는 모든 `claude` 자식 프로세스는 아래 셋 중 하나를 상한으로 받는다
 // (`run_claude_command`의 필수 인자 — 상한 없는 호출 경로가 구조적으로 없다).
 // 초과하면 `dev_tools::run_process_with_timeout_cancellable`이 프로세스 그룹을
-// SIGTERM → 3초 유예 → SIGKILL 하고 wait()까지 끝낸 뒤(고아 없음)
-// 사용자에게 "시간 초과" 의미의 실패 메시지를 돌려준다.
+// SIGTERM → 3초 유예 → SIGKILL 하고 직속 자식을 wait()한 뒤 사용자에게 "시간 초과"
+// 의미의 실패 메시지를 돌려준다. 그룹·트리를 벗어난 자손이 파이프를 물고 있어도
+// 출력 수거는 `DRAIN_GRACE`(2초)에서 끊고 반환하므로 호출(과 `PLUGIN_OP_LOCK` 가드)의
+// 수명은 유한하다 — 대신 그런 자손은 고아로 남을 수 있다.
 //
 // 값의 근거(실측값이 아니라 판단 — 이 코드베이스의 기존 상한과 같은 결): 같은
 // 앱 안의 `dev_tools` 설치 계획이 npm 전역 설치·`claude update`에 300초를
@@ -265,7 +267,8 @@ pub(crate) fn run_claude_command(args: &[&str], timeout: Duration) -> CommandRes
 /// kill·파이프 소비는 `dev_tools::run_process_with_timeout_cancellable`을
 /// 재사용한다(stdin=null, stdout/stderr 리더 스레드 동시 소비로 파이프 버퍼
 /// 교착 없음, 새 프로세스 그룹 스폰 + 상한 초과 시 그룹 kill→wait, Windows는
-/// 직속 자식 TerminateProcess + `.silent()`). `.output()` 직접 호출은 상한도
+/// `taskkill /T /F`로 트리 종료 + `Child::kill` 폴백 + `.silent()`, 종료 뒤 출력 수거는
+/// `DRAIN_GRACE`에서 끊는다). `.output()` 직접 호출은 상한도
 /// kill도 없어 CLI가 멈추면 워커 스레드가 영구히 묶였다.
 ///
 /// 테스트가 실제 `claude` 없이 `/bin/sh` 등으로 이 경로를 검증할 수 있게

@@ -193,7 +193,28 @@ fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option
 /// 필요한 시간 + 여유"일 뿐이다: 2초면 충분히 넉넉하고, 최악의 경우에도
 /// 호출자가 2초만 더 기다린다. 이 값을 바꾸면 아래 회귀 테스트
 /// (`descendant_holding_pipe_*`)의 시간 상한 단언도 함께 본다.
+///
+/// 상한을 넘기면 리더를 포기한다: 리더는 블록된 `read`가 돌아오는 즉시(자손이
+/// 다음에 쓰거나 닫을 때) 루프를 빠져나가 파이프 읽기 끝을 닫는다. 그래서
+/// 파이프를 계속 물고 있던 자손이 그 뒤에 stdout/stderr에 쓰면 SIGPIPE(Windows는
+/// 깨진 파이프 오류)를 받는다 — 포기 이후 자손의 출력은 버려지는 정도가 아니라
+/// 그 쓰기가 실패한다. 포기된 스레드와 fd는 자손이 쓰거나 파이프를 닫을 때까지
+/// 호출당 최대 2개 남는다. 이 동작은 의도다(자손 출력을 계속 읽어 버리려면
+/// 스레드가 영구히 남는다). 상한을 넘긴 사실은 `[process] drain 상한 초과` 로그
+/// 한 줄로 남는다.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// 테스트 전용 spawn 직렬화 락 — `Command::spawn` 구간(파이프 생성 → fork/exec)만
+/// 감싼다. macOS의 std는 파이프를 `pipe()`로 만든 뒤 `FD_CLOEXEC`를 따로 설정해서
+/// (원자적 `pipe2`가 없다) 그 사이에 다른 스레드가 fork하면 그 자식과 자식의
+/// 자손이 이쪽 파이프의 쓰기 끝을 물려받는다. 병렬 테스트에서는 `sleep 60 &`
+/// 자손을 남기는 테스트가 다른 테스트(`/bin/cat` 등)의 파이프를 물고 있게 되어
+/// 그쪽 EOF가 자손이 죽을 때까지(최대 `DRAIN_GRACE`) 오지 않고, 2초 미만을
+/// 단언하는 테스트가 간헐적으로 실패했다. 락은 spawn 동안만 잡으므로 테스트 전체
+/// 시간은 거의 늘지 않는다. 프로덕션에서는 같은 경합이 있어도 이제 `DRAIN_GRACE`가
+/// 지연을 2초로 제한하고 출력은 잃지 않으므로 전역 락을 도입하지 않는다.
+#[cfg(test)]
+static TEST_SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 /// 리더 스레드가 읽은 만큼을 공유 버퍼에 즉시 쌓는다 — 상한 시간 안에 EOF가
 /// 오지 않아 리더를 포기해도 그 시점까지 읽은 출력은 보존된다.
@@ -242,16 +263,20 @@ fn spawn_pipe_drain<R: Read + Send + 'static>(mut pipe: R) -> PipeDrain {
 impl PipeDrain {
     /// `deadline`까지 EOF를 기다린 뒤 지금까지 읽은 바이트를 가져온다.
     /// 상한을 넘기면 리더를 포기시키고(`abandoned`) 읽은 만큼만 돌려준다.
-    fn collect_until(self, deadline: Instant) -> Vec<u8> {
+    /// 둘째 값은 상한을 넘겨 포기했는지(`true` = 파이프를 물고 있는 자손이 남음).
+    fn collect_until(self, deadline: Instant) -> (Vec<u8>, bool) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         // Ok(()) = EOF, Err(Disconnected) = 리더 패닉 — 둘 다 "끝남". Timeout만 포기.
-        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = self.done.recv_timeout(remaining)
-        {
+        let capped = matches!(
+            self.done.recv_timeout(remaining),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        if capped {
             self.abandoned
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let mut guard = self.buf.lock().unwrap_or_else(|p| p.into_inner());
-        std::mem::take(&mut *guard)
+        (std::mem::take(&mut *guard), capped)
     }
 }
 
@@ -317,6 +342,10 @@ pub(crate) fn run_process_with_timeout_cancellable(
 
 /// `drain_grace`만 주입 가능하게 분리한 본체(테스트가 짧은 상한으로 출력 보존을
 /// 확인하려는 용도 — 공개 진입점은 항상 `DRAIN_GRACE`를 넘긴다).
+// 인자 9개는 공개 진입점(`run_process_with_timeout_cancellable`, 8개)의 시그니처에
+// `drain_grace` 하나를 얹은 것이다. 옵션 구조체로 묶으면 호출부 9곳과 테스트의
+// 시그니처 불변 약속(자율업무 설계 §4)을 건드리는 범위 밖 리팩터가 된다.
+#[allow(clippy::too_many_arguments)]
 fn run_process_inner(
     binary_path: &str,
     args: &[String],
@@ -360,7 +389,13 @@ fn run_process_inner(
     // 뜨면 안 된다(non-Windows에서는 no-op).
     command.silent();
 
-    let mut child = match command.spawn() {
+    let spawned = {
+        // 테스트 전용: 이 모듈 테스트끼리의 spawn을 직렬화한다(`TEST_SPAWN_LOCK` 주석).
+        #[cfg(test)]
+        let _spawn_guard = TEST_SPAWN_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        command.spawn()
+    };
+    let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
             return ProcessRunOutput {
@@ -393,12 +428,34 @@ fn run_process_inner(
     // 그룹/트리를 벗어난 자손이 파이프를 물고 있어도 반환하도록(`DRAIN_GRACE`
     // 주석 참고). 두 파이프가 하나의 마감시각을 공유한다.
     let drain_deadline = Instant::now() + drain_grace;
-    let stdout_bytes = stdout_drain
+    let (stdout_bytes, stdout_capped) = stdout_drain
         .map(|d| d.collect_until(drain_deadline))
         .unwrap_or_default();
-    let stderr_bytes = stderr_drain
+    let (stderr_bytes, stderr_capped) = stderr_drain
         .map(|d| d.collect_until(drain_deadline))
         .unwrap_or_default();
+    if stdout_capped || stderr_capped {
+        // 상한 초과 = 그룹·트리를 벗어난 자손이 파이프를 물고 있다는 뜻이다(고아 가능).
+        // 반환값은 바꾸지 않으므로 이 한 줄이 현장 진단의 유일한 신호다. 인자는
+        // 비밀이 들어갈 수 있어 프로그램 파일명만 남긴다.
+        eprintln!(
+            "[process] drain 상한 초과: pid={pid}, program={}, stdout={}, stderr={}, 상한={}ms, 종료사유={} — 자손이 파이프를 물고 있을 수 있음(고아 가능)",
+            std::path::Path::new(binary_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            if stdout_capped { "미종료" } else { "EOF" },
+            if stderr_capped { "미종료" } else { "EOF" },
+            drain_grace.as_millis(),
+            if timed_out {
+                "타임아웃"
+            } else if aborted {
+                "중단"
+            } else {
+                "정상종료"
+            },
+        );
+    }
 
     ProcessRunOutput {
         exit_code,
@@ -862,15 +919,20 @@ mod tests {
         );
     }
 
-    /// 짧은 상한을 주입한 본체 호출: 상한 이후에 자손이 쓰는 출력은 버려지고
-    /// (리더 포기), 상한 이전에 읽은 출력만 돌려준다.
+    /// 짧은 상한을 주입한 본체 호출: 주입한 상한이 실제로 적용되어(기본 2초가 아니라)
+    /// 상한까지는 기다리고, 상한 이전에 도착한 출력(`mid`)은 보존하며, 상한 이후에
+    /// 쓰는 출력(`late`)은 결과에 끼지 않는다. 자손(`sleep 5`가 낀 서브셸)이 파이프를
+    /// 물고 있으므로 EOF가 오지 않아 상한까지 기다리는 것이 이 테스트의 전제다 —
+    /// 하한 단언이 그 전제를 확인한다(자손이 파이프를 안 물었다면 즉시 반환해 실패).
+    /// 상한 이후 자손이 쓰는 `late`는 반환 뒤에 도착하므로 결과에서 관측할 수 없고,
+    /// 대신 반환 시각이 상한 부근이라는 점으로 리더 포기가 실제로 일어났음을 가른다.
     #[cfg(unix)]
     #[test]
-    fn drain_grace_is_injectable_and_keeps_only_output_read_before_deadline() {
+    fn drain_grace_is_injectable_and_keeps_output_read_before_deadline() {
         let pidfile = unique_pidfile("inject");
-        let _guard = KillOnDrop(pidfile.clone());
+        let guard = KillOnDrop(pidfile.clone());
         let script = format!(
-            "echo early; (sleep 1; echo late) & echo $! > '{}'; exit 0",
+            "echo early; (sleep 0.1; echo mid; sleep 5; echo late) & echo $! > '{}'; exit 0",
             pidfile.display()
         );
         let started = Instant::now();
@@ -883,46 +945,74 @@ mod tests {
             None,
             None,
             None,
-            Duration::from_millis(300),
+            Duration::from_millis(600),
         );
+        let elapsed = started.elapsed();
         assert!(output.spawn_error.is_none());
+        assert_eq!(output.exit_code, Some(0));
+        assert!(!output.timed_out && !output.aborted);
         assert!(
-            started.elapsed() < Duration::from_millis(900),
-            "주입한 상한(300ms)을 지켜야 한다: {:?}",
-            started.elapsed()
+            elapsed >= Duration::from_millis(550),
+            "자손이 파이프를 물고 있으면 EOF가 안 오므로 주입한 상한(600ms)까지 기다렸어야 한다(전제 검증): {elapsed:?}"
         );
-        assert_eq!(output.stdout.trim(), "early");
+        // 기본 상한(2초)이 아니라 주입한 상한이 적용됐다는 것만 가르면 되므로 넉넉히 잡는다.
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "주입한 상한(600ms)을 지켜야 한다: {elapsed:?}"
+        );
+        assert_eq!(
+            output.stdout.lines().collect::<Vec<_>>(),
+            vec!["early", "mid"],
+            "상한 이전에 읽은 출력만 보존해야 한다"
+        );
+        assert!(guard.pid().is_some(), "자손 pid가 기록되어야 한다(전제)");
     }
 
     /// Windows: 직속 자식 `cmd.exe`가 손자 `PING.EXE`(30초 이상)를 띄우고, 손자가
     /// stdout 파이프를 상속한다. 타임아웃 kill이 직속 자식만 죽이면 손자가
     /// 파이프를 계속 물어 리더 EOF가 안 온다. 트리째 종료(`taskkill /T /F`)하면
     /// 파이프가 바로 닫히므로, 일부러 큰 drain 상한(10초)을 주입해도 함수는
-    /// 훨씬 일찍(6초 미만) 반환해야 한다 — 상한 덕분이 아니라 트리 종료 덕분임을
+    /// 훨씬 일찍(8초 미만 — 타임아웃 3초 + taskkill 상한) 반환해야 한다 — 상한 덕분이 아니라 트리 종료 덕분임을
     /// 가르는 설계다. `cmd.exe`/`PING.EXE`는 절대경로. 미검증 — 이 개발
     /// 머신(Mac)에서는 컴파일 체크만 가능하고 실행은 Windows CI 전용이다.
     #[cfg(windows)]
     #[test]
     fn timeout_kill_terminates_grandchild_tree_so_pipe_closes_before_drain_grace() {
+        // 타임아웃을 3초로 둔다: `cmd.exe /C`는 자신의 명령(PING)이 도는 동안만
+        // 살아 있으므로 `timed_out`이 참이면 cmd가 PING을 기다리는 중이었다는 뜻이다.
+        // 700ms처럼 짧으면 느린 러너에서 PING이 뜨기 전에 cmd가 죽어 손자 없이 공허하게
+        // 통과할 수 있다. `ready`는 cmd가 명령줄을 해석해 PING 직전까지 갔다는 확인이다.
+        // (PING의 첫 출력 줄이 파이프로 즉시 flush되는지는 Windows 실기로 확인하지
+        // 못해 단언하지 않는다.)
         let started = Instant::now();
         let output = run_process_inner(
             r"C:\Windows\System32\cmd.exe",
             &[
                 "/C".to_string(),
-                r"C:\Windows\System32\PING.EXE -n 31 127.0.0.1".to_string(),
+                r"echo ready & C:\Windows\System32\PING.EXE -n 31 127.0.0.1".to_string(),
             ],
             r"C:\Windows\System32;C:\Windows",
             &[],
-            Duration::from_millis(700),
+            Duration::from_secs(3),
             None,
             None,
             None,
             Duration::from_secs(10),
         );
         assert!(output.spawn_error.is_none());
-        assert!(output.timed_out);
         assert!(
-            started.elapsed() < Duration::from_secs(6),
+            output.stdout.contains("ready"),
+            "cmd.exe가 명령줄을 해석해 PING 직전까지 가야 이 테스트가 의미가 있다: {:?}",
+            output.stdout
+        );
+        assert!(
+            output.timed_out,
+            "cmd.exe가 PING을 기다리는 중이어야 타임아웃으로 간다(손자 존재 전제)"
+        );
+        // 3초 타임아웃 + taskkill(상한 5초) 안에 반환해야 한다. 트리 종료가 회귀하면
+        // 손자가 파이프를 물어 3초 + 주입한 상한 10초 = 13초 부근이 된다.
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
             "손자(PING)가 트리 종료로 죽지 않아 파이프를 계속 물고 있었다: {:?}",
             started.elapsed()
         );

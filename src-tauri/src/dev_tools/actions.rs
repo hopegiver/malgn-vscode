@@ -26,8 +26,9 @@ use crate::cli_launcher::{open_terminal_command, TerminalLaunchResult};
 use std::time::Duration;
 
 /// 설계 §B.3 "타임아웃 시 손자 프로세스": winget은 msiexec/설치 EXE를 손자
-/// 프로세스로 띄우므로, 타임아웃 kill(직속 자식만 죽인다 —
-/// `process.rs::force_kill_process_group`의 기존 Windows 주석 참고) 후에도
+/// 프로세스로 띄우므로, 타임아웃 kill(Windows는 `taskkill /T /F`로 트리째 종료하지만
+/// UAC로 승격된 손자는 권한 때문에 죽일 수 없다 —
+/// `process.rs::force_kill_process_group`의 Windows 주석 참고) 후에도
 /// 설치가 백그라운드에서 계속될 수 있다. 이 한계를 메시지로 알려 사용자가
 /// "멈췄나?"라고 오판하지 않게 한다. Job Object 도입은 범위 밖(설계 §9
 /// 미해결쟁점 1).

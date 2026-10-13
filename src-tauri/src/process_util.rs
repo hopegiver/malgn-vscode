@@ -103,14 +103,54 @@ pub fn kill_process_group_with_grace(pid: u32) {
 /// 폴더에 놓이고, 거기 동명의 악성 실행파일이 있으면 bare-name spawn이
 /// 그것을 대신 실행할 수 있다. 대신 `dev_tools::platform::windows_system_tool`로
 /// `%SystemRoot%\System32\taskkill.exe` 절대경로를 조립해 실행한다.
+///
+/// taskkill 자체가 멈추는 경우(보안 제품의 개입, 시스템 과부하 등)에 호출자가 쥔
+/// 락(plugins의 `PLUGIN_OP_LOCK` 등)이 함께 묶이지 않도록 `TASKKILL_TIMEOUT`을
+/// 넘기면 taskkill을 `kill()`하고 반환한다. 정상적으로는 1초 안에 끝나므로 평소
+/// 동작(끝날 때까지 기다린 뒤 반환, 결과 무시)은 그대로다.
 #[cfg(windows)]
 pub fn kill_process_group_with_grace(pid: u32) {
+    use std::process::Stdio;
+
     let roots = crate::dev_tools::platform::EnvRoots::from_env();
     let taskkill = crate::dev_tools::platform::windows_system_tool(&roots, r"System32\taskkill.exe");
-    let _ = std::process::Command::new(taskkill)
+    let mut command = std::process::Command::new(taskkill);
+    // `.output()`과 같이 stdin은 닫고 출력은 버린다(파이프를 만들면 읽는 쪽이 있어야 한다).
+    command
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .silent()
-        .output();
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Ok(mut child) = command.spawn() {
+        wait_or_kill(&mut child, TASKKILL_TIMEOUT);
+    }
+}
+
+/// `taskkill` 한 번이 끝나기를 기다리는 상한. 평소 1초 미만이라 5초면 정상 경로에는
+/// 닿지 않는다. 이 값은 호출자 락의 최대 추가 보유 시간이 된다.
+#[cfg(windows)]
+const TASKKILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `child`가 `limit` 안에 끝나면 `true`. 넘기거나 상태 조회가 실패하면 `kill()` 후
+/// 수거하고 `false`를 돌려준다. 폴링 간격이 짧아(20ms) 빨리 끝나는 자식에 지연이 없다.
+/// (Windows에서만 쓰지만 로직이 플랫폼 중립이라 유닉스 테스트로 검증한다.)
+#[cfg(any(windows, test))]
+fn wait_or_kill(child: &mut std::process::Child, limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 // ---------------- Windows 콘솔 창 억제 ----------------
@@ -180,6 +220,44 @@ impl SilentCommand for std::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 상한을 넘긴 자식은 `kill()`되어 상한 부근에서 반환하고(`false`), 상한 안에
+    /// 끝나는 자식은 기다리지 않고 바로 반환한다(`true`). Windows의 `taskkill`
+    /// 대기가 쓰는 `wait_or_kill`의 로직 검증 — 플랫폼 중립이라 유닉스 자식으로 본다.
+    #[cfg(unix)]
+    #[test]
+    fn wait_or_kill_bounds_a_hanging_child_and_returns_fast_for_a_quick_one() {
+        use std::time::{Duration, Instant};
+
+        let mut hanging = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("보조 프로세스(sleep)를 띄우지 못했습니다");
+        let pid = hanging.id();
+        let started = Instant::now();
+        let finished = wait_or_kill(&mut hanging, Duration::from_millis(300));
+        let elapsed = started.elapsed();
+        assert!(!finished, "상한을 넘긴 자식은 false여야 한다");
+        assert!(
+            elapsed >= Duration::from_millis(250) && elapsed < Duration::from_secs(3),
+            "상한 부근에서 반환해야 한다: {elapsed:?}"
+        );
+        assert!(
+            !pid_alive(pid),
+            "상한을 넘긴 자식은 kill되고 수거되어 있어야 한다"
+        );
+
+        let mut quick = std::process::Command::new("/usr/bin/true")
+            .spawn()
+            .expect("보조 프로세스(true)를 띄우지 못했습니다");
+        let started = Instant::now();
+        assert!(wait_or_kill(&mut quick, Duration::from_secs(10)));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "빨리 끝나는 자식을 상한까지 기다리면 안 된다: {:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn current_process_is_alive() {
