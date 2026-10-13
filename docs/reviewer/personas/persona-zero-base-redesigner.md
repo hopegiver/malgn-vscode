@@ -106,3 +106,7 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
   — 재사용 사유: 역할개념("지운다면 무엇부터 다시 만들 것인가") 그대로 유효. 6대 요소 무수정.
   — 이번 라운드 집중: 국소 테스트 락 대신 장수 자손 테스트의 프로세스 격리(R2).
+- 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 1차(최초, Standard) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13.md`
+  — 재사용 사유: 역할개념 그대로 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 66곳 표시 시점 정리 대신 Rust 경계에서 요약/진단을 구조적으로 분리하는 대안.
+- 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 2차(증분, 재사용) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13-r2.md`

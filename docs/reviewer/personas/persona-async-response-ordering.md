@@ -43,3 +43,6 @@
 ## 적용 이력
 - 2026-10-13 / target_id `r2-p1-stability-batch` / 1차(최초, Standard 약식 패널) / `docs/reviewer/review-r2-p1-stability-batch-2026-10-13.md`
   — 이번 라운드 집중: `latestGate` 적용 범위(성공·실패·접기·재시도), 캐시 히트율 단일 정의(홈·사용량).
+- 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 1차(최초, Standard) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13.md`
+  — 재사용 사유: 배지 판정 통일이 기준 A4(같은 지표의 계산 함수가 앱 전체에서 1개)의 과녁 그 자체. 6대 요소 무수정.
+  — 이번 라운드 집중: `projectBadgeStatus` 외 `archiveStatus` 직접 판정 잔존 여부(grep), 필터·통계 수치와의 일치.

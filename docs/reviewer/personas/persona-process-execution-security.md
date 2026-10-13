@@ -83,3 +83,6 @@
 - 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
   — 재사용 사유: 새 코드 `wait_or_kill`·taskkill spawn 경로가 S1(셸 없음·절대경로)·S5(수명)의 직접 대상. 6대 요소 무수정.
   — 이번 라운드 집중: taskkill 5초 상한의 S1 유지·호출부 의미 보존, 공유 헬퍼를 쓰지 않는 autonomy taskkill 사본(N1).
+- 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 1차(최초, Standard) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13.md`
+  — 재사용 사유: install_plugin의 argv 변경·재시도 루프가 역할개념("명령의 argv·프로세스 수명이 안전한가")의 직접 대상. 6대 요소 무수정.
+  — 이번 라운드 집중: 신버전 argv 동일성, 재시도의 비멱등 부작용, 재시도 간 락 유지, 거부 문구 실측(commander).

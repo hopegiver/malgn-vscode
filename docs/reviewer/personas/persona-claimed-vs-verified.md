@@ -100,3 +100,7 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
   — 재사용 사유: "원인 확정(스크래치 재현)" 주장을 관측으로 바꾸는 것이 핵심. 6대 요소 무수정.
   — 이번 라운드 집중: 독립 재현(락 없음 5/4500 대 락 0/4500), 반복 실행의 판별력 한계, 현장 진단 주석 대 배포물 stderr 부재(N3), 직전 리뷰 자신의 "4개 호출부" 오류 정정.
+- 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 1차(최초, Standard) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13.md`
+  — 재사용 사유: 미설치 안내 문구가 가리키는 화면 이름을 실제 라벨과 대조하는 일이 "코드가 자기 주석·주장과 일치하는가"에 해당. 6대 요소 무수정.
+  — 이번 라운드 집중: '개발 환경' 문구 vs 실제 라벨, Windows 실기 원인 미확정 상태에서 이슈 해소 주장 가능 여부.
+- 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 2차(증분, 재사용) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13-r2.md`
