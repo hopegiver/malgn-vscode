@@ -20,6 +20,7 @@ import type { UsageTab } from '../state';
 import { fetchDailyUsage } from '../usageApi';
 import type { DailyUsage } from '../usageApi';
 import { fetchDailyDetail } from '../dailyDetailApi';
+import { createLatestGate } from '../latestGate';
 import type { AgentUsage, SessionDetail, ToolUsage } from '../dailyDetailApi';
 import { fetchUsageSummary, fetchProjectDailyTrend } from '../usageSummaryApi';
 import type { ModelUsageSummary, ProjectUsageSummary, UsageSummaryReport } from '../usageSummaryApi';
@@ -237,18 +238,26 @@ export function computeTodayTokens(items: readonly DailyUsage[]): number {
 
 // ---------------- 날짜별 상세 (실제 데이터) ----------------
 
+// 날짜를 빠르게 바꾸거나 접었다 펼칠 때 늦게 도착한 이전 요청의 응답이 현재
+// 선택 상태(report/error/loading)를 덮어쓰지 못하게 마지막 요청만 반영한다.
+// 이 응답은 state.dailyDetail에만 쓰므로 다른 뷰는 건드리지 않는다.
+const dailyDetailGate = createLatestGate();
+
 export async function loadDailyDetail(date: string): Promise<void> {
+  const token = dailyDetailGate.begin();
   state.dailyDetail.loading = true;
   state.dailyDetail.error = null;
   notifyChange();
   try {
-    state.dailyDetail.report = await fetchDailyDetail(date);
+    const report = await fetchDailyDetail(date);
+    if (!dailyDetailGate.isLatest(token)) return;
+    state.dailyDetail.report = report;
   } catch (err) {
+    if (!dailyDetailGate.isLatest(token)) return;
     state.dailyDetail.error = err instanceof Error ? err.message : '상세 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
-  } finally {
-    state.dailyDetail.loading = false;
-    notifyChange();
   }
+  state.dailyDetail.loading = false;
+  notifyChange();
 }
 
 // 사용량 사이드바는 "일별 사용량" 단일 항목만 둔다(PM 결정, 2026-09-24) —
@@ -257,9 +266,11 @@ export async function loadDailyDetail(date: string): Promise<void> {
 // 원래 동작으로 되돌아간다(사이드바에서 이 화면을 제어하지 않는다).
 function toggleDailyDetail(date: string): void {
   if (state.dailyDetail.selectedDate === date) {
+    dailyDetailGate.invalidate(); // 접은 뒤 도착하는 응답은 버린다
     state.dailyDetail.selectedDate = null;
     state.dailyDetail.report = null;
     state.dailyDetail.error = null;
+    state.dailyDetail.loading = false;
     notifyChange();
     return;
   }

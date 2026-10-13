@@ -27,9 +27,13 @@ pub async fn get_daily_usage() -> Vec<daily::DailyUsage> {
         .unwrap_or_default()
 }
 
+/// `get_daily_usage`와 동일한 이유(jsonl 재귀 스캔이 메인 스레드를 막지 않게)로
+/// async + `spawn_blocking`. 스레드 패닉 시 빈 보고서로 대체한다.
 #[tauri::command]
-pub fn get_daily_detail(date: String) -> detail::DailyDetailReport {
-    detail::aggregate_daily_detail(&date)
+pub async fn get_daily_detail(date: String) -> detail::DailyDetailReport {
+    tauri::async_runtime::spawn_blocking(move || detail::aggregate_daily_detail(&date))
+        .await
+        .unwrap_or_default()
 }
 
 /// 세션 상세 화면의 "에이전트 실행 이력" 섹션 — 날짜가 아니라 세션 하나만
