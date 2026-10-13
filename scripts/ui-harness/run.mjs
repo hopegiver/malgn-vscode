@@ -36,6 +36,7 @@ import * as qaShellNavCoverage from './flows/qaShellNavCoverage.mjs';
 import * as accountMenuAndStatusline from './flows/accountMenuAndStatusline.mjs';
 import * as fontPolicyKoreanMonoScan from './flows/fontPolicyKoreanMonoScan.mjs';
 import * as usage from './flows/usage.mjs';
+import * as usageGuide from './flows/usageGuide.mjs';
 import * as projectAgentProgress from './flows/projectAgentProgress.mjs';
 import * as devToolsOrder from './flows/devToolsOrder.mjs';
 
@@ -46,7 +47,7 @@ const SHOTS_DIR =
   '/private/tmp/claude-501/-Users-hopegiver-workspace-malgn-vscode/9682b635-b50a-4778-8416-a05a9cb13e8a/scratchpad/shots';
 const REPORT_PATH = path.join(__dirname, 'last-run-report.json');
 
-const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow, qaShellNavCoverage, accountMenuAndStatusline, fontPolicyKoreanMonoScan, usage, projectAgentProgress, devToolsOrder];
+const FLOWS = [autonomousTasks, sessions, catalog, settingsMcp, appLinks, formBackgroundRerender, majorReview20260921, updateCheck, home, tabstripOverflow, qaShellNavCoverage, accountMenuAndStatusline, fontPolicyKoreanMonoScan, usage, usageGuide, projectAgentProgress, devToolsOrder];
 
 const [, , flowFilter, scenarioFilter] = process.argv;
 

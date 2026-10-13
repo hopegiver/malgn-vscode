@@ -1458,3 +1458,34 @@ textarea.settings-input { resize: vertical; }
 }
 .onboard-slim[data-state="error"] .onboard-marker { color: var(--status-warn); }
 .onboard-slim .btn { margin-left: auto; }
+
+/* P2-7 efficiency guide */
+/* 사용량 화면 "효율 가이드"(views/usage.ts renderEfficiencyGuide) — Terminus
+   .callout 어휘(좌측 3px 강조선 + panel 배경)를 따르고 새 색은 들이지 않는다.
+   "점검 권장" 배지는 §3.5 currentColor 테두리 방식에 --status-warn을 준 것이며,
+   색만으로 의미를 전달하지 않도록 라벨 텍스트를 항상 함께 둔다. */
+.guide-list { display: flex; flex-direction: column; gap: var(--space-2-5); }
+.guide-card {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  background: var(--panel-bg-alt); border: var(--border-width) solid var(--border);
+  border-left-width: var(--border-width-callout); border-left-color: var(--status-warn);
+  padding: var(--space-3) var(--space-4); font-size: var(--font-size-small); color: var(--text-primary);
+}
+.guide-card-head { display: flex; align-items: center; gap: var(--space-2); }
+.guide-badge { color: var(--status-warn); }
+.guide-rule-name { font-size: var(--font-size-caption); color: var(--text-secondary); }
+.guide-observation { font-weight: 600; overflow-wrap: anywhere; }
+.guide-evidence { display: flex; flex-direction: column; gap: var(--space-1); }
+.guide-evidence-row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3);
+  font-size: var(--font-size-caption);
+}
+.guide-evidence-label { color: var(--text-muted-aa); }
+.guide-evidence-value { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.guide-evidence-threshold { color: var(--text-muted-aa); }
+.guide-action { color: var(--text-secondary); overflow-wrap: anywhere; }
+.guide-action-label {
+  margin-right: var(--space-2); font-size: var(--font-size-caption); letter-spacing: .02em; color: var(--accent); font-weight: 600;
+}
+.guide-skipped { margin: var(--space-2-5) 0 0; padding: 0; list-style: none; font-size: var(--font-size-caption); color: var(--text-muted-aa); display: flex; flex-direction: column; gap: var(--space-1); }
+.guide-box .unpriced-note { margin-top: var(--space-2-5); }

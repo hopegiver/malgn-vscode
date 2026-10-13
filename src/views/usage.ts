@@ -6,6 +6,9 @@
 //     토큰/활동일수/일평균/캐시 히트율/최고 사용일/캐시 절대량/입출력 비율)는
 //     usageApi.ts의 DailyUsage[]만으로 계산한 실제 값이다 — 비교할 이전 기간
 //     데이터가 없어 전월 대비 등 증감 배지는 두지 않는다.
+//     카드 아래의 "효율 가이드"(P2-7)는 같은 수치(+30일 요약의 모델별 토큰)에
+//     고정 임계값을 적용한 규칙 기반 참고 정보다 — 판정은 efficiencyGuide.ts의
+//     순수 함수가 하고, 표본이 작으면 단정하지 않고 "판단 보류"로 표시한다.
 //   - 프로젝트별(projects): 30일 요약(usageSummaryApi.ts)의 Top5 랭킹 + 나머지
 //     합. 프로젝트를 클릭하면 그 프로젝트만의 30일 일별 추이를 펼친다.
 //   - 모델·도구(models): 30일 요약의 모델별 비중·비용 + 자주 쓴 툴 Top5.
@@ -25,6 +28,8 @@ import { createLatestGate } from '../latestGate';
 import type { AgentUsage, SessionDetail, ToolUsage } from '../dailyDetailApi';
 import { fetchUsageSummary, fetchProjectDailyTrend } from '../usageSummaryApi';
 import type { ModelUsageSummary, ProjectUsageSummary, UsageSummaryReport } from '../usageSummaryApi';
+import { evaluateEfficiencyGuide } from '../efficiencyGuide';
+import type { GuideFinding } from '../efficiencyGuide';
 
 function barFillEl(pct: number): HTMLElement {
   const fill = el('div', { className: 'bar-fill' }, []);
@@ -452,8 +457,72 @@ function renderUsageStatCards(): HTMLElement {
   ]);
 }
 
+// ---------------- 효율 가이드 (WBS P2-7, 규칙 판정은 efficiencyGuide.ts) ----------------
+
+function guideFindingCard(f: GuideFinding): HTMLElement {
+  const card = el('div', { className: 'guide-card' }, [
+    el('div', { className: 'guide-card-head' }, [
+      el('span', { className: 'badge guide-badge' }, ['점검 권장']),
+      el('span', { className: 'guide-rule-name' }, [f.ruleName]),
+    ]),
+    el('div', { className: 'guide-observation' }, [f.observation]),
+    el(
+      'div',
+      { className: 'guide-evidence' },
+      f.evidence.map((e) =>
+        el('div', { className: 'guide-evidence-row' }, [
+          el('span', { className: 'guide-evidence-label' }, [e.label]),
+          el('span', { className: 'guide-evidence-value' }, [e.value]),
+          el('span', { className: 'guide-evidence-threshold' }, [`기준 ${e.threshold}`]),
+        ])
+      )
+    ),
+    el('div', { className: 'guide-action' }, [el('span', { className: 'guide-action-label' }, ['권장 행동']), f.action]),
+  ]);
+  card.setAttribute('data-rule', f.ruleId);
+  return card;
+}
+
+function renderEfficiencyGuide(totals: UsageTotals): HTMLElement {
+  // 모델 규칙은 30일 요약(별도 로딩 사이클)이 있어야 판정된다 — 아직이거나 실패면
+  // null을 넘겨 그 규칙만 "보류"로 처리한다(나머지 규칙은 영향 없음).
+  const summary = state.usageSummary;
+  const models = summary.loaded && summary.report && !summary.error ? summary.report.models : null;
+  const result = evaluateEfficiencyGuide(totals, models, formatTokenCount);
+
+  const body: HTMLElement[] = [];
+  if (result.status === 'insufficient') {
+    body.push(el('div', { className: 'state-block-desc guide-insufficient' }, ['판단할 데이터가 부족합니다 — 문제가 없다는 뜻이 아니라, 아직 가이드를 낼 만큼 표본이 쌓이지 않았다는 뜻입니다.']));
+  } else if (result.status === 'clear') {
+    body.push(el('div', { className: 'state-block-desc guide-clear' }, [`판정한 ${result.checkedCount}개 규칙 모두 기준 이내입니다. 지금 제안할 개선 항목이 없습니다.`]));
+  } else {
+    body.push(el('div', { className: 'guide-list' }, result.findings.map(guideFindingCard)));
+  }
+  if (result.skipped.length > 0) {
+    body.push(
+      el(
+        'ul',
+        { className: 'guide-skipped' },
+        result.skipped.map((s) => el('li', {}, [`${s.ruleName}: 판단 보류 — ${s.reason}`]))
+      )
+    );
+  }
+  body.push(el('div', { className: 'unpriced-note' }, ['※ 이 화면의 집계 수치에 고정 기준값을 적용한 규칙 기반 참고 정보입니다. 원인을 판정하지 않으며, 비용은 계산에 쓰지 않습니다.']));
+
+  const box = el('div', { className: 'box guide-box' }, [boxHead('효율 가이드'), el('div', { className: 'box-body' }, body)]);
+  box.setAttribute('data-guide-status', result.status);
+  return box;
+}
+
 function renderDailyTab(): HTMLElement {
-  return el('div', { className: 'col' }, [renderUsageStatCards(), renderDailyUsageSection()]);
+  const parts: HTMLElement[] = [renderUsageStatCards()];
+  // 통계 타일이 보이는 조건(로딩 끝·에러 없음·기록 있음)과 같을 때만 가이드를 낸다.
+  const d = state.dailyUsage;
+  if (!(d.loading && !d.loaded) && !d.error && d.items.length > 0) {
+    parts.push(renderEfficiencyGuide(computeUsageTotals(d.items)));
+  }
+  parts.push(renderDailyUsageSection());
+  return el('div', { className: 'col' }, parts);
 }
 
 // ---------------- 프로젝트별 (Top5 랭킹 + 클릭 시 30일 추이) ----------------
