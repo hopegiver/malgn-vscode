@@ -66,3 +66,9 @@
 - 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 2차(축소, 재사용) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13-r2.md`
   — 재사용 사유: RV-003(미설치 확정 조건)·RV-005(stale 건너뜀 사유)가 이 역할개념의 지적이었다. 6대 요소 무수정.
   — 이번 라운드 집중: path 있음+버전 실패 시 '?'(확인 불가) 표시와 로그인 버튼 유지, 재조회 뒤 건너뜀 패널 소거, 배치 종료 토스트 잔존.
+- 2026-10-13 / target_id `r9-rv008-anomaly-today-pending` / 1차(최초, Standard 약식) / `docs/reviewer/review-r9-rv008-anomaly-today-pending-2026-10-13.md`
+  — 재사용 사유: "판정 안 함"을 사유별(기준선 부족 / 하루 미종료 / 사용 없음)로 정직하게 구분해 말하는지가 이 역할개념의 S5와 같다. 6대 요소 무수정.
+  — 이번 라운드 집중: today-pending 캡처 열람, 주말 공백(zero-day)이 낀 신규 사용자 2주차 월요일 시나리오.
+- 2026-10-13 / target_id `r9-rv008-anomaly-today-pending` / 2차(재검토, Standard 경량) / `docs/reviewer/review-r9-rv008-anomaly-today-pending-2026-10-13-r2.md`
+  — 재사용 사유: "판정 안 함" 사유 구분(S5)의 후속 확인. 6대 요소 무수정.
+  — 이번 라운드 집중: today-pending·insufficient 캡처 열람, 30일 창 경계에서 기준선이 잘리는 입력의 문구 진위(창 범위 각주로 기각).

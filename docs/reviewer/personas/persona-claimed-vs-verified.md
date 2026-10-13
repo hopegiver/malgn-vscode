@@ -116,3 +116,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 2차(증분) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13-r2.md`
   — 재사용 사유: 수정 문구("최근 완료 7일"·"집계 중"·"판정하지 않았습니다")가 계산 결과와 일치하는지가 과녁. 6대 요소 무수정.
   — 이번 라운드 집중: RV-001~006 원본 라인 재확인, 오늘 unjudged 전환이 judgedCount=0 안내문을 거짓으로 만드는 조합(RV-008) 재현, 잔존 옛 용어(RV-009).
+- 2026-10-13 / target_id `r9-rv008-anomaly-today-pending` / 1차(최초, Standard 약식) / `docs/reviewer/review-r9-rv008-anomaly-today-pending-2026-10-13.md`
+  — 재사용 사유: 새 안내문 "어제까지는 … 판정한 날이 없습니다"가 detectAnomalies 계산 결과와 모든 입력에서 일치하는지가 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: 분기 조건과 계산(usageTrend.ts:281-309) 대조, zero-day 혼재 입력 스크래치 재현, 하네스 76/76·8시나리오 재실행.
+- 2026-10-13 / target_id `r9-rv008-anomaly-today-pending` / 2차(재검토, Standard 경량) / `docs/reviewer/review-r9-rv008-anomaly-today-pending-2026-10-13-r2.md`
+  — 재사용 사유: RV-011(문구가 계산보다 넓게 단정)·RV-012(잔존 옛 용어)가 이 역할개념의 지적이었다. 6대 요소 무수정.
+  — 이번 라운드 집중: 좁힌 문구 2줄을 detectAnomalies와 전수 대조(최근 17일 사용 패턴 2^17 x 사용량 2종), r1 재현 입력 S1~S5 재실행, 하네스 80/80.
