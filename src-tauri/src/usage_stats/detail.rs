@@ -866,8 +866,8 @@ mod tests {
 
     // 회귀 방지 — U1: Claude Code는 한 응답의 content 블록을 같은 message.id로
     // 여러 줄에 나눠 기록한다(줄마다 다른 tool_use). message.id 첫 줄만 보면
-    // 나머지 줄의 tool_use가 통째로 누락된다(실측: 30일 98,040개 중 18,815개만
-    // 집계). 토큰은 첫 줄에서만(2줄째 이후 usage는 같은 값의 반복) 센다.
+    // 나머지 줄의 tool_use가 통째로 누락된다(2026-10-13 실측: 30일 tool_use가
+    // 약 5배 과소 집계). 토큰은 첫 줄에서만(2줄째 이후 usage는 같은 값의 반복) 센다.
     #[test]
     fn counts_tool_use_across_split_lines_of_same_message_id() {
         let tmp = std::env::temp_dir().join(format!(

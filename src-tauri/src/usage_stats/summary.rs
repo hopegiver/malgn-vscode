@@ -634,17 +634,10 @@ mod tests {
         assert_eq!(summary.input_tokens, 100, "중복 message.id가 두 번 세어졌습니다");
     }
 
-    // 실제 JSONL 포맷의 `usage.cache_creation.{ephemeral_5m_input_tokens,
-    // ephemeral_1h_input_tokens}` 분해 객체를 `scan_file_for_summary`가 끝까지
-    // 정확히 반영하는지(JSON 파싱 → split_cache_write_tokens → cost_for_usage
-    // 전체 경로) 확인한다. claude-sonnet-4-6, cache_write_5m=40_000,
-    // cache_write_1h=60_000, 나머지 0.
-    //   = (40_000/1e6)*3.75 + (60_000/1e6)*6.0 = 0.15 + 0.36 = 0.51
-    // (5m/6.0 1h는 pricing.rs 표: sonnet-4-6 cache_write_5m=3.75, cache_write_1h=6.0)
     // 회귀 방지 — U1: Claude Code는 한 응답의 content 블록을 같은 message.id로
     // 여러 줄에 나눠 기록한다(줄마다 다른 tool_use). message.id 첫 줄만 보면
-    // 나머지 줄의 tool_use가 통째로 누락된다(실측: 30일 98,040개 중 18,815개만
-    // 집계). 토큰·비용은 첫 줄에서만(뒷줄 usage는 같은 값의 반복) 센다.
+    // 나머지 줄의 tool_use가 통째로 누락된다(2026-10-13 실측: 30일 tool_use가
+    // 약 5배 과소 집계). 토큰·비용은 첫 줄에서만(뒷줄 usage는 같은 값의 반복) 센다.
     #[test]
     fn counts_tool_use_across_split_lines_of_same_message_id() {
         let now = Utc::now();
@@ -700,6 +693,13 @@ mod tests {
         assert_eq!(summary.input_tokens, 200);
     }
 
+    // 실제 JSONL 포맷의 `usage.cache_creation.{ephemeral_5m_input_tokens,
+    // ephemeral_1h_input_tokens}` 분해 객체를 `scan_file_for_summary`가 끝까지
+    // 정확히 반영하는지(JSON 파싱 → split_cache_write_tokens → cost_for_usage
+    // 전체 경로) 확인한다. claude-sonnet-4-6, cache_write_5m=40_000,
+    // cache_write_1h=60_000, 나머지 0.
+    //   = (40_000/1e6)*3.75 + (60_000/1e6)*6.0 = 0.15 + 0.36 = 0.51
+    // (5m/6.0 1h는 pricing.rs 표: sonnet-4-6 cache_write_5m=3.75, cache_write_1h=6.0)
     #[test]
     fn scan_reflects_5m_1h_cache_write_breakdown_from_real_json_shape() {
         let now = Utc::now();
