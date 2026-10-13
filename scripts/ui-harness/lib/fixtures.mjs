@@ -231,6 +231,9 @@ export async function buildBaseFixtures() {
     list_workspace_projects: { projects, skipped: [] },
     list_claude_sessions: sessions,
     check_dev_tools: devToolsSample(),
+    // 허브 기기 토큰 상태(홈 malgnai-hub 위젯이 loadHubAuth로 호출) — 베이스에 없어 모든 흐름에서
+    // UNSTUBBED_COMMAND 오탐이 났다. 정상 연결 기본값을 둔다(추가만).
+    hub_auth_status: { connected: true, state: 'CONNECTED', device_name: '하네스 기기', expires_at: null, renew_after: null, reason: null },
     list_installed_plugins: plugins,
     list_global_catalog: globalCatalog,
     list_known_marketplaces: marketplaces,

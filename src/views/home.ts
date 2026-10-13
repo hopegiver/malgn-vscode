@@ -28,6 +28,9 @@ import { loadMcp } from './settings';
 import { describeHubAuth } from '../hubAuthApi';
 import { ensureAppVersionLoaded } from '../sidebar';
 import { checkClaudeAuthStatus, openClaudeLoginTerminal, logoutClaudeAuth } from '../sessionsApi';
+import { claudeInstallState, computeOnboarding } from '../onboarding';
+import type { OnboardingStep, StepState } from '../onboarding';
+import { loadDevTools } from './devTools';
 
 const MALGNAI_HUB_MCP_NAME = 'plugin:malgn-agent:malgnai-hub';
 const RECENT_SESSIONS_LIMIT = 5;
@@ -46,6 +49,7 @@ export function renderHomeView(): HTMLElement {
 
   return el('div', { className: 'home-view' }, [
     renderGreeting(),
+    renderOnboarding(),
     renderStatRow(),
     el('div', { className: 'split' }, [
       el('div', { className: 'col' }, [recentSessionsBox(), taskQueueBox()]),
@@ -91,6 +95,86 @@ function renderGreeting(): HTMLElement {
     el('div', { className: 'greet-line' }, [el('span', { className: 'sym' }, ['❯']), `${greetingPhrase(now.getHours())}${name}`, el('span', { className: 'cursor' }, [])]),
     el('div', { className: 'greet-sub' }, subParts),
   ]);
+}
+
+// ---------------- 온보딩 체크리스트(P2-1) ----------------
+// 판정은 src/onboarding.ts(순수 함수)가 이미 앱 state에 있는 값(state.devTools,
+// state.claudeAuth)으로만 한다. 모든 단계가 완료되면 아무것도 그리지 않아 기존
+// 사용자의 홈 화면을 방해하지 않는다. 확정 미완료 단계가 없고 단순히 로딩 중이거나
+// 일부 조회가 실패한 경우에는 한 줄짜리 얇은 안내만 보여, 새로고침마다 큰 박스가
+// 깜빡이지 않게 한다.
+const ONBOARDING_MARKERS: Record<StepState, string> = {
+  done: '✓',
+  todo: '○',
+  loading: '…',
+  error: '?',
+  blocked: '○',
+};
+
+function retryOnboardingChecks(): void {
+  if (state.devTools.error) void loadDevTools();
+  if (state.claudeAuth.error) void loadClaudeAuthStatus();
+}
+
+function onboardingStepAction(step: OnboardingStep, isCurrent: boolean): HTMLElement | null {
+  if (step.state === 'error') {
+    return el('button', { className: 'btn btn-sm', onClick: retryOnboardingChecks }, ['다시 확인']);
+  }
+  if (step.state !== 'todo') return null;
+  if (step.kind === 'required-tools' || step.kind === 'claude-install') {
+    return el('button', { className: isCurrent ? 'btn btn-sm btn-primary' : 'btn btn-sm', onClick: () => navigate('#/settings/devtools') }, ['개발 도구에서 설치']);
+  }
+  // 로그인 단계는 앞선 설치 단계가 모두 끝난 현재 단계일 때만 시작 버튼을 보인다.
+  if (!isCurrent) return null;
+  if (state.claudeAuthLogin.active) return el('span', { className: 'onboard-note' }, ['진행 중']);
+  return el('button', { className: 'btn btn-sm btn-primary', onClick: () => void handleClaudeAuthLoginStart() }, ['로그인하기']);
+}
+
+function onboardingMarker(glyph: string): HTMLElement {
+  const m = el('span', { className: 'onboard-marker' }, [glyph]);
+  m.setAttribute('aria-hidden', 'true');
+  return m;
+}
+
+function onboardingRow(step: OnboardingStep, isCurrent: boolean): HTMLElement {
+  const row = el('div', { className: `onboard-row is-${step.state}${isCurrent ? ' is-current' : ''}` }, [
+    onboardingMarker(isCurrent ? '❯' : ONBOARDING_MARKERS[step.state]),
+    el('div', { className: 'onboard-text' }, [
+      el('div', { className: 'onboard-title' }, [step.title]),
+      el('div', { className: 'onboard-detail' }, [step.detail]),
+    ]),
+  ]);
+  const action = onboardingStepAction(step, isCurrent);
+  if (action) row.appendChild(action);
+  row.setAttribute('data-step', step.kind);
+  row.setAttribute('data-state', step.state);
+  return row;
+}
+
+function renderOnboarding(): HTMLElement | Text {
+  const model = computeOnboarding(state);
+  if (model.allDone) return document.createTextNode('');
+
+  if (!model.hasTodo) {
+    // 확정된 미완료는 없고 판정 불가(로딩/에러)만 남은 상태 — 완료로도 미완료로도 단정하지 않는다.
+    const slim = el('div', { className: 'onboard-slim' }, [
+      onboardingMarker(model.hasError ? '?' : '…'),
+      el('span', { className: 'onboard-slim-text' }, [
+        model.hasError ? '시작 체크리스트 — 일부 설치·로그인 상태를 확인하지 못했습니다.' : '시작 체크리스트 — 설치·로그인 상태 확인 중…',
+      ]),
+    ]);
+    slim.setAttribute('data-state', model.hasError ? 'error' : 'loading');
+    if (model.hasError) slim.appendChild(el('button', { className: 'btn btn-sm', onClick: retryOnboardingChecks }, ['다시 확인']));
+    return slim;
+  }
+
+  const box = el('div', { className: 'box onboard-box' }, [
+    boxHead('시작하기', el('span', { className: 'count' }, [`${model.doneCount}/${model.steps.length} 완료`])),
+    el('div', { className: 'box-body' }, [
+      el('div', { className: 'onboard-list' }, model.steps.map((s) => onboardingRow(s, s.kind === model.currentKind))),
+    ]),
+  ]);
+  return box;
 }
 
 // ---------------- 통계 타일 ----------------
@@ -426,6 +510,20 @@ function claudeAuthWidget(): HTMLElement {
           { className: 'btn', disabled: auth.loggingOut, onClick: () => void handleClaudeAuthLogout() },
           [auth.loggingOut ? '로그아웃 중…' : 'Anthropic 계정 로그아웃']
         ),
+      ]),
+    ]);
+  }
+
+  // 개발 도구 조회가 "claude 미설치"로 확정된 경우에만 로그인 버튼 대신 설치 안내를
+  // 보인다(로딩/에러/항목 없음은 'unknown'이라 기존 로그인 동작을 그대로 유지한다).
+  // 로그인이 이미 진행 중이면(login.active) 설치돼 있다는 증거이므로 기존 분기를 쓴다.
+  if (!login.active && claudeInstallState(state.devTools) === 'missing') {
+    return el('div', { className: 'home-widget' }, [
+      title,
+      el('span', { className: 'badge badge-archived' }, ['설치 필요']),
+      el('div', { className: 'home-widget-desc' }, ['claude CLI(Claude Code)가 설치되어 있지 않아 로그인할 수 없습니다. 먼저 설치하세요.']),
+      el('div', { className: 'home-widget-btn-row' }, [
+        el('button', { className: 'btn btn-primary', onClick: () => navigate('#/settings/devtools') }, ['Claude Code 설치하기']),
       ]),
     ]);
   }

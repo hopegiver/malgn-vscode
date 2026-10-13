@@ -7,6 +7,32 @@
 export const flowId = 'home';
 export const startHash = '#/';
 
+
+// ---- P2-1 온보딩 체크리스트 시나리오 공용 픽스처 ----
+// check_dev_tools 응답은 required 플래그(백엔드 DEV_TOOLS 테이블: node·git만 true)를 실제
+// 모양 그대로 싣는다. 하네스 베이스 샘플에는 required/git이 없어 이 시나리오들이 직접 만든다.
+function devToolsFixture({ claudeInstalled = true, nodeInstalled = true, gitInstalled = true } = {}) {
+  const tool = (id, name, installed, required, version) => ({
+    id, name, installed, version: installed ? version : null, path: installed ? `/usr/local/bin/${id}` : null,
+    installMethod: installed ? 'brew' : null, actionKind: installed ? 'manual' : 'run', manualHint: null, required,
+  });
+  return [
+    tool('claude', 'Claude Code', claudeInstalled, false, '2.1.0'),
+    tool('node', 'Node.js', nodeInstalled, true, '22.9.0'),
+    tool('git', 'Git', gitInstalled, true, '2.45.0'),
+    tool('gh', 'GitHub CLI', false, false, null),
+  ];
+}
+const AUTH_OUT = { loggedIn: false, authMethod: null, email: null, orgName: null, subscriptionType: null };
+const AUTH_IN = { loggedIn: true, authMethod: 'claude.ai', email: 'dev@malgnsoft.com', orgName: 'malgnsoft', subscriptionType: 'max' };
+const CHECKLIST = 'src/views/home.ts:renderOnboarding / src/onboarding.ts';
+
+async function stepState(page, kind) {
+  const row = page.locator(`.onboard-row[data-step="${kind}"]`);
+  if ((await row.count()) === 0) return null;
+  return { state: await row.getAttribute('data-state'), current: (await row.getAttribute('class')).includes('is-current') };
+}
+
 export function scenarios(base) {
   return [
     // ① 확인 중 — check_claude_auth_status가 아직 응답하기 전.
@@ -421,6 +447,191 @@ export function scenarios(base) {
         }
         await page.waitForSelector('.greet-sub');
         await shot('03-back-to-home');
+      },
+    },
+    // ===== P2-1 온보딩 체크리스트 =====
+    // (a) claude 미설치(개발 도구 조회가 installed:false로 확정) — 로그인 위젯은 로그인 버튼 대신
+    // 설치 버튼, 체크리스트는 설치 단계가 todo(현재)이고 로그인 단계는 blocked.
+    {
+      id: 'onboarding-claude-missing-shows-install-not-login',
+      fixtures: { ...base, check_dev_tools: devToolsFixture({ claudeInstalled: false }), check_claude_auth_status: { __throw: 'claude: command not found' } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await shot('01-claude-missing');
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        if ((await widget.getByRole('button', { name: 'Claude Code 설치하기' }).count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: 'claude 미설치 확정인데 로그인 위젯에 "Claude Code 설치하기" 버튼이 없음', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        if ((await widget.getByRole('button', { name: '앱에서 로그인' }).count()) > 0 || (await widget.getByRole('button', { name: /claude login/ }).count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: 'claude 미설치 확정인데 "앱에서 로그인"/"터미널 열기" 버튼이 노출됨', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        const install = await stepState(page, 'claude-install');
+        const login = await stepState(page, 'claude-login');
+        if (!install || install.state !== 'todo' || !install.current) {
+          bugs.push({ severity: 'Critical', symptom: `claude 설치 단계가 todo+현재 단계가 아님(실제: ${JSON.stringify(install)})`, file: CHECKLIST });
+        }
+        if (!login || login.state !== 'blocked') {
+          bugs.push({ severity: 'Critical', symptom: `미설치인데 로그인 단계가 blocked가 아님(실제: ${JSON.stringify(login)}) — 조회 에러를 해석해 단정함`, file: CHECKLIST });
+        }
+        if ((await page.locator('.onboard-row[data-step="claude-login"]').getByRole('button').count()) > 0) {
+          bugs.push({ severity: 'Major', symptom: '미설치 상태에서 체크리스트 로그인 단계에 시작 버튼이 노출됨', file: CHECKLIST });
+        }
+        // 설치 버튼은 새 설치 실행이 아니라 개발 도구 화면으로 보낼 뿐이다.
+        await widget.getByRole('button', { name: 'Claude Code 설치하기' }).click();
+        await page.waitForTimeout(200);
+        const hash = await page.evaluate(() => window.location.hash);
+        if (hash !== '#/settings/devtools') {
+          bugs.push({ severity: 'Critical', symptom: `설치 버튼이 개발 도구 화면으로 이동하지 않음(hash=${hash})`, file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        const forbidden = await page.evaluate(() => (window.__invokeLog ?? []).filter((e) => ['install_dev_tool', 'update_dev_tool', 'open_manual_instruction', 'start_claude_auth_login'].includes(e.cmd)));
+        if (forbidden.length > 0) {
+          bugs.push({ severity: 'Critical', symptom: `설치 버튼 클릭이 실행 커맨드를 호출함: ${JSON.stringify(forbidden)}`, file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        await shot('02-after-install-button-devtools');
+      },
+    },
+    // (b) 설치됨 + 미로그인 — 설치 두 단계 done, 로그인 단계가 현재 단계, 위젯은 기존 로그인 버튼 유지.
+    {
+      id: 'onboarding-installed-not-logged-in-login-is-current',
+      fixtures: { ...base, check_dev_tools: devToolsFixture(), check_claude_auth_status: AUTH_OUT },
+      async run(page, { shot, bugs, emitEvent }) {
+        await page.waitForTimeout(300);
+        await shot('01-installed-not-logged-in');
+        const req = await stepState(page, 'required-tools');
+        const inst = await stepState(page, 'claude-install');
+        const login = await stepState(page, 'claude-login');
+        if (!req || req.state !== 'done') bugs.push({ severity: 'Critical', symptom: `필수 도구 단계가 done이 아님(실제: ${JSON.stringify(req)})`, file: CHECKLIST });
+        if (!inst || inst.state !== 'done') bugs.push({ severity: 'Critical', symptom: `Claude Code 설치 단계가 done이 아님(실제: ${JSON.stringify(inst)})`, file: CHECKLIST });
+        if (!login || login.state !== 'todo' || !login.current) {
+          bugs.push({ severity: 'Critical', symptom: `로그인 단계가 todo+현재 단계가 아님(실제: ${JSON.stringify(login)})`, file: CHECKLIST });
+        }
+        const head = await page.locator('.onboard-box .box-head .count').textContent().catch(() => null);
+        if (!head || !head.includes('2/3')) bugs.push({ severity: 'Major', symptom: `진행 카운트가 2/3이 아님(실제: ${head})`, file: CHECKLIST });
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        if ((await widget.getByRole('button', { name: '앱에서 로그인' }).count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '설치됨 상태인데 위젯의 "앱에서 로그인" 버튼이 사라짐(기존 동작 훼손)', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        if ((await widget.getByRole('button', { name: 'Claude Code 설치하기' }).count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: '설치됨 상태인데 설치 버튼이 노출됨', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        // 체크리스트 "로그인하기"는 위젯과 같은 시작 경로(start_claude_auth_login)를 쓴다.
+        const startBtn = page.locator('.onboard-row[data-step="claude-login"]').getByRole('button', { name: '로그인하기' });
+        if ((await startBtn.count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '현재 단계(로그인)에 "로그인하기" 버튼이 없음', file: CHECKLIST });
+        } else {
+          await startBtn.click();
+          await page.waitForTimeout(150);
+          const started = await page.evaluate(() => (window.__invokeLog ?? []).some((e) => e.cmd === 'start_claude_auth_login'));
+          if (!started) bugs.push({ severity: 'Major', symptom: '"로그인하기" 클릭이 start_claude_auth_login을 호출하지 않음', file: CHECKLIST });
+          await shot('02-login-started-from-checklist');
+          const cancelBtn = page.getByRole('button', { name: '로그인 취소' });
+          if ((await cancelBtn.count()) > 0) {
+            await cancelBtn.click();
+            await page.waitForTimeout(100);
+            await emitEvent('claude-auth-login-finished', { ok: false, canceled: true, error: null, status: null });
+            await page.waitForTimeout(150);
+          }
+        }
+      },
+    },
+    // (b') 필수 도구(node) 미설치 — 첫 단계가 현재 단계, 로그인 단계는 현재가 아니며 시작 버튼이 없다.
+    {
+      id: 'onboarding-required-tool-missing-first-step-current',
+      fixtures: { ...base, check_dev_tools: devToolsFixture({ nodeInstalled: false }), check_claude_auth_status: AUTH_OUT },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await shot('01-required-missing');
+        const req = await stepState(page, 'required-tools');
+        const login = await stepState(page, 'claude-login');
+        if (!req || req.state !== 'todo' || !req.current) bugs.push({ severity: 'Critical', symptom: `필수 도구 단계가 todo+현재가 아님(실제: ${JSON.stringify(req)})`, file: CHECKLIST });
+        if (login && login.current) bugs.push({ severity: 'Critical', symptom: '선행 설치 단계가 미완료인데 로그인 단계가 현재 단계로 표시됨', file: CHECKLIST });
+        const detail = await page.locator('.onboard-row[data-step="required-tools"] .onboard-detail').textContent().catch(() => null);
+        if (!detail || !detail.includes('Node.js')) bugs.push({ severity: 'Minor', symptom: `누락된 도구명이 설명에 없음(실제: ${detail})`, file: CHECKLIST });
+      },
+    },
+    // (c) 전부 완료 — 체크리스트가 DOM에서 사라진다.
+    {
+      id: 'onboarding-all-done-hides-checklist',
+      fixtures: { ...base, check_dev_tools: devToolsFixture(), check_claude_auth_status: AUTH_IN },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await shot('01-all-done');
+        const n = (await page.locator('.onboard-box').count()) + (await page.locator('.onboard-slim').count());
+        if (n > 0) bugs.push({ severity: 'Critical', symptom: '모든 단계가 완료인데 체크리스트(또는 안내 줄)가 남아 있음', file: CHECKLIST });
+        if ((await page.locator('.home-widget', { hasText: '로그인됨' }).count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '완료 상태에서 기존 로그인됨 위젯이 보이지 않음', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+      },
+    },
+    // (d) 로딩 — 응답 전에는 완료/미완료로 단정하지 않는다(얇은 "확인 중" 줄만).
+    {
+      id: 'onboarding-loading-does-not-assert',
+      fixtures: { ...base, check_dev_tools: { __delay: 2500, value: devToolsFixture() }, check_claude_auth_status: { __delay: 2500, value: AUTH_IN } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await shot('01-loading');
+        const slim = page.locator('.onboard-slim');
+        if ((await slim.count()) === 0 || (await slim.getAttribute('data-state')) !== 'loading') {
+          bugs.push({ severity: 'Critical', symptom: '로딩 중인데 "확인 중" 안내 줄이 없음', file: CHECKLIST });
+        }
+        if ((await page.locator('.onboard-box').count()) > 0 || (await page.locator('.onboard-row.is-done, .onboard-row.is-todo').count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: '로딩 중인데 단계가 완료/미완료로 단정되어 그려짐', file: CHECKLIST });
+        }
+        await page.waitForTimeout(2800);
+        await shot('02-after-resolve-all-done');
+        if ((await page.locator('.onboard-box').count()) + (await page.locator('.onboard-slim').count()) > 0) {
+          bugs.push({ severity: 'Major', symptom: '로딩이 끝나 전부 완료로 확정됐는데 체크리스트가 사라지지 않음', file: CHECKLIST });
+        }
+      },
+    },
+    // (d') 에러 — 개발 도구·로그인 조회가 모두 실패하면 단정하지 않고 "확인하지 못했습니다" +
+    // 다시 확인. 위젯은 설치 여부를 모르므로 기존 로그인 버튼을 유지한다(미설치로 단정 금지).
+    {
+      id: 'onboarding-error-does-not-assert',
+      fixtures: { ...base, check_dev_tools: { __throw: '테스트 강제 에러: check_dev_tools 실패' }, check_claude_auth_status: { __throw: '테스트 강제 에러: claude auth status 실패' } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await shot('01-both-error');
+        const slim = page.locator('.onboard-slim');
+        if ((await slim.count()) === 0 || (await slim.getAttribute('data-state')) !== 'error') {
+          bugs.push({ severity: 'Critical', symptom: '조회가 모두 실패했는데 "확인하지 못했습니다" 안내 줄이 없음', file: CHECKLIST });
+        } else {
+          const text = await slim.textContent();
+          if (!text.includes('확인하지 못했습니다')) bugs.push({ severity: 'Major', symptom: `에러 안내 문구 불일치(실제: ${text})`, file: CHECKLIST });
+          if ((await slim.getByRole('button', { name: '다시 확인' }).count()) === 0) bugs.push({ severity: 'Major', symptom: '에러 안내 줄에 "다시 확인" 버튼이 없음', file: CHECKLIST });
+        }
+        if ((await page.locator('.onboard-row.is-done, .onboard-row.is-todo').count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: '조회 실패 상태에서 단계가 완료/미완료로 단정됨', file: CHECKLIST });
+        }
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        if ((await widget.getByRole('button', { name: '앱에서 로그인' }).count()) === 0) {
+          bugs.push({ severity: 'Critical', symptom: '설치 여부를 모르는 에러 상태에서 기존 "앱에서 로그인" 버튼이 사라짐(미설치로 단정)', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        if ((await widget.getByRole('button', { name: 'Claude Code 설치하기' }).count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: '개발 도구 조회 실패 상태에서 설치 버튼이 노출됨(미설치로 단정)', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+      },
+    },
+    // (d'') 혼합 — 개발 도구만 실패, 로그인은 미로그인으로 확정: 박스는 열리되 설치 두 단계는
+    // 확인 불가(error)이고 로그인 단계는 선행 단계가 확정되지 않았으므로 현재 단계가 아니다.
+    {
+      id: 'onboarding-devtools-error-login-known',
+      fixtures: { ...base, check_dev_tools: { __throw: '테스트 강제 에러: check_dev_tools 실패' }, check_claude_auth_status: AUTH_OUT },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await shot('01-devtools-error-login-known');
+        const req = await stepState(page, 'required-tools');
+        const inst = await stepState(page, 'claude-install');
+        const login = await stepState(page, 'claude-login');
+        if (!req || req.state !== 'error' || !inst || inst.state !== 'error') {
+          bugs.push({ severity: 'Critical', symptom: `개발 도구 조회 실패인데 설치 단계가 error가 아님(실제: ${JSON.stringify([req, inst])})`, file: CHECKLIST });
+        }
+        if (!login || login.state !== 'todo' || login.current) {
+          bugs.push({ severity: 'Critical', symptom: `로그인 단계가 todo(비현재)가 아님(실제: ${JSON.stringify(login)})`, file: CHECKLIST });
+        }
+        if ((await page.locator('.onboard-row[data-step="claude-login"]').getByRole('button', { name: '로그인하기' }).count()) > 0) {
+          bugs.push({ severity: 'Major', symptom: '선행 단계가 확정되지 않았는데 로그인 시작 버튼이 노출됨', file: CHECKLIST });
+        }
       },
     },
   ];
