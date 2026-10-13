@@ -15,6 +15,7 @@
 // 그대로 쓴다(재스캔하지 않는다). 실시간 감시는 하지 않는다 — "사용량" 탭에
 // 새로 진입할 때마다 다시 불러온다(sidebar.ts).
 import { el, clickable } from '../dom';
+import { errorMessage } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { UsageTab } from '../state';
 import { fetchDailyUsage } from '../usageApi';
@@ -166,7 +167,7 @@ export async function loadDailyUsage(): Promise<void> {
     state.dailyUsage.items = await fetchDailyUsage();
     state.dailyUsage.loaded = true;
   } catch (err) {
-    state.dailyUsage.error = err instanceof Error ? err.message : '사용량 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.dailyUsage.error = errorMessage(err, '사용량 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.dailyUsage.loading = false;
     notifyChange();
@@ -183,7 +184,7 @@ export async function loadUsageSummary(): Promise<void> {
     state.usageSummary.report = await fetchUsageSummary();
     state.usageSummary.loaded = true;
   } catch (err) {
-    state.usageSummary.error = err instanceof Error ? err.message : '30일 요약 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.usageSummary.error = errorMessage(err, '30일 요약 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.usageSummary.loading = false;
     notifyChange();
@@ -204,7 +205,7 @@ async function loadProjectTrend(projectKey: string): Promise<void> {
     state.usageProjectTrend.items = items;
   } catch (err) {
     if (state.usageProjectTrend.projectKey !== projectKey) return;
-    state.usageProjectTrend.error = err instanceof Error ? err.message : '프로젝트별 추이를 불러오지 못했습니다.';
+    state.usageProjectTrend.error = errorMessage(err, '프로젝트별 추이를 불러오지 못했습니다.');
   } finally {
     if (state.usageProjectTrend.projectKey === projectKey) state.usageProjectTrend.loading = false;
     notifyChange();
@@ -259,7 +260,7 @@ export async function loadDailyDetail(date: string): Promise<void> {
     state.dailyDetail.report = report;
   } catch (err) {
     if (!dailyDetailGate.isLatest(token)) return;
-    state.dailyDetail.error = err instanceof Error ? err.message : '상세 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.dailyDetail.error = errorMessage(err, '상세 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   }
   state.dailyDetail.loading = false;
   notifyChange();

@@ -446,8 +446,10 @@ export function showToast(message: string): void {
   toast.textContent = message;
   toastRoot.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add('show'));
+  // 백엔드 원문이 담긴 긴 에러 토스트는 2.2초로는 읽을 수 없다 — 길이에 따라 더 오래 둔다.
+  const holdMs = message.length > 80 ? 6000 : 2200;
   setTimeout(() => {
     toast.classList.remove('show');
     setTimeout(() => toast.remove(), 250);
-  }, 2200);
+  }, holdMs);
 }

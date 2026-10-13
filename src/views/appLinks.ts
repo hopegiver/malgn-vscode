@@ -8,6 +8,7 @@
 // state.appLinks.status를 건드리지 않으므로(성공했을 때만 교체) 화면은 저절로
 // 저장 전 상태로 남는다.
 import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, toggleSwitch, boundField, restoreModalFocus } from '../dom';
+import { errorMessage, sanitizeBackendText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import { fetchAppLinks, saveAppLinks, openAppLink } from '../appLinksApi';
 import type { AppLink } from '../appLinksApi';
@@ -19,7 +20,7 @@ export async function loadAppLinks(): Promise<void> {
   try {
     state.appLinks.status = await fetchAppLinks();
   } catch (err) {
-    state.appLinks.error = err instanceof Error ? err.message : '앱링크 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.appLinks.error = errorMessage(err, '앱링크 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     // 성공 시에만 loaded=true를 세우면 실패 시 이 값이 영원히 false로 남아
     // 사이드바(renderAppLinksGroup)가 "불러오는 중…"에 무한히 머무는 버그가
@@ -42,7 +43,7 @@ export async function openLink(link: AppLink): Promise<void> {
   try {
     await openAppLink(link.id);
   } catch (err) {
-    showToast(err instanceof Error ? err.message : `'${link.name}'을(를) 열지 못했습니다`);
+    showToast(errorMessage(err, `'${link.name}'을(를) 열지 못했습니다`));
   }
 }
 
@@ -57,7 +58,7 @@ async function persistLinks(links: readonly AppLink[], successMessage: string): 
     showToast(successMessage);
     return true;
   } catch (err) {
-    showToast(err instanceof Error ? err.message : '앱링크 저장에 실패했습니다.');
+    showToast(errorMessage(err, '앱링크 저장에 실패했습니다.'));
     return false;
   } finally {
     state.appLinks.saving = false;
@@ -302,7 +303,7 @@ export function renderAppLinksPanel(): HTMLElement {
   if (blocked) {
     notices.push(
       el('div', { className: 'alert' }, [
-        el('span', {}, [`⚠ ${status.error ?? '앱링크 설정 파일을 읽지 못했습니다.'}`]),
+        el('span', {}, [`⚠ ${sanitizeBackendText(status.error) || '앱링크 설정 파일을 읽지 못했습니다.'}`]),
         el('button', { className: 'btn', onClick: () => void loadAppLinks() }, ['다시 시도']),
       ])
     );

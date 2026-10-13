@@ -3,6 +3,7 @@
 // ~/workspace 아래를 스캔한 결과를 그대로 쓴다(workspaceApi.ts, src-tauri/src/lib.rs
 // 주석 참고). "세션목록"에 이은 이 앱의 두 번째 실동작 화면.
 import { el, clickable, showToast, createModalOverlay, boundField, restoreModalFocus, runningDot, loadingBlock, errorBlock } from '../dom';
+import { errorMessage } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { ArchiveStatus } from '../state';
 import { fetchWorkspaceProjects, fetchProjectTree, fetchFilePreview } from '../workspaceApi';
@@ -12,6 +13,7 @@ import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi
 import { loadMalgnAgentConfigStatus } from './autonomousTasks';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 import { navigate } from '../route';
+import { projectBadgeStatus } from '../projectBadge';
 import { groupSessionsByProject } from '../projectActivity';
 import { sessionBlistRow } from '../sessionRow';
 import { loadSessions } from './sessions';
@@ -29,7 +31,7 @@ function badge(status: ArchiveStatus): HTMLSpanElement {
 
 function filteredProjects(): readonly WorkspaceProject[] {
   const filtered =
-    state.dashboard.filter === 'all' ? state.dashboard.projects : state.dashboard.projects.filter((p) => p.archiveStatus === state.dashboard.filter);
+    state.dashboard.filter === 'all' ? state.dashboard.projects : state.dashboard.projects.filter((p) => projectBadgeStatus(p) === state.dashboard.filter);
   const sorted = [...filtered];
   if (state.dashboard.sort === 'name') {
     sorted.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
@@ -57,7 +59,7 @@ export async function loadProjects(): Promise<void> {
     state.dashboard.skipped = result.skipped;
     state.dashboard.loaded = true;
   } catch (err) {
-    state.dashboard.error = err instanceof Error ? err.message : '프로젝트 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.dashboard.error = errorMessage(err, '프로젝트 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.dashboard.loading = false;
     notifyChange();
@@ -100,7 +102,7 @@ function renderProjectCard(project: WorkspaceProject, runningCount: number): HTM
       el('button', { className: 'project-card-name', onClick: goToProject }, [project.name]),
       // 실행 중일 때만 표시한다(0건/미로딩/에러면 생략 — 거짓 0 금지, 끝난 상태가 기본값).
       ...(runningCount > 0 ? [el('span', { className: 'project-card-running' }, [runningDot(), `실행 중 ${runningCount}`])] : []),
-      badge(project.archiveStatus),
+      badge(projectBadgeStatus(project)),
     ]),
     el('div', { className: 'project-card-desc' }, [project.path]),
     el('div', { className: 'project-card-footer' }, [
@@ -192,7 +194,7 @@ async function handleSaveWorkspaces(workspaces: readonly string[]): Promise<void
     closeWorkspacesModal();
     showToast('전역 설정을 저장했습니다.');
   } catch (err) {
-    showToast(`전역 설정 저장에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`전역 설정 저장에 실패했습니다: ${errorMessage(err)}`);
   } finally {
     state.malgnAgentConfig.saving = false;
     notifyChange();
@@ -409,11 +411,11 @@ export function renderProjectsDetailView(path: string): HTMLElement {
     return el('div', {}, [back, el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['프로젝트를 찾을 수 없습니다'])])]);
   }
 
-  const { name, path: projectPath, hasStatus, sections } = project;
+  const { name, path: projectPath, hasStatus } = project;
 
   const header = el('div', { className: 'detail-header' }, [
     el('div', {}, [el('h1', { className: 'detail-title' }, [name]), el('div', { className: 'detail-path' }, [projectPath])]),
-    badge(hasStatus ? (sections?.parsed ? project.archiveStatus : 'unknown') : 'unknown'),
+    badge(projectBadgeStatus(project)),
   ]);
 
   // STATUS.md 요약은 오른쪽 트리 미리보기 패널에 기본으로 열리므로(loadProjectTree
@@ -488,7 +490,7 @@ export async function loadProjectTree(projectPath: string): Promise<void> {
   try {
     state.projectTree.nodes = await fetchProjectTree(projectPath);
   } catch (err) {
-    state.projectTree.error = err instanceof Error ? err.message : '폴더 구조를 불러오지 못했습니다.';
+    state.projectTree.error = errorMessage(err, '폴더 구조를 불러오지 못했습니다.');
   } finally {
     state.projectTree.loading = false;
     notifyChange();
@@ -513,7 +515,7 @@ async function loadFilePreview(projectPath: string, relativePath: string): Promi
   try {
     state.projectTree.preview = await fetchFilePreview(projectPath, relativePath);
   } catch (err) {
-    state.projectTree.previewError = err instanceof Error ? err.message : '파일을 불러오지 못했습니다.';
+    state.projectTree.previewError = errorMessage(err, '파일을 불러오지 못했습니다.');
   } finally {
     state.projectTree.previewLoading = false;
     notifyChange();

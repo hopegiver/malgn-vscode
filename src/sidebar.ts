@@ -11,6 +11,7 @@
 // "사이드바의 기본값"이 아니라 그 두 탭이 우연히 같은 콘텐츠 종류를 공유하는
 // 것뿐이다(IA §4-1/§4-2).
 import { getVersion } from '@tauri-apps/api/app';
+import { projectBadgeStatus } from './projectBadge';
 import { el, clickable } from './dom';
 import { state, notifyChange, resetStateForLogout } from './state';
 import { navigate } from './route';
@@ -358,7 +359,7 @@ function wsRow(p: WorkspaceProject, route: Route, runningCount: number): HTMLEle
   return narrowRow({
     dotClass: dotClassFor(runningCount),
     name: p.name,
-    meta: `${BADGE_META[p.archiveStatus].label} · ${formatDaysAgo(p.updatedAt)}`,
+    meta: `${BADGE_META[projectBadgeStatus(p)].label} · ${formatDaysAgo(p.updatedAt)}`,
     current,
     onClick: () => navigate(`#/project/${encodeURIComponent(p.path)}`),
   });

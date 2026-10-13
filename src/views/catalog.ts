@@ -8,6 +8,7 @@
 // 필드 없음). 성공해도 Claude Code 재시작 전까지는 반영되지 않는다 — 반드시
 // 안내한다.
 import { el, showToast } from '../dom';
+import { errorMessage, errorMessagePersistent, sanitizeBackendText, sanitizeBackendTextPersistent } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { CatalogTab } from '../state';
 import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, updatePlugin, installPlugin } from '../catalogApi';
@@ -50,7 +51,7 @@ export async function loadCatalog(): Promise<void> {
     state.catalog.plugins = plugins;
     state.catalog.loaded = true;
   } catch (err) {
-    state.catalog.error = err instanceof Error ? err.message : '카탈로그를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.catalog.error = errorMessage(err, '카탈로그를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.catalog.loading = false;
     notifyChange();
@@ -66,7 +67,7 @@ export async function loadGlobalCatalog(): Promise<void> {
     state.globalCatalog.data = await fetchGlobalCatalog();
     state.globalCatalog.loaded = true;
   } catch (err) {
-    state.globalCatalog.error = err instanceof Error ? err.message : '전역 에이전트/스킬을 불러오지 못했습니다.';
+    state.globalCatalog.error = errorMessage(err, '전역 에이전트/스킬을 불러오지 못했습니다.');
   } finally {
     state.globalCatalog.loading = false;
     notifyChange();
@@ -81,7 +82,7 @@ export async function loadMarketplaces(): Promise<void> {
     state.marketplaces.items = await fetchKnownMarketplaces();
     state.marketplaces.loaded = true;
   } catch (err) {
-    state.marketplaces.error = err instanceof Error ? err.message : '마켓플레이스 정보를 불러오지 못했습니다.';
+    state.marketplaces.error = errorMessage(err, '마켓플레이스 정보를 불러오지 못했습니다.');
   } finally {
     state.marketplaces.loading = false;
     notifyChange();
@@ -99,16 +100,16 @@ async function handleUpdatePlugin(plugin: InstalledPlugin): Promise<void> {
     showToast(
       result.success
         ? `${plugin.displayName ?? plugin.name} 업데이트 완료 — 적용하려면 Claude Code를 재시작하세요`
-        : `${plugin.displayName ?? plugin.name} 업데이트 실패: ${result.message}`
+        : `${plugin.displayName ?? plugin.name} 업데이트 실패: ${sanitizeBackendText(result.message)}`
     );
     if (result.success) {
       scheduleResultClear(plugin.id);
       await loadCatalog();
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    state.catalog.lastResult[plugin.id] = { success: false, message };
-    showToast(`${plugin.displayName ?? plugin.name} 업데이트 실패: ${message}`);
+    // 결과 노트에 남는 값은 진단 블록을 자르지 않는 쪽, 토스트는 길이 제한 쪽.
+    state.catalog.lastResult[plugin.id] = { success: false, message: errorMessagePersistent(err) };
+    showToast(`${plugin.displayName ?? plugin.name} 업데이트 실패: ${errorMessage(err)}`);
   } finally {
     state.catalog.updating[plugin.id] = false;
     notifyChange();
@@ -127,15 +128,14 @@ async function handleInstallDefaultPlugin(): Promise<void> {
     showToast(
       result.success
         ? 'malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요'
-        : `malgn-agent 설치 실패: ${result.message}`
+        : `malgn-agent 설치 실패: ${sanitizeBackendText(result.message)}`
     );
     if (result.success) {
       await loadCatalog();
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    state.catalog.installDefaultResult = { success: false, message };
-    showToast(`malgn-agent 설치 실패: ${message}`);
+    state.catalog.installDefaultResult = { success: false, message: errorMessagePersistent(err) };
+    showToast(`malgn-agent 설치 실패: ${errorMessage(err)}`);
   } finally {
     state.catalog.installingDefault = false;
     notifyChange();
@@ -160,7 +160,7 @@ async function handleUpdateAll(): Promise<void> {
         scheduleResultClear(p.id);
       }
     } catch (err) {
-      state.catalog.lastResult[p.id] = { success: false, message: err instanceof Error ? err.message : String(err) };
+      state.catalog.lastResult[p.id] = { success: false, message: errorMessagePersistent(err) };
     } finally {
       state.catalog.updating[p.id] = false;
       notifyChange();
@@ -365,13 +365,13 @@ function renderPluginCard(plugin: InstalledPlugin): HTMLElement {
 // 문구를 쓴다 — 기본 플러그인 원클릭 설치 버튼의 실패 결과 전용.
 function renderInstallDefaultResultNote(result: CommandResult): HTMLElement {
   return el('div', { className: `plugin-update-note ${result.success ? 'ok' : 'fail'}` }, [
-    result.success ? `✓ 설치 완료 — 적용하려면 Claude Code를 재시작하세요. (${result.message})` : `⚠ 설치 실패: ${result.message}`,
+    result.success ? `✓ 설치 완료 — 적용하려면 Claude Code를 재시작하세요. (${sanitizeBackendTextPersistent(result.message)})` : `⚠ 설치 실패: ${sanitizeBackendTextPersistent(result.message)}`,
   ]);
 }
 
 function renderUpdateResultNote(result: CommandResult): HTMLElement {
   return el('div', { className: `plugin-update-note ${result.success ? 'ok' : 'fail'}` }, [
-    result.success ? `✓ 업데이트 완료 — 적용하려면 Claude Code를 재시작하세요. (${result.message})` : `⚠ 업데이트 실패: ${result.message}`,
+    result.success ? `✓ 업데이트 완료 — 적용하려면 Claude Code를 재시작하세요. (${sanitizeBackendTextPersistent(result.message)})` : `⚠ 업데이트 실패: ${sanitizeBackendTextPersistent(result.message)}`,
   ]);
 }
 

@@ -14,6 +14,7 @@
 // 이 화면의 전체 재렌더 구조(notifyChange)에서도 이미 로드했거나 로딩 중이면
 // 재조회하지 않는다.
 import { el, showToast, toggleSwitch, createModalOverlay, confirmDialog, loadingBlock, errorBlock, boundField, boundChecked, restoreModalFocus } from '../dom';
+import { errorMessage, maskLogText, sanitizeBackendText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { AutonomousTask } from '../state';
 import {
@@ -416,7 +417,7 @@ export async function loadAutonomousTasks(): Promise<void> {
   } catch (err) {
     // 전역 설정(malgn-agent.json)이 손상되면 autonomy_list가 Err를 던진다
     // (fail-closed) — 목록을 비우는 대신 오류 배너로 원인을 보여준다.
-    state.autonomousTasks.error = err instanceof Error ? err.message : '자율 작업 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.autonomousTasks.error = errorMessage(err, '자율 작업 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.autonomousTasks.loading = false;
     notifyAutonomyChange();
@@ -525,7 +526,7 @@ export async function loadMalgnAgentConfigStatus(): Promise<void> {
     // 계약상 malgn_agent_config_get은 항상 성공하고 실패를 ok:false로 표현하지만
     // (§11), Tauri IPC 자체를 못 쓰는 환경(플레인 브라우저) 대비 방어적으로
     // catch도 둔다.
-    state.malgnAgentConfig.error = err instanceof Error ? err.message : '전역 설정을 불러오지 못했습니다.';
+    state.malgnAgentConfig.error = errorMessage(err, '전역 설정을 불러오지 못했습니다.');
   } finally {
     state.malgnAgentConfig.loading = false;
     notifyChange();
@@ -548,7 +549,7 @@ function renderConfigStatusBanner(): HTMLElement | null {
   if (!status.ok) {
     return el('div', { className: 'alert' }, [
       el('span', {}, [
-        `⚠ 전역 설정(${status.configPath}) 오류: ${status.error ?? '알 수 없는 오류'} — workspace가 0개로 처리되어 스캔·실행이 되지 않습니다.`,
+        `⚠ 전역 설정(${status.configPath}) 오류: ${sanitizeBackendText(status.error) || '알 수 없는 오류'} — workspace가 0개로 처리되어 스캔·실행이 되지 않습니다.`,
       ]),
       el('button', { className: 'btn', onClick: () => void loadMalgnAgentConfigStatus() }, ['다시 시도']),
     ]);
@@ -595,7 +596,7 @@ async function handleSaveMalgnAgentConfig(payload: MalgnAgentConfigInput): Promi
     closeAutonomyConfigModal();
     showToast('전역 설정을 저장했습니다.');
   } catch (err) {
-    showToast(`전역 설정 저장에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`전역 설정 저장에 실패했습니다: ${errorMessage(err)}`);
   } finally {
     state.malgnAgentConfig.saving = false;
     notifyChange();
@@ -783,7 +784,7 @@ async function handleToggleTask(task: AutonomousTask): Promise<void> {
     task.nextRunLabel = computeNextRunLabel(task.nextRunAt, task.enabled, task.scheduleMode);
     showToast(`${task.name} ${next ? '활성화' : '비활성화'}됨`);
   } catch (err) {
-    showToast(err instanceof Error ? err.message : '상태 변경에 실패했습니다');
+    showToast(errorMessage(err, '상태 변경에 실패했습니다'));
   } finally {
     notifyChange();
   }
@@ -810,7 +811,7 @@ async function handleRunNow(task: AutonomousTask): Promise<void> {
   } catch (err) {
     // 백엔드 계약: 실패 시 한국어 에러 메시지로 reject된다 — 그 문구를 그대로
     // 토스트에 보여준다(프론트에서 문구를 새로 짓지 않는다).
-    showToast(err instanceof Error ? err.message : String(err));
+    showToast(errorMessage(err));
   } finally {
     runNowPending.delete(key);
     notifyChange();
@@ -825,7 +826,7 @@ async function handleDeleteTask(task: AutonomousTask, afterDelete?: () => void):
     showToast(`"${task.name}" 자율 작업이 삭제되었습니다`);
     afterDelete?.();
   } catch (err) {
-    showToast(err instanceof Error ? err.message : '삭제에 실패했습니다');
+    showToast(errorMessage(err, '삭제에 실패했습니다'));
   } finally {
     notifyChange();
   }
@@ -1439,7 +1440,7 @@ function renderTaskForm(editingTask: AutonomousTask | null, draft: TaskFormDraft
         // cron 탭은 백엔드가 돌려준 한국어 에러 메시지를 필드 아래(cronError)에
         // 그대로 노출한다(지시서 필수 요구사항 — 프론트에서 문구를 새로 짓지
         // 않는다). 그 외 탭은 기존과 동일하게 토스트로 보여준다.
-        const message = err instanceof Error ? err.message : '자율 작업 저장에 실패했습니다';
+        const message = errorMessage(err, '자율 작업 저장에 실패했습니다');
         if (scheduleMode === 'cron') {
           cronError.textContent = message;
         } else {
@@ -1583,7 +1584,7 @@ function loadTaskHistory(projectPath: string, taskId: string, requestedLimit: nu
     } catch (err) {
       historyCache.set(key, {
         loading: false,
-        error: err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.',
+        error: errorMessage(err, '알 수 없는 오류가 발생했습니다.'),
         items: prev?.items ?? [],
         requestedLimit,
         hasMore: prev?.hasMore ?? false,
@@ -1754,7 +1755,7 @@ function renderHistoryDetail(entry: RunHistoryEntry, latestSummary: string | nul
     // 통일한다. 설계 §4-1이 명시한 "최대 500자, white-space: pre-wrap"은
     // .devtool-log에 이미 있다.
     const summaryLabel = el('div', { className: 'overview-label' }, ['가장 최근 실행 요약']);
-    const summaryBox = el('pre', { className: 'devtool-log' }, [latestSummary]);
+    const summaryBox = el('pre', { className: 'devtool-log' }, [maskLogText(latestSummary)]);
     children.push(summaryLabel, summaryBox);
   }
   children.push(pathRow);

@@ -30,6 +30,7 @@
 // 전제조건인지를 나타낸다(현재 Node.js/Git) — 정본은 백엔드 하나뿐이고(위
 // devToolsApi.ts 주석 참고), 이 화면은 그 값을 "필수" 배지로만 반영한다.
 import { el, showToast, confirmDialog } from '../dom';
+import { errorMessage, sanitizeBackendText, maskLogText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
@@ -67,7 +68,7 @@ export async function loadDevTools(): Promise<void> {
     state.devTools.items = await fetchDevTools();
     state.devTools.loaded = true;
   } catch (err) {
-    state.devTools.error = err instanceof Error ? err.message : '개발 도구 정보를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.devTools.error = errorMessage(err, '개발 도구 정보를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.devTools.loading = false;
     notifyChange();
@@ -163,7 +164,7 @@ function notifyOutcome(tool: DevToolStatus, result: DevToolActionResult): void {
       showToast(`${tool.name}: 상태 불명 — 다시 확인이 필요합니다`);
       break;
     case 'failed':
-      showToast(`${tool.name}: 실행 실패 — ${result.message}`);
+      showToast(`${tool.name}: 실행 실패 — ${sanitizeBackendText(result.message)}`);
       break;
     case 'notSupported':
       showToast(`${tool.name}: 이 방식으로는 실행할 수 없습니다`);
@@ -180,7 +181,7 @@ async function handleRequestPreview(tool: DevToolStatus): Promise<void> {
   try {
     state.devTools.preview[tool.id] = await previewDevToolUpdate(tool.id);
   } catch (err) {
-    showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${errorMessage(err)}`);
   } finally {
     state.devTools.previewLoading[tool.id] = false;
     notifyChange();
@@ -207,7 +208,7 @@ async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<vo
       await loadDevTools();
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     showToast(`${tool.name}: 실행 중 오류가 발생했습니다 — ${message}`);
   } finally {
     stopElapsedTimer(tool.id);
@@ -259,7 +260,7 @@ async function handleRequestManualConfirm(tool: DevToolStatus): Promise<void> {
       showToast(`${tool.name}: ${preview.message}`);
     }
   } catch (err) {
-    showToast(`${tool.name}: 실행 준비 중 오류가 발생했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`${tool.name}: 실행 준비 중 오류가 발생했습니다 — ${errorMessage(err)}`);
   } finally {
     manualConfirmLoading[tool.id] = false;
     notifyChange();
@@ -276,9 +277,9 @@ async function handleConfirmManualExecute(tool: DevToolStatus): Promise<void> {
   notifyChange();
   try {
     const result = await openManualInstruction(tool.id, true);
-    showToast(result.opened ? `${tool.name}: ${result.message}` : `${tool.name}: 터미널을 열지 못했습니다 — ${result.message}`);
+    showToast(result.opened ? `${tool.name}: ${sanitizeBackendText(result.message)}` : `${tool.name}: 터미널을 열지 못했습니다 — ${sanitizeBackendText(result.message)}`);
   } catch (err) {
-    showToast(`${tool.name}: 실행 중 오류가 발생했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`${tool.name}: 실행 중 오류가 발생했습니다 — ${errorMessage(err)}`);
   }
 }
 
@@ -337,7 +338,7 @@ async function handleUpdateAll(): Promise<void> {
     try {
       preview = await previewDevToolUpdate(tool.id);
     } catch (err) {
-      showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${err instanceof Error ? err.message : String(err)}`);
+      showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${errorMessage(err)}`);
     } finally {
       state.devTools.previewLoading[tool.id] = false;
     }
@@ -627,7 +628,7 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
     alreadyLatest: '✓ 이미 최신입니다',
     unknownAfter: '⚠ 명령은 성공했다고 보고했으나 실제 버전을 확인하지 못했습니다(확인되지 않음)',
     timedOut: '⏱ 상태 불명 — 시간이 초과되었습니다. 다시 확인해주세요',
-    failed: `✕ 실행 실패: ${result.message}`,
+    failed: `✕ 실행 실패: ${sanitizeBackendText(result.message)}`,
     notSupported: '이 방식으로는 실행할 수 없습니다',
   };
 
@@ -674,7 +675,7 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
               el('div', { className: 'devtool-panel-label' }, [
                 '⚠ 이 로그에는 사용자명·사내 경로가 포함될 수 있습니다. 공개 저장소(GitHub 이슈 등)에 붙여넣기 전 반드시 확인하세요.',
               ]),
-              el('pre', { className: 'devtool-log' }, [result.logTail || '(로그 없음)']),
+              el('pre', { className: 'devtool-log' }, [maskLogText(result.logTail) || '(로그 없음)']),
             ]
           : []),
       ])

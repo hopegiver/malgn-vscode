@@ -36,6 +36,7 @@
 // 이벤트가 쌓여 오히려 계속 느려졌다. 대신 메뉴 클릭 시점에만 새로 불러온다
 // (sidebar.ts).
 import { el, captureActiveFocusForRerender, flushPendingFieldFocus, showToast } from './dom';
+import { sanitizeBackendText } from './errorMessage';
 import { state, onStateChange, notifyChange, applyAuthenticatedIdentity } from './state';
 import { parseRoute } from './route';
 import { renderTabstrip, renderSidebar, renderStatusline } from './sidebar';
@@ -420,7 +421,7 @@ function initClaudeAuthLoginWatcher(): void {
       // 자동으로 닫지 않는다 — 방금 쌓인 원문 로그가 원인 추적의 유일한
       // 단서일 수 있다(요구사항 3, sessions.ts renderClaudeAuthLoginOutputToggle).
       state.claudeAuthLogin.outcome = d.status ? 'failed' : 'unknown';
-      state.claudeAuthLogin.error = d.error ?? (d.status ? '로그인에 실패했습니다.' : '로그인 결과를 확인하지 못했습니다.');
+      state.claudeAuthLogin.error = sanitizeBackendText(d.error) || (d.status ? '로그인에 실패했습니다.' : '로그인 결과를 확인하지 못했습니다.');
       state.claudeAuthLogin.outputExpanded = true;
     }
     notifyChange();

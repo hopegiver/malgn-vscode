@@ -3,6 +3,7 @@
 // 앱 플로우 전체를 처리한다(authApi.ts/src-tauri/src/lib.rs 참고). Client ID가
 // 아직 비어있는 동안은 브라우저를 열지 않고 명확한 에러만 보여준다.
 import { el } from '../dom';
+import { errorMessage } from '../errorMessage';
 import { state, notifyChange, applyAuthenticatedIdentity } from '../state';
 import { loginWithGoogle } from '../authApi';
 import { brandMark } from '../brand';
@@ -17,7 +18,7 @@ async function handleGoogleLogin(): Promise<void> {
     applyAuthenticatedIdentity(result.email, result.name);
     window.location.hash = '#/';
   } catch (err) {
-    state.auth.error = err instanceof Error ? err.message : String(err);
+    state.auth.error = errorMessage(err);
   } finally {
     state.auth.loading = false;
     notifyChange();

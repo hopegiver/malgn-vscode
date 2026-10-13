@@ -6,6 +6,7 @@
 // 입력창으로 보낸 메시지는 그 세션에 실제로 이어져(send_session_message) 응답이
 // 스트리밍된다.
 import { el, liveIndicator, runningDot, createModalOverlay, showToast, boundField, restoreModalFocus } from '../dom';
+import { errorMessage, sanitizeBackendText, maskLogText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import {
   fetchClaudeSessions,
@@ -92,7 +93,7 @@ export async function loadSessions(): Promise<void> {
     state.sessions.loaded = true;
   } catch (err) {
     if (seq !== sessionsSeq) return;
-    state.sessions.error = err instanceof Error ? err.message : '세션 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.sessions.error = errorMessage(err, '세션 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     if (seq === sessionsSeq) {
       state.sessions.loading = false;
@@ -422,7 +423,7 @@ async function loadSessionAgentHistory(sessionId: string): Promise<void> {
   } catch (err) {
     if (state.sessionAgentHistory.sessionId !== sessionId) return;
     state.sessionAgentHistory.error =
-      err instanceof Error ? err.message : '에이전트 실행 이력을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+      errorMessage(err, '에이전트 실행 이력을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     if (state.sessionAgentHistory.sessionId === sessionId) state.sessionAgentHistory.loading = false;
     notifyChange();
@@ -479,7 +480,7 @@ async function loadSessionTranscript(sessionId: string, showLoading: boolean, pr
     }
   } catch (err) {
     if (state.sessionChat.sessionId !== sessionId) return;
-    state.sessionChat.error = err instanceof Error ? err.message : String(err);
+    state.sessionChat.error = errorMessage(err);
   } finally {
     if (state.sessionChat.sessionId === sessionId) state.sessionChat.loading = false;
     notifyChange();
@@ -546,7 +547,7 @@ async function attachChatListeners(myGeneration: number): Promise<void> {
       // 원문 에러는 항상 그대로 보존한다(home.ts widgetErrorShell 선례) — authError는
       // 그 원문을 대체하지 않고, 화면이 로그인 안내를 추가로 보여줄지만 결정한다.
       if (!d.ok && d.error) {
-        state.sessionChat.error = d.error;
+        state.sessionChat.error = sanitizeBackendText(d.error);
         state.sessionChat.authError = d.authError;
       }
       notifyChange();
@@ -674,7 +675,7 @@ export async function sendChatMessage(sessionId: string, text: string): Promise<
       pendingUserText = null;
       return;
     }
-    state.sessionChat.error = err instanceof Error ? err.message : String(err);
+    state.sessionChat.error = errorMessage(err);
     state.sessionChat.input = trimmed; // 실패했으니 재전송할 수 있게 되돌려준다
     pendingUserText = null;
   } finally {
@@ -734,7 +735,7 @@ export async function sendDraftMessage(projectPath: string, text: string): Promi
       pendingUserText = null;
       return;
     }
-    state.sessionChat.error = err instanceof Error ? err.message : String(err);
+    state.sessionChat.error = errorMessage(err);
     state.sessionChat.input = trimmed; // 실패했으니 재전송할 수 있게 되돌려준다
     pendingUserText = null;
   } finally {
@@ -751,9 +752,9 @@ export async function sendDraftMessage(projectPath: string, text: string): Promi
 async function handleClaudeLogin(): Promise<void> {
   try {
     const result = await openClaudeLoginTerminal();
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`터미널을 여는 데 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`터미널을 여는 데 실패했습니다: ${errorMessage(err)}`);
   }
 }
 
@@ -782,7 +783,7 @@ export async function handleClaudeAuthLoginStart(): Promise<void> {
   } catch (err) {
     state.claudeAuthLogin.active = false;
     state.claudeAuthLogin.outcome = 'unknown';
-    state.claudeAuthLogin.error = err instanceof Error ? err.message : String(err);
+    state.claudeAuthLogin.error = errorMessage(err);
     notifyChange();
   }
 }
@@ -801,7 +802,7 @@ async function handleClaudeAuthLoginCancel(): Promise<void> {
   try {
     await cancelClaudeAuthLogin();
   } catch (err) {
-    showToast(`취소 요청에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`취소 요청에 실패했습니다: ${errorMessage(err)}`);
   }
 }
 
@@ -832,7 +833,7 @@ async function handleClaudeAuthLoginSubmitCode(): Promise<void> {
     state.claudeAuthLogin.codeInput = '';
     showToast('코드를 전달했습니다.');
   } catch (err) {
-    showToast(`코드 전달에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`코드 전달에 실패했습니다: ${errorMessage(err)}`);
   } finally {
     state.claudeAuthLogin.submitting = false;
     notifyChange();
@@ -862,7 +863,7 @@ function renderClaudeAuthLoginOutputToggle(login: typeof state.claudeAuthLogin):
     ),
   ];
   if (login.outputExpanded) {
-    children.push(el('pre', { className: 'chat-auth-login-output' }, [login.output || '(아직 출력이 없습니다)']));
+    children.push(el('pre', { className: 'chat-auth-login-output' }, [maskLogText(login.output, true) || '(아직 출력이 없습니다)']));
   }
   return el('div', { className: 'chat-auth-log-block' }, children);
 }
@@ -1083,7 +1084,7 @@ export async function cancelChatTurn(): Promise<void> {
   try {
     await cancelSessionTurn(turnId);
   } catch (err) {
-    state.sessionChat.error = err instanceof Error ? err.message : String(err);
+    state.sessionChat.error = errorMessage(err);
     notifyChange();
   }
 }

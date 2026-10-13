@@ -1,4 +1,5 @@
 import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOverlay, boundField, restoreModalFocus } from '../dom';
+import { errorMessage, errorMessagePersistent, sanitizeBackendText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
@@ -98,7 +99,7 @@ export async function loadOtelEnv(): Promise<void> {
     state.otel.settings = await fetchOtelSettings();
     state.otel.loaded = true;
   } catch (err) {
-    state.otel.error = err instanceof Error ? err.message : 'OTel 설정을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.otel.error = errorMessage(err, 'OTel 설정을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.otel.loading = false;
     notifyChange();
@@ -115,7 +116,7 @@ async function handleSaveOtelSettings(values: Record<string, string>): Promise<v
     state.otel.settings = await saveOtelSettings({ values, identity });
     showToast('OTel 설정을 저장했습니다.');
   } catch (err) {
-    showToast(`OTel 설정 저장에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`OTel 설정 저장에 실패했습니다: ${errorMessage(err)}`);
   } finally {
     state.otel.saving = false;
     notifyChange();
@@ -332,7 +333,7 @@ export async function loadGithubStatus(): Promise<void> {
     state.github.status = await fetchGithubStatus();
     state.github.loaded = true;
   } catch (err) {
-    state.github.error = err instanceof Error ? err.message : 'GitHub 연동 상태를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.github.error = errorMessage(err, 'GitHub 연동 상태를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.github.loading = false;
     notifyChange();
@@ -344,9 +345,9 @@ async function handleGithubConnect(): Promise<void> {
   notifyChange();
   try {
     const result = await connectGithub();
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`GitHub 연결을 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`GitHub 연결을 시작하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.github.connecting = false;
     notifyChange();
@@ -358,9 +359,9 @@ async function handleGithubDisconnect(): Promise<void> {
   notifyChange();
   try {
     const result = await disconnectGithub();
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`GitHub 연결 해제를 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`GitHub 연결 해제를 시작하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.github.disconnecting = false;
     notifyChange();
@@ -451,7 +452,7 @@ export async function loadCloudflareStatus(): Promise<void> {
     state.cloudflare.status = await fetchCloudflareStatus();
     state.cloudflare.loaded = true;
   } catch (err) {
-    state.cloudflare.error = err instanceof Error ? err.message : 'Cloudflare 연동 상태를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.cloudflare.error = errorMessage(err, 'Cloudflare 연동 상태를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.cloudflare.loading = false;
     notifyChange();
@@ -463,9 +464,9 @@ async function handleCloudflareConnect(): Promise<void> {
   notifyChange();
   try {
     const result = await connectCloudflare();
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`Cloudflare 연결을 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`Cloudflare 연결을 시작하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.cloudflare.connecting = false;
     notifyChange();
@@ -477,9 +478,9 @@ async function handleCloudflareDisconnect(): Promise<void> {
   notifyChange();
   try {
     const result = await disconnectCloudflare();
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`Cloudflare 연결 해제를 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`Cloudflare 연결 해제를 시작하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.cloudflare.disconnecting = false;
     notifyChange();
@@ -572,11 +573,11 @@ async function handleRefreshMarketplaces(): Promise<void> {
   notifyChange();
   try {
     const result = await refreshMarketplaces();
-    showToast(result.success ? `마켓플레이스 새로고침 완료 (${result.message})` : `마켓플레이스 새로고침 실패: ${result.message}`);
+    showToast(result.success ? `마켓플레이스 새로고침 완료 (${sanitizeBackendText(result.message)})` : `마켓플레이스 새로고침 실패: ${sanitizeBackendText(result.message)}`);
     await loadMarketplaces();
     await loadCatalog();
   } catch (err) {
-    showToast(`마켓플레이스 새로고침 실패: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`마켓플레이스 새로고침 실패: ${errorMessage(err)}`);
   } finally {
     state.marketplaces.refreshing = false;
     notifyChange();
@@ -611,17 +612,17 @@ async function handleAddMarketplace(source: string): Promise<void> {
   try {
     const result = await addMarketplace(source);
     if (result.success) {
-      showToast(`마켓플레이스를 추가했습니다: ${result.message}`);
+      showToast(`마켓플레이스를 추가했습니다: ${sanitizeBackendText(result.message)}`);
       marketplaceAddDraft = ''; // 성공했을 때만 인라인 입력창을 비운다(실패 시에는 사용자가 다시 타이핑하지 않도록 남긴다)
       await loadMarketplaces();
       await loadCatalog();
     } else {
       // 실패 원인 원문을 그대로 보여준다(home.ts의 widgetErrorShell 선례) —
       // "실패했습니다"로만 뭉개면 잘못된 URL인지 네트워크 문제인지 알 수 없다.
-      showToast(`마켓플레이스 추가 실패: ${result.message}`);
+      showToast(`마켓플레이스 추가 실패: ${sanitizeBackendText(result.message)}`);
     }
   } catch (err) {
-    showToast(`마켓플레이스 추가 실패: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`마켓플레이스 추가 실패: ${errorMessage(err)}`);
   } finally {
     state.marketplaces.adding = false;
     notifyChange();
@@ -648,10 +649,10 @@ async function handleRemoveMarketplace(marketplace: MarketplaceInfo): Promise<vo
       await loadMarketplaces();
       await loadCatalog();
     } else {
-      showToast(`마켓플레이스 제거 실패: ${result.message}`);
+      showToast(`마켓플레이스 제거 실패: ${sanitizeBackendText(result.message)}`);
     }
   } catch (err) {
-    showToast(`마켓플레이스 제거 실패: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`마켓플레이스 제거 실패: ${errorMessage(err)}`);
   } finally {
     state.marketplaces.removingId = null;
     notifyChange();
@@ -833,7 +834,7 @@ export async function loadMcp(): Promise<void> {
     state.mcp.items = await fetchMcpServers();
     state.mcp.loaded = true;
   } catch (err) {
-    state.mcp.error = err instanceof Error ? err.message : 'MCP 서버 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.mcp.error = errorMessage(err, 'MCP 서버 목록을 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.mcp.loading = false;
     notifyChange();
@@ -852,7 +853,7 @@ export async function loadHubAuth(): Promise<void> {
     state.hubAuth.status = await fetchHubAuthStatus();
     state.hubAuth.loaded = true;
   } catch (err) {
-    state.hubAuth.error = err instanceof Error ? err.message : String(err);
+    state.hubAuth.error = errorMessage(err);
   } finally {
     state.hubAuth.loading = false;
     notifyChange();
@@ -877,7 +878,7 @@ async function runHubAuthAction(
     }
   } catch (err) {
     // Tauri invoke 오류는 Rust가 만든 문자열(토큰 없음)이다.
-    showToast(`${failLabel}: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`${failLabel}: ${errorMessage(err)}`);
   } finally {
     state.hubAuth.busy = null;
     notifyChange();
@@ -954,7 +955,7 @@ export async function loadMcpCatalog(): Promise<void> {
     state.mcpCatalog.items = await fetchMcpCatalog();
     state.mcpCatalog.loaded = true;
   } catch (err) {
-    state.mcpCatalog.error = err instanceof Error ? err.message : 'MCP 카탈로그를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.';
+    state.mcpCatalog.error = errorMessage(err, 'MCP 카탈로그를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
   } finally {
     state.mcpCatalog.loading = false;
     notifyChange();
@@ -966,9 +967,9 @@ async function handleInstallMcpCatalogEntry(entry: McpCatalogEntry): Promise<voi
   notifyChange();
   try {
     const result = await installMcpCatalogEntry(entry.id);
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`"${entry.label}" 설치를 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`"${entry.label}" 설치를 시작하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.mcpCatalog.installingId = null;
     notifyChange();
@@ -1181,7 +1182,7 @@ async function handleRemoveMcp(server: McpServerSummary): Promise<void> {
     showToast(`"${server.name}" 서버를 삭제했습니다`);
     await loadMcp();
   } catch (err) {
-    showToast(`삭제에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`삭제에 실패했습니다: ${errorMessage(err)}`);
   }
 }
 
@@ -1190,9 +1191,9 @@ async function handleLoginMcp(server: McpServerSummary): Promise<void> {
   notifyChange();
   try {
     const result = await loginMcpServer(server.name);
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`"${server.name}" 로그인을 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`"${server.name}" 로그인을 시작하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.mcp.loggingInName = null;
     notifyChange();
@@ -1212,7 +1213,7 @@ async function handleLogoutMcp(server: McpServerSummary): Promise<void> {
     showToast(`"${server.name}" 연결을 해제했습니다.`);
     await loadMcp();
   } catch (err) {
-    showToast(`"${server.name}" 연결 해제에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`"${server.name}" 연결 해제에 실패했습니다: ${errorMessage(err)}`);
   } finally {
     state.mcp.loggingOutName = null;
     notifyChange();
@@ -1320,16 +1321,15 @@ async function handleInstallMalgnAgentPluginForMcp(): Promise<void> {
     showToast(
       result.success
         ? 'malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요'
-        : `malgn-agent 설치 실패: ${result.message}`
+        : `malgn-agent 설치 실패: ${sanitizeBackendText(result.message)}`
     );
     if (result.success) {
       await loadCatalog();
       await loadMcp();
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    state.catalog.installDefaultResult = { success: false, message };
-    showToast(`malgn-agent 설치 실패: ${message}`);
+    state.catalog.installDefaultResult = { success: false, message: errorMessagePersistent(err) };
+    showToast(`malgn-agent 설치 실패: ${errorMessage(err)}`);
   } finally {
     state.catalog.installingDefault = false;
     notifyChange();
@@ -1617,7 +1617,7 @@ function renderMcpAddForm(): HTMLElement {
         closeMcpAddModal();
         await loadMcp();
       } catch (err) {
-        showToast(`추가에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+        showToast(`추가에 실패했습니다: ${errorMessage(err)}`);
         saveBtn.disabled = false;
         notifyChange();
       }

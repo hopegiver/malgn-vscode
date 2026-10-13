@@ -12,6 +12,8 @@
 // 이번 라운드에서 신설한 통계 타일·박스가 같은 데이터를 이미 보여주므로
 // 중복 제거했다.
 import { el, clickable, showToast, confirmDialog, loadingBlock, errorBlock } from '../dom';
+import { errorMessage, sanitizeBackendText } from '../errorMessage';
+import { projectBadgeStatus } from '../projectBadge';
 import { state, notifyChange } from '../state';
 import { navigate } from '../route';
 import { computeTodayTokens, computeUsageTotals, dailyUsageTotal, formatTokenCount, loadDailyUsage } from './usage';
@@ -102,7 +104,7 @@ function statTile(label: string, value: string, trend?: { readonly text: string;
 
 function renderStatRow(): HTMLElement {
   const dash = state.dashboard;
-  const activeValue = dash.loaded ? `${dash.projects.filter((p) => p.archiveStatus === 'active').length}` : '—';
+  const activeValue = dash.loaded ? `${dash.projects.filter((p) => projectBadgeStatus(p) === 'active').length}` : '—';
   const totalValue = dash.loaded ? ` / ${dash.projects.length}` : '';
 
   const portfolio = portfolioSummary(state.sessions.items);
@@ -458,9 +460,9 @@ function claudeAuthWidget(): HTMLElement {
 async function handleOpenClaudeLoginTerminalFromHome(): Promise<void> {
   try {
     const result = await openClaudeLoginTerminal();
-    showToast(result.message);
+    showToast(sanitizeBackendText(result.message));
   } catch (err) {
-    showToast(`터미널을 여는 데 실패했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`터미널을 여는 데 실패했습니다: ${errorMessage(err)}`);
   }
 }
 
@@ -486,7 +488,7 @@ async function handleClaudeAuthLogout(): Promise<void> {
         : 'Anthropic 계정에서 로그아웃했습니다.'
     );
   } catch (err) {
-    showToast(`로그아웃 상태를 확인하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`로그아웃 상태를 확인하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.claudeAuth.loggingOut = false;
     notifyChange();
@@ -503,7 +505,7 @@ export async function loadClaudeAuthStatus(): Promise<void> {
     state.claudeAuth.status = await checkClaudeAuthStatus();
     state.claudeAuth.loaded = true;
   } catch (err) {
-    state.claudeAuth.error = err instanceof Error ? err.message : String(err);
+    state.claudeAuth.error = errorMessage(err);
   } finally {
     state.claudeAuth.loading = false;
     notifyChange();
