@@ -42,6 +42,12 @@ const WRANGLER_CANDIDATES: [&str; 4] = [
     "~/.local/share/pnpm/bin/wrangler",
 ];
 
+/// wrangler 미설치 폴백(connect/disconnect 공통). 외부 안내 대신 앱 안의 "개발 도구"
+/// 화면에서 설치하도록 안내한다. 화면 이름은 사이드바·설정 탭 라벨(src/sidebar.ts,
+/// src/views/settings.ts), 도구명은 dev_tools/mod.rs의 Wrangler 표시명("Wrangler")과 같아야 한다.
+const WRANGLER_NOT_INSTALLED_MESSAGE: &str =
+    "Wrangler가 설치되어 있지 않습니다. 앱의 '개발 도구' 화면에서 Wrangler를 설치한 뒤 다시 시도해주세요.";
+
 fn resolve_wrangler() -> Option<String> {
     resolve_binary_expand_home(&WRANGLER_CANDIDATES, "wrangler")
 }
@@ -133,7 +139,7 @@ pub fn cloudflare_connect() -> Result<TerminalLaunchResult, String> {
     let Some(wrangler) = resolve_wrangler() else {
         return Ok(TerminalLaunchResult {
             opened: false,
-            message: "Wrangler CLI가 설치되어 있지 않습니다. 프로젝트에 devDependency로 추가하거나 `npm install -g wrangler`로 설치한 뒤 다시 시도해주세요.".to_string(),
+            message: WRANGLER_NOT_INSTALLED_MESSAGE.to_string(),
         });
     };
     // 설계 §E.3: 구조화된 진입점으로 전환(github_integration.rs와 동일 이유).
@@ -151,7 +157,7 @@ pub fn cloudflare_disconnect() -> Result<TerminalLaunchResult, String> {
     let Some(wrangler) = resolve_wrangler() else {
         return Ok(TerminalLaunchResult {
             opened: false,
-            message: "Wrangler CLI가 설치되어 있지 않습니다.".to_string(),
+            message: WRANGLER_NOT_INSTALLED_MESSAGE.to_string(),
         });
     };
     open_terminal_program(&wrangler, &["logout"])?;
@@ -163,7 +169,17 @@ pub fn cloudflare_disconnect() -> Result<TerminalLaunchResult, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{determine_connected, extract_email_from_whoami};
+    /// 미설치 폴백은 외부 URL·수동 설치 명령이 아니라 앱 내 "개발 도구" 화면을 가리킨다.
+    #[test]
+    fn not_installed_message_points_to_in_app_dev_tools_screen() {
+        assert!(WRANGLER_NOT_INSTALLED_MESSAGE.contains("'개발 도구' 화면"));
+        assert!(WRANGLER_NOT_INSTALLED_MESSAGE.starts_with("Wrangler가"));
+        assert!(!WRANGLER_NOT_INSTALLED_MESSAGE.contains("개발 환경"));
+        assert!(!WRANGLER_NOT_INSTALLED_MESSAGE.contains("http"));
+        assert!(!WRANGLER_NOT_INSTALLED_MESSAGE.contains("npm install"));
+    }
+
+    use super::{determine_connected, extract_email_from_whoami, WRANGLER_NOT_INSTALLED_MESSAGE};
 
     #[test]
     fn extracts_email_from_typical_whoami_output() {

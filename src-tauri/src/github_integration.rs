@@ -18,6 +18,12 @@ const GH_CANDIDATES: [&str; 3] = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "
 /// 테스트가 잡는다). 각 플래그를 고른 근거는 `github_connect()` 주석 참고.
 const GH_LOGIN_ARGS: [&str; 7] = ["auth", "login", "-h", "github.com", "-p", "https", "-w"];
 
+/// gh 미설치 폴백(connect/disconnect 공통). 외부 URL 대신 앱 안의 "개발 도구" 화면
+/// (설정의 개발 도구 탭)에서 설치하도록 안내한다. 화면 이름은 src/sidebar.ts·
+/// src/views/settings.ts 라벨, 도구명은 dev_tools/mod.rs의 gh 표시명("GitHub CLI")과 같아야 한다.
+const GH_NOT_INSTALLED_MESSAGE: &str =
+    "GitHub CLI(gh)가 설치되어 있지 않습니다. 앱의 '개발 도구' 화면에서 GitHub CLI를 설치한 뒤 다시 시도해주세요.";
+
 fn resolve_gh() -> Option<String> {
     resolve_binary(&GH_CANDIDATES, "gh")
 }
@@ -94,7 +100,7 @@ pub fn github_connect() -> Result<TerminalLaunchResult, String> {
     let Some(gh) = resolve_gh() else {
         return Ok(TerminalLaunchResult {
             opened: false,
-            message: "GitHub CLI(gh)가 설치되어 있지 않습니다. https://cli.github.com 에서 설치한 뒤 다시 시도해주세요.".to_string(),
+            message: GH_NOT_INSTALLED_MESSAGE.to_string(),
         });
     };
     // 설계 §E.3: 구조화된 진입점으로 전환 — Windows 경로에 공백이 있으면
@@ -130,7 +136,7 @@ pub fn github_disconnect() -> Result<TerminalLaunchResult, String> {
     let Some(gh) = resolve_gh() else {
         return Ok(TerminalLaunchResult {
             opened: false,
-            message: "GitHub CLI(gh)가 설치되어 있지 않습니다.".to_string(),
+            message: GH_NOT_INSTALLED_MESSAGE.to_string(),
         });
     };
     open_terminal_program(&gh, &["auth", "logout"])?;
@@ -142,6 +148,15 @@ pub fn github_disconnect() -> Result<TerminalLaunchResult, String> {
 
 #[cfg(test)]
 mod tests {
+    /// 미설치 폴백은 외부 URL이 아니라 앱 내 "개발 도구" 화면을 가리킨다.
+    #[test]
+    fn not_installed_message_points_to_in_app_dev_tools_screen() {
+        assert!(GH_NOT_INSTALLED_MESSAGE.contains("'개발 도구' 화면"));
+        assert!(GH_NOT_INSTALLED_MESSAGE.contains("GitHub CLI를 설치"));
+        assert!(!GH_NOT_INSTALLED_MESSAGE.contains("개발 환경"));
+        assert!(!GH_NOT_INSTALLED_MESSAGE.contains("npm install"));
+    }
+
     use super::*;
     use crate::dev_tools::platform::{build_terminal_command_line, Platform};
 
