@@ -431,7 +431,9 @@ pub fn spawn_scheduler(app_handle: tauri::AppHandle) {
 /// 워커들의 `should_abort` 콜백이 진행 중인 `claude -p`를 타임아웃과 동일한
 /// 경로(force_kill_process_group)로 정리하게 만든 뒤, `running_count`가 0이
 /// 될 때까지 `max_wait` 동안만 폴링한다(그 이상 앱 종료를 붙잡지 않는다).
-/// 그래도 남아 있으면 unix 한정 보루로 `child_pid`에 직접 `SIGKILL`을 쏜다.
+/// 그래도 남아 있으면 `force_kill_all_remaining`이 보루로 레지스트리의 `child_pid`를
+/// 직접 정리한다: unix는 프로세스 그룹에 `SIGKILL`, Windows는
+/// `kill_process_group_with_grace`에 위임해 `taskkill /T /F`로 하위 트리까지 종료한다.
 pub(crate) fn request_shutdown_and_wait(max_wait: Duration) {
     runtime::SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let deadline = std::time::Instant::now() + max_wait;

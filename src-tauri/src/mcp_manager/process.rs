@@ -125,7 +125,8 @@ fn run_bounded(
 
     let Some(status) = exit_status else {
         return Err(format!(
-            "claude 명령이 {MCP_COMMAND_TIMEOUT_SECS}초 내에 끝나지 않아 중단했습니다."
+            "claude 명령이 {}초 내에 끝나지 않아 중단했습니다.",
+            timeout.as_secs()
         ));
     };
 

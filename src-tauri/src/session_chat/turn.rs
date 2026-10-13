@@ -429,10 +429,12 @@ pub(crate) fn run_turn(
         }
     }
 
-    // 자식을 먼저 수거한 뒤 stderr를 상한(`DRAIN_GRACE`) 안에서만 기다린다: 자손이
-    // stderr 파이프를 물고 있으면 EOF가 영영 오지 않아 예전의 상한 없는 `join()`은 이 턴
-    // 스레드를 끝내지 못했다(`finish_turn`/`emit_done`이 호출되지 않아 UI가 "진행 중"에
-    // 고착). stderr는 에러 꼬리 표시에만 쓰이므로 포기해도 잃는 것은 그 꼬리뿐이다.
+    // 자식을 수거한 뒤 stderr를 상한(`DRAIN_GRACE`) 안에서만 기다린다: 자손이 stderr
+    // 파이프를 물고 있어도 이 대기는 상한에서 끊긴다. stderr는 에러 꼬리 표시에만
+    // 쓰이므로 포기해도 잃는 것은 그 꼬리뿐이다. 보장 범위는 여기까지다 — 위의 stdout
+    // 줄 읽기 루프는 상한이 없어서, 자손이 stdout 파이프를 물고 있으면 EOF가 올 때까지
+    // 이 루프에서 계속 기다리고 `child.wait()`·`finish_turn`/`emit_done`에 도달하지
+    // 못한다(stdout 루프의 상한화는 남은 과제).
     let status = child.wait();
     let exit_code = status.as_ref().ok().and_then(|s| s.code());
     let stderr_bytes = PipeDrain::collect_logged(

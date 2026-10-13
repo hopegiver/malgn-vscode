@@ -707,11 +707,12 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
         });
     }
 
-    // 자식을 먼저 수거한 뒤 stderr를 상한(`DRAIN_GRACE`) 안에서만 기다린다: 로그인 자식의
-    // 자손(브라우저 실행 헬퍼 등)이 stderr 파이프를 물고 있으면 EOF가 영영 오지 않아
-    // 예전의 상한 없는 `join()`은 이 스레드를 끝내지 못했다(`finish_login`이 호출되지
-    // 않아 이후 로그인이 "이미 진행 중"으로 막히고 `login-finished`도 오지 않았다).
-    // stderr는 실패 메시지 꼬리에만 쓰인다.
+    // 자식을 수거한 뒤 stderr를 상한(`DRAIN_GRACE`) 안에서만 기다린다: 로그인 자식의
+    // 자손(브라우저 실행 헬퍼 등)이 stderr 파이프를 물고 있어도 이 대기는 상한에서
+    // 끊긴다. stderr는 실패 메시지 꼬리에만 쓰인다. 보장 범위는 여기까지다 — 위의 stdout
+    // 펌프(`pump_stdout`)는 상한이 없어서, 자손이 stdout 파이프를 물고 있으면 EOF가 올
+    // 때까지 펌프에서 계속 기다리고 `child.wait()`·`finish_login`에 도달하지 못한다
+    // (stdout 펌프의 상한화는 남은 과제).
     let _ = child.wait();
     done.store(true, Ordering::Relaxed);
     let stderr_bytes = PipeDrain::collect_logged(
