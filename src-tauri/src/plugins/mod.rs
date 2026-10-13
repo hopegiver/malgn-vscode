@@ -478,15 +478,141 @@ pub async fn remove_marketplace(name: String) -> CommandResult {
 /// — update_plugin과 동일한 id 포맷. `-y`로 비대화형 확인을 건너뛰고,
 /// `-s user`로 설치 스코프를 user로 고정한다(installed_plugins.json에서
 /// scope="user"만 "설치된 플러그인"으로 취급하는 기존 규칙과 맞춘다 — plugins/installed.rs 참고).
+///
+/// 구버전 claude CLI는 `-y`/`-s`를 모르는 옵션으로 거부한다(Windows 실기:
+/// "-y 옵션이 없다"). 그래서 먼저 두 플래그를 모두 붙여 실행하고(신버전 = 기존
+/// 동작 그대로, `-y`가 없으면 비대화 실행이 확인 프롬프트에서 멈출 수 있다),
+/// CLI가 특정 플래그를 "unknown option"으로 거부했을 때만 그 플래그를 뺀 인자로
+/// 다시 시도한다. 사전 `--help` 파싱 대신 거부 신호를 쓰는 이유: 도움말 문구 파싱은
+/// 버전마다 깨질 수 있지만, 거부 메시지가 안 맞으면 폴백이 안 일어날 뿐 신버전 경로는
+/// 어떤 경우에도 이전과 동일하다(fail-safe).
 #[tauri::command]
 pub async fn install_plugin(plugin_id: String) -> CommandResult {
     run_blocking(move || {
-        run_claude_command(
-            &["plugin", "install", &plugin_id, "-y", "-s", "user"],
-            TIMEOUT_PLUGIN_INSTALL,
-        )
+        install_with_flag_fallback(&plugin_id, |args| {
+            run_claude_command(args, TIMEOUT_PLUGIN_INSTALL)
+        })
     })
     .await
+}
+
+/// `plugin install`에 붙일 선택 플래그 집합. 기본은 둘 다 사용(신버전 동작).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InstallFlags {
+    /// `-y`(marketplace 선언 command 수락 — 비대화 실행용)
+    yes: bool,
+    /// `-s user`(설치 스코프 고정)
+    scope_user: bool,
+}
+
+impl InstallFlags {
+    const ALL: InstallFlags = InstallFlags { yes: true, scope_user: true };
+}
+
+/// 순수함수 — 플래그 집합에 맞는 `claude` 인자 배열을 만든다. 순서는 기존
+/// (`plugin install <id> -y -s user`)과 같다.
+fn install_args(plugin_id: &str, flags: InstallFlags) -> Vec<String> {
+    let mut args = vec!["plugin".to_string(), "install".to_string(), plugin_id.to_string()];
+    if flags.yes {
+        args.push("-y".to_string());
+    }
+    if flags.scope_user {
+        args.push("-s".to_string());
+        args.push("user".to_string());
+    }
+    args
+}
+
+/// 순수함수 — 실패 메시지(CLI stderr)가 "알 수 없는 옵션" 거부이고 그 옵션이
+/// 아직 붙어 있는 `-y`/`--yes` 또는 `-s`/`--scope`이면, 그 플래그를 뺀 다음 시도용
+/// 플래그 집합을 돌려준다. 그 외(다른 실패·다른 옵션·이미 뺀 옵션)는 `None` —
+/// 재시도하지 않고 원래 실패를 그대로 보고한다.
+///
+/// 거부 문구는 commander 계열 CLI의 `error: unknown option '-y'`(대소문자·따옴표
+/// 종류·`unrecognized option` 변형 허용)를 기준으로 한다.
+fn next_flags_after_rejection(stderr: &str, current: InstallFlags) -> Option<InstallFlags> {
+    let token = unknown_option_token(stderr)?;
+    match token.as_str() {
+        "-y" | "--yes" if current.yes => Some(InstallFlags { yes: false, ..current }),
+        "-s" | "--scope" if current.scope_user => Some(InstallFlags { scope_user: false, ..current }),
+        _ => None,
+    }
+}
+
+/// 메시지에서 "unknown/unrecognized option" 바로 뒤의 옵션 토큰(`-y` 등)을 뽑는다.
+fn unknown_option_token(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    for marker in ["unknown option", "unrecognized option"] {
+        let Some(pos) = lower.find(marker) else { continue };
+        // 마커는 ASCII라 소문자 변환 전후 바이트 오프셋이 같다(비ASCII가 앞에 있어도
+        // to_lowercase가 길이를 바꿀 수 있어 원문이 아니라 lower에서 계속 자른다).
+        let rest = &lower[pos + marker.len()..];
+        let token: String = rest
+            .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '\'' | '"' | '`'))
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !matches!(c, '\'' | '"' | '`' | ',' | ';' | ')'))
+            .collect();
+        if token.starts_with('-') {
+            return Some(token);
+        }
+    }
+    None
+}
+
+/// 설치 실행 + 구버전 폴백 루프. `run`이 실제 프로세스 실행을 맡는다(테스트는 가짜
+/// 실행기를 주입해 프로세스를 띄우지 않는다). 플래그는 매 반복 최소 하나씩
+/// 줄어들므로(최대 2회 재시도) 무한 루프가 없다. 성공하거나 폴백 대상이 아닌
+/// 실패는 즉시 그 결과를 돌려준다.
+fn install_with_flag_fallback<F>(plugin_id: &str, mut run: F) -> CommandResult
+where
+    F: FnMut(&[&str]) -> CommandResult,
+{
+    let mut flags = InstallFlags::ALL;
+    loop {
+        let args = install_args(plugin_id, flags);
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let mut result = run(&arg_refs);
+        if result.success {
+            return with_fallback_note(result, flags);
+        }
+        match next_flags_after_rejection(&result.message, flags) {
+            Some(next) => flags = next,
+            None => {
+                result = with_fallback_note(result, flags);
+                return result;
+            }
+        }
+    }
+}
+
+/// 순수함수 — 폴백으로 플래그를 뺀 채 끝난 시도라면(`flags != ALL`) 최종 결과 메시지
+/// 끝에 그 사실(뺀 플래그 + `claude update` 권장)을 덧붙인다. 성공·실패 모두 해당
+/// (실패 원인이 다른 문제여도 "플래그를 빼고 재시도했다"는 맥락이 진단에 필요하고,
+/// `-s user`를 빼면 설치 스코프가 user가 아닐 수 있어 성공이어도 알려야 한다).
+/// 폴백이 없었으면(`flags == ALL`) 메시지를 그대로 둔다.
+fn with_fallback_note(mut result: CommandResult, flags: InstallFlags) -> CommandResult {
+    let mut dropped: Vec<&str> = Vec::new();
+    if !flags.yes {
+        dropped.push("`-y`");
+    }
+    if !flags.scope_user {
+        dropped.push("`-s user`");
+    }
+    if dropped.is_empty() {
+        return result;
+    }
+    let scope_hint = if flags.scope_user {
+        ""
+    } else {
+        " 설치 범위가 user가 아닐 수 있어 설치 목록에 보이지 않으면 claude를 업데이트한 뒤 다시 설치해주세요."
+    };
+    result.message = format!(
+        "{}\n\n(구버전 claude CLI 호환: {} 옵션을 거부해 해당 옵션을 빼고 다시 시도했습니다. `claude update`로 업데이트를 권장합니다.{})",
+        result.message,
+        dropped.join(", "),
+        scope_hint
+    );
+    result
 }
 
 // ⚠️ update_plugin()/refresh_marketplaces()/install_plugin()을 실제로 호출하는
@@ -879,5 +1005,212 @@ mod op_lock_tests {
         let after = with_op_lock(&LOCK, || ok("recovered"));
         assert!(after.success);
         assert_eq!(after.message, "recovered");
+    }
+}
+
+// install 플래그 폴백의 순수 로직 검증 — 가짜 실행기를 주입하므로 실제 `claude`
+// 프로세스를 띄우지 않는다(위 ⚠️ 경고 준수).
+#[cfg(test)]
+mod install_flag_fallback_tests {
+    use super::*;
+
+    const ID: &str = "malgn-agent@malgnsoft-plugins";
+
+    fn fail(msg: &str) -> CommandResult {
+        CommandResult { success: false, message: msg.to_string() }
+    }
+    fn ok() -> CommandResult {
+        CommandResult { success: true, message: "완료되었습니다.".to_string() }
+    }
+
+    #[test]
+    fn install_args_all_flags_matches_legacy_argv() {
+        assert_eq!(
+            install_args(ID, InstallFlags::ALL),
+            ["plugin", "install", ID, "-y", "-s", "user"]
+        );
+    }
+
+    #[test]
+    fn install_args_drops_individual_flags() {
+        let no_yes = InstallFlags { yes: false, scope_user: true };
+        assert_eq!(install_args(ID, no_yes), ["plugin", "install", ID, "-s", "user"]);
+        let no_scope = InstallFlags { yes: true, scope_user: false };
+        assert_eq!(install_args(ID, no_scope), ["plugin", "install", ID, "-y"]);
+        let none = InstallFlags { yes: false, scope_user: false };
+        assert_eq!(install_args(ID, none), ["plugin", "install", ID]);
+    }
+
+    #[test]
+    fn rejection_of_y_drops_only_yes() {
+        let next = next_flags_after_rejection("error: unknown option '-y'", InstallFlags::ALL);
+        assert_eq!(next, Some(InstallFlags { yes: false, scope_user: true }));
+    }
+
+    #[test]
+    fn rejection_of_s_drops_only_scope() {
+        let next = next_flags_after_rejection("error: unknown option '-s'\n", InstallFlags::ALL);
+        assert_eq!(next, Some(InstallFlags { yes: true, scope_user: false }));
+    }
+
+    #[test]
+    fn rejection_variants_are_recognized() {
+        for msg in [
+            "Error: Unknown option \"-y\"",
+            "error: unrecognized option `-y`",
+            "error: unknown option '--yes'",
+            "error: unknown option '-y'\n(Did you mean --yes?)",
+            "error: unknown option '-y'\n\n[진단 정보 — ...]",
+        ] {
+            assert_eq!(
+                next_flags_after_rejection(msg, InstallFlags::ALL),
+                Some(InstallFlags { yes: false, scope_user: true }),
+                "{msg}"
+            );
+        }
+        assert_eq!(
+            next_flags_after_rejection("error: unknown option '--scope'", InstallFlags::ALL),
+            Some(InstallFlags { yes: true, scope_user: false })
+        );
+    }
+
+    #[test]
+    fn unrelated_failures_do_not_trigger_fallback() {
+        for msg in [
+            "",
+            "알 수 없는 오류로 실패했습니다.",
+            "Plugin not found in marketplace",
+            "시간 초과: `claude plugin install a@b -y -s user` 명령이 300초 안에 끝나지 않아",
+            "error: unknown option '--bogus'",
+            "error: unknown option",
+            "error: unknown command 'install'",
+            "Error: network unreachable (-y not supported by proxy)",
+        ] {
+            assert_eq!(next_flags_after_rejection(msg, InstallFlags::ALL), None, "{msg}");
+        }
+    }
+
+    #[test]
+    fn already_dropped_flag_rejection_is_not_retried_again() {
+        let no_yes = InstallFlags { yes: false, scope_user: true };
+        assert_eq!(next_flags_after_rejection("error: unknown option '-y'", no_yes), None);
+    }
+
+    #[test]
+    fn new_cli_succeeds_first_try_with_legacy_argv_and_no_retry() {
+        let mut calls: Vec<Vec<String>> = Vec::new();
+        let result = install_with_flag_fallback(ID, |args| {
+            calls.push(args.iter().map(|s| s.to_string()).collect());
+            ok()
+        });
+        assert!(result.success);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], ["plugin", "install", ID, "-y", "-s", "user"]);
+        // 폴백이 없으면 메시지는 기존과 동일(노트 없음).
+        assert_eq!(result.message, "완료되었습니다.");
+    }
+
+    #[test]
+    fn old_cli_rejecting_y_then_s_installs_with_bare_args() {
+        let mut calls: Vec<Vec<String>> = Vec::new();
+        let result = install_with_flag_fallback(ID, |args| {
+            calls.push(args.iter().map(|s| s.to_string()).collect());
+            if args.contains(&"-y") {
+                fail("error: unknown option '-y'")
+            } else if args.contains(&"-s") {
+                fail("error: unknown option '-s'")
+            } else {
+                ok()
+            }
+        });
+        assert!(result.success);
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[1], ["plugin", "install", ID, "-s", "user"]);
+        assert_eq!(calls[2], ["plugin", "install", ID]);
+    }
+
+    #[test]
+    fn old_cli_rejecting_only_y_retries_once_keeping_scope() {
+        let mut calls = 0;
+        let result = install_with_flag_fallback(ID, |args| {
+            calls += 1;
+            if args.contains(&"-y") { fail("error: unknown option '-y'") } else { ok() }
+        });
+        assert!(result.success);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn non_flag_failure_is_returned_as_is_without_retry() {
+        let mut calls = 0;
+        let result = install_with_flag_fallback(ID, |_| {
+            calls += 1;
+            fail("Plugin not found")
+        });
+        assert!(!result.success);
+        assert_eq!(result.message, "Plugin not found");
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn fallback_success_message_names_dropped_flag_and_recommends_update() {
+        let result = install_with_flag_fallback(ID, |args| {
+            if args.contains(&"-y") { fail("error: unknown option '-y'") } else { ok() }
+        });
+        assert!(result.success);
+        assert!(result.message.starts_with("완료되었습니다."), "{}", result.message);
+        assert!(result.message.contains("`-y`"), "{}", result.message);
+        assert!(!result.message.contains("`-s user`"), "{}", result.message);
+        assert!(result.message.contains("claude update"), "{}", result.message);
+    }
+
+    #[test]
+    fn fallback_then_unrelated_failure_keeps_original_error_plus_note() {
+        let result = install_with_flag_fallback(ID, |args| {
+            if args.contains(&"-y") {
+                fail("error: unknown option '-y'")
+            } else {
+                fail("Plugin not found in marketplace")
+            }
+        });
+        assert!(!result.success);
+        assert!(result.message.starts_with("Plugin not found in marketplace"), "{}", result.message);
+        assert!(result.message.contains("`-y`"), "{}", result.message);
+        assert!(result.message.contains("claude update"), "{}", result.message);
+    }
+
+    #[test]
+    fn dropping_scope_note_warns_about_install_scope() {
+        let result = install_with_flag_fallback(ID, |args| {
+            if args.contains(&"-y") {
+                fail("error: unknown option '-y'")
+            } else if args.contains(&"-s") {
+                fail("error: unknown option '-s'")
+            } else {
+                ok()
+            }
+        });
+        assert!(result.success);
+        assert!(result.message.contains("`-y`, `-s user`"), "{}", result.message);
+        assert!(result.message.contains("설치 범위"), "{}", result.message);
+        assert!(result.message.contains("claude update"), "{}", result.message);
+    }
+
+    #[test]
+    fn no_fallback_failure_message_is_unchanged() {
+        let result = install_with_flag_fallback(ID, |_| fail("Plugin not found"));
+        assert_eq!(result.message, "Plugin not found");
+    }
+
+    #[test]
+    fn persistent_rejection_terminates_after_bounded_attempts() {
+        // CLI가 어떤 인자에도 같은 거부를 내는 병적 상황 — 무한 루프 없이 끝나야 한다.
+        let mut calls = 0;
+        let result = install_with_flag_fallback(ID, |_| {
+            calls += 1;
+            fail("error: unknown option '-y'")
+        });
+        assert!(!result.success);
+        assert_eq!(calls, 2); // ALL → (-y 제거) → 같은 -y 거부는 재시도 대상 아님
     }
 }
