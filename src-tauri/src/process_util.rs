@@ -153,6 +153,72 @@ fn wait_or_kill(child: &mut std::process::Child, limit: std::time::Duration) -> 
     }
 }
 
+// ---------------- 존재 확인용 프로브(상한 대기) ----------------
+/// 자식을 띄워 상한 안에 끝나는지만 본다. 끝나면 `true`(종료 코드는 보지 않는다 —
+/// 실행 자체가 가능했다는 뜻), spawn 실패이거나 상한을 넘기면 자식을 정리하고 `false`.
+///
+/// `dev_tools::process::run_process_with_timeout*`를 재사용하지 않는 이유(이 호출은
+/// "이 이름이 실행되는가"만 알면 된다): (1) 그쪽은 stdout/stderr를 파이프로 받아
+/// 리더 스레드가 상한 없는 `Vec`에 쌓는다 — 버릴 출력을 위해 스레드와 메모리를
+/// 쓸 이유가 없어 여기서는 세 표준 스트림을 전부 null로 연결한다(파이프를 물고
+/// 있는 자손 때문에 기다릴 일도 사라진다). (2) 그쪽은 PATH를 인자로 덮어쓰는데
+/// 이 프로브는 상속된 PATH 그대로의 이름 해석이 목적이다. (3) 그쪽의 정리는
+/// SIGTERM→3초 유예→SIGKILL + 리더 수거 2초라 호출자 락의 추가 보유 시간이
+/// `limit`에 최대 5초가 더해진다 — 프로브는 곧바로 SIGKILL하고 수거도 `REAP_LIMIT`로
+/// 끊는다. (4) 모듈 의존 방향: `cli_launcher`(저수준 유틸)가 `dev_tools`(상위)를
+/// 거꾸로 부르지 않고 이미 쓰는 `process_util`에 머문다.
+///
+/// 유닉스에서는 새 프로세스 그룹으로 띄워 상한 초과 시 그룹 전체를 SIGKILL한다
+/// (셸 shim 뒤의 손자까지 정리). Windows는 직속 자식만 `kill()`한다 — 이 프로브를
+/// 쓰는 `cli_launcher::resolve_binary`의 이름 프로브는 macOS 분기에서만 실행된다.
+pub fn command_completes_within(command: &mut std::process::Command, limit: std::time::Duration) -> bool {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .silent();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => break,
+        }
+    }
+
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    // 수거도 상한을 둔다: 커널 대기(D 상태)에 걸린 자식을 무기한 `wait()`하면 이 함수를
+    // 부른 쪽 락이 영구히 잡힌다. 못 거둬도 좀비 하나가 남을 뿐이다.
+    let reap_deadline = Instant::now() + PROBE_REAP_LIMIT;
+    while Instant::now() < reap_deadline {
+        if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// `command_completes_within`이 kill 뒤 자식 수거를 기다리는 최대 시간.
+const PROBE_REAP_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 // ---------------- Windows 콘솔 창 억제 ----------------
 // GUI(콘솔 없는) 부모 프로세스가 콘솔 서브프로세스(claude/gh/wrangler 등)를
 // spawn하면 Windows는 그 자식을 위해 새 콘솔 창을 자동으로 띄운다(부모에게
@@ -257,6 +323,67 @@ mod tests {
             "빨리 끝나는 자식을 상한까지 기다리면 안 된다: {:?}",
             started.elapsed()
         );
+    }
+
+    /// 존재 확인 프로브: 끝나는 자식은 `true`(종료 코드 무관), 멈추는 자식은 상한 부근에서
+    /// `false`로 반환하고 자식이 정리되며, 없는 프로그램은 `false`다.
+    #[cfg(unix)]
+    #[test]
+    fn command_completes_within_bounds_a_hanging_child_and_cleans_it_up() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        let started = Instant::now();
+        assert!(command_completes_within(
+            &mut Command::new("/usr/bin/true"),
+            Duration::from_secs(10)
+        ));
+        assert!(
+            command_completes_within(
+                Command::new("/bin/sh").args(["-c", "exit 7"]),
+                Duration::from_secs(10)
+            ),
+            "종료 코드가 0이 아니어도 '실행되었다'는 뜻이므로 true"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3), "빨리 끝나는 자식을 상한까지 기다리면 안 된다");
+
+        assert!(!command_completes_within(
+            &mut Command::new("/definitely/not/a/real/program"),
+            Duration::from_secs(10)
+        ));
+
+        // 손자(sleep)가 stdout을 물고 남는 셸 shim을 흉내낸다: 셸이 손자를 낳고 기다린다.
+        let pid_file = std::env::temp_dir().join(format!(
+            "malgn_vscode_probe_pid_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let started = Instant::now();
+        let finished =
+            command_completes_within(Command::new("/bin/sh").args(["-c", &script]), Duration::from_millis(400));
+        let elapsed = started.elapsed();
+        assert!(!finished, "상한을 넘긴 자식은 false여야 한다");
+        assert!(
+            elapsed >= Duration::from_millis(350) && elapsed < Duration::from_secs(3),
+            "상한 부근에서 반환해야 한다: {elapsed:?}"
+        );
+
+        let grandchild: u32 = std::fs::read_to_string(&pid_file)
+            .expect("손자 pid 파일")
+            .trim()
+            .parse()
+            .expect("손자 pid 파싱");
+        let _ = std::fs::remove_file(&pid_file);
+        // 프로세스 그룹 kill이면 손자도 죽는다(init이 거두는 시간을 잠시 기다린다).
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while pid_alive(grandchild) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!pid_alive(grandchild), "손자 프로세스까지 정리되어야 한다");
     }
 
     #[test]

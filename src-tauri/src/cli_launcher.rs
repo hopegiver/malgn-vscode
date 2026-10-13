@@ -19,8 +19,9 @@
 // 기존 동작이 그대로 보존된다).
 
 use crate::dev_tools::platform::{self, Platform};
-use crate::process_util::SilentCommand;
+use crate::process_util::{command_completes_within, SilentCommand};
 use std::process::Command;
+use std::time::Duration;
 
 /// 후보 절대경로를 순서대로 확인하고, 전부 없으면(macOS만) PATH 안에 있을
 /// 가능성(예: 터미널에서 `pnpm tauri dev`로 실행한 개발 모드)에 대비해 이름
@@ -35,6 +36,23 @@ use std::process::Command;
 /// 반환한다(`platform::resolve_binary_with`, 프로세스를 하나도 띄우지 않는다).
 /// 어느 쪽도 찾지 못하면 `None` — 이때 "미설치"는 예외가 아니라 정상 값이다.
 pub fn resolve_binary(absolute_candidates: &[&str], bare_name: &str) -> Option<String> {
+    resolve_binary_with_probe_timeout(absolute_candidates, bare_name, PATH_PROBE_TIMEOUT)
+}
+
+/// macOS PATH 폴백(`<이름> --version`)이 끝나기를 기다리는 상한. 이 호출은
+/// `dev_tools::EXECUTION_LOCK`을 쥔 `perform_update`/`perform_install` 안에서도 불리므로
+/// 상한이 없으면 멈춘 shim 하나가 업데이트 기능 전체를 앱 재시작 전까지 잠근다. 정상
+/// `--version`은 1초 안에 끝나고(node 기반 CLI의 콜드 스타트 포함 수백 ms), 이 값은
+/// 락 최대 추가 보유 시간이자 "느린 첫 실행을 미설치로 오판"하는 임계라 둘의 절충이다.
+const PATH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// `resolve_binary`의 본체 — 폴백 상한만 주입 가능하게 분리했다(테스트가 짧은 상한으로
+/// 멈추는 프로세스를 검증하려는 용도이며 공개 진입점은 항상 `PATH_PROBE_TIMEOUT`을 넘긴다).
+fn resolve_binary_with_probe_timeout(
+    absolute_candidates: &[&str],
+    bare_name: &str,
+    probe_timeout: Duration,
+) -> Option<String> {
     let plat = platform::platform_now();
     let path_var = match plat {
         Platform::Win => {
@@ -56,15 +74,11 @@ pub fn resolve_binary(absolute_candidates: &[&str], bare_name: &str) -> Option<S
     }
 
     if plat == Platform::Mac {
-        // 기존 그대로(변경 없음): PATH 폴백은 존재 여부만 확인하고(버전 출력
-        // 내용은 쓰지 않는다) 성공하면 이름을 그대로 돌려준다. 여기서
-        // 실행하는 것은 --version 뿐이라 안전하다(비대화형).
-        if Command::new(bare_name)
-            .arg("--version")
-            .silent()
-            .output()
-            .is_ok()
-        {
+        // PATH 폴백은 존재 여부만 확인하고(버전 출력 내용은 쓰지 않는다) 성공하면
+        // 이름을 그대로 돌려준다. 여기서 실행하는 것은 --version 뿐이라 안전하다
+        // (비대화형). 상한 안에 끝나지 않으면 미발견(None)으로 취급하고 자식은
+        // 정리된다(`process_util::command_completes_within`).
+        if command_completes_within(Command::new(bare_name).arg("--version"), probe_timeout) {
             return Some(bare_name.to_string());
         }
     }
@@ -233,6 +247,75 @@ mod tests {
             resolve_binary(&["/definitely/not/a/real/path/tool"], "malgn_vscode_fake_tool_xyz"),
             None
         );
+    }
+
+    /// 테스트용 실행 스크립트를 임시 디렉터리에 만든다(절대경로를 `bare_name`으로 넘겨
+    /// PATH를 건드리지 않고 PATH 폴백 분기를 태운다). 호출자가 디렉터리를 지운다.
+    #[cfg(unix)]
+    fn write_probe_script(tag: &str, body: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "malgn_vscode_resolve_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("임시 디렉터리");
+        let script = dir.join("fake_tool");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).expect("스크립트 쓰기");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        (dir, script)
+    }
+
+    // L1: PATH 폴백의 `--version`이 멈춰도 상한 안에 None으로 끝나고 자식(과 손자)은 정리된다.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_binary_path_fallback_returns_none_within_limit_when_version_hangs() {
+        use std::time::Instant;
+        // 손자(sleep)를 낳고 기다리는 shim — 직속 자식만 죽이면 손자가 남는 구조.
+        let (dir, script) = write_probe_script(
+            "hang",
+            "sleep 30 & echo $! > \"$(dirname \"$0\")/grandchild.pid\"; wait",
+        );
+
+        let started = Instant::now();
+        let found = resolve_binary_with_probe_timeout(
+            &[],
+            script.to_str().unwrap(),
+            Duration::from_millis(500),
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(found, None, "멈추는 프로세스는 미발견(None)으로 취급해야 한다");
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "무기한 대기하지 않고 상한 부근에서 끝나야 한다: {elapsed:?}"
+        );
+
+        let pid: u32 = std::fs::read_to_string(dir.join("grandchild.pid"))
+            .expect("손자 pid")
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while crate::process_util::pid_alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let alive = crate::process_util::pid_alive(pid);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!alive, "상한을 넘긴 프로브의 손자 프로세스가 남아 있다");
+    }
+
+    // 정상 경로 회귀 방지: 빨리 끝나는 실행 파일은 이름 그대로 발견된다.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_binary_path_fallback_still_finds_a_tool_that_exits_quickly() {
+        let (dir, script) = write_probe_script("quick", "echo fake 1.0.0");
+        let name = script.to_str().unwrap().to_string();
+        let found = resolve_binary_with_probe_timeout(&[], &name, Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found, Some(name));
     }
 
     #[test]
