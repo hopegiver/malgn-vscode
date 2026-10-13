@@ -64,3 +64,6 @@ Intel 맥 6대와 nvm·volta·corepack이 뒤섞인 머신이 아직 살아 있�
 - 2026-09-18 / target_id `malgn-vscode-installer-release-autoupdate` / 1차(최초, 풀패널 — Sensitive 등급) / `docs/reviewer/review-installer-release-autoupdate-2026-09-18.md`
   — 재사용 사유: 역할개념("우리 조직 이기종 머신에서 실제로 뜨는가, 안 될 때 막다른 골목인가")이 그대로 유효하다. 이번 대상은 devtools가 아니라 설치형 배포지만, 묻는 질문은 동일하다 — 사내 단말이 MSI로 깔렸는지 NSIS로 깔렸는지, WebView2가 있는지, 무서명 dmg가 첫 실행에서 뜨는지에 따라 같은 릴리스가 다르게 도착한다. O2·O3(막다른 골목·같은 실패 반복 루프)가 특히 과녁. 6대 요소 무수정 — §5 참고파일의 devtools 목록은 최초 라운드 인스턴스 정보이므로 이번엔 워크플로·플랫폼 번들 설정·`tauri-utils` 기본값을 대신 참조했다.
   — 이번 라운드 집중: NSIS(currentUser/%LOCALAPPDATA%) 대 MSI(per-machine/Program Files) 동시 타깃이 "IT 대량배포 = MSI, 자동업데이트 = NSIS"로 갈릴 때 생기는 이중 설치·업데이트 재감지 루프(→ M3), `webviewInstallMode` 기본값 실측(DownloadBootstrapper{silent:true} — 오탐 지적 강등), 잘못된 릴리스가 나간 단말에 남는 막다른 골목(다운그레이드 수단 부재 → M5), 무서명 dmg 최초 실행이 IT MDM에만 의존하는 사실이 어디에 적혀 있는지(→ m7).
+- 2026-10-13 / target_id `devtools-l1-l2-l4` / 1차(최초, Standard) / `docs/reviewer/review-2026-10-13-devtools-l1-l2-l4.md`
+  — 재사용 사유: 3초 프로브 오판과 비표준 brew prefix 사용자 손실이 '이기종 머신에서 뜨는가'의 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: 느린 첫 실행 미설치 오판·진단 로그 부재(RV-001), L4로 잃는 사용자 범위(GUI 런치는 HOMEBREW_PREFIX 미상속), Windows cfg 컴파일(로컬 미확인).

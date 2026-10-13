@@ -86,3 +86,6 @@
 - 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 1차(최초, Standard) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13.md`
   — 재사용 사유: install_plugin의 argv 변경·재시도 루프가 역할개념("명령의 argv·프로세스 수명이 안전한가")의 직접 대상. 6대 요소 무수정.
   — 이번 라운드 집중: 신버전 argv 동일성, 재시도의 비멱등 부작용, 재시도 간 락 유지, 거부 문구 실측(commander).
+- 2026-10-13 / target_id `devtools-l1-l2-l4` / 1차(최초, Standard) / `docs/reviewer/review-2026-10-13-devtools-l1-l2-l4.md`
+  — 재사용 사유: PATH 프로브의 spawn·그룹 kill·수거 상한이 역할개념(프로세스 수명 안전성)의 직접 대상. 6대 요소 무수정.
+  — 이번 라운드 집중: 음수 pid kill 안전성(RV-004 Err 분기), stdio null·process_group(0) 의미 보존, 비0 종료=발견 의미 보존.

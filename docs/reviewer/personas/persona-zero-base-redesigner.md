@@ -110,3 +110,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
   — 재사용 사유: 역할개념 그대로 유효. 6대 요소 무수정.
   — 이번 라운드 집중: 66곳 표시 시점 정리 대신 Rust 경계에서 요약/진단을 구조적으로 분리하는 대안.
 - 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 2차(증분, 재사용) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13-r2.md`
+- 2026-10-13 / target_id `devtools-l1-l2-l4` / 1차(최초, Standard) / `docs/reviewer/review-2026-10-13-devtools-l1-l2-l4.md`
+  — 재사용 사유: 역할개념 그대로 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 멈추는 프로브에 상한을 다는 대신 macOS도 Windows처럼 PATH 정적 스캔으로 프로브 자체를 제거(RV-006).

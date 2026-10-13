@@ -55,3 +55,6 @@ Tauri v1→v2 데스크톱 앱을 3년 운영하며 "버튼 하나 눌렀더니 
 - 2026-10-13 / target_id `r3-process-drain-and-tree-kill` / 2차(재검토, 풀패널) / `docs/reviewer/review-r3-process-drain-and-tree-kill-2026-10-13-r2.md`
   — 재사용 사유: 플레이크의 해법이 "테스트 전용 락으로 직렬화"다 — 그 락이 무엇을 직렬화하고 무엇을 놓치는지가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: TEST_SPAWN_LOCK 범위 밖 spawn과의 역방향 fd 상속(N2), Windows PLUGIN_OP_LOCK 가드 수명의 유한화.
+- 2026-10-13 / target_id `devtools-l1-l2-l4` / 1차(최초, Standard) / `docs/reviewer/review-2026-10-13-devtools-l1-l2-l4.md`
+  — 재사용 사유: EXECUTION_LOCK 보유 시간 상한·poison 회복·PREVIEW_LOCK 신설이 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 락 보유 최악 합계, poison 회복(release panic=abort로 dev 한정 — RV-003), PREVIEW_LOCK과 전체 업데이트 루프·사용자 동시 조작(RV-002), 테스트 spawn 락 비참여(RV-005).
