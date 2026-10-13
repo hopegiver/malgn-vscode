@@ -101,6 +101,12 @@ export function runGuideBoundaryChecks(mod) {
   const all = run({ cacheHitRate: 10, peakDay: { date: '2026-10-01', total: 500_000 } }, mix(800_000));
   check('3규칙 모두 초과 → findings 3건, 각 finding에 근거 수치+기준(threshold)과 action', all.status === 'findings' && all.findings.length === 3 && all.findings.every((f) => f.evidence.length > 0 && f.evidence.every((e) => e.value && e.threshold) && f.action && f.observation), `${all.status}/${all.findings.length}`);
   check('finding 문구에 인과 단정("때문") 없음', all.findings.every((f) => !/때문/.test(f.observation + f.action)), '');
+  // RV-004: 캐시 카드와 쏠림 카드가 함께 뜰 때 /compact·세션 분할 조언이 서로 반대로 읽히지 않는다 —
+  // /compact를 권하는 문장("/compact로 정리")이 어느 카드에도 없고, 두 카드 모두 /compact를
+  // 캐시 재사용과 맞바꾸는 선택으로만 언급한다.
+  const cacheAction = all.findings.find((f) => f.ruleId === 'cache-hit-low')?.action ?? '';
+  const peakAction = all.findings.find((f) => f.ruleId === 'peak-day-concentration')?.action ?? '';
+  check('캐시·쏠림 카드가 함께 떠도 /compact 조언이 모순되지 않음', !/\/compact로 (정리|압축)/.test(cacheAction + peakAction) && /캐시 재사용이 줄어들/.test(cacheAction) && /캐시 재사용이 줄어들/.test(peakAction) && /무관한 작업/.test(cacheAction) && /무관한 작업/.test(peakAction), `${cacheAction} | ${peakAction}`);
   check('finding 문구에 달러($) 없음(비용 미사용)', all.findings.every((f) => !/\$/.test(f.observation + f.action + f.evidence.map((e) => e.value).join(''))), '');
 
   return { total, failures, rows };

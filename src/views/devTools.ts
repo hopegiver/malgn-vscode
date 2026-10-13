@@ -513,9 +513,18 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   if (updating) panels.push(renderRunningPanel(tool));
   if (pendingPreview) panels.push(renderPreviewPanel(tool, pendingPreview));
   if (!updating && !pendingPreview && lastResult) panels.push(renderResultPanel(tool, lastResult));
-  // 설치가 확인된 도구에는 지난 배치의 건너뜀 사유가 더 이상 맞지 않는다.
-  const skipReason = batchSkipReason[tool.id];
-  if (skipReason && !tool.installed && !updating && !pendingPreview && !lastResult) panels.push(renderSkipPanel(tool, skipReason));
+  // 설치가 확인된 도구에는 지난 배치의 건너뜀 사유가 더 이상 맞지 않는다. 선행 도구도
+  // 마찬가지다 — 배치 뒤에 사용자가 선행 도구(Node.js 등)를 개별 설치해 지금은 모두
+  // 설치돼 있으면 "설치가 확인되지 않아 건너뜀"은 사실이 아니므로 패널을 숨기고, 아직
+  // 미설치인 선행 도구만 현재 목록 기준으로 사유에 적는다.
+  if (batchSkipReason[tool.id] && !tool.installed && !updating && !pendingPreview && !lastResult) {
+    const installedNow = new Set(state.devTools.items.filter((t) => t.installed).map((t) => t.id));
+    const stillUnmet = unmetInstallDependencies(tool, installedNow);
+    if (stillUnmet.length > 0) {
+      const nameById = new Map(state.devTools.items.map((t) => [t.id, t.name]));
+      panels.push(renderSkipPanel(tool, skipReasonForUnmet(stillUnmet.map((id) => nameById.get(id) ?? id))));
+    }
+  }
   if (tool.actionKind === 'manual' && state.devTools.manualOpen[tool.id]) panels.push(renderManualPanel(tool));
 
   return el('div', { className: 'devtool-item' }, [row, ...panels]);

@@ -9,15 +9,22 @@ export const startHash = '#/';
 
 
 // ---- P2-1 온보딩 체크리스트 시나리오 공용 픽스처 ----
-// check_dev_tools 응답은 required 플래그(백엔드 DEV_TOOLS 테이블: node·git만 true)를 실제
-// 모양 그대로 싣는다. 하네스 베이스 샘플에는 required/git이 없어 이 시나리오들이 직접 만든다.
-function devToolsFixture({ claudeInstalled = true, nodeInstalled = true, gitInstalled = true } = {}) {
-  const tool = (id, name, installed, required, version) => ({
+// check_dev_tools 응답은 백엔드 DEV_TOOLS 테이블의 실제 모양을 그대로 싣는다 — required는 node·git·
+// claude가 true(Claude는 P2-2에서 필수로 바뀜), claude의 installDependsOn은 ['node']. 하네스 베이스
+// 샘플에는 required/git이 없어 이 시나리오들이 직접 만든다.
+// claudePathWhenMissing: installed=false인데 path가 있는 상태(경로는 찾았으나 `--version` 조회가
+// 타임아웃·빈 출력으로 실패) — 백엔드 query.rs가 낼 수 있는 모양이다.
+function devToolsFixture({ claudeInstalled = true, nodeInstalled = true, gitInstalled = true, claudePathWhenMissing = null } = {}) {
+  const tool = (id, name, installed, required, version, extra = {}) => ({
     id, name, installed, version: installed ? version : null, path: installed ? `/usr/local/bin/${id}` : null,
     installMethod: installed ? 'brew' : null, actionKind: installed ? 'manual' : 'run', manualHint: null, required,
+    installDependsOn: [], ...extra,
   });
   return [
-    tool('claude', 'Claude Code', claudeInstalled, false, '2.1.0'),
+    tool('claude', 'Claude Code', claudeInstalled, true, '2.1.0', {
+      installDependsOn: ['node'],
+      ...(!claudeInstalled && claudePathWhenMissing ? { path: claudePathWhenMissing } : {}),
+    }),
     tool('node', 'Node.js', nodeInstalled, true, '22.9.0'),
     tool('git', 'Git', gitInstalled, true, '2.45.0'),
     tool('gh', 'GitHub CLI', false, false, null),
@@ -470,6 +477,20 @@ export function scenarios(base) {
         if (!install || install.state !== 'todo' || !install.current) {
           bugs.push({ severity: 'Critical', symptom: `claude 설치 단계가 todo+현재 단계가 아님(실제: ${JSON.stringify(install)})`, file: CHECKLIST });
         }
+        // RV-001: Claude는 required=true이지만 별도 2단계가 전담한다 — 1단계(필수 도구)는 done이고
+        // 진행 카운트는 1/3(Node·Git 설치됨)이어야 한다(Claude가 1·2단계에 중복 집계되면 0/3).
+        const reqStep = await stepState(page, 'required-tools');
+        if (!reqStep || reqStep.state !== 'done') {
+          bugs.push({ severity: 'Critical', symptom: `Claude만 없는데 필수 도구 단계가 done이 아님(실제: ${JSON.stringify(reqStep)}) — Claude가 1단계에 중복 집계됨`, file: 'src/onboarding.ts:requiredToolsStep' });
+        }
+        const missingCount = await page.locator('.onboard-box .box-head .count').textContent().catch(() => null);
+        if (!missingCount || !missingCount.includes('1/3')) {
+          bugs.push({ severity: 'Major', symptom: `Claude만 없는 상태의 진행 카운트가 1/3이 아님(실제: ${missingCount})`, file: CHECKLIST });
+        }
+        const reqDetail = await page.locator('.onboard-row[data-step="required-tools"] .onboard-detail').textContent().catch(() => '');
+        if (reqDetail && reqDetail.includes('Claude')) {
+          bugs.push({ severity: 'Major', symptom: `필수 도구 단계 설명에 Claude가 중복 표기됨(실제: ${reqDetail})`, file: 'src/onboarding.ts:requiredToolsStep' });
+        }
         if (!login || login.state !== 'blocked') {
           bugs.push({ severity: 'Critical', symptom: `미설치인데 로그인 단계가 blocked가 아님(실제: ${JSON.stringify(login)}) — 조회 에러를 해석해 단정함`, file: CHECKLIST });
         }
@@ -488,6 +509,39 @@ export function scenarios(base) {
           bugs.push({ severity: 'Critical', symptom: `설치 버튼 클릭이 실행 커맨드를 호출함: ${JSON.stringify(forbidden)}`, file: 'src/views/home.ts:claudeAuthWidget' });
         }
         await shot('02-after-install-button-devtools');
+      },
+    },
+    // (a') RV-003: claude 경로는 있는데 버전 조회가 실패해 installed=false — 설치 "확정" 미달이므로
+    // 기존 로그인 버튼을 유지하고 설치 버튼으로 바꾸지 않는다. 설치 단계는 단정 없이 확인 불가(error).
+    {
+      id: 'onboarding-claude-path-present-version-failed-keeps-login',
+      fixtures: { ...base, check_dev_tools: devToolsFixture({ claudeInstalled: false, claudePathWhenMissing: '/Users/dev/.local/bin/claude' }), check_claude_auth_status: AUTH_OUT },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await shot('01-claude-path-present-version-failed');
+        const widget = page.locator('.home-widget', { hasText: 'claude CLI 로그인' });
+        if ((await widget.getByRole('button', { name: 'Claude Code 설치하기' }).count()) > 0) {
+          bugs.push({ severity: 'Major', symptom: 'claude 경로가 있는데(버전 조회만 실패) 설치 안내 버튼으로 미설치를 단정함', file: 'src/onboarding.ts:claudeInstallState' });
+        }
+        if ((await widget.getByRole('button', { name: '앱에서 로그인' }).count()) === 0) {
+          bugs.push({ severity: 'Major', symptom: '미설치 확정이 아닌데 기존 "앱에서 로그인" 버튼이 사라짐', file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        const text = (await widget.textContent()) ?? '';
+        if (text.includes('설치되어 있지 않아')) {
+          bugs.push({ severity: 'Major', symptom: `경로가 있는데 "설치되어 있지 않아…" 단정 문구가 보임(실제: ${text})`, file: 'src/views/home.ts:claudeAuthWidget' });
+        }
+        const inst = await stepState(page, 'claude-install');
+        const login = await stepState(page, 'claude-login');
+        if (!inst || inst.state !== 'error') {
+          bugs.push({ severity: 'Major', symptom: `경로는 있고 버전 조회 실패인데 설치 단계가 error(확인 불가)가 아님(실제: ${JSON.stringify(inst)})`, file: 'src/onboarding.ts:claudeInstallStep' });
+        }
+        if (login && login.state === 'blocked') {
+          bugs.push({ severity: 'Major', symptom: '설치 미확정인데 로그인 단계가 blocked로 단정됨', file: 'src/onboarding.ts:claudeLoginStep' });
+        }
+        const instDetail = await page.locator('.onboard-row[data-step="claude-install"] .onboard-detail').textContent().catch(() => '');
+        if (instDetail && instDetail.includes('설치되어 있지 않습니다')) {
+          bugs.push({ severity: 'Major', symptom: `설치 단계 설명이 미설치로 단정함(실제: ${instDetail})`, file: 'src/onboarding.ts:claudeInstallStep' });
+        }
       },
     },
     // (b) 설치됨 + 미로그인 — 설치 두 단계 done, 로그인 단계가 현재 단계, 위젯은 기존 로그인 버튼 유지.

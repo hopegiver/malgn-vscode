@@ -58,14 +58,18 @@ export type ClaudeInstallState = 'installed' | 'missing' | 'unknown';
 
 /**
  * Claude Code(claude CLI) 설치 여부. 'missing'은 개발 도구 조회가 성공했고 그 결과에
- * claude 항목이 있으며 installed===false일 때만 나온다. 로딩·에러·항목 부재는 모두
- * 'unknown'이라 호출 측이 기존 동작을 유지해야 한다.
+ * claude 항목이 있으며 installed===false이면서 실행 파일 경로(path) 자체가 없을 때만
+ * 나온다. 경로는 있는데 버전 조회만 실패(타임아웃·빈 출력)해 installed=false인 경우는
+ * 실제로 설치돼 있을 수 있으므로 'unknown'이다. 로딩·에러·항목 부재도 'unknown'이라
+ * 호출 측이 기존 동작(로그인 버튼 유지)을 유지해야 한다.
  */
 export function claudeInstallState(devTools: OnboardingInput['devTools']): ClaudeInstallState {
   if (devTools.error || !devTools.loaded) return 'unknown';
   const claude = devTools.items.find((t) => t.id === 'claude');
   if (!claude) return 'unknown';
-  return claude.installed ? 'installed' : 'missing';
+  if (claude.installed) return 'installed';
+  // path는 백엔드가 파일을 찾았을 때만 채운다(query.rs: 미발견 None). 경로가 있으면 확정 불가.
+  return claude.path == null ? 'missing' : 'unknown';
 }
 
 function devToolsUnknown(devTools: OnboardingInput['devTools']): { state: 'loading' | 'error'; detail: string } | null {
@@ -81,7 +85,9 @@ function requiredToolsStep(devTools: OnboardingInput['devTools']): OnboardingSte
   if (devTools.items.length === 0) {
     return { kind: 'required-tools', title, state: 'error', detail: '개발 도구 목록이 비어 있어 설치 상태를 판정할 수 없습니다.' };
   }
-  const missing = devTools.items.filter((t) => t.required && !t.installed);
+  // Claude Code는 필수(required)지만 별도의 2단계(claude-install)가 전담한다 — 여기에도
+  // 넣으면 같은 미설치가 두 단계에서 중복 미완료로 잡힌다.
+  const missing = devTools.items.filter((t) => t.required && !t.installed && t.id !== 'claude');
   if (missing.length > 0) {
     return { kind: 'required-tools', title, state: 'todo', detail: `${missing.map((t) => t.name).join(', ')} 설치가 필요합니다.` };
   }
@@ -99,6 +105,10 @@ function claudeInstallStep(devTools: OnboardingInput['devTools']): OnboardingSte
   }
   if (install === 'missing') {
     return { kind: 'claude-install', title, state: 'todo', detail: 'claude CLI가 설치되어 있지 않습니다.' };
+  }
+  const claude = devTools.items.find((t) => t.id === 'claude');
+  if (claude) {
+    return { kind: 'claude-install', title, state: 'error', detail: 'claude 실행 파일은 있지만 버전을 확인하지 못했습니다.' };
   }
   return { kind: 'claude-install', title, state: 'error', detail: '개발 도구 목록에서 Claude Code 항목을 찾지 못했습니다.' };
 }

@@ -136,7 +136,7 @@ function ruleCacheHitLow(t: GuideTotals, fmt: TokenFormatter): RuleOutcome {
         { label: '캐시 히트율', value: `${t.cacheHitRate}%`, threshold: `${T.cacheHitLowBelowPct}% 미만` },
         { label: '표본', value: `${fmt(sample)} 토큰 · 활동 ${t.activeDays}일`, threshold: `${fmt(T.minSampleTokens)} 토큰 · ${T.minActiveDays}일 이상` },
       ],
-      action: '관련된 작업은 새 세션을 여는 대신 같은 세션에서 이어가고, 서로 무관한 작업일 때만 세션을 나누세요. /compact·/clear를 자주 쓰면 캐시 재사용이 줄어들 수 있습니다.',
+      action: '관련된 작업은 새 세션을 여는 대신 같은 세션에서 이어가고, 서로 무관한 작업일 때만 세션을 나누세요. /compact·/clear는 컨텍스트를 줄이는 대신 이후 캐시 재사용이 줄어들 수 있으니 필요할 때만 쓰세요.',
     },
   };
 }
@@ -159,7 +159,7 @@ function rulePeakDay(t: GuideTotals, fmt: TokenFormatter): RuleOutcome {
         { label: `최고 사용일 ${day} 비중`, value: `${share}% (${fmt(t.peakDay.total)} / ${fmt(t.totalTokens)} 토큰)`, threshold: `${T.peakDayShareAtLeastPct}% 이상` },
         { label: '활동일', value: `${t.activeDays}일`, threshold: `${T.peakDayMinActiveDays}일 이상` },
       ],
-      action: '아래 일별 목록에서 그 날짜를 눌러 세션별 사용량을 확인해 보세요. 한 세션에 몰려 있다면 작업 단위로 세션을 나누거나 중간에 /compact로 정리하는 것이 일반적으로 도움이 됩니다.',
+      action: '아래 일별 목록에서 그 날짜를 눌러 세션별 사용량을 확인해 보세요. 한 세션에 몰려 있다면 서로 무관한 작업끼리만 세션을 나누고, 이어지는 작업은 같은 세션에서 계속하세요. /compact는 컨텍스트를 줄이는 대신 이후 캐시 재사용이 줄어들 수 있는 선택입니다.',
     },
   };
 }

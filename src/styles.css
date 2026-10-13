@@ -1442,7 +1442,7 @@ textarea.settings-input { resize: vertical; }
 .onboard-row:last-child { border-bottom: none; }
 .onboard-marker { font-family: var(--font-numeric); font-size: var(--font-size-body); color: var(--text-muted-aa); text-align: center; }
 .onboard-title { font-size: var(--font-size-small); color: var(--text-primary); }
-.onboard-detail { font-size: var(--font-size-caption); color: var(--text-muted-aa); margin-top: 2px; }
+.onboard-detail { font-size: var(--font-size-caption); color: var(--text-muted-aa); margin-top: var(--space-05); }
 .onboard-note { font-size: var(--font-size-caption); color: var(--accent); }
 .onboard-row.is-done .onboard-marker { color: var(--status-good); }
 .onboard-row.is-done .onboard-title { color: var(--text-secondary); }

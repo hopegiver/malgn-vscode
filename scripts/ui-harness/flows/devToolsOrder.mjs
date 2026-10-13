@@ -16,7 +16,7 @@ const FILE = 'src/views/devTools.ts:handleUpdateAll';
 
 // 백엔드 DEV_TOOLS 테이블 순서(Claude가 Node보다 앞) 그대로 — 정렬이 없으면 Claude가 먼저
 // 실행되는 상황을 재현한다. installDependsOn/required는 백엔드 정본 값과 같은 모양.
-function tool(id, name, { installed, required = false, installDependsOn = [] }) {
+function tool(id, name, { installed, required = false, installDependsOn = [], actionKind = 'run' }) {
   return {
     id,
     name,
@@ -24,11 +24,25 @@ function tool(id, name, { installed, required = false, installDependsOn = [] }) 
     version: installed ? '1.0.0' : null,
     path: installed ? `/opt/homebrew/bin/${id}` : null,
     installMethod: installed ? 'brew' : null,
-    actionKind: 'run',
+    actionKind,
     manualHint: null,
     required,
     installDependsOn,
   };
+}
+
+// 실제 백엔드가 내는 "신규 머신" 모양: Node가 없으면 npm이 해석되지 않아 Claude/pnpm/Wrangler가
+// 처음부터 actionKind=manual이고(query.rs: resolve_install_plan → Manual), mac에서는 Node도 manual이다.
+// 그래서 배치의 runnable에는 이미 설치된 gh/git 업데이트만 남는다.
+function realShapeNoNodeList() {
+  return [
+    tool('claude', 'Claude Code', { installed: false, required: true, installDependsOn: ['node'], actionKind: 'manual' }),
+    tool('node', 'Node.js', { installed: false, required: true, actionKind: 'manual' }),
+    tool('gh', 'GitHub CLI', { installed: true }),
+    tool('git', 'Git', { installed: true, required: true, actionKind: 'manual' }),
+    tool('pnpm', 'pnpm', { installed: false, installDependsOn: ['node'], actionKind: 'manual' }),
+    tool('wrangler', 'Wrangler', { installed: false, installDependsOn: ['node'], actionKind: 'manual' }),
+  ];
 }
 
 function toolList({ nodeInstalled }) {
@@ -216,6 +230,59 @@ export function scenarios(base) {
         bugs.push({ severity: 'Critical', symptom: '[node-already-installed] Node가 이미 설치돼 있는데 건너뜀 패널이 표시됨', file: FILE });
       }
     }),
+
+    // RV-005: 배치에서 Node 실패로 건너뜀 사유가 붙은 뒤 사용자가 Node를 따로 설치해 재조회하면(지금은
+    // 선행 도구가 모두 설치됨) "설치가 확인되지 않아 건너뜀"은 사실이 아니므로 패널이 사라져야 한다.
+    mk('skip-reason-clears-after-node-installed', false, { nodeOutcome: 'failed', nodePreviewReliable: true }, async (page, { shot, bugs }) => {
+      await runBatch(page);
+      await expectDependentsSkipped(page, bugs, 'skip-clears(배치 직후)', ['preview:node', 'install:node']);
+      await shot('01-skip-panels-before');
+      await page.evaluate((installedNodeList) => {
+        const orig = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = async (cmd, args) => (cmd === 'check_dev_tools' ? installedNodeList : orig(cmd, args));
+      }, toolList({ nodeInstalled: true }));
+      await page.getByRole('button', { name: '↻ 다시 확인' }).click();
+      await page.waitForFunction(() => document.querySelector('#devtool-row-node')?.textContent?.includes('설치됨') || !document.querySelector('.devtool-panel-skipped'), null, { timeout: 4000 }).catch(() => {});
+      await page.waitForTimeout(200);
+      await shot('02-skip-panels-after-node-installed');
+      const left = await page.locator('.devtool-panel-skipped').count();
+      if (left !== 0) {
+        const texts = await page.locator('.devtool-panel-skipped').allTextContents();
+        bugs.push({ severity: 'Major', symptom: `[skip-reason-clears] Node가 설치된 것으로 재조회됐는데 건너뜀 사유 패널이 ${left}개 남음(거짓 문장): ${JSON.stringify(texts)}`, file: 'src/views/devTools.ts:renderDevToolItem' });
+      }
+    }),
+
+    // RV-002 보완(실제 모양): Node 미설치 신규 머신에서는 Claude/pnpm/Wrangler가 manual로 내려와
+    // 배치 runnable에 들어오지 않는다 — 배치는 이들을 미리보기·설치하지 않고(오동작 없음), 건너뜀
+    // 패널도 만들지 않으며(실행 대상이 아니었으므로), 설치 요약 동의창도 뜨지 않는다.
+    {
+      id: 'real-shape-no-node-dependents-manual-not-run',
+      startHash,
+      fixtures: { ...base, check_dev_tools: realShapeNoNodeList() },
+      async run(page, { shot, bugs }) {
+        await page.evaluate(installStub, { nodeOutcome: 'failed', nodePreviewReliable: true });
+        await page.waitForSelector('.devtool-row');
+        await page.getByRole('button', { name: '전체 업데이트' }).click();
+        await page.waitForTimeout(300);
+        if ((await page.locator('.modal-body').count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: '[real-shape] 설치 대상(run)이 없는데 설치 요약 동의창이 떴음', file: FILE });
+        }
+        await page.waitForFunction(() => !document.querySelector('.devtool-header-actions .btn-primary')?.textContent?.includes('중…'), null, { timeout: 8000 });
+        await page.waitForTimeout(150);
+        await shot('01-real-shape-after-batch');
+        const all = await page.evaluate(() => window.__invokeOrder ?? []);
+        const touched = all.filter((e) => ['claude', 'node', 'pnpm', 'wrangler'].includes(e.split(':')[1]));
+        if (touched.length > 0) {
+          bugs.push({ severity: 'Critical', symptom: `[real-shape] manual 도구(Claude/Node/pnpm/Wrangler)에 배치가 미리보기·설치를 호출함: ${JSON.stringify(touched)}`, file: FILE });
+        }
+        if (!all.includes('update:gh')) {
+          bugs.push({ severity: 'Major', symptom: `[real-shape] 설치된 gh 업데이트는 정상 진행돼야 함(실제 호출: ${JSON.stringify(all)})`, file: FILE });
+        }
+        if ((await page.locator('.devtool-panel-skipped').count()) !== 0) {
+          bugs.push({ severity: 'Major', symptom: '[real-shape] 실행 대상이 아니었던 manual 도구에 건너뜀 패널이 표시됨', file: FILE });
+        }
+      },
+    },
 
     // 순수 함수(devToolsOrder.ts) 단위 검증 — Vite가 모듈을 그대로 서빙하므로 브라우저에서 import한다.
     {
