@@ -542,8 +542,8 @@ function renderWeeklySummary(trend: UsageTrend): HTMLElement {
   if (w.status === 'insufficient' || !w.current) {
     const msg =
       w.spanDays === 0
-        ? '사용 기록이 없어 주간 요약을 내지 않습니다.'
-        : `사용 기록이 있는 기간이 ${w.spanDays}일입니다 — 7일 이상 쌓여야 주간 요약을, 14일 이상 쌓여야 전주 대비를 냅니다.`;
+        ? '어제까지 끝난 날의 사용 기록이 없어 주간 요약을 내지 않습니다.'
+        : `최근 30일 안에서 첫 사용일부터 어제까지 ${w.spanDays}일이 지났습니다 — 끝난 날이 7일 이상이어야 주간 요약을, 14일 이상이어야 전주 대비를 냅니다.`;
     const block = el('div', { className: 'state-block-desc trend-weekly-note' }, [msg]);
     block.setAttribute('data-trend-weekly', 'insufficient');
     return block;
@@ -552,7 +552,7 @@ function renderWeeklySummary(trend: UsageTrend): HTMLElement {
   const prev = w.previous;
   const d = w.delta;
   const rows: HTMLElement[] = [
-    trendRow(['지표', `최근 7일 (${weekRangeLabel(cur)})`, prev ? `직전 7일 (${weekRangeLabel(prev)})` : '직전 7일', '전주 대비'], true),
+    trendRow(['지표', `최근 완료 7일 (${weekRangeLabel(cur)})`, prev ? `그 전 7일 (${weekRangeLabel(prev)})` : '그 전 7일', '전주 대비'], true),
     trendRow([
       '총 토큰',
       formatTokenCount(cur.totalTokens),
@@ -579,7 +579,14 @@ function renderWeeklySummary(trend: UsageTrend): HTMLElement {
   ];
   const parts: HTMLElement[] = [el('div', { className: 'trend-week-table' }, rows)];
   if (w.status === 'no-baseline') {
-    parts.push(el('div', { className: 'state-block-desc trend-weekly-note' }, [`직전 7일은 사용 기록이 있는 기간(${w.spanDays}일)을 벗어나 비교하지 않습니다 — 14일 이상 쌓이면 전주 대비를 표시합니다.`]));
+    parts.push(el('div', { className: 'state-block-desc trend-weekly-note' }, [`그 전 7일은 최근 30일 안 첫 사용일보다 앞이라(첫 사용일부터 어제까지 ${w.spanDays}일) 비교하지 않습니다 — 끝난 날이 14일 이상 쌓이면 전주 대비를 표시합니다.`]));
+  }
+  if (w.today) {
+    const t = el('div', { className: 'state-block-desc trend-weekly-note trend-today-note' }, [
+      `오늘(${formatMonthDay(w.today.date)}, 집계 중) ${formatTokenCount(w.today.totalTokens)} 토큰 — 하루가 끝나지 않아 위 표에 넣지 않았습니다.`,
+    ]);
+    t.setAttribute('data-trend-today', String(w.today.totalTokens));
+    parts.push(t);
   }
   const box = el('div', { className: 'trend-weekly' }, parts);
   box.setAttribute('data-trend-weekly', w.status);
@@ -608,8 +615,8 @@ function renderDailyTrendChart(trend: UsageTrend): HTMLElement {
   const kindByDate = new Map(trend.anomalies.points.map((p) => [p.date, p.kind]));
   const bars = trend.series.map((p, i) => {
     const kind = kindByDate.get(p.date);
-    const cls = kind === 'spike' ? ' trend-bar-spike' : kind === 'drop' ? ' trend-bar-drop' : p.total === 0 ? ' trend-bar-zero' : '';
     const isToday = i === trend.series.length - 1;
+    const cls = (kind === 'spike' ? ' trend-bar-spike' : kind === 'drop' ? ' trend-bar-drop' : p.total === 0 ? ' trend-bar-zero' : '') + (isToday ? ' trend-bar-today' : '');
     const bar = el('div', { className: `trend-bar${cls}` }, []);
     bar.style.height = p.total === 0 ? '2px' : `${Math.max(3, Math.round((p.total / max) * 100))}%`;
     bar.title = `${p.date} · ${p.total.toLocaleString('ko-KR')} 토큰${isToday ? ' (오늘, 집계 중)' : ''}${kind === 'spike' ? ' · 급증' : kind === 'drop' ? ' · 급락' : ''}`;
@@ -631,7 +638,7 @@ function renderDailyTrendChart(trend: UsageTrend): HTMLElement {
 function renderAnomalies(trend: UsageTrend): HTMLElement {
   const T = TREND_THRESHOLDS;
   const a = trend.anomalies;
-  const rule = `규칙: 그 날 직전 ${T.baselineLookbackDays}일 중 사용한 날(최소 ${T.minBaselineActiveDays}일)의 일 토큰 중앙값을 기준으로 ${T.spikeRatio}배 이상이면 급증, 1/${T.dropDivisor} 이하면 급락 — 단, 기준과의 차이가 ${formatTokenCount(T.minAbsDeviationTokens)} 토큰 이상일 때만. 사용 없는 날과 오늘의 급락은 판정하지 않습니다.`;
+  const rule = `규칙: 그 날 직전 ${T.baselineLookbackDays}일 중 사용한 날(최소 ${T.minBaselineActiveDays}일)의 일 토큰 중앙값을 기준으로 ${T.spikeRatio}배 이상이면 급증, 1/${T.dropDivisor} 이하면 급락 — 단, 기준과의 차이가 ${formatTokenCount(T.minAbsDeviationTokens)} 토큰 이상일 때만. 사용 없는 날은 판정하지 않고, 오늘은 하루가 끝나지 않아 급증만 판정합니다.`;
   const head = el('div', { className: 'trend-subhead' }, ['이상치 (일별 토큰 급증·급락)']);
   let body: HTMLElement;
   let state: string;

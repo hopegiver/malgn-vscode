@@ -83,17 +83,26 @@ export interface WeekDelta {
   readonly cacheHitPointDiff: number | null; // 퍼센트포인트(%p) 차, 어느 한쪽이 null이면 null
 }
 
-// insufficient: 활동 시작 후 경과일 < 7 — 주간 요약 자체를 내지 않는다
-// no-baseline:  7 <= 경과일 < 14 — 이번 주만 보이고 직전 주와는 비교하지 않는다
-// ok:           경과일 >= 14 — 직전 주와 비교한다(직전 주 토큰이 0일 수는 있다)
+// 경과일은 "어제까지 끝난 날"만 센다(오늘은 하루가 끝나지 않아 제외).
+// insufficient: 경과일 < 7 — 주간 요약 자체를 내지 않는다
+// no-baseline:  7 <= 경과일 < 14 — 최근 완료 7일만 보이고 그 전 7일과는 비교하지 않는다
+// ok:           경과일 >= 14 — 그 전 7일과 비교한다(그 전 7일 토큰이 0일 수는 있다)
 export type WeeklyStatus = 'insufficient' | 'no-baseline' | 'ok';
+
+export interface TodayPartial {
+  readonly date: string;
+  readonly totalTokens: number; // 아직 끝나지 않은 오늘의 누적 — 주간 비교 창에 넣지 않는다
+}
 
 export interface WeeklySummary {
   readonly status: WeeklyStatus;
-  readonly spanDays: number; // 최초 사용일부터 오늘까지 경과일(양끝 포함), 사용 기록이 없으면 0
-  readonly current: WeekMetrics | null; // insufficient이면 null
-  readonly previous: WeekMetrics | null; // ok일 때만
+  // 최근 30일 창 안에서 처음 사용한 날부터 어제까지의 경과일(양끝 포함). 어제까지 사용한
+  // 날이 없으면 0. (창 밖 — 31일 전 이전 — 의 사용은 입력에 없어 알 수 없다.)
+  readonly spanDays: number;
+  readonly current: WeekMetrics | null; // 어제까지 끝난 7일. insufficient이면 null
+  readonly previous: WeekMetrics | null; // 그 전 7일. ok일 때만
   readonly delta: WeekDelta | null; // ok일 때만
+  readonly today: TodayPartial | null; // 집계 중인 오늘(표 밖 표기용). 시계열이 비었으면 null
 }
 
 export type AnomalyKind = 'spike' | 'drop' | 'normal' | 'unjudged';
@@ -219,23 +228,28 @@ function weekMetrics(points: readonly SeriesPoint[], deps: TrendDeps): WeekMetri
 }
 
 /**
- * 최근 7일(오늘 포함)과 직전 7일을 요약하고 증감을 낸다.
- * 활동 시작(최초 사용일) 이후 경과일로 비교 가능 여부를 정한다 — 앞선 주가 "사용 안 한
- * 주"인지 "아직 수집 전인 주"인지 입력만으로는 구분할 수 없어서, 최초 사용일 이전 구간은
- * 비교 기준으로 쓰지 않는다.
+ * 어제까지 끝난 7일과 그 전 7일을 요약하고 증감을 낸다. 아직 끝나지 않은 오늘은 두 창
+ * 어디에도 넣지 않는다(하루 중 이른 시각일수록 "이번 주"가 낮게 잡혀 전주 대비 부호가
+ * 뒤집히는 편향을 막기 위해) — 오늘 수치는 today로 따로 돌려준다.
+ * 활동 시작(최근 30일 창 안 최초 사용일) 이후 "완료된 날" 경과일로 비교 가능 여부를 정한다 —
+ * 앞선 주가 "사용 안 한 주"인지 "아직 수집 전인 주"인지 입력만으로는 구분할 수 없어서,
+ * 최초 사용일 이전 구간은 비교 기준으로 쓰지 않는다.
+ * series의 마지막 점이 오늘이라고 가정한다(buildDailySeries가 그렇게 만든다).
  */
 export function summarizeWeeks(series: readonly SeriesPoint[], deps: TrendDeps): WeeklySummary {
   const W = TREND_THRESHOLDS.weekDays;
-  const firstActive = series.findIndex((p) => p.total > 0);
-  const spanDays = firstActive < 0 ? 0 : series.length - firstActive;
-  if (series.length < W * 2 || spanDays < W) {
-    return { status: 'insufficient', spanDays, current: null, previous: null, delta: null };
+  const today: TodayPartial | null = series.length > 0 ? { date: series[series.length - 1].date, totalTokens: series[series.length - 1].total } : null;
+  const done = series.slice(0, Math.max(0, series.length - 1)); // 어제까지 끝난 날
+  const firstActive = done.findIndex((p) => p.total > 0);
+  const spanDays = firstActive < 0 ? 0 : done.length - firstActive;
+  if (done.length < W * 2 || spanDays < W) {
+    return { status: 'insufficient', spanDays, current: null, previous: null, delta: null, today };
   }
-  const cur = weekMetrics(series.slice(series.length - W), deps);
+  const cur = weekMetrics(done.slice(done.length - W), deps);
   if (spanDays < W * 2) {
-    return { status: 'no-baseline', spanDays, current: cur, previous: null, delta: null };
+    return { status: 'no-baseline', spanDays, current: cur, previous: null, delta: null, today };
   }
-  const prev = weekMetrics(series.slice(series.length - W * 2, series.length - W), deps);
+  const prev = weekMetrics(done.slice(done.length - W * 2, done.length - W), deps);
   const tokensAbs = cur.totalTokens - prev.totalTokens;
   const delta: WeekDelta = {
     tokensAbs,
@@ -243,7 +257,7 @@ export function summarizeWeeks(series: readonly SeriesPoint[], deps: TrendDeps):
     activeDaysAbs: cur.activeDays - prev.activeDays,
     cacheHitPointDiff: cur.cacheHitRate !== null && prev.cacheHitRate !== null ? cur.cacheHitRate - prev.cacheHitRate : null,
   };
-  return { status: 'ok', spanDays, current: cur, previous: prev, delta };
+  return { status: 'ok', spanDays, current: cur, previous: prev, delta, today };
 }
 
 // ---------------- P3-2: 이상치 ----------------
@@ -258,10 +272,11 @@ function median(sortedAsc: readonly number[]): number {
  * 일별 토큰의 급증·급락을 판정한다. 규칙(TREND_THRESHOLDS):
  *   기준선 = 그 날 직전 14일 중 토큰 > 0인 날들의 일 토큰 중앙값 (그 날 자신은 제외).
  *   급증  = 그 날 >= 기준선 x 3  그리고  (그 날 - 기준선) >= 100,000 토큰
- *   급락  = 그 날 <= 기준선 / 3  그리고  (기준선 - 그 날) >= 100,000 토큰 (그 날 > 0, 오늘 제외)
+ *   급락  = 그 날 <= 기준선 / 3  그리고  (기준선 - 그 날) >= 100,000 토큰 (그 날 > 0)
  * 판정하지 않는 경우(kind='unjudged'): 사용 없는 날(0 — 휴무와 구분할 수 없다), 기준선에
- * 쓸 사용일이 5일 미만, 오늘(하루가 끝나지 않아 급락 판정 불가 — 급증은 이미 쌓인 양이라
- * 판정한다). 기준선은 입력 구간(최근 30일) 안의 날만 쓴다.
+ * 쓸 사용일이 5일 미만, 오늘(하루가 끝나지 않았다 — 급증만 판정한다. 이미 쌓인 양이 기준
+ * 이상이면 하루가 끝나도 줄지 않기 때문이다. 급증이 아니면 '기준 이내'도 '급락'도 단정하지
+ * 않고 today-partial로 둔다). 기준선은 입력 구간(최근 30일) 안의 날만 쓴다.
  */
 export function detectAnomalies(series: readonly SeriesPoint[], today: string): AnomalyReport {
   const T = TREND_THRESHOLDS;
@@ -284,7 +299,8 @@ export function detectAnomalies(series: readonly SeriesPoint[], today: string): 
     const isToday = p.date === today;
     let kind: AnomalyKind = 'normal';
     if (m > 0 && p.total >= m * T.spikeRatio && absDev >= T.minAbsDeviationTokens) kind = 'spike';
-    else if (m > 0 && p.total * T.dropDivisor <= m && absDev >= T.minAbsDeviationTokens) kind = isToday ? 'unjudged' : 'drop';
+    else if (isToday) kind = 'unjudged';
+    else if (m > 0 && p.total * T.dropDivisor <= m && absDev >= T.minAbsDeviationTokens) kind = 'drop';
     points.push({ ...base, kind, baselineMedian: m, ratio, reason: kind === 'unjudged' ? 'today-partial' : null });
   }
   const judgedCount = points.filter((p) => p.kind !== 'unjudged').length;

@@ -34,13 +34,15 @@ function rec(offset, total, readShare) {
 }
 const tot = (r) => r.inputTokens + r.outputTokens + r.cacheCreationTokens + r.cacheReadTokens;
 
-// offset 0..29, 6/7번째 날(i%7 in {5,6})은 기록 없음(주말 모사). 이번 주(0..6)는 x1.25, 캐시 read 80% / 직전 이전 70%.
+// offset 0..29, 6/7번째 날(i%7 in {5,6})은 기록 없음(주말 모사). 최근 완료 7일(어제=1 ~ 7)은 x1.25, 캐시 read 80% / 그 이전 70%.
+// 오늘(offset 0)은 주간 비교에 들어가지 않는 부분일이다.
 function steadyItems() {
   const out = [];
   for (let i = 0; i < 30; i++) {
     if (i % 7 === 5 || i % 7 === 6) continue;
     const base = 200_000 + ((i * 37) % 11) * 20_000;
-    out.push(rec(i, i < 7 ? Math.round(base * 1.25) : base, i < 7 ? 0.8 : 0.7));
+    const recent = i >= 1 && i <= 7;
+    out.push(rec(i, recent ? Math.round(base * 1.25) : base, recent ? 0.8 : 0.7));
   }
   return out;
 }
@@ -54,8 +56,8 @@ function withSpikeAndDrop() {
 
 function expectedWeekly(items) {
   const sum = (from, to) => items.filter((r) => { for (let o = from; o <= to; o++) if (r.date === localKey(o)) return true; return false; });
-  const cur = sum(0, 6);
-  const prev = sum(7, 13);
+  const cur = sum(1, 7); // 어제까지 끝난 7일(오늘 제외)
+  const prev = sum(8, 14);
   const t = (rs) => rs.reduce((a, r) => a + tot(r), 0);
   const hit = (rs) => {
     const i = rs.reduce((a, r) => a + r.inputTokens, 0);
@@ -63,7 +65,8 @@ function expectedWeekly(items) {
     const rd = rs.reduce((a, r) => a + r.cacheReadTokens, 0);
     return i + c + rd > 0 ? Math.round((rd / (i + c + rd)) * 100) : null;
   };
-  return { curTotal: t(cur), prevTotal: t(prev), curActive: cur.length, prevActive: prev.length, curHit: hit(cur), prevHit: hit(prev) };
+  const todayRows = sum(0, 0);
+  return { todayTotal: t(todayRows), curTotal: t(cur), prevTotal: t(prev), curActive: cur.length, prevActive: prev.length, curHit: hit(cur), prevHit: hit(prev) };
 }
 
 async function tallShot(page, shot, name) {
@@ -114,6 +117,11 @@ export function scenarios(base) {
         for (const want of [fmt(e.curTotal), fmt(e.prevTotal), `${e.curActive}일`, `${e.prevActive}일`, `${e.curHit}%`, `${e.prevHit}%`]) {
           if (!t.includes(want)) bugs.push({ severity: 'Major', symptom: `주간 요약에 기대값 "${want}"이(가) 없음`, file: 'src/views/usage.ts:renderWeeklySummary' });
         }
+        // 오늘 부분일은 표에 들어가지 않고 따로 '집계 중'으로 표기된다.
+        const todayAttr = await page.locator('[data-trend-today]').getAttribute('data-trend-today');
+        if (todayAttr !== String(e.todayTotal) || !t.includes('집계 중') || !t.includes(`${fmt(e.todayTotal)} 토큰`)) bugs.push({ severity: 'Major', symptom: `오늘 '집계 중' 표기(${fmt(e.todayTotal)}) 없음(attr=${todayAttr})`, file: 'src/views/usage.ts:renderWeeklySummary' });
+        if (!t.includes('최근 완료 7일') || !t.includes('그 전 7일')) bugs.push({ severity: 'Major', symptom: '주간 표 헤더가 "최근 완료 7일 / 그 전 7일"이 아님', file: 'src/views/usage.ts:renderWeeklySummary' });
+        if (e.todayTotal === 0) bugs.push({ severity: 'Minor', symptom: '픽스처 오류: 오늘 사용이 0이면 오늘 격리 검증이 의미 없음', file: 'scripts/ui-harness/flows/usageTrend.mjs' });
         const absDelta = e.curTotal - e.prevTotal;
         const pct = ((absDelta / e.prevTotal) * 100).toFixed(1);
         if (!t.includes(`+${fmt(absDelta)}`) || !t.includes(`+${pct}%`)) bugs.push({ severity: 'Major', symptom: `전주 대비 절대(+${fmt(absDelta)})/%(+${pct}%) 표기 없음`, file: 'src/views/usage.ts' });
@@ -158,7 +166,7 @@ export function scenarios(base) {
     },
     {
       id: 'insufficient',
-      // 최근 4일(오늘~오늘-3)만 사용 — 주간 요약·이상치 모두 판정하지 않아야 한다.
+      // 최근 4일(오늘~오늘-3)만 사용 — 어제까지 끝난 날은 3일이라 주간 요약·이상치 모두 판정하지 않아야 한다.
       fixtures: { ...common, get_daily_usage: [rec(0, 350_000, 0.7), rec(1, 280_000, 0.7), rec(2, 410_000, 0.7), rec(3, 190_000, 0.7)] },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
@@ -166,7 +174,7 @@ export function scenarios(base) {
         const t = await commonChecks(page, bugs, { expectBox: true });
         const status = await page.locator('.trend-box').getAttribute('data-trend-weekly-status');
         if (status !== 'insufficient') bugs.push({ severity: 'Critical', symptom: `4일 데이터인데 주간 상태가 insufficient가 아님(${status})`, file: 'src/usageTrend.ts' });
-        if (!t.includes('사용 기록이 있는 기간이 4일') || !t.includes('7일 이상')) bugs.push({ severity: 'Major', symptom: `데이터 부족 안내 문구가 없음: ${t.slice(0, 160)}`, file: 'src/views/usage.ts:renderWeeklySummary' });
+        if (!t.includes('첫 사용일부터 어제까지 3일') || !t.includes('7일 이상')) bugs.push({ severity: 'Major', symptom: `데이터 부족 안내 문구가 없음: ${t.slice(0, 160)}`, file: 'src/views/usage.ts:renderWeeklySummary' });
         if (await page.locator('.trend-week-table').count()) bugs.push({ severity: 'Major', symptom: '데이터 7일 미만인데 주간 비교 표가 그려짐', file: 'src/views/usage.ts' });
         const state = await page.locator('[data-trend-anomalies]').getAttribute('data-trend-anomalies');
         if (state !== 'insufficient' || !t.includes('판정하지 않았습니다') || !t.includes('이상치가 없다는 뜻이 아닙니다')) bugs.push({ severity: 'Critical', symptom: `이상치 "판정 안 함" 안내가 아님(state=${state})`, file: 'src/views/usage.ts:renderAnomalies' });
@@ -176,7 +184,7 @@ export function scenarios(base) {
     },
     {
       id: 'no-baseline',
-      // 최초 사용일이 오늘-9 -> 경과 10일: 이번 7일은 보이고 직전 7일은 비교 불가.
+      // 최초 사용일이 오늘-9 -> 어제까지 끝난 날 9일: 최근 완료 7일은 보이고 그 전 7일은 비교 불가.
       fixtures: { ...common, get_daily_usage: Array.from({ length: 10 }, (_, i) => rec(i, 300_000 + i * 10_000, 0.7)) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
@@ -190,7 +198,8 @@ export function scenarios(base) {
     },
     {
       id: 'prev-zero',
-      // 직전 7일(오늘-7~-13)에 사용이 없고, 오늘-20과 최근 7일에 사용 -> 전주 0: % 계산 불가를 정직하게 표시.
+      // 그 전 7일(오늘-8~-14)에 사용이 없고, 오늘-20과 최근 완료 7일(오늘-1~-7)에 사용 -> 전주 0: % 계산 불가를 정직하게 표시.
+      // 오늘(offset 0) 100K는 주간 비교에 들어가지 않아야 한다(+250.0K이지 +350.0K가 아니다).
       fixtures: { ...common, get_daily_usage: [rec(20, 300_000, 0.7), rec(2, 250_000, 0.8), rec(0, 100_000, 0.8)] },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
@@ -199,7 +208,8 @@ export function scenarios(base) {
         const status = await page.locator('.trend-box').getAttribute('data-trend-weekly-status');
         if (status !== 'ok') bugs.push({ severity: 'Critical', symptom: `전주 0 픽스처가 ok 상태가 아님(${status})`, file: 'src/usageTrend.ts' });
         if (!t.includes('직전 주 0') || !t.includes('% 계산 안 함')) bugs.push({ severity: 'Major', symptom: '전주 0일 때 "% 계산 안 함" 표기가 없음', file: 'src/views/usage.ts' });
-        if (!t.includes('+350.0K')) bugs.push({ severity: 'Major', symptom: '전주 0이어도 절대 증감(+350.0K)은 표시되어야 함', file: 'src/views/usage.ts' });
+        if (!t.includes('+250.0K')) bugs.push({ severity: 'Major', symptom: '전주 0이어도 절대 증감(+250.0K, 오늘 제외)은 표시되어야 함', file: 'src/views/usage.ts' });
+        if (t.includes('+350.0K')) bugs.push({ severity: 'Critical', symptom: '오늘 부분일(100K)이 주간 비교에 섞임(+350.0K)', file: 'src/usageTrend.ts:summarizeWeeks' });
       },
     },
     {

@@ -1515,14 +1515,15 @@ textarea.settings-input { resize: vertical; }
 .trend-bar { flex: 1 1 0; min-width: 3px; background: var(--accent); border-radius: var(--radius-0); }
 .trend-bar-zero { background: var(--text-muted); }
 .trend-bar-spike { background: var(--status-warn); }
-.trend-bar-drop { background: var(--status-bad); }
+.trend-bar-drop { background: var(--color-ink-muted); } /* 급락은 좋고 나쁨이 없는 사실이라 상태색(빨강)을 쓰지 않는다 */
+.trend-bar-today { opacity: 0.6; } /* 집계 중인 오늘 */
 .trend-axis { display: flex; justify-content: space-between; font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 .trend-subhead { font-size: var(--font-size-caption); font-weight: 700; color: var(--color-ink-muted); margin-bottom: var(--space-2); }
 .trend-anomaly-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-1-5); font-size: var(--font-size-small); }
 .trend-anomaly { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
 .trend-anomaly-mark { font-weight: 700; min-width: 56px; }
 .trend-anomaly-spike .trend-anomaly-mark { color: var(--status-warn); }
-.trend-anomaly-drop .trend-anomaly-mark { color: var(--status-bad); }
+.trend-anomaly-drop .trend-anomaly-mark { color: var(--color-ink-muted); }
 .trend-anomaly-date, .trend-anomaly-value { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 .trend-anomaly-basis { font-size: var(--font-size-caption); color: var(--text-muted-aa); }
 .trend-body .unpriced-note { margin-top: 0; word-break: keep-all; }
