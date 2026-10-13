@@ -10,7 +10,7 @@
 //     고정 임계값을 적용한 규칙 기반 참고 정보다 — 판정은 efficiencyGuide.ts의
 //     순수 함수가 하고, 표본이 작으면 단정하지 않고 "판단 보류"로 표시한다.
 //     그 아래 "사용 추이"(P3-1/P3-2)는 같은 30일 DailyUsage[]를 0으로 채워 날짜를
-//     연속화한 일별 막대 + 최근 7일 vs 직전 7일 요약 + 일별 이상치(급증·급락)다 —
+//     연속화한 일별 막대 + 어제까지 끝난 7일 vs 그 전 7일 요약 + 일별 이상치(급증·급락)다 —
 //     계산은 usageTrend.ts 순수 함수가 하고, 데이터가 부족하면 판정/비교하지 않는다.
 //   - 프로젝트별(projects): 30일 요약(usageSummaryApi.ts)의 Top5 랭킹 + 나머지
 //     합. 프로젝트를 클릭하면 그 프로젝트만의 30일 일별 추이를 펼친다.
@@ -560,7 +560,7 @@ function renderWeeklySummary(trend: UsageTrend): HTMLElement {
       d
         ? trendDeltaCell(
             signed(d.tokensAbs, formatTokenCount),
-            d.tokensPct !== null ? `${d.tokensPct > 0 ? '+' : ''}${d.tokensPct.toFixed(1)}%` : '직전 주 0 — % 계산 안 함'
+            d.tokensPct !== null ? `${d.tokensPct > 0 ? '+' : ''}${d.tokensPct.toFixed(1)}%` : '그 전 7일 0 — % 계산 안 함'
           )
         : trendDeltaCell('—'),
     ]),
@@ -642,7 +642,11 @@ function renderAnomalies(trend: UsageTrend): HTMLElement {
   const head = el('div', { className: 'trend-subhead' }, ['이상치 (일별 토큰 급증·급락)']);
   let body: HTMLElement;
   let state: string;
-  if (a.judgedCount === 0) {
+  if (a.judgedCount === 0 && a.points.some((p) => p.reason === 'today-partial')) {
+    // 판정할 수 있는 날이 오늘뿐이고 오늘은 급증이 아니라 판정을 미룬 경우 — 사유는 기준선 부족이 아니라 하루가 끝나지 않은 것이다.
+    state = 'today-pending';
+    body = el('div', { className: 'state-block-desc' }, [`오늘은 하루가 끝나지 않아 판정을 미뤘습니다 — 어제까지는 직전 ${T.baselineLookbackDays}일 안에 사용한 날이 ${T.minBaselineActiveDays}일 이상인 날이 없어 판정한 날이 없습니다. 이상치가 없다는 뜻이 아닙니다.`]);
+  } else if (a.judgedCount === 0) {
     state = 'insufficient';
     body = el('div', { className: 'state-block-desc' }, [`판정하지 않았습니다 — 날짜마다 직전 ${T.baselineLookbackDays}일 안에 사용한 날이 ${T.minBaselineActiveDays}일 이상 있어야 하는데, 그런 날이 아직 없습니다. 이상치가 없다는 뜻이 아닙니다.`]);
   } else if (a.anomalies.length === 0) {

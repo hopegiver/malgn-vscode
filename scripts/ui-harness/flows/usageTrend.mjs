@@ -192,8 +192,8 @@ export function scenarios(base) {
         const t = await commonChecks(page, bugs, { expectBox: true });
         const status = await page.locator('.trend-box').getAttribute('data-trend-weekly-status');
         if (status !== 'no-baseline') bugs.push({ severity: 'Critical', symptom: `10일 데이터인데 주간 상태가 no-baseline이 아님(${status})`, file: 'src/usageTrend.ts' });
-        if (!t.includes('비교하지 않습니다')) bugs.push({ severity: 'Major', symptom: '직전 주 비교 불가 안내가 없음', file: 'src/views/usage.ts' });
-        if (/[+-]\d+(\.\d)?%(?!p)/.test(t.replace(/\s/g, '')) && /전주 대비\s*[+-]/.test(t)) bugs.push({ severity: 'Major', symptom: '직전 주가 없는데 증감%가 표시됨', file: 'src/views/usage.ts' });
+        if (!t.includes('비교하지 않습니다')) bugs.push({ severity: 'Major', symptom: '그 전 7일 비교 불가 안내가 없음', file: 'src/views/usage.ts' });
+        if (/[+-]\d+(\.\d)?%(?!p)/.test(t.replace(/\s/g, '')) && /전주 대비\s*[+-]/.test(t)) bugs.push({ severity: 'Major', symptom: '그 전 7일이 없는데 증감%가 표시됨', file: 'src/views/usage.ts' });
       },
     },
     {
@@ -207,9 +207,25 @@ export function scenarios(base) {
         const t = await commonChecks(page, bugs, { expectBox: true });
         const status = await page.locator('.trend-box').getAttribute('data-trend-weekly-status');
         if (status !== 'ok') bugs.push({ severity: 'Critical', symptom: `전주 0 픽스처가 ok 상태가 아님(${status})`, file: 'src/usageTrend.ts' });
-        if (!t.includes('직전 주 0') || !t.includes('% 계산 안 함')) bugs.push({ severity: 'Major', symptom: '전주 0일 때 "% 계산 안 함" 표기가 없음', file: 'src/views/usage.ts' });
+        if (!t.includes('그 전 7일 0') || !t.includes('% 계산 안 함')) bugs.push({ severity: 'Major', symptom: '전주 0일 때 "% 계산 안 함" 표기가 없음', file: 'src/views/usage.ts' });
         if (!t.includes('+250.0K')) bugs.push({ severity: 'Major', symptom: '전주 0이어도 절대 증감(+250.0K, 오늘 제외)은 표시되어야 함', file: 'src/views/usage.ts' });
         if (t.includes('+350.0K')) bugs.push({ severity: 'Critical', symptom: '오늘 부분일(100K)이 주간 비교에 섞임(+350.0K)', file: 'src/usageTrend.ts:summarizeWeeks' });
+      },
+    },
+    {
+      id: 'today-only-judgeable',
+      // 어제까지 5일(오늘-1~-5) 300K + 오늘 300K: 기준선 5일을 갖춘 날은 오늘뿐이고 오늘은 급증이 아니다.
+      // 판정을 미룬 사유는 기준선 부족이 아니라 "하루가 끝나지 않음"이어야 한다(옛 문구 "그런 날이 아직 없습니다"는 사실과 다름).
+      fixtures: { ...common, get_daily_usage: [1, 2, 3, 4, 5, 0].map((o) => rec(o, 300_000, 0.7)) },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await tallShot(page, shot, '01-trend-today-only-judgeable');
+        const t = await commonChecks(page, bugs, { expectBox: true });
+        const state = await page.locator('[data-trend-anomalies]').getAttribute('data-trend-anomalies');
+        if (state !== 'today-pending') bugs.push({ severity: 'Major', symptom: `판정 가능일이 오늘뿐인데 이상치 상태가 today-pending이 아님(${state})`, file: 'src/views/usage.ts:renderAnomalies' });
+        if (!t.includes('오늘은 하루가 끝나지 않아 판정을 미뤘습니다') || !t.includes('이상치가 없다는 뜻이 아닙니다')) bugs.push({ severity: 'Major', symptom: `오늘 판정 보류 문구가 없음: ${t.slice(0, 200)}`, file: 'src/views/usage.ts:renderAnomalies' });
+        if (t.includes('그런 날이 아직 없습니다')) bugs.push({ severity: 'Major', symptom: '오늘이 기준선을 갖췄는데 "그런 날이 아직 없습니다"라는 사실과 다른 문구가 나옴', file: 'src/views/usage.ts:renderAnomalies' });
+        if (await page.locator('.trend-bar-spike, .trend-bar-drop, .trend-anomaly').count()) bugs.push({ severity: 'Critical', symptom: '급증이 아닌 오늘에 이상치가 표시됨', file: 'src/usageTrend.ts' });
       },
     },
     {

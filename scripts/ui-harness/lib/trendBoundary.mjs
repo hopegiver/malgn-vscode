@@ -243,6 +243,16 @@ export function runTrendBoundaryChecks(mod) {
     check('평소 수준(기준선과 같음) -> normal, ratio 1', p.kind === 'normal' && p.ratio === 1, JSON.stringify(p));
   }
   {
+    // 판정 가능한 날이 오늘뿐 + 오늘은 급증이 아님: judgedCount 0이어도 오늘은 today-partial이고(기준선 부족이 아님),
+    // 어제까지는 insufficient-baseline이다. 뷰가 이 조합을 "기준선 부족"과 구분해 문구를 가른다.
+    const t = trendOf([1, 2, 3, 4, 5, 0].map((o) => rec(o, 300_000)));
+    const pts = t.anomalies.points;
+    const todayPt = pts[pts.length - 1];
+    const past = pts.filter((x) => x.date !== TODAY && x.total > 0);
+    check('판정 가능일이 오늘뿐: judgedCount 0, 오늘은 today-partial(기준선 5일 보유)', t.anomalies.judgedCount === 0 && todayPt.date === TODAY && todayPt.reason === 'today-partial' && todayPt.baselineDays === 5, JSON.stringify(todayPt));
+    check('판정 가능일이 오늘뿐: 어제까지 사용한 날은 모두 insufficient-baseline', past.length === 5 && past.every((x) => x.reason === 'insufficient-baseline'), JSON.stringify(past.map((x) => x.reason)));
+  }
+  {
     const t = trendOf([rec(1, 500_000)]);
     const p = t.anomalies.points.find((x) => x.date === day(1));
     check('사용 없는 날은 판정하지 않음(zero-day), 사용 있는 날도 기준선 없으면 unjudged', t.anomalies.points[0].reason === 'zero-day' && p.kind === 'unjudged' && p.reason === 'insufficient-baseline', JSON.stringify(p));

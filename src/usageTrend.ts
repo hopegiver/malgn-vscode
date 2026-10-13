@@ -4,7 +4,7 @@
 //   1. 입력은 fetchDailyUsage()가 이미 돌려주는 최근 30일 DailyUsage[]뿐이다. 새
 //      수집·새 로그 파싱·비용 계산을 하지 않는다(비용·세션 수·툴 호출은 범위 밖).
 //   2. 계산된 수치만 낸다. 원인을 추정하지 않는다("~때문" 금지) — 이 코드는 원인을 모른다.
-//   3. 경계(0 나누기·직전 주 0·데이터 부족)는 NaN/Infinity 대신 null + 사유 상태로 낸다.
+//   3. 경계(0 나누기·그 전 7일 0·데이터 부족)는 NaN/Infinity 대신 null + 사유 상태로 낸다.
 //      반환값의 모든 number는 유한수(finite)다.
 //   4. DOM/Tauri/다른 모듈에 의존하지 않는다(import 없음) — node/하네스가 Vite가 서빙하는
 //      변환 결과를 그대로 로드해 경계값을 검증한다. 앱 전체에서 단 하나뿐인 정의인
@@ -77,8 +77,8 @@ export interface WeekMetrics {
 }
 
 export interface WeekDelta {
-  readonly tokensAbs: number; // 이번 주 - 직전 주
-  readonly tokensPct: number | null; // 직전 주 토큰이 0이면 null(0 나누기 방지), 소수 1자리
+  readonly tokensAbs: number; // 최근 완료 7일 - 그 전 7일
+  readonly tokensPct: number | null; // 그 전 7일 토큰이 0이면 null(0 나누기 방지), 소수 1자리
   readonly activeDaysAbs: number;
   readonly cacheHitPointDiff: number | null; // 퍼센트포인트(%p) 차, 어느 한쪽이 null이면 null
 }
