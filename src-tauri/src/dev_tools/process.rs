@@ -154,24 +154,105 @@ fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option
     }
 }
 
-/// Windows에는 POSIX 프로세스 그룹이 없다 — 직속 자식만 종료한다(`Child::kill`
-/// → `TerminateProcess`). Npm/Pnpm/SelfBinary 러너는 손자 프로세스를 남기는
-/// 경우가 드물어 이것으로 충분하다.
+/// Windows에는 POSIX 프로세스 그룹이 없다 — 대신 `taskkill /PID <pid> /T /F`로
+/// 직속 자식과 그 자손 트리를 함께 강제 종료한다(`process_util::
+/// kill_process_group_with_grace`의 Windows 분기 — 셸을 거치지 않고
+/// `%SystemRoot%\System32\taskkill.exe` 절대경로로 직접 실행하므로 S1
+/// 불변식과 bare-name spawn 금지 원칙을 그대로 지킨다). `claude.cmd` →
+/// `cmd.exe` → `node` 구조에서 `Child::kill`(`TerminateProcess`)만 쓰면 직속
+/// 자식인 `cmd.exe`만 죽고 손자 `node`가 살아남아 파이프를 계속 물고 있었다.
 ///
-/// Winget 러너는 다르다(N4, 2라운드): winget이 UAC로 승격해서 띄우는 msiexec
-/// 등 손자 프로세스는 우리 프로세스보다 높은 무결성 수준(elevated token)으로
-/// 실행된다 — 그 PID를 알아내 `kill`을 시도해도 권한 부족으로 ACCESS_DENIED가
+/// 이어서 `Child::kill`을 한 번 더 호출한다 — taskkill이 없거나 실패한 경우의
+/// 최소 폴백이며(이미 죽었으면 무해한 에러), 그 뒤 `wait`로 직속 자식을
+/// 수거한다. `taskkill /T`는 kill 시점에 부모 PID 관계가 살아 있는 트리만
+/// 따라간다: 중간 프로세스가 이미 종료돼 고아가 된 손자는 트리에서 끊겨
+/// 못 찾는다(Job Object 도입은 범위 밖, 설계 §9 미해결쟁점 1). 그 경우에도
+/// 호출자는 `drain` 상한(아래 `DRAIN_GRACE`) 덕에 막히지 않는다.
+///
+/// Winget 러너는 구조적 한계가 따로 있다(N4, 2라운드): winget이 UAC로
+/// 승격해서 띄우는 msiexec 등 손자 프로세스는 우리 프로세스보다 높은 무결성
+/// 수준(elevated token)으로 실행된다 — taskkill도 권한 부족으로 ACCESS_DENIED가
 /// 난다. "드물게 남는다"가 아니라 "구조적으로 죽일 수 없다"이다. 타임아웃
 /// 시 winget.exe 자신(직속 자식)은 종료되지만, 이미 승격되어 독립한 설치
 /// 프로세스는 백그라운드에서 계속 진행될 수 있다(`actions.rs`의
-/// `timed_out_message`가 이 사실을 사용자에게 알린다). Job Object 도입은
-/// 범위 밖(설계 §9 미해결쟁점 1). pid 인자는 unix 버전과 시그니처를 맞추기
-/// 위해서만 존재하며 사용하지 않는다.
+/// `timed_out_message`가 이 사실을 사용자에게 알린다).
 #[cfg(windows)]
-fn force_kill_process_group(_pid: i32, child: &mut std::process::Child) -> Option<i32> {
+fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option<i32> {
+    crate::process_util::kill_process_group_with_grace(pid as u32);
     let _ = child.kill();
     let _ = child.wait();
     None
+}
+
+/// 자식이 종료됐거나 kill된 뒤 stdout/stderr 리더가 EOF를 낼 때까지 기다리는
+/// 상한. 프로세스 그룹/트리를 벗어난 자손이 파이프를 계속 물고 있으면 EOF가
+/// 영영 오지 않는다 — 예전에는 리더 스레드를 상한 없이 `join()`해서 이 함수가
+/// 반환하지 않았고, 호출자가 쥔 락(plugins의 `PLUGIN_OP_LOCK`)이 앱을
+/// 재시작할 때까지 잡힌 채 남았다. 정상 종료 시 EOF는 자식 종료와 거의 동시에
+/// 오므로 이 시간은 "자식 종료 직전에 쓴 마지막 버퍼가 리더로 넘어오는 데
+/// 필요한 시간 + 여유"일 뿐이다: 2초면 충분히 넉넉하고, 최악의 경우에도
+/// 호출자가 2초만 더 기다린다. 이 값을 바꾸면 아래 회귀 테스트
+/// (`descendant_holding_pipe_*`)의 시간 상한 단언도 함께 본다.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// 리더 스레드가 읽은 만큼을 공유 버퍼에 즉시 쌓는다 — 상한 시간 안에 EOF가
+/// 오지 않아 리더를 포기해도 그 시점까지 읽은 출력은 보존된다.
+struct PipeDrain {
+    buf: std::sync::Arc<Mutex<Vec<u8>>>,
+    /// 포기 신호. 리더는 다음 `read`가 돌아올 때 이 값을 보고 스스로 끝난다
+    /// (블록된 `read` 자체는 외부에서 깨울 수 없어 최대 1회 읽기만큼 더 산다).
+    abandoned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+fn spawn_pipe_drain<R: Read + Send + 'static>(mut pipe: R) -> PipeDrain {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let (tx, done) = std::sync::mpsc::channel();
+    let thread_buf = Arc::clone(&buf);
+    let thread_abandoned = Arc::clone(&abandoned);
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if thread_abandoned.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let mut guard = thread_buf.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.extend_from_slice(&chunk[..n]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        // 수신 측이 이미 포기해 사라졌어도 무해하다.
+        let _ = tx.send(());
+    });
+    PipeDrain {
+        buf,
+        abandoned,
+        done,
+    }
+}
+
+impl PipeDrain {
+    /// `deadline`까지 EOF를 기다린 뒤 지금까지 읽은 바이트를 가져온다.
+    /// 상한을 넘기면 리더를 포기시키고(`abandoned`) 읽은 만큼만 돌려준다.
+    fn collect_until(self, deadline: Instant) -> Vec<u8> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // Ok(()) = EOF, Err(Disconnected) = 리더 패닉 — 둘 다 "끝남". Timeout만 포기.
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = self.done.recv_timeout(remaining)
+        {
+            self.abandoned
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let mut guard = self.buf.lock().unwrap_or_else(|p| p.into_inner());
+        std::mem::take(&mut *guard)
+    }
 }
 
 /// stdin=null(부록 B.1 — 프롬프트가 즉시 EOF를 받아 정지 대신 실패한다) +
@@ -220,6 +301,32 @@ pub(crate) fn run_process_with_timeout_cancellable(
     on_spawn: Option<&dyn Fn(u32)>,
     should_abort: Option<&dyn Fn() -> bool>,
     working_dir: Option<&std::path::Path>,
+) -> ProcessRunOutput {
+    run_process_inner(
+        binary_path,
+        args,
+        path_env,
+        extra_env,
+        timeout,
+        on_spawn,
+        should_abort,
+        working_dir,
+        DRAIN_GRACE,
+    )
+}
+
+/// `drain_grace`만 주입 가능하게 분리한 본체(테스트가 짧은 상한으로 출력 보존을
+/// 확인하려는 용도 — 공개 진입점은 항상 `DRAIN_GRACE`를 넘긴다).
+fn run_process_inner(
+    binary_path: &str,
+    args: &[String],
+    path_env: &str,
+    extra_env: &[(&str, &str)],
+    timeout: Duration,
+    on_spawn: Option<&dyn Fn(u32)>,
+    should_abort: Option<&dyn Fn() -> bool>,
+    working_dir: Option<&std::path::Path>,
+    drain_grace: Duration,
 ) -> ProcessRunOutput {
     let started = Instant::now();
     let mut command = Command::new(binary_path);
@@ -272,23 +379,8 @@ pub(crate) fn run_process_with_timeout_cancellable(
     if let Some(cb) = on_spawn {
         cb(pid as u32);
     }
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-
-    let stdout_reader = stdout_pipe.map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            buf
-        })
-    });
-    let stderr_reader = stderr_pipe.map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            buf
-        })
-    });
+    let stdout_drain = child.stdout.take().map(spawn_pipe_drain);
+    let stderr_drain = child.stderr.take().map(spawn_pipe_drain);
 
     let (exit_code, timed_out, aborted) =
         match wait_up_to_cancellable(&mut child, timeout, started, should_abort) {
@@ -297,11 +389,15 @@ pub(crate) fn run_process_with_timeout_cancellable(
             WaitOutcome::Aborted => (force_kill_process_group(pid, &mut child), false, true),
         };
 
-    let stdout_bytes = stdout_reader
-        .and_then(|h| h.join().ok())
+    // 자식은 이미 종료/수거됐다. 리더는 EOF까지만 기다리되 상한을 둔다 —
+    // 그룹/트리를 벗어난 자손이 파이프를 물고 있어도 반환하도록(`DRAIN_GRACE`
+    // 주석 참고). 두 파이프가 하나의 마감시각을 공유한다.
+    let drain_deadline = Instant::now() + drain_grace;
+    let stdout_bytes = stdout_drain
+        .map(|d| d.collect_until(drain_deadline))
         .unwrap_or_default();
-    let stderr_bytes = stderr_reader
-        .and_then(|h| h.join().ok())
+    let stderr_bytes = stderr_drain
+        .map(|d| d.collect_until(drain_deadline))
         .unwrap_or_default();
 
     ProcessRunOutput {
@@ -468,7 +564,7 @@ mod tests {
     /// Windows 등가물. Windows에는 인자 없는 `/bin/sleep` 상당의 표준 유틸이
     /// 없어 `PING.EXE -n 31 127.0.0.1`(약 30초 이상 응답 없이 대기)로 대신
     /// 버티는 프로세스를 만든다. `force_kill_process_group`의 Windows 분기는
-    /// 유예 없이 즉시 `TerminateProcess`이므로(process.rs 상단 주석) 500ms
+    /// 유예 없이 즉시 `taskkill /T /F`로 트리를 종료하므로(위 함수 주석) 500ms
     /// 타임아웃 뒤 바로 죽어야 한다 — 5초 상한은 유닉스 버전(3초 유예 포함)과
     /// 동일한 여유를 그대로 둔 것이다. 미검증 — Windows CI 전용.
     #[cfg(windows)]
@@ -641,5 +737,194 @@ mod tests {
             Duration::from_secs(5),
         );
         assert_eq!(output.stdout.trim(), expected);
+    }
+
+    // ── 자손이 파이프를 물고 있어도 상한 안에 반환한다(리더 join 상한 없음 회귀) ──
+
+    /// 테스트가 남긴 자손 프로세스를 assertion 실패 시에도 반드시 정리하는 가드.
+    #[cfg(unix)]
+    struct KillOnDrop(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl KillOnDrop {
+        fn pid(&self) -> Option<i32> {
+            std::fs::read_to_string(&self.0)
+                .ok()
+                .and_then(|t| t.trim().parse::<i32>().ok())
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if let Some(pid) = self.pid() {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[cfg(unix)]
+    fn unique_pidfile(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "malgn-process-test-{tag}-{}-{nanos}.pid",
+            std::process::id()
+        ))
+    }
+
+    /// (시간 단언은 `DRAIN_GRACE`=2초 기준 리터럴이다 — 상수를 바꾸면 같이 본다.)
+    /// 자식이 정상 종료했지만 같은 그룹의 자손(`sleep 60 &`)이 stdout/stderr
+    /// 파이프를 상속한 채 살아 있다. 예전 구현은 EOF를 영영 못 받아 `join()`에서
+    /// 멈췄다. 지금은 `DRAIN_GRACE`(2초) 안에 반환하고, 자식이 종료 전에 쓴
+    /// 출력은 보존해야 한다. 자손 pid는 `$!`로 파일에 남겨 테스트가 정리한다.
+    #[cfg(unix)]
+    #[test]
+    fn descendant_holding_pipe_after_normal_exit_does_not_block_and_keeps_output() {
+        let pidfile = unique_pidfile("normal");
+        let guard = KillOnDrop(pidfile.clone());
+        let script = format!(
+            "echo before-exit; echo err-before-exit >&2; sleep 60 & echo $! > '{}'; exit 0",
+            pidfile.display()
+        );
+        let started = Instant::now();
+        let output = run_process_with_timeout(
+            "/bin/sh",
+            &["-c".to_string(), script],
+            "/usr/bin:/bin",
+            &[],
+            Duration::from_secs(10),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(output.spawn_error.is_none());
+        assert_eq!(output.exit_code, Some(0));
+        assert!(!output.timed_out && !output.aborted);
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "자손이 파이프를 물고 있어도 상한 안에 반환해야 한다: {elapsed:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(1500),
+            "자손이 파이프를 물고 있으면 EOF가 안 오므로 상한까지 기다렸어야 한다(테스트 전제 검증): {elapsed:?}"
+        );
+        assert_eq!(output.stdout.trim(), "before-exit");
+        assert_eq!(output.stderr.trim(), "err-before-exit");
+        assert!(guard.pid().is_some(), "자손 pid가 기록되어야 한다(전제)");
+    }
+
+    /// 타임아웃 kill 경로: 자손이 프로세스 그룹을 벗어나(`setsid`) 파이프를 물고
+    /// 있으면 그룹 kill로도 못 죽인다. perl이 fork→setsid→exec로 그런 자손을
+    /// 만든다(macOS/Linux 모두 `/usr/bin/perl` 기본 설치, `setsid` 명령은 macOS에
+    /// 없다). kill 뒤에도 상한 안에 반환하고, kill 전에 쓴 출력은 보존해야 한다.
+    #[cfg(unix)]
+    #[test]
+    fn setsid_escaped_descendant_holding_pipe_after_timeout_kill_does_not_block() {
+        let pidfile = unique_pidfile("escaped");
+        let guard = KillOnDrop(pidfile.clone());
+        let script = format!(
+            "echo started-ok; /usr/bin/perl -MPOSIX -e 'if (fork() == 0) {{ setsid(); exec \"/bin/sh\", \"-c\", \"echo \\$\\$ > {pf}; exec sleep 60\"; }}'; sleep 30",
+            pf = pidfile.display()
+        );
+        let started = Instant::now();
+        let output = run_process_with_timeout(
+            "/bin/sh",
+            &["-c".to_string(), script],
+            "/usr/bin:/bin",
+            &[],
+            Duration::from_secs(1),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(output.spawn_error.is_none());
+        assert!(output.timed_out, "자식(sleep 30)은 타임아웃으로 kill되어야 한다");
+        // 타임아웃 1s + 그룹 kill(SIGTERM 즉시 사망) + DRAIN_GRACE 2s + 여유. 상한은
+        // `DRAIN_GRACE` 상수와 무관한 리터럴이어야 상수를 키워도 회귀를 잡는다.
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "그룹을 벗어난 자손이 파이프를 물고 있어도 상한 안에 반환해야 한다: {elapsed:?}"
+        );
+        assert_eq!(output.stdout.trim(), "started-ok");
+        // 자손이 실제로 살아서 그룹 밖에 있었는지(전제) — pid 파일이 늦게 생길 수 있어 잠깐 폴링한다.
+        let poll_until = Instant::now() + Duration::from_secs(3);
+        while guard.pid().is_none() && Instant::now() < poll_until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let pid = guard.pid().expect("그룹 밖 자손 pid가 기록되어야 한다(전제)");
+        assert!(
+            crate::process_util::pid_alive(pid as u32),
+            "그룹 kill 뒤에도 setsid 자손은 살아 있어야 이 테스트가 의미가 있다"
+        );
+    }
+
+    /// 짧은 상한을 주입한 본체 호출: 상한 이후에 자손이 쓰는 출력은 버려지고
+    /// (리더 포기), 상한 이전에 읽은 출력만 돌려준다.
+    #[cfg(unix)]
+    #[test]
+    fn drain_grace_is_injectable_and_keeps_only_output_read_before_deadline() {
+        let pidfile = unique_pidfile("inject");
+        let _guard = KillOnDrop(pidfile.clone());
+        let script = format!(
+            "echo early; (sleep 1; echo late) & echo $! > '{}'; exit 0",
+            pidfile.display()
+        );
+        let started = Instant::now();
+        let output = run_process_inner(
+            "/bin/sh",
+            &["-c".to_string(), script],
+            "/usr/bin:/bin",
+            &[],
+            Duration::from_secs(10),
+            None,
+            None,
+            None,
+            Duration::from_millis(300),
+        );
+        assert!(output.spawn_error.is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "주입한 상한(300ms)을 지켜야 한다: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(output.stdout.trim(), "early");
+    }
+
+    /// Windows: 직속 자식 `cmd.exe`가 손자 `PING.EXE`(30초 이상)를 띄우고, 손자가
+    /// stdout 파이프를 상속한다. 타임아웃 kill이 직속 자식만 죽이면 손자가
+    /// 파이프를 계속 물어 리더 EOF가 안 온다. 트리째 종료(`taskkill /T /F`)하면
+    /// 파이프가 바로 닫히므로, 일부러 큰 drain 상한(10초)을 주입해도 함수는
+    /// 훨씬 일찍(6초 미만) 반환해야 한다 — 상한 덕분이 아니라 트리 종료 덕분임을
+    /// 가르는 설계다. `cmd.exe`/`PING.EXE`는 절대경로. 미검증 — 이 개발
+    /// 머신(Mac)에서는 컴파일 체크만 가능하고 실행은 Windows CI 전용이다.
+    #[cfg(windows)]
+    #[test]
+    fn timeout_kill_terminates_grandchild_tree_so_pipe_closes_before_drain_grace() {
+        let started = Instant::now();
+        let output = run_process_inner(
+            r"C:\Windows\System32\cmd.exe",
+            &[
+                "/C".to_string(),
+                r"C:\Windows\System32\PING.EXE -n 31 127.0.0.1".to_string(),
+            ],
+            r"C:\Windows\System32;C:\Windows",
+            &[],
+            Duration::from_millis(700),
+            None,
+            None,
+            None,
+            Duration::from_secs(10),
+        );
+        assert!(output.spawn_error.is_none());
+        assert!(output.timed_out);
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "손자(PING)가 트리 종료로 죽지 않아 파이프를 계속 물고 있었다: {:?}",
+            started.elapsed()
+        );
     }
 }
