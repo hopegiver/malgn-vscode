@@ -9,6 +9,7 @@
 // 안내한다.
 import { el, showToast } from '../dom';
 import { errorMessage, errorMessagePersistent, sanitizeBackendText, sanitizeBackendTextPersistent } from '../errorMessage';
+import { extractFallbackNote, successToastWithFallbackNote } from '../installFallbackNote';
 import { state, notifyChange } from '../state';
 import type { CatalogTab } from '../state';
 import { fetchInstalledPlugins, fetchKnownMarketplaces, fetchGlobalCatalog, updatePlugin, installPlugin } from '../catalogApi';
@@ -127,7 +128,7 @@ async function handleInstallDefaultPlugin(): Promise<void> {
     state.catalog.installDefaultResult = result;
     showToast(
       result.success
-        ? 'malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요'
+        ? successToastWithFallbackNote('malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요', result.message, sanitizeBackendText)
         : `malgn-agent 설치 실패: ${sanitizeBackendText(result.message)}`
     );
     if (result.success) {
@@ -218,6 +219,11 @@ export function renderCatalogView(tab: CatalogTab): HTMLElement {
 
 function renderPluginsTabBody(): HTMLElement[] {
   const body: HTMLElement[] = [];
+
+  // 구버전 CLI 폴백으로 끝난 성공 설치는 토스트가 금방 사라지고(설치 직후 목록이 다시 그려져
+  // 빈 상태의 결과 노트도 함께 사라진다) 범위 경고를 놓치기 쉬워 목록 위에 남겨 둔다.
+  const fallbackNote = renderInstallFallbackNote(state.catalog.installDefaultResult);
+  if (fallbackNote) body.push(fallbackNote);
 
   if (state.catalog.loading && !state.catalog.loaded) {
     body.push(el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]));
@@ -367,6 +373,16 @@ function renderInstallDefaultResultNote(result: CommandResult): HTMLElement {
   return el('div', { className: `plugin-update-note ${result.success ? 'ok' : 'fail'}` }, [
     result.success ? `✓ 설치 완료 — 적용하려면 Claude Code를 재시작하세요. (${sanitizeBackendTextPersistent(result.message)})` : `⚠ 설치 실패: ${sanitizeBackendTextPersistent(result.message)}`,
   ]);
+}
+
+// 성공한 설치 결과에 백엔드의 구버전 CLI 폴백 노트(설치 범위 경고 포함)가 있을 때만 경고
+// 블록을 만든다. 폴백이 없던 일반 성공·실패 결과는 null(실패는 기존 결과 노트가 맡는다).
+// settings.ts의 MCP 화면 설치 흐름도 같은 블록을 재사용한다.
+export function renderInstallFallbackNote(result: CommandResult | null): HTMLElement | null {
+  if (!result || !result.success) return null;
+  const note = extractFallbackNote(result.message);
+  if (note === null) return null;
+  return el('div', { className: 'plugin-update-note warn' }, [`⚠ malgn-agent 설치는 완료됐지만 확인이 필요합니다. ${sanitizeBackendTextPersistent(note)}`]);
 }
 
 function renderUpdateResultNote(result: CommandResult): HTMLElement {

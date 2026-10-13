@@ -4,7 +4,8 @@ import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
 import type { OtelSettings } from '../otelApi';
-import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID } from './catalog';
+import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID, renderInstallFallbackNote } from './catalog';
+import { successToastWithFallbackNote } from '../installFallbackNote';
 import { renderAppLinksPanel } from './appLinks';
 import { refreshMarketplaces, installPlugin, addMarketplace, removeMarketplace } from '../catalogApi';
 import type { MarketplaceInfo } from '../catalogApi';
@@ -1320,7 +1321,7 @@ async function handleInstallMalgnAgentPluginForMcp(): Promise<void> {
     state.catalog.installDefaultResult = result;
     showToast(
       result.success
-        ? 'malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요'
+        ? successToastWithFallbackNote('malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요', result.message, sanitizeBackendText)
         : `malgn-agent 설치 실패: ${sanitizeBackendText(result.message)}`
     );
     if (result.success) {
@@ -1370,7 +1371,10 @@ function buildRegisteredMcpRows(): HTMLElement[] {
   const otherServers = state.mcp.items.filter((s) => s.name !== MALGNAI_HUB_MCP_NAME);
   const otherRows = sortMalgnAgentFirst(otherServers.map((server) => ({ name: server.name, el: renderMcpRow(server) }))).map((r) => r.el);
   const pinnedRow = hubServer ? renderMcpRow(hubServer, { locked: true }) : renderMalgnaiHubMissingRow();
-  return [renderHubAuthRow(), pinnedRow, ...otherRows];
+  // 구버전 CLI 폴백으로 끝난 성공 설치의 범위 경고 — 토스트는 금방 사라지고 이 화면은 설치 직후
+  // 실제 서버 행으로 바뀌어 안내 행의 결과도 남지 않으므로 행 아래에 경고를 남긴다.
+  const fallbackNote = renderInstallFallbackNote(state.catalog.installDefaultResult);
+  return [renderHubAuthRow(), pinnedRow, ...(fallbackNote ? [fallbackNote] : []), ...otherRows];
 }
 
 function buildInstallableMcpRows(): HTMLElement[] {

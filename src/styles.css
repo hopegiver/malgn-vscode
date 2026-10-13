@@ -1095,6 +1095,7 @@ textarea.settings-input { resize: vertical; }
 }
 .plugin-update-note.ok { border-left-color: var(--status-good); color: var(--status-good); }
 .plugin-update-note.fail { border-left-color: var(--status-bad); color: var(--status-bad); }
+.plugin-update-note.warn { border-left-color: var(--status-warn); color: var(--status-warn); }
 
 /* ---------------- 마켓플레이스: 저장소 목록(복수) ---------------- */
 .marketplace-repo-list { display: flex; flex-direction: column; gap: var(--space-2-5); margin-bottom: var(--space-4); }

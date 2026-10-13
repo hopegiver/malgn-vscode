@@ -1,5 +1,7 @@
 // 흐름 (3) 카탈로그 설치 플로우 — src/views/catalog.ts
+import { readFile } from 'node:fs/promises';
 import { manyPlugins } from '../lib/fixtures.mjs';
+import { runFallbackNoteChecks } from '../lib/fallbackNoteBoundary.mjs';
 
 export const flowId = 'catalog';
 export const startHash = '#/catalog';
@@ -74,6 +76,69 @@ export function scenarios(base) {
         if (!note || !note.includes('실패')) {
           bugs.push({ severity: 'Major', symptom: `설치 실패인데 실패 노트가 보이지 않음(실제: ${note})`, file: 'src/views/catalog.ts:renderInstallDefaultResultNote' });
         }
+      },
+    },
+    {
+      id: 'install-fallback-success',
+      // 백엔드 with_fallback_note가 만드는 형식 그대로(-y/-s user 둘 다 뺀 성공) — 토스트와 지속 경고 노트에
+      // 폴백 사실과 범위 경고가 보여야 한다.
+      fixtures: {
+        ...base,
+        list_installed_plugins: [],
+        install_plugin: {
+          success: true,
+          message:
+            'Successfully installed plugin: malgn-agent@malgnsoft-plugins\n\n(구버전 claude CLI 호환: `-y`, `-s user` 옵션을 거부해 해당 옵션을 빼고 다시 시도했습니다. `claude update`로 업데이트를 권장합니다. 설치 범위가 user가 아닐 수 있어 설치 목록에 보이지 않으면 claude를 업데이트한 뒤 다시 설치해주세요.)',
+        },
+      },
+      async run(page, { shot, bugs }) {
+        await page.getByRole('button', { name: 'malgn-agent 설치' }).click();
+        await page.waitForTimeout(400);
+        await shot('01-install-fallback-success');
+        const toast = await page.locator('.toast').last().textContent().catch(() => null);
+        if (!toast || !toast.includes('설치 완료') || !toast.includes('구버전 claude CLI 호환') || !toast.includes('설치 범위가 user가 아닐 수')) {
+          bugs.push({ severity: 'Major', symptom: `폴백 성공인데 토스트에 폴백 노트/범위 경고가 없음(실제: ${toast})`, file: 'src/views/catalog.ts:handleInstallDefaultPlugin' });
+        }
+        const warn = await page.locator('.plugin-update-note.warn').first().textContent().catch(() => null);
+        if (!warn || !warn.includes('구버전 claude CLI 호환') || !warn.includes('설치 범위가 user가 아닐 수')) {
+          bugs.push({ severity: 'Major', symptom: `폴백 성공인데 지속 경고 노트에 폴백 노트/범위 경고가 없음(실제: ${warn})`, file: 'src/views/catalog.ts:renderInstallFallbackNote' });
+        }
+        if (warn && warn.includes('Successfully installed')) {
+          bugs.push({ severity: 'Minor', symptom: '경고 노트에 노트 외 원래 메시지가 섞임', file: 'src/installFallbackNote.ts:extractFallbackNote' });
+        }
+      },
+    },
+    {
+      id: 'install-plain-success',
+      // 폴백 없는 일반 성공 — 기존 토스트 그대로, 경고 노트 없음.
+      fixtures: { ...base, list_installed_plugins: [], install_plugin: { success: true, message: 'Successfully installed plugin: malgn-agent@malgnsoft-plugins' } },
+      async run(page, { shot, bugs }) {
+        await page.getByRole('button', { name: 'malgn-agent 설치' }).click();
+        await page.waitForTimeout(400);
+        await shot('01-install-plain-success');
+        const toast = await page.locator('.toast').last().textContent().catch(() => null);
+        if (toast !== 'malgn-agent 설치 완료 — 적용하려면 Claude Code를 재시작하세요') {
+          bugs.push({ severity: 'Major', symptom: `일반 성공 토스트가 기존 문구와 다름(실제: ${toast})`, file: 'src/views/catalog.ts:handleInstallDefaultPlugin' });
+        }
+        if ((await page.locator('.plugin-update-note.warn').count()) !== 0) {
+          bugs.push({ severity: 'Major', symptom: '폴백 없는 일반 성공인데 경고 노트가 보임', file: 'src/views/catalog.ts:renderInstallFallbackNote' });
+        }
+      },
+    },
+    {
+      id: 'fallback-note-boundary',
+      // 판별 순수 함수 경계값 + 백엔드(src-tauri/src/plugins/mod.rs) 문자열 대조. 화면 없이 Node에서 실행.
+      fixtures: { ...base },
+      async run(page, { bugs }) {
+        const baseUrl = process.env.UI_HARNESS_BASE_URL || 'http://localhost:1420';
+        const js = await (await fetch(`${baseUrl}/src/installFallbackNote.ts`)).text();
+        if (/^\s*import\s/m.test(js)) bugs.push({ severity: 'Major', symptom: 'installFallbackNote.ts가 다른 모듈을 import함(순수 함수 계약 위반)', file: 'src/installFallbackNote.ts' });
+        const mod = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+        const rustSource = await readFile(new URL('../../../src-tauri/src/plugins/mod.rs', import.meta.url), 'utf8');
+        const result = runFallbackNoteChecks(mod, rustSource);
+        for (const row of result.rows) console.log(`[catalog/fallback-note] ${row}`);
+        console.log(`[catalog/fallback-note] ${result.total - result.failures.length}/${result.total} PASS`);
+        for (const f of result.failures) bugs.push({ severity: 'Critical', symptom: `폴백 노트 판별 검사 실패: ${f}`, file: 'src/installFallbackNote.ts' });
       },
     },
     {
