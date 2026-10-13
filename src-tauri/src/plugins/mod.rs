@@ -19,6 +19,7 @@ mod marketplace;
 
 use crate::dev_tools::platform::{self, Platform};
 use serde::Serialize;
+use std::sync::{Mutex, TryLockError};
 use std::time::Duration;
 
 // ---------------- claude 자식 프로세스 상한 시간 ----------------
@@ -360,14 +361,60 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
     format!("…{}", text.chars().skip(count - max_chars).collect::<String>())
 }
 
+/// 자식 프로세스를 띄우는 플러그인 커맨드(update/refresh/install/add/remove
+/// marketplace)의 동시 실행을 막는 전역 락.
+///
+/// 왜 필요한가: 이 커맨드들이 sync였을 때는 메인 스레드가 서로를 자연 직렬화했지만
+/// async + spawn_blocking으로 옮기며 그 보장이 사라졌다. 같은 마켓플레이스의
+/// 플러그인 둘을 연달아 "업데이트"하면 `claude plugin marketplace update`가 같은
+/// git 클론에서 동시에 돌고(index.lock 충돌), CLI의 `installed_plugins.json`·
+/// `known_marketplaces.json` read-modify-write가 겹치면 항목이 유실될 수 있다.
+///
+/// `dev_tools::EXECUTION_LOCK`과 일부러 공유하지 않는다: 그 락은 brew/winget/npm
+/// 계열 도구 설치·업데이트의 패키지 매니저 전역 락 충돌을 막는 용도라, 공유하면
+/// 최대 8분(SYNC 180 + INSTALL 300초)짜리 플러그인 작업이 무관한 도구 업데이트를
+/// 거부시키고 그 반대도 마찬가지다. 두 작업군이 건드리는 자원(플러그인/마켓플레이스
+/// 상태 파일·git 클론 vs 패키지 매니저 상태)이 겹치지 않는다. 남는 위험은 `claude
+/// update`가 바이너리를 교체하는 동안 플러그인 작업이 도는 경우뿐인데, 사용자가
+/// 터미널에서 같은 조합을 실행해도 생기는 상황이고 어느 쪽이든 실패가 사용자에게
+/// 그대로 보이며 재실행해도 안전하다.
+static PLUGIN_OP_LOCK: Mutex<()> = Mutex::new(());
+
+const PLUGIN_OP_BUSY_MESSAGE: &str =
+    "다른 플러그인 작업이 진행 중입니다. 완료 후 다시 시도해주세요.";
+
+/// `lock`을 대기 없이 잡아 `job`을 실행한다. 이미 잡혀 있으면 `job`을 실행하지 않고
+/// 즉시 "작업 중" 실패를 돌려준다(무기한 대기·대기열 없음 — 겹친 요청은 사용자가
+/// 끝난 뒤 다시 누르면 된다). 가드는 `job`이 끝날 때(타임아웃 kill·wait 포함)까지
+/// 유지되고, `job`이 패닉해도 unwind로 해제된다. 락이 보호하는 데이터가 `()`뿐이라
+/// poison은 무시하고 그대로 진행한다(한 번의 패닉이 이후 모든 플러그인 작업을
+/// 영구 거부하면 안 된다).
+fn with_op_lock<F>(lock: &Mutex<()>, job: F) -> CommandResult
+where
+    F: FnOnce() -> CommandResult,
+{
+    let _guard = match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => {
+            return CommandResult {
+                success: false,
+                message: PLUGIN_OP_BUSY_MESSAGE.to_string(),
+            }
+        }
+    };
+    job()
+}
+
 /// 블로킹 작업(자식 프로세스 대기)을 tokio 워커가 아니라 blocking 풀에서 돌린다 —
-/// `list_installed_plugins`/`usage_stats`와 같은 관용구. 조인 실패(작업 패닉)는
-/// 프론트가 그대로 보여줄 수 있는 실패 결과로 변환한다.
+/// `list_installed_plugins`/`usage_stats`와 같은 관용구. 락은 반드시 blocking 풀의
+/// 클로저 안에서 잡는다(메인 스레드·async 워커를 막지 않고, 가드 수명 = 자식 프로세스
+/// 수명). 조인 실패(작업 패닉)는 프론트가 그대로 보여줄 수 있는 실패 결과로 변환한다.
 async fn run_blocking<F>(job: F) -> CommandResult
 where
     F: FnOnce() -> CommandResult + Send + 'static,
 {
-    tauri::async_runtime::spawn_blocking(job)
+    tauri::async_runtime::spawn_blocking(move || with_op_lock(&PLUGIN_OP_LOCK, job))
         .await
         .unwrap_or_else(|e| CommandResult {
             success: false,
@@ -772,5 +819,62 @@ mod run_claude_binary_tests {
         assert!(!r.success);
         assert!(r.message.starts_with("시간 초과"), "{}", r.message);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+}
+
+// ---------------- 동시 실행 락 테스트 ----------------
+// 실제 `claude`는 띄우지 않는다 — 전역 락 대신 테스트 전용 로컬 락을 `with_op_lock`에
+// 넘겨 같은 코드 경로를 검증한다.
+#[cfg(test)]
+mod op_lock_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn ok(msg: &str) -> CommandResult {
+        CommandResult { success: true, message: msg.to_string() }
+    }
+
+    #[test]
+    fn second_job_fails_fast_with_busy_while_first_holds_lock_then_succeeds_after_release() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        let first = std::thread::spawn(move || {
+            with_op_lock(&LOCK, || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap(); // 해제 신호까지 락을 쥔다
+                ok("first")
+            })
+        });
+        started_rx.recv().unwrap();
+
+        let mut ran = false;
+        let busy = with_op_lock(&LOCK, || {
+            ran = true;
+            ok("second")
+        });
+        assert!(!busy.success);
+        assert_eq!(busy.message, PLUGIN_OP_BUSY_MESSAGE);
+        assert!(!ran, "Busy면 job 자체를 실행하지 않아야 한다");
+
+        release_tx.send(()).unwrap();
+        assert!(first.join().unwrap().success);
+
+        let after = with_op_lock(&LOCK, || ok("third"));
+        assert!(after.success);
+        assert_eq!(after.message, "third");
+    }
+
+    #[test]
+    fn lock_is_released_and_poison_ignored_after_job_panics() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let panicked = std::thread::spawn(|| with_op_lock(&LOCK, || panic!("job panic"))).join();
+        assert!(panicked.is_err());
+        assert!(LOCK.is_poisoned());
+
+        let after = with_op_lock(&LOCK, || ok("recovered"));
+        assert!(after.success);
+        assert_eq!(after.message, "recovered");
     }
 }
