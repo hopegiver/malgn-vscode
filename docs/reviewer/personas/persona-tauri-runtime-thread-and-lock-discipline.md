@@ -61,3 +61,6 @@ Tauri v1→v2 데스크톱 앱을 3년 운영하며 "버튼 하나 눌렀더니 
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 1차(최초, 풀패널) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13.md`
   — 재사용 사유: wait/done/drain 순서 변경과 앱 종료 경로 스레드 병렬화가 역할개념(블로킹·직렬화 대체) 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: claude_auth 워치독-done 순서 경합, autonomy Windows pid별 스레드 join의 앱 종료 최악 지연, SPAWN_LOCK 공유화.
+- 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
+  — 재사용 사유: 정정 주석의 워치독·취소 해제 경로 서술 확인이 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 순서 무변경 확인, turn/auth 해제 수단 비대칭을 RT-2 설계 입력으로 기록.

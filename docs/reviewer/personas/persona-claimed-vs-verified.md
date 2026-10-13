@@ -125,3 +125,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 1차(최초, 풀패널) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13.md`
   — 재사용 사유: "남은 무상한 대기 일원화" 커밋 주장과 실제 보장 범위, 신규 테스트의 실효성 대조가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 주석·커밋 메시지 주장 vs 코드, cargo test 205건·하네스 3시나리오·경계값 26/26 재실행, 테스트 공백(turn/auth/settings).
+- 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
+  — 재사용 사유: 정정 주석(보장 범위 한정) vs 코드 재대조가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-001 주석 정정·N-1·N-2 반영 확인, 해제 수단 미기재(N-5) Nit 강등.

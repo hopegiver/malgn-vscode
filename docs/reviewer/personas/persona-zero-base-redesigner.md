@@ -134,3 +134,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 1차(최초, 풀패널) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13.md`
   — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
   — 이번 라운드 집중: 사람용 문장 파싱 대신 구조화 필드(RT-1), 호출부별 수거 대신 공용 "자식 실행+수거" 한 함수(RT-2).
+- 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 이월 이슈를 stdout 상한 사본이 아닌 공용 run_streaming_bounded 수렴으로 잡을 것 권고.

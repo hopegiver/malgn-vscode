@@ -92,3 +92,6 @@
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 1차(최초, 풀패널) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13.md`
   — 재사용 사유: 3경로(mcp·turn·auth) 자식 출력 수거 상한과 Windows taskkill 위임이 역할개념(프로세스 수명 안전성) 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 4지점 유한 대기 실제 보장 여부(stdout 루프 잔여), 포기 후 SIGPIPE 노출 확대, Windows 분기 정적 컴파일 검토.
+- 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
+  — 재사용 사유: Windows force_kill_all_remaining CI 실검증(RV-003)이 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: CI run 38361489303 windows-latest 해당 테스트 ok 대조, pid 4242 테스트 이월 타당성.
