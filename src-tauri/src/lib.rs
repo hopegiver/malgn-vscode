@@ -43,6 +43,23 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // macOS: 왼쪽 위 빨간 버튼은 앱을 종료하지 않고 창만 숨긴다(다른 mac 앱과 같은 동작).
+        // 앱은 Dock에 남아 허브 토큰 자동 갱신·진행 중인 자율업무가 계속 돈다. Dock 아이콘을
+        // 누르면 아래 RunEvent::Reopen이 창을 다시 보이고, 완전 종료는 ⌘Q(앱 메뉴 종료)다.
+        // Windows·Linux는 기존대로 창을 닫으면 종료한다.
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                // 전체화면에서 그대로 숨기면 빈 Space가 남으므로 먼저 해제한다.
+                if window.is_fullscreen().unwrap_or(false) {
+                    let _ = window.set_fullscreen(false);
+                }
+                let _ = window.hide();
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (window, event);
+        })
         .plugin(tauri_plugin_opener::init())
         // GitHub Releases(`latest.json`) 기반 자동업데이트. 서명 공개키는
         // tauri.conf.json의 `plugins.updater.pubkey`에 실제 값으로 설정돼 있다
@@ -173,7 +190,23 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app_handle, event| {
+        .run(|app_handle, event| {
+            // Dock 아이콘 클릭(보이는 창이 없을 때) → 숨겨 둔 메인 창을 다시 연다.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = event
+            {
+                use tauri::Manager;
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = app_handle;
             // 앱 종료 시 자식 프로세스 정리(설계 §1-4) — 진행 중인 자율업무
             // `claude -p`가 고아 프로세스로 남지 않도록, 종료 요청 시점에
             // 최대 2초만 대기하며 정리한다(그 이상 앱 종료를 붙잡지 않는다).
