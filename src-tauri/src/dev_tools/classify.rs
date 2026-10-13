@@ -223,7 +223,18 @@ pub(crate) fn classify_install_method(
     InstallMethod::Unknown(full)
 }
 
-/// 실제 환경(홈 디렉터리, PNPM_HOME, HOMEBREW_PREFIX)을 읽어 순수 함수에 주입하는
+/// `<prefix>/Cellar/<formula>/<version>/...` 경로를 HomebrewFormula로 승격해도 되는
+/// 신뢰 prefix — Apple Silicon(`/opt/homebrew`)과 Intel(`/usr/local`)의 표준 brew
+/// 위치뿐이다. `HOMEBREW_PREFIX` 같은 환경변수로 넓히지 않는다: 이 판정이 Formula로
+/// 나가면 그 prefix 아래 `bin/brew`가 실제 실행 대상(`brew upgrade`)이 되는데, 환경변수는
+/// 앱을 띄운 쪽(셸 프로파일·launchctl)이 임의 디렉터리로 바꿀 수 있어 사용자가 만든
+/// 아무 디렉터리 아래 가짜 `Cellar`를 신뢰 대상으로 만들 수 있다. 비표준 prefix에 설치한
+/// brew는 Formula로 인식되지 않고 Unknown(수동 안내)로 강등된다 — 안전한 쪽의 실패다.
+pub(crate) fn trusted_brew_prefixes() -> Vec<String> {
+    vec!["/opt/homebrew".to_string(), "/usr/local".to_string()]
+}
+
+/// 실제 환경(홈 디렉터리, PNPM_HOME)을 읽어 순수 함수에 주입하는
 /// 얇은 래퍼. 여기만 env/fs에 닿고, 분류 로직 자체는 순수하게 유지한다. macOS
 /// 분기는 기존 로직과 완전히 동일하다(무변경) — Windows는 별도 순수함수
 /// `classify_install_method_windows`로 위임한다(설계 §B.4, Homebrew 전용 개념인
@@ -240,13 +251,12 @@ pub(crate) fn classify_install_method_with_defaults(path: &Path) -> InstallMetho
                 .ok()
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from);
-            let mut prefixes = vec!["/opt/homebrew".to_string(), "/usr/local".to_string()];
-            if let Ok(p) = std::env::var("HOMEBREW_PREFIX") {
-                if !p.is_empty() && !prefixes.contains(&p) {
-                    prefixes.push(p);
-                }
-            }
-            classify_install_method(path, home.as_deref(), pnpm_home.as_deref(), &prefixes)
+            classify_install_method(
+                path,
+                home.as_deref(),
+                pnpm_home.as_deref(),
+                &trusted_brew_prefixes(),
+            )
         }
     }
 }

@@ -73,8 +73,6 @@ pub(crate) fn normalize_version(raw: &str) -> Option<String> {
 
 // ==================== 6. 실행 엔진(결정 6) ====================
 
-pub(crate) static EXECUTION_LOCK: Mutex<()> = Mutex::new(());
-
 pub(crate) struct ProcessRunOutput {
     pub(crate) exit_code: Option<i32>,
     pub(crate) stdout: String,

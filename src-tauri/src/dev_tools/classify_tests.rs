@@ -715,3 +715,54 @@ fn windows_candidates_never_silently_fall_to_unknown_method_manual() {
         violations.join("\n")
     );
 }
+
+// ── 신뢰 brew prefix는 환경변수로 넓어지지 않는다 ──
+
+#[test]
+fn trusted_brew_prefixes_are_exactly_the_two_standard_locations() {
+    assert_eq!(
+        trusted_brew_prefixes(),
+        vec!["/opt/homebrew".to_string(), "/usr/local".to_string()]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn homebrew_prefix_env_var_does_not_promote_arbitrary_cellar_to_formula() {
+    // 환경변수를 건드리므로 다른 테스트와 겹치지 않게 이 검증만 한 테스트에 모은다.
+    // (같은 변수를 읽는 코드는 이제 어디에도 없으므로 설정/복원 사이에 다른 테스트의
+    // 결과가 달라질 일이 없다.)
+    {
+        let evil = "/tmp/malgn_vscode_evil_brew_prefix";
+        let evil_path = PathBuf::from(format!("{evil}/Cellar/gh/9.9.9/bin/gh"));
+        let previous = std::env::var("HOMEBREW_PREFIX").ok();
+        std::env::set_var("HOMEBREW_PREFIX", evil);
+
+        let method = classify_install_method_with_defaults(&evil_path);
+
+        match previous {
+            Some(v) => std::env::set_var("HOMEBREW_PREFIX", v),
+            None => std::env::remove_var("HOMEBREW_PREFIX"),
+        }
+        assert!(
+            matches!(method, InstallMethod::Unknown(_)),
+            "환경변수로 지정한 임의 prefix 아래 Cellar는 Formula로 승격되면 안 된다: {method:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn standard_prefixes_still_classify_as_formula_with_defaults() {
+    for prefix in ["/opt/homebrew", "/usr/local"] {
+        let path = PathBuf::from(format!("{prefix}/Cellar/gh/2.95.0/bin/gh"));
+        assert_eq!(
+            classify_install_method_with_defaults(&path),
+            InstallMethod::HomebrewFormula {
+                formula: "gh".to_string(),
+                keg_version: "2.95.0".to_string(),
+                prefix: prefix.to_string(),
+            }
+        );
+    }
+}

@@ -25,6 +25,7 @@ mod classify;
 mod contract;
 mod diagnostics;
 mod install_resolver;
+mod locks;
 mod plan_table;
 // `pub(crate)`인 이유: cli_launcher.rs(크레이트 루트, dev_tools 밖)가 이 모듈의
 // Platform/EnvRoots/quote_token 등을 터미널 열기(§E) + resolve_binary(§D.3)
@@ -272,7 +273,7 @@ pub async fn check_dev_tools() -> Vec<DevToolStatus> {
 
 #[tauri::command]
 pub async fn preview_dev_tool_update(tool_id: String) -> Result<DevToolPreview, String> {
-    tauri::async_runtime::spawn_blocking(move || query::perform_preview(&tool_id))
+    tauri::async_runtime::spawn_blocking(move || query::perform_preview_exclusive(&tool_id))
         .await
         .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }

@@ -15,6 +15,7 @@ use super::install_resolver::{
     resolve_plan, InstallResolution, ResolvedAction, ResolvedPlan, ResolvedRunners,
 };
 use super::plan_table::{install_manual_plan, manual_display_message, Runner, MANUAL_XCODE_CLT};
+use super::locks::{try_acquire_lock, PREVIEW_BUSY_MESSAGE, PREVIEW_LOCK};
 use super::process::{build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout};
 use super::{resolve_tool_path, tool_definition, tool_path_candidates, DevTool, ToolId, DEV_TOOLS};
 use std::time::Duration;
@@ -362,6 +363,30 @@ fn build_install_preview(def: &DevTool, tool: ToolId, runners: &ResolvedRunners)
     }
 }
 
+/// 커맨드 진입점용 — 미리보기를 한 번에 1건으로 제한한다(`PREVIEW_LOCK`, 대기 없이
+/// 즉시 거부). 락은 자식 프로세스(dry-run)가 끝날 때까지 유지된다. 알 수 없는 도구
+/// id는 락 없이 바로 거부해 자식을 띄우지 않는 요청이 다른 미리보기를 막지 않게 한다.
+pub(crate) fn perform_preview_exclusive(tool_id_str: &str) -> Result<DevToolPreview, String> {
+    perform_preview_with_lock(&PREVIEW_LOCK, tool_id_str, perform_preview)
+}
+
+/// `perform_preview_exclusive`의 본체 — 락과 실행 본문을 주입 가능하게 분리했다(테스트가
+/// 전역 락·실제 brew 없이 동시성 제한을 검증하려는 용도).
+fn perform_preview_with_lock<F>(
+    lock: &std::sync::Mutex<()>,
+    tool_id_str: &str,
+    run: F,
+) -> Result<DevToolPreview, String>
+where
+    F: FnOnce(&str) -> Result<DevToolPreview, String>,
+{
+    if ToolId::from_key(tool_id_str).is_none() {
+        return Err(format!("알 수 없는 도구 id입니다: {tool_id_str}"));
+    }
+    let _guard = try_acquire_lock(lock).ok_or_else(|| PREVIEW_BUSY_MESSAGE.to_string())?;
+    run(tool_id_str)
+}
+
 pub(crate) fn perform_preview(tool_id_str: &str) -> Result<DevToolPreview, String> {
     let tool = ToolId::from_key(tool_id_str)
         .ok_or_else(|| format!("알 수 없는 도구 id입니다: {tool_id_str}"))?;
@@ -399,6 +424,78 @@ pub(crate) fn perform_preview(tool_id_str: &str) -> Result<DevToolPreview, Strin
 mod tests {
     use super::*;
     use super::super::install_resolver::install_candidates;
+
+    // ── 미리보기 동시 실행 제한(PREVIEW_LOCK) ──
+    // 전역 락·실제 brew 없이 검증한다: 로컬 락과 가짜 실행 본문을 주입한다.
+
+    fn dummy_preview() -> DevToolPreview {
+        DevToolPreview {
+            id: "gh".to_string(),
+            plan_id: "p".to_string(),
+            will_run: true,
+            command_display: String::new(),
+            affected: Vec::new(),
+            notes: String::new(),
+            preview_reliable: true,
+        }
+    }
+
+    #[test]
+    fn preview_rejects_concurrent_request_while_one_is_running_then_allows_after() {
+        use std::sync::mpsc::channel;
+        use std::sync::{Arc, Mutex};
+
+        let lock = Arc::new(Mutex::new(()));
+        let (entered_tx, entered_rx) = channel::<()>();
+        let (release_tx, release_rx) = channel::<()>();
+
+        let first_lock = Arc::clone(&lock);
+        let first = std::thread::spawn(move || {
+            perform_preview_with_lock(&first_lock, "gh", |_| {
+                entered_tx.send(()).unwrap();
+                // 첫 미리보기가 dry-run 자식을 기다리는 중인 상황.
+                release_rx.recv().unwrap();
+                Ok(dummy_preview())
+            })
+        });
+        entered_rx.recv().unwrap();
+
+        // 진행 중에 들어온 두 번째 요청: 본문을 실행하지 않고 즉시 거부한다.
+        let second_ran = std::sync::atomic::AtomicBool::new(false);
+        let second = perform_preview_with_lock(&lock, "node", |_| {
+            second_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(dummy_preview())
+        });
+        assert_eq!(second.unwrap_err(), PREVIEW_BUSY_MESSAGE);
+        assert!(!second_ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        release_tx.send(()).unwrap();
+        assert!(first.join().unwrap().is_ok());
+
+        // 첫 요청이 끝나 락이 풀렸으므로 다음 요청은 정상 수행된다.
+        assert!(perform_preview_with_lock(&lock, "node", |_| Ok(dummy_preview())).is_ok());
+    }
+
+    #[test]
+    fn preview_recovers_from_poisoned_lock_and_unknown_tool_does_not_take_lock() {
+        use std::sync::{Arc, Mutex};
+
+        let lock = Arc::new(Mutex::new(()));
+        let cloned = Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _g = cloned.lock().unwrap();
+            panic!("미리보기 중 패닉(테스트용 poison 유발)");
+        })
+        .join();
+        assert!(lock.is_poisoned());
+        // 패닉 뒤에도 미리보기가 영구 거부되지 않는다.
+        assert!(perform_preview_with_lock(&lock, "gh", |_| Ok(dummy_preview())).is_ok());
+
+        // 알 수 없는 id는 락을 쥔 채여도 "알 수 없는 도구"로 답한다(busy로 가리지 않는다).
+        let _held = lock.lock().unwrap();
+        let err = perform_preview_with_lock(&lock, "docker", |_| Ok(dummy_preview())).unwrap_err();
+        assert!(err.contains("알 수 없는 도구 id"), "{err}");
+    }
 
     // ── 완료판정 필수 테스트 ①: 존재하지 않는 toolId → 안전한 Err ──
     #[test]

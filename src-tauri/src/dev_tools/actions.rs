@@ -17,9 +17,10 @@ use super::plan_table::{
     manual_display_message, Runner, RunPlan, WINGET_ALREADY_LATEST_EXIT_CODE,
     WINGET_GENERIC_CANCELLED, WINGET_INSTALL_CANCELLED_BY_USER,
 };
+use super::locks::{try_acquire_lock, EXECUTION_BUSY_MESSAGE, EXECUTION_LOCK};
 use super::process::{
     build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout,
-    truncate_log, EXECUTION_LOCK,
+    truncate_log,
 };
 use super::{resolve_tool_path, tool_definition, DevTool, ToolId};
 use crate::cli_launcher::{open_terminal_command, TerminalLaunchResult};
@@ -79,9 +80,7 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
 
     // 동시 실행 전역 뮤텍스(결정 6) — brew 전역 락 충돌로 무의미한 Failed가
     // 나는 것을 막는다. 대기하지 않고 즉시 거부한다(사용자에게 명확한 이유 제공).
-    let _guard = EXECUTION_LOCK.try_lock().map_err(|_| {
-        "다른 업데이트가 이미 실행 중입니다. 완료 후 다시 시도해주세요.".to_string()
-    })?;
+    let _guard = try_acquire_lock(&EXECUTION_LOCK).ok_or_else(|| EXECUTION_BUSY_MESSAGE.to_string())?;
 
     let Some(resolved_path) = resolve_tool_path(def) else {
         return Ok(not_supported_result(
@@ -239,9 +238,7 @@ pub(crate) fn perform_install(tool_id_str: &str, plan_id: &str) -> Result<DevToo
         return perform_update(tool_id_str, plan_id);
     }
 
-    let _guard = EXECUTION_LOCK.try_lock().map_err(|_| {
-        "다른 업데이트가 이미 실행 중입니다. 완료 후 다시 시도해주세요.".to_string()
-    })?;
+    let _guard = try_acquire_lock(&EXECUTION_LOCK).ok_or_else(|| EXECUTION_BUSY_MESSAGE.to_string())?;
 
     let runners = ResolvedRunners::resolve();
     match resolve_install_plan(tool, &runners) {
