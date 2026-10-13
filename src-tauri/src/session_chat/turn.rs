@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -51,7 +51,8 @@ struct SessionChatDonePayload {
 // 함께 그쪽으로 옮겨졌다(로직 무변경, 이 파일의 호출부는 그대로다). 그
 // 이동으로 `pid_alive`를 이 파일이 직접 쓸 일이 없어져 더 이상 import하지
 // 않는다(유예 종료 확인은 옮겨진 함수 내부에서만 필요).
-use crate::process_util::kill_process_group_with_grace;
+use crate::process_util::{kill_process_group_with_grace, spawn_pipe_drain, PipeDrain, DRAIN_GRACE};
+use std::time::Instant;
 
 // ==================== S8: 세션당 1개 / 전역 3개 동시 실행 ====================
 
@@ -369,13 +370,7 @@ pub(crate) fn run_turn(
     // 기다리며 교착할 수 있다. stdout은 메인 스레드가 아래에서 바로 읽고,
     // stderr는 이미 별도 스레드다. stdin 쓰기도 별도 스레드로 돌려 모든 파이프가
     // 동시에 흐르게 한다.
-    let stderr_reader = child.stderr.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            buf
-        })
-    });
+    let stderr_drain = child.stderr.take().map(spawn_pipe_drain);
 
     // S2: 사용자 텍스트는 stdin으로만 전달한다. argv에는 절대 넣지 않는다.
     if let Some(mut stdin) = child.stdin.take() {
@@ -434,11 +429,18 @@ pub(crate) fn run_turn(
         }
     }
 
-    let stderr_bytes = stderr_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-    let stderr_text = String::from_utf8_lossy(&stderr_bytes).to_string();
-
+    // 자식을 먼저 수거한 뒤 stderr를 상한(`DRAIN_GRACE`) 안에서만 기다린다: 자손이
+    // stderr 파이프를 물고 있으면 EOF가 영영 오지 않아 예전의 상한 없는 `join()`은 이 턴
+    // 스레드를 끝내지 못했다(`finish_turn`/`emit_done`이 호출되지 않아 UI가 "진행 중"에
+    // 고착). stderr는 에러 꼬리 표시에만 쓰이므로 포기해도 잃는 것은 그 꼬리뿐이다.
     let status = child.wait();
     let exit_code = status.as_ref().ok().and_then(|s| s.code());
+    let stderr_bytes = PipeDrain::collect_logged(
+        stderr_drain,
+        Instant::now() + DRAIN_GRACE,
+        "session_chat turn stderr",
+    );
+    let stderr_text = String::from_utf8_lossy(&stderr_bytes).to_string();
 
     let canceled = finish_turn(&turn_id);
 

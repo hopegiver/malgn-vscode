@@ -234,30 +234,25 @@ pub(crate) fn force_kill_all_remaining() {
 }
 
 /// Windows에는 유닉스의 프로세스 그룹(음수 pid로 그룹 전체에 SIGKILL) 개념이
-/// 없다. `session_chat::turn::kill_process_group_with_grace`(Windows 분기)가
-/// 이미 확립한 패턴을 그대로 재사용한다: `taskkill /PID <pid> /T /F`로
-/// 자식 + 그 하위 트리 전체를 강제 종료한다.
+/// 없다. `process_util::kill_process_group_with_grace`(Windows 분기)에 위임한다:
+/// `taskkill /PID <pid> /T /F`로 자식 + 그 하위 트리 전체를 강제 종료한다. 그 헬퍼가
+/// `%SystemRoot%\System32\taskkill.exe` 절대경로 실행(bare-name 스폰 금지, B2)·
+/// `CREATE_NO_WINDOW`·taskkill 대기 상한(`TASKKILL_TIMEOUT`)을 한 곳에서 갖고 있다 —
+/// 예전 이 함수는 같은 호출을 직접 `.output()`으로 복붙해 상한이 없었다(taskkill이
+/// 멈추면 앱 종료가 함께 멈췄다). 이 호출을 다시 복붙하지 말 것.
+///
+/// pid마다 스레드를 하나씩 띄워 동시에 종료한다. 순차로 부르면 최악의 경우 pid 수 ×
+/// 상한만큼 앱 종료가 늦어진다(동시 실행 수는 `concurrency`로 이미 제한돼 있어 스레드
+/// 수도 그만큼이다). 모든 스레드를 `join`하므로 반환 시점에는 각 taskkill이 끝났거나
+/// 상한에서 끊긴 뒤다 — 앱 종료 직전에 호출되므로 반환 전에 끝나야 한다.
 ///
 /// Job Object(`CreateJobObject` +
 /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`)가 더 견고한 대안이지만(Job이 닫히는
 /// 순간 트리 전체가 자동 정리되어 이 함수 자체가 필요 없어진다) spawn
 /// 경로(`claude` 자식을 실제로 띄우는 지점) 수정이 필요하다 — 45인 규모
 /// 사내 도구에 그 정도 구조 변경은 과설계라 이번 결함 수정 범위를 넘는다.
-/// `taskkill`은 이 함수 하나만 고치면 되고, 이미 이 저장소가 같은 문제
-/// (자식 트리 종료)에 실제로 쓰고 있는 검증된 패턴이라 이걸 택한다.
-///
-/// `taskkill`을 bare-name으로 스폰하지 않는다 — `kill_process_group_with_grace`의
-/// B2(2라운드 차단) 주석과 동일한 이유: 이 앱의 Windows 배포물은 단일
-/// 포터블 exe라 보통 다운로드 폴더 등에 놓이고, 거기 동명의 악성 실행파일이
-/// 있으면 bare-name spawn이 그것을 대신 실행할 수 있다. 대신
-/// `dev_tools::platform::windows_system_tool`로
-/// `%SystemRoot%\System32\taskkill.exe` 절대경로를 조립해 실행한다.
-/// `.silent()`로 `CREATE_NO_WINDOW`를 적용해 이 저장소가 이미 잡아둔
-/// "콘솔 창이 뜨지 않는다"는 계약을 유지한다.
 #[cfg(windows)]
 pub(crate) fn force_kill_all_remaining() {
-    use crate::process_util::SilentCommand;
-
     let pids: Vec<u32> = {
         let map = super::lock_recovering(&RUNTIME);
         map.values()
@@ -265,17 +260,12 @@ pub(crate) fn force_kill_all_remaining() {
             .filter_map(|rt| rt.child_pid)
             .collect()
     };
-    if pids.is_empty() {
-        return;
-    }
-
-    let roots = crate::dev_tools::platform::EnvRoots::from_env();
-    let taskkill = crate::dev_tools::platform::windows_system_tool(&roots, r"System32\taskkill.exe");
-    for pid in pids {
-        let _ = std::process::Command::new(&taskkill)
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .silent()
-            .output();
+    let handles: Vec<_> = pids
+        .into_iter()
+        .map(|pid| std::thread::spawn(move || crate::process_util::kill_process_group_with_grace(pid)))
+        .collect();
+    for handle in handles {
+        let _ = handle.join();
     }
 }
 

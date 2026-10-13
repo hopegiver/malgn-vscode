@@ -1,12 +1,10 @@
 // ==================== 5. 버전 문자열 정규화(결정 4) ====================
 
 use super::DevTool;
-use crate::process_util::SilentCommand;
-use std::io::Read;
+use crate::process_util::{spawn_pipe_drain, SilentCommand, DRAIN_GRACE};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// "숫자+(.숫자+)+" 뒤에 선택적 `[-+.][영숫자.]+` 접미부를 붙여 첫 번째로 나타나는
@@ -165,7 +163,7 @@ fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option
 /// 수거한다. `taskkill /T`는 kill 시점에 부모 PID 관계가 살아 있는 트리만
 /// 따라간다: 중간 프로세스가 이미 종료돼 고아가 된 손자는 트리에서 끊겨
 /// 못 찾는다(Job Object 도입은 범위 밖, 설계 §9 미해결쟁점 1). 그 경우에도
-/// 호출자는 `drain` 상한(아래 `DRAIN_GRACE`) 덕에 막히지 않는다.
+/// 호출자는 `drain` 상한(`process_util::DRAIN_GRACE`) 덕에 막히지 않는다.
 ///
 /// Winget 러너는 구조적 한계가 따로 있다(N4, 2라운드): winget이 UAC로
 /// 승격해서 띄우는 msiexec 등 손자 프로세스는 우리 프로세스보다 높은 무결성
@@ -180,102 +178,6 @@ fn force_kill_process_group(pid: i32, child: &mut std::process::Child) -> Option
     let _ = child.kill();
     let _ = child.wait();
     None
-}
-
-/// 자식이 종료됐거나 kill된 뒤 stdout/stderr 리더가 EOF를 낼 때까지 기다리는
-/// 상한. 프로세스 그룹/트리를 벗어난 자손이 파이프를 계속 물고 있으면 EOF가
-/// 영영 오지 않는다 — 예전에는 리더 스레드를 상한 없이 `join()`해서 이 함수가
-/// 반환하지 않았고, 호출자가 쥔 락(plugins의 `PLUGIN_OP_LOCK`)이 앱을
-/// 재시작할 때까지 잡힌 채 남았다. 정상 종료 시 EOF는 자식 종료와 거의 동시에
-/// 오므로 이 시간은 "자식 종료 직전에 쓴 마지막 버퍼가 리더로 넘어오는 데
-/// 필요한 시간 + 여유"일 뿐이다: 2초면 충분히 넉넉하고, 최악의 경우에도
-/// 호출자가 2초만 더 기다린다. 이 값을 바꾸면 아래 회귀 테스트
-/// (`descendant_holding_pipe_*`)의 시간 상한 단언도 함께 본다.
-///
-/// 상한을 넘기면 리더를 포기한다: 리더는 블록된 `read`가 돌아오는 즉시(자손이
-/// 다음에 쓰거나 닫을 때) 루프를 빠져나가 파이프 읽기 끝을 닫는다. 그래서
-/// 파이프를 계속 물고 있던 자손이 그 뒤에 stdout/stderr에 쓰면 SIGPIPE(Windows는
-/// 깨진 파이프 오류)를 받는다 — 포기 이후 자손의 출력은 버려지는 정도가 아니라
-/// 그 쓰기가 실패한다. 포기된 스레드와 fd는 자손이 쓰거나 파이프를 닫을 때까지
-/// 호출당 최대 2개 남는다. 이 동작은 의도다(자손 출력을 계속 읽어 버리려면
-/// 스레드가 영구히 남는다). 상한을 넘긴 사실은 `[process] drain 상한 초과` 로그
-/// 한 줄로 남는다.
-const DRAIN_GRACE: Duration = Duration::from_secs(2);
-
-/// 테스트 전용 spawn 직렬화 락 — `Command::spawn` 구간(파이프 생성 → fork/exec)만
-/// 감싼다. macOS의 std는 파이프를 `pipe()`로 만든 뒤 `FD_CLOEXEC`를 따로 설정해서
-/// (원자적 `pipe2`가 없다) 그 사이에 다른 스레드가 fork하면 그 자식과 자식의
-/// 자손이 이쪽 파이프의 쓰기 끝을 물려받는다. 병렬 테스트에서는 `sleep 60 &`
-/// 자손을 남기는 테스트가 다른 테스트(`/bin/cat` 등)의 파이프를 물고 있게 되어
-/// 그쪽 EOF가 자손이 죽을 때까지(최대 `DRAIN_GRACE`) 오지 않고, 2초 미만을
-/// 단언하는 테스트가 간헐적으로 실패했다. 락은 spawn 동안만 잡으므로 테스트 전체
-/// 시간은 거의 늘지 않는다. 프로덕션에서는 같은 경합이 있어도 이제 `DRAIN_GRACE`가
-/// 지연을 2초로 제한하고 출력은 잃지 않으므로 전역 락을 도입하지 않는다.
-#[cfg(test)]
-static TEST_SPAWN_LOCK: Mutex<()> = Mutex::new(());
-
-/// 리더 스레드가 읽은 만큼을 공유 버퍼에 즉시 쌓는다 — 상한 시간 안에 EOF가
-/// 오지 않아 리더를 포기해도 그 시점까지 읽은 출력은 보존된다.
-struct PipeDrain {
-    buf: std::sync::Arc<Mutex<Vec<u8>>>,
-    /// 포기 신호. 리더는 다음 `read`가 돌아올 때 이 값을 보고 스스로 끝난다
-    /// (블록된 `read` 자체는 외부에서 깨울 수 없어 최대 1회 읽기만큼 더 산다).
-    abandoned: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    done: std::sync::mpsc::Receiver<()>,
-}
-
-fn spawn_pipe_drain<R: Read + Send + 'static>(mut pipe: R) -> PipeDrain {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    let buf = Arc::new(Mutex::new(Vec::new()));
-    let abandoned = Arc::new(AtomicBool::new(false));
-    let (tx, done) = std::sync::mpsc::channel();
-    let thread_buf = Arc::clone(&buf);
-    let thread_abandoned = Arc::clone(&abandoned);
-    std::thread::spawn(move || {
-        let mut chunk = [0u8; 8192];
-        loop {
-            match pipe.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if thread_abandoned.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let mut guard = thread_buf.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.extend_from_slice(&chunk[..n]);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
-            }
-        }
-        // 수신 측이 이미 포기해 사라졌어도 무해하다.
-        let _ = tx.send(());
-    });
-    PipeDrain {
-        buf,
-        abandoned,
-        done,
-    }
-}
-
-impl PipeDrain {
-    /// `deadline`까지 EOF를 기다린 뒤 지금까지 읽은 바이트를 가져온다.
-    /// 상한을 넘기면 리더를 포기시키고(`abandoned`) 읽은 만큼만 돌려준다.
-    /// 둘째 값은 상한을 넘겨 포기했는지(`true` = 파이프를 물고 있는 자손이 남음).
-    fn collect_until(self, deadline: Instant) -> (Vec<u8>, bool) {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        // Ok(()) = EOF, Err(Disconnected) = 리더 패닉 — 둘 다 "끝남". Timeout만 포기.
-        let capped = matches!(
-            self.done.recv_timeout(remaining),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        );
-        if capped {
-            self.abandoned
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        let mut guard = self.buf.lock().unwrap_or_else(|p| p.into_inner());
-        (std::mem::take(&mut *guard), capped)
-    }
 }
 
 /// stdin=null(부록 B.1 — 프롬프트가 즉시 EOF를 받아 정지 대신 실패한다) +
@@ -388,9 +290,9 @@ fn run_process_inner(
     command.silent();
 
     let spawned = {
-        // 테스트 전용: 이 모듈 테스트끼리의 spawn을 직렬화한다(`TEST_SPAWN_LOCK` 주석).
+        // 테스트 전용: 이 모듈 테스트끼리의 spawn을 직렬화한다(`process_util::test_support::SPAWN_LOCK` 주석).
         #[cfg(test)]
-        let _spawn_guard = TEST_SPAWN_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _spawn_guard = crate::process_util::test_support::SPAWN_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         command.spawn()
     };
     let mut child = match spawned {
@@ -796,42 +698,8 @@ mod tests {
 
     // ── 자손이 파이프를 물고 있어도 상한 안에 반환한다(리더 join 상한 없음 회귀) ──
 
-    /// 테스트가 남긴 자손 프로세스를 assertion 실패 시에도 반드시 정리하는 가드.
     #[cfg(unix)]
-    struct KillOnDrop(std::path::PathBuf);
-
-    #[cfg(unix)]
-    impl KillOnDrop {
-        fn pid(&self) -> Option<i32> {
-            std::fs::read_to_string(&self.0)
-                .ok()
-                .and_then(|t| t.trim().parse::<i32>().ok())
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for KillOnDrop {
-        fn drop(&mut self) {
-            if let Some(pid) = self.pid() {
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                }
-            }
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    #[cfg(unix)]
-    fn unique_pidfile(tag: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!(
-            "malgn-process-test-{tag}-{}-{nanos}.pid",
-            std::process::id()
-        ))
-    }
+    use crate::process_util::test_support::{unique_pidfile, KillOnDrop};
 
     /// (시간 단언은 `DRAIN_GRACE`=2초 기준 리터럴이다 — 상수를 바꾸면 같이 본다.)
     /// 자식이 정상 종료했지만 같은 그룹의 자손(`sleep 60 &`)이 stdout/stderr

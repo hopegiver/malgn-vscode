@@ -72,9 +72,11 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::process_util::{kill_process_group_with_grace, SilentCommand};
+use crate::process_util::{
+    kill_process_group_with_grace, spawn_pipe_drain, PipeDrain, SilentCommand, DRAIN_GRACE,
+};
 
 /// `dev_tools.rs`/`autonomy.rs`/`mcp_manager.rs`/`session_chat/mod.rs`가 이미
 /// 정한 관례(후보 상수를 공유하지 않고 각자 별도로 둔다, 회귀 위험 0)를
@@ -649,13 +651,7 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
         None => {}
     }
 
-    let stderr_reader = child.stderr.take().map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            buf
-        })
-    });
+    let stderr_drain = child.stderr.take().map(spawn_pipe_drain);
 
     // 앱 쪽 상한(LOGIN_MAX_WAIT) 워치독 — 1초 틱으로 완료 플래그를 확인해
     // 정상 종료 시 즉시 스스로 빠진다. 5분을 한 번에 sleep하고 나서 pid를
@@ -711,11 +707,19 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
         });
     }
 
-    let stderr_bytes = stderr_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-    let stderr_text = String::from_utf8_lossy(&stderr_bytes).to_string();
-
+    // 자식을 먼저 수거한 뒤 stderr를 상한(`DRAIN_GRACE`) 안에서만 기다린다: 로그인 자식의
+    // 자손(브라우저 실행 헬퍼 등)이 stderr 파이프를 물고 있으면 EOF가 영영 오지 않아
+    // 예전의 상한 없는 `join()`은 이 스레드를 끝내지 못했다(`finish_login`이 호출되지
+    // 않아 이후 로그인이 "이미 진행 중"으로 막히고 `login-finished`도 오지 않았다).
+    // stderr는 실패 메시지 꼬리에만 쓰인다.
     let _ = child.wait();
     done.store(true, Ordering::Relaxed);
+    let stderr_bytes = PipeDrain::collect_logged(
+        stderr_drain,
+        Instant::now() + DRAIN_GRACE,
+        "claude_auth login stderr",
+    );
+    let stderr_text = String::from_utf8_lossy(&stderr_bytes).to_string();
 
     let canceled = finish_login();
 

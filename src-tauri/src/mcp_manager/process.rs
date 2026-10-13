@@ -62,28 +62,36 @@ pub(super) fn run_mcp_command_with_env(
         command.env(key, value);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("claude 명령을 실행하지 못했습니다: {e}"))?;
+    run_bounded(
+        &mut command,
+        std::time::Duration::from_secs(MCP_COMMAND_TIMEOUT_SECS),
+        crate::process_util::DRAIN_GRACE,
+    )
+}
 
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-    let stdout_reader = stdout_pipe.map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-            buf
-        })
-    });
-    let stderr_reader = stderr_pipe.map(|mut pipe| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut pipe, &mut buf);
-            buf
-        })
-    });
+/// 이미 구성된 `command`(stdout/stderr piped)를 `timeout` 안에 끝내고 출력을 수거한다.
+/// `run_mcp_command_with_env`에서 claude 해석과 분리해 둔 본체 — 상한 동작을 실제 프로세스로
+/// 테스트하려는 용도다. 출력 수거는 `process_util::PipeDrain`으로 하며, 자식이 끝나거나
+/// kill된 뒤에도 자손이 파이프를 물고 있으면 `drain_grace`에서 끊고 그때까지 읽은 만큼만
+/// 쓴다(예전에는 리더 스레드를 상한 없이 `join()`해 이 함수가 반환하지 않았다).
+fn run_bounded(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+    drain_grace: std::time::Duration,
+) -> Result<(String, bool), String> {
+    let spawned = {
+        // 테스트 전용: 파이프 상속 경합을 피하려고 spawn을 직렬화한다(`SPAWN_LOCK` 주석).
+        #[cfg(test)]
+        let _spawn_guard = crate::process_util::test_support::SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        command.spawn()
+    };
+    let mut child = spawned.map_err(|e| format!("claude 명령을 실행하지 못했습니다: {e}"))?;
 
-    let timeout = std::time::Duration::from_secs(MCP_COMMAND_TIMEOUT_SECS);
+    let stdout_drain = child.stdout.take().map(crate::process_util::spawn_pipe_drain);
+    let stderr_drain = child.stderr.take().map(crate::process_util::spawn_pipe_drain);
+
     let started = std::time::Instant::now();
     let exit_status = loop {
         match child.try_wait() {
@@ -100,8 +108,18 @@ pub(super) fn run_mcp_command_with_env(
         }
     };
 
-    let stdout_bytes = stdout_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-    let stderr_bytes = stderr_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+    // 두 파이프가 하나의 마감시각을 공유한다.
+    let drain_deadline = std::time::Instant::now() + drain_grace;
+    let stdout_bytes = crate::process_util::PipeDrain::collect_logged(
+        stdout_drain,
+        drain_deadline,
+        "mcp_manager claude 명령 stdout",
+    );
+    let stderr_bytes = crate::process_util::PipeDrain::collect_logged(
+        stderr_drain,
+        drain_deadline,
+        "mcp_manager claude 명령 stderr",
+    );
     let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
     let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
 
@@ -139,5 +157,78 @@ mod tests {
             resolved.is_some(),
             "이 개발 머신에는 claude가 설치돼 있어야 하는데 절대경로 후보와 PATH 폴백 모두 실패했습니다"
         );
+    }
+
+    /// 자식이 정상 종료했지만 자손(`sleep 60 &`)이 stdout/stderr 파이프를 상속한 채 살아
+    /// 있다. 예전 구현은 EOF를 영영 못 받아 리더 `join()`에서 멈췄다. 지금은 주입한 상한
+    /// 안에 반환하고, 자식이 종료 전에 쓴 출력과 성공 판정은 그대로여야 한다.
+    #[cfg(unix)]
+    #[test]
+    fn descendant_holding_pipe_does_not_block_and_keeps_output_and_success() {
+        use crate::process_util::test_support::{unique_pidfile, KillOnDrop};
+        use std::time::{Duration, Instant};
+
+        let pidfile = unique_pidfile("mcp-normal");
+        let guard = KillOnDrop(pidfile.clone());
+        let script = format!(
+            "echo before-exit; sleep 60 & echo $! > '{}'; exit 0",
+            pidfile.display()
+        );
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let started = Instant::now();
+        let result = run_bounded(&mut command, Duration::from_secs(10), Duration::from_millis(500));
+        let elapsed = started.elapsed();
+
+        let (text, success) = result.expect("자식은 정상 종료했으므로 Ok여야 한다");
+        assert!(success);
+        assert_eq!(text.trim(), "before-exit");
+        assert!(
+            elapsed >= Duration::from_millis(450),
+            "자손이 파이프를 물고 있으면 EOF가 안 오므로 주입한 상한까지 기다렸어야 한다(전제 검증): {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "자손이 파이프를 물고 있어도 상한 안에 반환해야 한다: {elapsed:?}"
+        );
+        assert!(guard.pid().is_some(), "자손 pid가 기록되어야 한다(전제)");
+    }
+
+    /// 타임아웃 경로: `child.kill()`은 직속 자식만 죽이므로 자손이 파이프를 계속 문다.
+    /// 그래도 타임아웃 에러를 상한 안에 돌려줘야 한다.
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kill_with_descendant_holding_pipe_still_returns_timeout_error() {
+        use crate::process_util::test_support::{unique_pidfile, KillOnDrop};
+        use std::time::{Duration, Instant};
+
+        let pidfile = unique_pidfile("mcp-timeout");
+        let guard = KillOnDrop(pidfile.clone());
+        // exec로 sleep이 셸을 대체하면 pid가 같아져 손자가 생기지 않는다 — exec 없이 셸이
+        // 손자를 낳고 기다리게 한다(셸 kill 뒤에도 손자가 남는다).
+        let script = format!("sleep 60 & echo $! > '{}'; wait", pidfile.display());
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let started = Instant::now();
+        let result = run_bounded(&mut command, Duration::from_millis(400), Duration::from_millis(500));
+        let elapsed = started.elapsed();
+
+        let err = result.expect_err("타임아웃이면 Err여야 한다");
+        assert!(err.contains("내에 끝나지 않아 중단"), "{err}");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "kill 뒤 손자가 파이프를 물고 있어도 상한 안에 반환해야 한다: {elapsed:?}"
+        );
+        assert!(guard.pid().is_some(), "자손 pid가 기록되어야 한다(전제)");
     }
 }
