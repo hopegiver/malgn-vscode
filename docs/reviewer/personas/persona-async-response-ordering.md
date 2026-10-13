@@ -46,3 +46,9 @@
 - 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 1차(최초, Standard) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13.md`
   — 재사용 사유: 배지 판정 통일이 기준 A4(같은 지표의 계산 함수가 앱 전체에서 1개)의 과녁 그 자체. 6대 요소 무수정.
   — 이번 라운드 집중: `projectBadgeStatus` 외 `archiveStatus` 직접 판정 잔존 여부(grep), 필터·통계 수치와의 일치.
+- 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 1차(최초, Standard) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13.md`
+  — 재사용 사유: 기준 A4(같은 지표의 계산 함수가 앱 전체에서 1개) — 일 토큰 합·캐시 히트율을 추이 모듈이 재정의하지 않고 주입받는지가 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: dailyUsageTotal/computeCacheHitRate 주입, 하네스 deps 사본과 원본 일치, Rust 30일 cutoff(now-30d)와 프런트 30일 창(today-29..today)의 날짜 집합 차이.
+- 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 2차(증분) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13-r2.md`
+  — 재사용 사유: 주간 요약의 "오늘"(series 마지막 점)과 이상치의 "오늘"(today 인자)이 한 정의인지. 6대 요소 무수정.
+  — 이번 라운드 집중: computeUsageTrend의 today 단일 주입, 지표 주입 유지.

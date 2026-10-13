@@ -119,3 +119,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 2차(축소, 재사용) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13-r2.md`
   — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
   — 이번 라운드 집중: P2-9(재조회 연쇄 설치)가 mac에서 Node=manual이라 단독으로는 신규 머신 1회 셋업을 만들지 못한다는 의존(P2-3).
+- 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 1차(최초, Standard) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 새 30일 막대 차트와 바로 아래 기존 30일 일별 목록의 중복, "완료된 날 기준" 비교 단위.
+- 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 2차(증분) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13-r2.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: RT-2 채택 확인, 오늘 표기가 주간 insufficient 상태에서 사라지는 배치(RT-3, 차트 축 라벨로 이동 대안).

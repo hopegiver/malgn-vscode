@@ -110,3 +110,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 2차(축소, 재사용) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13-r2.md`
   — 재사용 사유: 픽스처가 실제 백엔드 모양으로 바뀌었는지, RV-002 후속 이월이 주장 정정으로 충분한지가 이 역할개념의 과녁. 6대 요소 무수정.
   — 이번 라운드 집중: home.mjs claude required=true·installDependsOn 반영, real-shape 시나리오가 query.rs 미설치 분기(path None·actionKind=resolve_install_plan)와 일치하는지, WBS P2-9 실재.
+- 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 1차(최초, Standard) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13.md`
+  — 재사용 사유: "도구 호출 98,064" 같은 수치 주장이 독립 관측과 맞는지, 화면 문구(전주 대비·급증/급락)가 계산값 이상을 말하지 않는지가 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: 로컬 로그 독립 재집계(고유 tool_use.id), 토큰 경로 불변 증명, 진행 중인 오늘이 "최근 7일" 비교에 섞이는 편향, 경계 하네스 65/65 재실행.
+- 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 2차(증분) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13-r2.md`
+  — 재사용 사유: 수정 문구("최근 완료 7일"·"집계 중"·"판정하지 않았습니다")가 계산 결과와 일치하는지가 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-001~006 원본 라인 재확인, 오늘 unjudged 전환이 judgedCount=0 안내문을 거짓으로 만드는 조합(RV-008) 재현, 잔존 옛 용어(RV-009).
