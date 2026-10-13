@@ -232,6 +232,7 @@ fn scan_usage_lines_matching(
         return;
     };
     let mut seen_message_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_tool_use_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in BufReader::new(f).lines() {
         let Ok(line) = line else { continue };
         if line.trim().is_empty() {
@@ -258,15 +259,16 @@ fn scan_usage_lines_matching(
         let Some(msg) = value.get("message") else {
             continue;
         };
-        // 스트리밍 응답이 여러 줄로 쪼개져 usage/tool_use가 반복 기록되는 것을
-        // 막는다 — id당 한 번만 usage와 tool_use를 센다.
-        if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-            if !seen_message_ids.insert(id.to_string()) {
-                continue;
-            }
-        }
+        // usage는 같은 message.id가 여러 줄에 반복 기록되므로 첫 줄에서만
+        // 센다. 단 tool_use는 Claude Code가 한 응답의 content 블록을 같은
+        // message.id로 여러 줄에 나눠 기록하므로(줄마다 다른 블록) 줄 단위
+        // dedup 대상이 아니다 — 아래에서 tool_use.id 단위로 따로 센다.
+        let first_line_of_message = match msg.get("id").and_then(|v| v.as_str()) {
+            Some(id) => seen_message_ids.insert(id.to_string()),
+            None => true,
+        };
 
-        if let Some(usage) = msg.get("usage") {
+        if let (true, Some(usage)) = (first_line_of_message, msg.get("usage")) {
             let model = msg
                 .get("model")
                 .and_then(|m| m.as_str())
@@ -303,6 +305,13 @@ fn scan_usage_lines_matching(
             for item in content {
                 if item.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
                     continue;
+                }
+                // 같은 tool_use 블록이 여러 줄에 중복 기록돼도 한 번만 센다.
+                // id가 없는 블록은 구분할 수 없으므로 블록마다 센다.
+                if let Some(tid) = item.get("id").and_then(|v| v.as_str()) {
+                    if !seen_tool_use_ids.insert(tid.to_string()) {
+                        continue;
+                    }
                 }
                 if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
                     *tool_counts.entry(name.to_string()).or_insert(0) += 1;
@@ -853,6 +862,71 @@ mod tests {
             (2 + 100 + 10000) + (1 + 50 + 5000),
             "중복 제거 후 토큰 합계가 예상과 다릅니다"
         );
+    }
+
+    // 회귀 방지 — U1: Claude Code는 한 응답의 content 블록을 같은 message.id로
+    // 여러 줄에 나눠 기록한다(줄마다 다른 tool_use). message.id 첫 줄만 보면
+    // 나머지 줄의 tool_use가 통째로 누락된다(실측: 30일 98,040개 중 18,815개만
+    // 집계). 토큰은 첫 줄에서만(2줄째 이후 usage는 같은 값의 반복) 센다.
+    #[test]
+    fn counts_tool_use_across_split_lines_of_same_message_id() {
+        let tmp = std::env::temp_dir().join(format!(
+            "malgn-vscode-usage-detail-split-tool-test-{}.jsonl",
+            std::process::id()
+        ));
+        let content = concat!(
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:00.000Z","message":{"id":"msg_split","model":"claude-sonnet-4-6","usage":{"input_tokens":2,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":10000},"content":[{"type":"tool_use","id":"toolu_a","name":"Read"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:01.000Z","message":{"id":"msg_split","model":"claude-sonnet-4-6","usage":{"input_tokens":2,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":10000},"content":[{"type":"tool_use","id":"toolu_b","name":"Bash"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:02.000Z","message":{"id":"msg_split","model":"claude-sonnet-4-6","usage":{"input_tokens":2,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":10000},"content":[{"type":"tool_use","id":"toolu_c","name":"Bash"}]}}"#,
+            "\n",
+        );
+        std::fs::write(&tmp, content).expect("fixture 파일 쓰기 실패");
+
+        let mut tally = UsageTally::default();
+        let mut tool_counts = std::collections::HashMap::new();
+        scan_usage_lines_for_date(&tmp, "2026-09-08", &mut tally, &mut tool_counts);
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(tool_counts.get("Read"), Some(&1));
+        assert_eq!(
+            tool_counts.get("Bash"),
+            Some(&2),
+            "같은 message.id의 뒷줄 tool_use가 누락됐습니다"
+        );
+        // 토큰·턴은 message.id당 한 번 — 변경 전과 동일.
+        assert_eq!(tally.turns, 1);
+        assert_eq!(tally.tokens, 2 + 100 + 10000);
+    }
+
+    // 같은 tool_use 블록(같은 tool_use.id)이 여러 줄에 중복 기록돼도 한 번만
+    // 센다. id가 없는 블록은 서로 구분할 수 없으므로 블록마다 센다.
+    #[test]
+    fn counts_duplicated_tool_use_block_once_but_idless_blocks_each() {
+        let tmp = std::env::temp_dir().join(format!(
+            "malgn-vscode-usage-detail-dup-tool-test-{}.jsonl",
+            std::process::id()
+        ));
+        let content = concat!(
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:00.000Z","message":{"id":"msg_x","model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","id":"toolu_dup","name":"Edit"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:01.000Z","message":{"id":"msg_x","model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","id":"toolu_dup","name":"Edit"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-09-08T10:00:02.000Z","message":{"id":"msg_y","model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","name":"Grep"},{"type":"tool_use","name":"Grep"}]}}"#,
+            "\n",
+        );
+        std::fs::write(&tmp, content).expect("fixture 파일 쓰기 실패");
+
+        let mut tally = UsageTally::default();
+        let mut tool_counts = std::collections::HashMap::new();
+        scan_usage_lines_for_date(&tmp, "2026-09-08", &mut tally, &mut tool_counts);
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(tool_counts.get("Edit"), Some(&1), "중복 tool_use 블록이 두 번 세어졌습니다");
+        assert_eq!(tool_counts.get("Grep"), Some(&2), "id 없는 블록은 각각 세어야 합니다");
+        assert_eq!(tally.turns, 2);
+        assert_eq!(tally.tokens, 4);
     }
 
     // detail.rs가 summary.rs와 같은 단가 로직(pricing.rs)을 쓰는지, 그리고

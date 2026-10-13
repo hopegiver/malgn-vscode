@@ -164,6 +164,7 @@ fn scan_file_for_summary(path: &Path, project_key: &str, cutoff_dt: DateTime<Utc
         return summary;
     };
     let mut seen_message_ids: HashSet<String> = HashSet::new();
+    let mut seen_tool_use_ids: HashSet<String> = HashSet::new();
     for line in BufReader::new(f).lines() {
         let Ok(line) = line else { continue };
         if line.trim().is_empty() {
@@ -188,13 +189,16 @@ fn scan_file_for_summary(path: &Path, project_key: &str, cutoff_dt: DateTime<Utc
         let Some(msg) = value.get("message") else {
             continue;
         };
-        if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-            if !seen_message_ids.insert(id.to_string()) {
-                continue;
-            }
-        }
+        // usage는 같은 message.id가 여러 줄에 반복 기록되므로 첫 줄에서만
+        // 센다. 단 tool_use는 Claude Code가 한 응답의 content 블록을 같은
+        // message.id로 여러 줄에 나눠 기록하므로(줄마다 다른 블록) 줄 단위
+        // dedup 대상이 아니다 — 아래에서 tool_use.id 단위로 따로 센다.
+        let first_line_of_message = match msg.get("id").and_then(|v| v.as_str()) {
+            Some(id) => seen_message_ids.insert(id.to_string()),
+            None => true,
+        };
 
-        if let Some(usage) = msg.get("usage") {
+        if let (true, Some(usage)) = (first_line_of_message, msg.get("usage")) {
             let model = msg
                 .get("model")
                 .and_then(|m| m.as_str())
@@ -253,6 +257,13 @@ fn scan_file_for_summary(path: &Path, project_key: &str, cutoff_dt: DateTime<Utc
             for item in content {
                 if item.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
                     continue;
+                }
+                // 같은 tool_use 블록이 여러 줄에 중복 기록돼도 한 번만 센다.
+                // id가 없는 블록은 구분할 수 없으므로 블록마다 센다.
+                if let Some(tid) = item.get("id").and_then(|v| v.as_str()) {
+                    if !seen_tool_use_ids.insert(tid.to_string()) {
+                        continue;
+                    }
                 }
                 if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
                     *summary.tool_counts.entry(name.to_string()).or_insert(0) += 1;
@@ -630,6 +641,65 @@ mod tests {
     // cache_write_1h=60_000, 나머지 0.
     //   = (40_000/1e6)*3.75 + (60_000/1e6)*6.0 = 0.15 + 0.36 = 0.51
     // (5m/6.0 1h는 pricing.rs 표: sonnet-4-6 cache_write_5m=3.75, cache_write_1h=6.0)
+    // 회귀 방지 — U1: Claude Code는 한 응답의 content 블록을 같은 message.id로
+    // 여러 줄에 나눠 기록한다(줄마다 다른 tool_use). message.id 첫 줄만 보면
+    // 나머지 줄의 tool_use가 통째로 누락된다(실측: 30일 98,040개 중 18,815개만
+    // 집계). 토큰·비용은 첫 줄에서만(뒷줄 usage는 같은 값의 반복) 센다.
+    #[test]
+    fn counts_tool_use_across_split_lines_of_same_message_id() {
+        let now = Utc::now();
+        let ts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let content = format!(
+            concat!(
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"msg_split","model":"claude-sonnet-4-6","usage":{{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"content":[{{"type":"tool_use","id":"toolu_a","name":"Read"}}]}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"msg_split","model":"claude-sonnet-4-6","usage":{{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"content":[{{"type":"tool_use","id":"toolu_b","name":"Bash"}}]}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"msg_split","model":"claude-sonnet-4-6","usage":{{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"content":[{{"type":"tool_use","id":"toolu_c","name":"Bash"}}]}}}}"#,
+                "\n",
+            ),
+            ts = ts,
+        );
+        let path = write_fixture(&content);
+        let summary = scan_file_for_summary(&path, "test-project", now - chrono::Duration::days(30));
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(summary.tool_counts.get("Read"), Some(&1));
+        assert_eq!(
+            summary.tool_counts.get("Bash"),
+            Some(&2),
+            "같은 message.id의 뒷줄 tool_use가 누락됐습니다"
+        );
+        // 토큰은 message.id당 한 번 — 변경 전과 동일.
+        assert_eq!(summary.input_tokens, 100);
+    }
+
+    // 같은 tool_use 블록(같은 tool_use.id)이 여러 줄에 중복 기록돼도 한 번만
+    // 센다. id가 없는 블록은 서로 구분할 수 없으므로 블록마다 센다.
+    #[test]
+    fn counts_duplicated_tool_use_block_once_but_idless_blocks_each() {
+        let now = Utc::now();
+        let ts = (now - chrono::Duration::days(1)).to_rfc3339();
+        let content = format!(
+            concat!(
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"msg_x","model":"claude-sonnet-4-6","usage":{{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"content":[{{"type":"tool_use","id":"toolu_dup","name":"Edit"}}]}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"msg_x","model":"claude-sonnet-4-6","usage":{{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"content":[{{"type":"tool_use","id":"toolu_dup","name":"Edit"}}]}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"msg_y","model":"claude-sonnet-4-6","usage":{{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"content":[{{"type":"tool_use","name":"Grep"}},{{"type":"tool_use","name":"Grep"}}]}}}}"#,
+                "\n",
+            ),
+            ts = ts,
+        );
+        let path = write_fixture(&content);
+        let summary = scan_file_for_summary(&path, "test-project", now - chrono::Duration::days(30));
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(summary.tool_counts.get("Edit"), Some(&1), "중복 tool_use 블록이 두 번 세어졌습니다");
+        assert_eq!(summary.tool_counts.get("Grep"), Some(&2), "id 없는 블록은 각각 세어야 합니다");
+        assert_eq!(summary.input_tokens, 200);
+    }
+
     #[test]
     fn scan_reflects_5m_1h_cache_write_breakdown_from_real_json_shape() {
         let now = Utc::now();
