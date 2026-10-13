@@ -9,6 +9,9 @@
 //     카드 아래의 "효율 가이드"(P2-7)는 같은 수치(+30일 요약의 모델별 토큰)에
 //     고정 임계값을 적용한 규칙 기반 참고 정보다 — 판정은 efficiencyGuide.ts의
 //     순수 함수가 하고, 표본이 작으면 단정하지 않고 "판단 보류"로 표시한다.
+//     그 아래 "사용 추이"(P3-1/P3-2)는 같은 30일 DailyUsage[]를 0으로 채워 날짜를
+//     연속화한 일별 막대 + 최근 7일 vs 직전 7일 요약 + 일별 이상치(급증·급락)다 —
+//     계산은 usageTrend.ts 순수 함수가 하고, 데이터가 부족하면 판정/비교하지 않는다.
 //   - 프로젝트별(projects): 30일 요약(usageSummaryApi.ts)의 Top5 랭킹 + 나머지
 //     합. 프로젝트를 클릭하면 그 프로젝트만의 30일 일별 추이를 펼친다.
 //   - 모델·도구(models): 30일 요약의 모델별 비중·비용 + 자주 쓴 툴 Top5.
@@ -30,6 +33,8 @@ import { fetchUsageSummary, fetchProjectDailyTrend } from '../usageSummaryApi';
 import type { ModelUsageSummary, ProjectUsageSummary, UsageSummaryReport } from '../usageSummaryApi';
 import { evaluateEfficiencyGuide } from '../efficiencyGuide';
 import type { GuideFinding } from '../efficiencyGuide';
+import { computeUsageTrend, TREND_THRESHOLDS } from '../usageTrend';
+import type { AnomalyPoint, UsageTrend, WeekMetrics } from '../usageTrend';
 
 function barFillEl(pct: number): HTMLElement {
   const fill = el('div', { className: 'bar-fill' }, []);
@@ -514,12 +519,159 @@ function renderEfficiencyGuide(totals: UsageTotals): HTMLElement {
   return box;
 }
 
+// ---------------- 사용 추이 (WBS P3-1 주간 요약 / P3-2 이상치, 계산은 usageTrend.ts) ----------------
+
+function signed(n: number, fmt: (v: number) => string): string {
+  return n > 0 ? `+${fmt(n)}` : n < 0 ? `-${fmt(-n)}` : fmt(0);
+}
+
+function weekRangeLabel(w: WeekMetrics): string {
+  return `${formatMonthDay(w.startDate)}~${formatMonthDay(w.endDate)}`;
+}
+
+function trendRow(cells: readonly (string | HTMLElement)[], head = false): HTMLElement {
+  return el('div', { className: `trend-week-row${head ? ' trend-week-head' : ''}` }, cells.map((c) => (typeof c === 'string' ? el('span', {}, [c]) : c)));
+}
+
+function trendDeltaCell(main: string, sub?: string): HTMLElement {
+  return el('span', { className: 'trend-delta' }, [main, ...(sub ? [el('small', {}, [sub])] : [])]);
+}
+
+function renderWeeklySummary(trend: UsageTrend): HTMLElement {
+  const w = trend.weekly;
+  if (w.status === 'insufficient' || !w.current) {
+    const msg =
+      w.spanDays === 0
+        ? '사용 기록이 없어 주간 요약을 내지 않습니다.'
+        : `사용 기록이 있는 기간이 ${w.spanDays}일입니다 — 7일 이상 쌓여야 주간 요약을, 14일 이상 쌓여야 전주 대비를 냅니다.`;
+    const block = el('div', { className: 'state-block-desc trend-weekly-note' }, [msg]);
+    block.setAttribute('data-trend-weekly', 'insufficient');
+    return block;
+  }
+  const cur = w.current;
+  const prev = w.previous;
+  const d = w.delta;
+  const rows: HTMLElement[] = [
+    trendRow(['지표', `최근 7일 (${weekRangeLabel(cur)})`, prev ? `직전 7일 (${weekRangeLabel(prev)})` : '직전 7일', '전주 대비'], true),
+    trendRow([
+      '총 토큰',
+      formatTokenCount(cur.totalTokens),
+      prev ? formatTokenCount(prev.totalTokens) : '—',
+      d
+        ? trendDeltaCell(
+            signed(d.tokensAbs, formatTokenCount),
+            d.tokensPct !== null ? `${d.tokensPct > 0 ? '+' : ''}${d.tokensPct.toFixed(1)}%` : '직전 주 0 — % 계산 안 함'
+          )
+        : trendDeltaCell('—'),
+    ]),
+    trendRow([
+      '활동일',
+      `${cur.activeDays}일`,
+      prev ? `${prev.activeDays}일` : '—',
+      d ? trendDeltaCell(signed(d.activeDaysAbs, (v) => `${v}일`)) : trendDeltaCell('—'),
+    ]),
+    trendRow([
+      '캐시 히트율',
+      cur.cacheHitRate !== null ? `${cur.cacheHitRate}%` : '—',
+      prev && prev.cacheHitRate !== null ? `${prev.cacheHitRate}%` : '—',
+      d && d.cacheHitPointDiff !== null ? trendDeltaCell(signed(d.cacheHitPointDiff, (v) => `${v}%p`)) : trendDeltaCell('—'),
+    ]),
+  ];
+  const parts: HTMLElement[] = [el('div', { className: 'trend-week-table' }, rows)];
+  if (w.status === 'no-baseline') {
+    parts.push(el('div', { className: 'state-block-desc trend-weekly-note' }, [`직전 7일은 사용 기록이 있는 기간(${w.spanDays}일)을 벗어나 비교하지 않습니다 — 14일 이상 쌓이면 전주 대비를 표시합니다.`]));
+  }
+  const box = el('div', { className: 'trend-weekly' }, parts);
+  box.setAttribute('data-trend-weekly', w.status);
+  return box;
+}
+
+function anomalyLine(p: AnomalyPoint): HTMLElement {
+  const T = TREND_THRESHOLDS;
+  const spike = p.kind === 'spike';
+  const median = p.baselineMedian ?? 0;
+  const ratioText = p.ratio !== null ? `${p.ratio.toFixed(2)}배` : '—';
+  const li = el('li', { className: `trend-anomaly trend-anomaly-${p.kind}` }, [
+    el('span', { className: 'trend-anomaly-mark' }, [spike ? '▲ 급증' : '▼ 급락']),
+    el('span', { className: 'trend-anomaly-date' }, [formatMonthDay(p.date)]),
+    el('span', { className: 'trend-anomaly-value' }, [`${formatTokenCount(p.total)} 토큰`]),
+    el('span', { className: 'trend-anomaly-basis' }, [
+      `기준 ${formatTokenCount(median)}(직전 ${T.baselineLookbackDays}일 중 사용한 ${p.baselineDays}일 중앙값)의 ${ratioText}`,
+    ]),
+  ]);
+  li.setAttribute('data-anomaly', p.kind);
+  return li;
+}
+
+function renderDailyTrendChart(trend: UsageTrend): HTMLElement {
+  const max = Math.max(1, ...trend.series.map((p) => p.total));
+  const kindByDate = new Map(trend.anomalies.points.map((p) => [p.date, p.kind]));
+  const bars = trend.series.map((p, i) => {
+    const kind = kindByDate.get(p.date);
+    const cls = kind === 'spike' ? ' trend-bar-spike' : kind === 'drop' ? ' trend-bar-drop' : p.total === 0 ? ' trend-bar-zero' : '';
+    const isToday = i === trend.series.length - 1;
+    const bar = el('div', { className: `trend-bar${cls}` }, []);
+    bar.style.height = p.total === 0 ? '2px' : `${Math.max(3, Math.round((p.total / max) * 100))}%`;
+    bar.title = `${p.date} · ${p.total.toLocaleString('ko-KR')} 토큰${isToday ? ' (오늘, 집계 중)' : ''}${kind === 'spike' ? ' · 급증' : kind === 'drop' ? ' · 급락' : ''}`;
+    return bar;
+  });
+  const first = trend.series[0];
+  const last = trend.series[trend.series.length - 1];
+  const allZero = trend.series.every((p) => p.total === 0);
+  const maxLabel = `일 최대 ${formatTokenCount(allZero ? 0 : max)} 토큰`;
+  const chart = el('div', { className: 'trend-chart' }, bars);
+  chart.setAttribute('role', 'img');
+  chart.setAttribute('aria-label', `최근 ${trend.series.length}일 일별 토큰 추이, ${maxLabel}`);
+  return el('div', { className: 'trend-chart-wrap' }, [
+    chart,
+    el('div', { className: 'trend-axis' }, [el('span', {}, [formatMonthDay(first.date)]), el('span', {}, [maxLabel]), el('span', {}, [`${formatMonthDay(last.date)} (오늘)`])]),
+  ]);
+}
+
+function renderAnomalies(trend: UsageTrend): HTMLElement {
+  const T = TREND_THRESHOLDS;
+  const a = trend.anomalies;
+  const rule = `규칙: 그 날 직전 ${T.baselineLookbackDays}일 중 사용한 날(최소 ${T.minBaselineActiveDays}일)의 일 토큰 중앙값을 기준으로 ${T.spikeRatio}배 이상이면 급증, 1/${T.dropDivisor} 이하면 급락 — 단, 기준과의 차이가 ${formatTokenCount(T.minAbsDeviationTokens)} 토큰 이상일 때만. 사용 없는 날과 오늘의 급락은 판정하지 않습니다.`;
+  const head = el('div', { className: 'trend-subhead' }, ['이상치 (일별 토큰 급증·급락)']);
+  let body: HTMLElement;
+  let state: string;
+  if (a.judgedCount === 0) {
+    state = 'insufficient';
+    body = el('div', { className: 'state-block-desc' }, [`판정하지 않았습니다 — 날짜마다 직전 ${T.baselineLookbackDays}일 안에 사용한 날이 ${T.minBaselineActiveDays}일 이상 있어야 하는데, 그런 날이 아직 없습니다. 이상치가 없다는 뜻이 아닙니다.`]);
+  } else if (a.anomalies.length === 0) {
+    state = 'none';
+    body = el('div', { className: 'state-block-desc' }, [`판정한 ${a.judgedCount}일 모두 기준 이내입니다.`]);
+  } else {
+    state = 'found';
+    body = el('ul', { className: 'trend-anomaly-list' }, a.anomalies.map(anomalyLine));
+  }
+  const wrap = el('div', { className: 'trend-anomalies' }, [head, body, el('div', { className: 'unpriced-note' }, [rule])]);
+  wrap.setAttribute('data-trend-anomalies', state);
+  return wrap;
+}
+
+function renderUsageTrend(items: readonly DailyUsage[]): HTMLElement {
+  const trend = computeUsageTrend(items, localDateKey(new Date()), { dayTotal: dailyUsageTotal, cacheHitRate: computeCacheHitRate });
+  const box = el('div', { className: 'box trend-box' }, [
+    boxHead('사용 추이 (최근 30일)'),
+    el('div', { className: 'box-body trend-body' }, [
+      renderWeeklySummary(trend),
+      renderDailyTrendChart(trend),
+      renderAnomalies(trend),
+      el('div', { className: 'unpriced-note' }, ['※ 위 수치는 최근 30일 일별 합계만으로 계산한 값입니다. 증감·이상치의 원인은 판정하지 않으며, 기록이 없는 날은 0으로 채워 날짜를 이었습니다.']),
+    ]),
+  ]);
+  box.setAttribute('data-trend-weekly-status', trend.weekly.status);
+  return box;
+}
+
 function renderDailyTab(): HTMLElement {
   const parts: HTMLElement[] = [renderUsageStatCards()];
   // 통계 타일이 보이는 조건(로딩 끝·에러 없음·기록 있음)과 같을 때만 가이드를 낸다.
   const d = state.dailyUsage;
   if (!(d.loading && !d.loaded) && !d.error && d.items.length > 0) {
     parts.push(renderEfficiencyGuide(computeUsageTotals(d.items)));
+    parts.push(renderUsageTrend(d.items));
   }
   parts.push(renderDailyUsageSection());
   return el('div', { className: 'col' }, parts);

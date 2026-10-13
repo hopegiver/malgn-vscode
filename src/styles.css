@@ -1489,3 +1489,41 @@ textarea.settings-input { resize: vertical; }
 }
 .guide-skipped { margin: var(--space-2-5) 0 0; padding: 0; list-style: none; font-size: var(--font-size-caption); color: var(--text-muted-aa); display: flex; flex-direction: column; gap: var(--space-1); }
 .guide-box .unpriced-note { margin-top: var(--space-2-5); }
+
+/* P3-1/P3-2 usage trend */
+/* 사용량 화면 "사용 추이"(views/usage.ts renderUsageTrend) — 새 색은 들이지 않고 기존 토큰만
+   쓴다. 급증/급락은 색만으로 전달하지 않는다: 막대 색 + 아래 이상치 목록의 ▲/▼ 라벨을
+   항상 함께 둔다. */
+.trend-body { display: flex; flex-direction: column; gap: var(--space-4); }
+.trend-week-table { display: flex; flex-direction: column; font-size: var(--font-size-small); }
+.trend-week-row {
+  display: grid; grid-template-columns: 1fr 1.4fr 1.4fr 1.2fr; gap: var(--space-2-5); align-items: baseline;
+  padding: var(--space-1-5) 0; border-bottom: var(--border-width) solid var(--border-soft);
+}
+.trend-week-row:last-child { border-bottom: none; }
+.trend-week-row > span:not(:first-child) { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
+.trend-week-head { font-weight: 700; color: var(--color-ink-muted); font-size: var(--font-size-caption); border-bottom: 2px solid var(--color-hairline); }
+.trend-week-head > span:not(:first-child) { font-family: inherit; }
+.trend-delta { display: flex; flex-direction: column; gap: var(--space-05); color: var(--text-primary); }
+.trend-delta small { font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-body); }
+.trend-weekly-note { margin-top: var(--space-2); }
+.trend-chart-wrap { display: flex; flex-direction: column; gap: var(--space-1-5); }
+.trend-chart {
+  display: flex; align-items: flex-end; gap: 2px; height: 72px; padding: 0 var(--space-05);
+  border-bottom: var(--border-width) solid var(--border);
+}
+.trend-bar { flex: 1 1 0; min-width: 3px; background: var(--accent); border-radius: var(--radius-0); }
+.trend-bar-zero { background: var(--text-muted); }
+.trend-bar-spike { background: var(--status-warn); }
+.trend-bar-drop { background: var(--status-bad); }
+.trend-axis { display: flex; justify-content: space-between; font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
+.trend-subhead { font-size: var(--font-size-caption); font-weight: 700; color: var(--color-ink-muted); margin-bottom: var(--space-2); }
+.trend-anomaly-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-1-5); font-size: var(--font-size-small); }
+.trend-anomaly { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
+.trend-anomaly-mark { font-weight: 700; min-width: 56px; }
+.trend-anomaly-spike .trend-anomaly-mark { color: var(--status-warn); }
+.trend-anomaly-drop .trend-anomaly-mark { color: var(--status-bad); }
+.trend-anomaly-date, .trend-anomaly-value { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
+.trend-anomaly-basis { font-size: var(--font-size-caption); color: var(--text-muted-aa); }
+.trend-body .unpriced-note { margin-top: 0; word-break: keep-all; }
+.trend-anomalies .unpriced-note { margin-top: var(--space-2-5); }
