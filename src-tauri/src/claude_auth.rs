@@ -52,6 +52,10 @@
 // EOF를 못 받아 또 다른 얼굴의 무한 대기에 빠질 수 있다 — `finish_login()`의
 // 정상 종료 경로도 슬롯 전체를 take()하며 같은 효과를 낸다).
 //
+// 코드 제출의 stdin write는 `LOGIN_STATE` 락 밖에서 일어난다 — 락 안에서는 핸들을
+// 꺼내고(`take_login_stdin`) 돌려놓기만 한다(`InFlightStdin`). 파이프가 차서 write가
+// 블로킹돼도 취소·타임아웃·앱 종료 경로가 같은 락에 막히지 않는다.
+//
 // 정상 폴링 경로(자동 완료·완료 판정·앱 자체 타임아웃)는 이 리비전에서
 // 손대지 않았다 — 실측대로 `--claudeai`는 서버 폴링 기반으로 자동 완료되고
 // 자체 타임아웃도 갖는다(바이너리 문자열 "Sign-in timed out..." 확인됨).
@@ -66,7 +70,7 @@ use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -93,13 +97,29 @@ const LOGIN_MAX_WAIT: Duration = Duration::from_secs(300);
 /// 묶이지 않는 전역 단일 자원(브라우저 로그인 창 하나)이라 슬롯도 하나면
 /// 충분하다.
 struct LoginState {
+    /// 로그인 시도마다 단조 증가하는 번호. 코드 제출이 stdin 핸들을 슬롯 밖으로
+    /// 꺼내 쓰는 동안(아래 `InFlightStdin`) 그 로그인이 끝나고 새 로그인이 등록될
+    /// 수 있다 — 반납 시 이 번호가 같을 때만 슬롯에 되돌려, 이전 로그인의 핸들이
+    /// 새 로그인의 stdin 자리에 들어가는 일을 막는다.
+    generation: u64,
     pid: Option<u32>,
     canceled: bool,
-    /// 자식 stdin의 쓰기 끝 — `submit_claude_auth_login_code`가 여기 쓴다.
-    /// `Option`을 `None`으로 바꾸면(`.take()`) 그 즉시 drop되어 파이프가
-    /// 닫힌다(취소·타임아웃·정상 종료 공통 경로).
+    /// 자식 stdin의 쓰기 끝 — `submit_claude_auth_login_code`가 쓴다. `Option`을
+    /// `None`으로 바꾸면(`.take()`) 그 즉시 drop되어 파이프가 닫힌다(취소·타임아웃·
+    /// 정상 종료 공통 경로). 코드 제출 중에는 핸들이 슬롯 밖(`InFlightStdin`)에 있어
+    /// `None`이다 — 그때는 `stdin_in_flight`가 true.
     stdin: Option<std::process::ChildStdin>,
+    /// 취소·앱 자체 타임아웃이 stdin을 닫으라고 요청했다. 이후에는 새 핸들을
+    /// 보관하지 않고(`set_login_stdin`) 제출에서 반납된 핸들도 되돌리지 않는다
+    /// (`InFlightStdin::drop`) — 제출이 핸들을 쥐고 있는 사이 들어온 취소가
+    /// "닫기"를 잃지 않게 하는 표식이다.
+    stdin_closed: bool,
+    /// 어떤 제출이 핸들을 꺼내 쓰는 중이다. 동시 제출(더블클릭)이 같은 파이프에
+    /// 바이트를 섞어 쓰지 못하게 직렬화한다.
+    stdin_in_flight: bool,
 }
+
+static LOGIN_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 static LOGIN_STATE: OnceLock<Mutex<Option<LoginState>>> = OnceLock::new();
 
@@ -113,9 +133,12 @@ fn register_login() -> Result<(), String> {
         return Err("이미 로그인 절차가 진행 중입니다.".to_string());
     }
     *guard = Some(LoginState {
+        generation: LOGIN_GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
         pid: None,
         canceled: false,
         stdin: None,
+        stdin_closed: false,
+        stdin_in_flight: false,
     });
     Ok(())
 }
@@ -133,13 +156,15 @@ fn set_login_pid(pid: u32) -> bool {
     }
 }
 
-/// 자식 stdin의 쓰기 끝을 슬롯에 보관한다 — 슬롯이 이미 비어 있으면(등록 전에
-/// 취소·종료가 끝난 레이스) 인자로 받은 값이 즉시 스코프를 벗어나며
-/// drop되어 그 자체로 닫힌다. 별도 분기가 필요 없다.
+/// 자식 stdin의 쓰기 끝을 슬롯에 보관한다 — 슬롯이 이미 비어 있거나(등록 전에
+/// 취소·종료가 끝난 레이스) 그 사이 닫기 요청(`stdin_closed`)이 들어왔으면 인자로
+/// 받은 값이 즉시 스코프를 벗어나며 drop되어 그 자체로 닫힌다.
 fn set_login_stdin(stdin: std::process::ChildStdin) {
     let mut guard = login_state().lock().unwrap();
     if let Some(state) = guard.as_mut() {
-        state.stdin = Some(stdin);
+        if !state.stdin_closed {
+            state.stdin = Some(stdin);
+        }
     }
 }
 
@@ -149,8 +174,104 @@ fn set_login_stdin(stdin: std::process::ChildStdin) {
 fn close_login_stdin() {
     let mut guard = login_state().lock().unwrap();
     if let Some(state) = guard.as_mut() {
+        state.stdin_closed = true;
         drop(state.stdin.take());
     }
+}
+
+/// 코드 제출이 stdin 핸들을 슬롯 밖으로 꺼내 쓰는 동안 들고 있는 소유권.
+///
+/// 이전 구현은 `LOGIN_STATE` 락을 쥔 채 `write_all`을 호출했다 — 자식이 stdin을
+/// 안 읽어 파이프 버퍼가 차면 write가 블로킹되고, 같은 락을 쓰는 취소·종료·워치독
+/// 경로가 전부 그 뒤에 줄을 섰다(취소가 자식을 죽여야 write가 풀리는데, 죽이려면
+/// 락이 필요한 순환 대기). 이제는 락 안에서 핸들만 `take`하고(`take_login_stdin`)
+/// 락을 놓은 뒤에 쓴다. 쓰는 동안 취소가 들어오면 락이 비어 있으므로 즉시 처리되고
+/// (`canceled`/`stdin_closed` 설정 + 프로세스 그룹 kill), 자식이 죽으면 파이프의
+/// 읽기 끝이 닫혀 블로킹된 write가 EPIPE로 풀린다.
+///
+/// `Drop`이 반납을 맡아 쓰기 성공·실패·패닉 모든 경로에서 `stdin_in_flight`가
+/// 해제되고, 반납 시점에 아직 같은 로그인이 살아 있고 닫기 요청이 없을 때만
+/// 슬롯에 되돌린다. 아니면(취소·타임아웃이 끼어듦, 로그인이 끝남, 새 로그인으로
+/// 교체됨) 핸들을 그대로 drop해 파이프를 닫는다 — 네 종료 경로(취소·타임아웃·정상
+/// 완료·앱 종료) 모두에서 stdin이 EOF로 닫히는 성질을 유지한다.
+struct InFlightStdin {
+    stdin: Option<std::process::ChildStdin>,
+    generation: u64,
+}
+
+impl InFlightStdin {
+    fn write_line(&mut self, payload: &[u8]) -> std::io::Result<()> {
+        let stdin = self.stdin.as_mut().expect("InFlightStdin은 drop 전까지 핸들을 가진다");
+        stdin.write_all(payload).and_then(|_| stdin.flush())
+    }
+}
+
+impl Drop for InFlightStdin {
+    fn drop(&mut self) {
+        let Some(stdin) = self.stdin.take() else {
+            return;
+        };
+        // 락이 poison이어도(다른 스레드 패닉) 해제는 시도한다 — 여기서 또 패닉하면
+        // 이중 패닉으로 abort된다.
+        let mut guard = match login_state().lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(state) = guard.as_mut() {
+            if state.generation == self.generation {
+                state.stdin_in_flight = false;
+                if !state.stdin_closed {
+                    state.stdin = Some(stdin);
+                    return;
+                }
+            }
+        }
+        // 슬롯 없음 / 다른 로그인 / 닫기 요청됨 → 락을 쥔 채 drop해도 close(2)는
+        // 즉시 반환되므로 문제없지만, 의도를 분명히 하려고 명시적으로 닫는다.
+        drop(stdin);
+    }
+}
+
+enum TakeStdinError {
+    NoLogin,
+    Closed,
+    Busy,
+    NotReady,
+}
+
+impl TakeStdinError {
+    fn message(&self) -> &'static str {
+        match self {
+            TakeStdinError::NoLogin => "진행 중인 로그인이 없습니다.",
+            TakeStdinError::Closed => "로그인이 취소되었거나 종료 중입니다.",
+            TakeStdinError::Busy => "이전 코드를 전달하는 중입니다. 잠시 후 다시 시도해주세요.",
+            TakeStdinError::NotReady => {
+                "로그인 프로세스가 아직 입력을 받을 준비가 되지 않았습니다. 잠시 후 다시 시도해주세요."
+            }
+        }
+    }
+}
+
+/// 락 안에서는 핸들을 꺼내기만 한다(I/O 없음).
+fn take_login_stdin() -> Result<InFlightStdin, TakeStdinError> {
+    let mut guard = login_state().lock().unwrap();
+    let Some(state) = guard.as_mut() else {
+        return Err(TakeStdinError::NoLogin);
+    };
+    if state.canceled || state.stdin_closed {
+        return Err(TakeStdinError::Closed);
+    }
+    if state.stdin_in_flight {
+        return Err(TakeStdinError::Busy);
+    }
+    let Some(stdin) = state.stdin.take() else {
+        return Err(TakeStdinError::NotReady);
+    };
+    state.stdin_in_flight = true;
+    Ok(InFlightStdin {
+        stdin: Some(stdin),
+        generation: state.generation,
+    })
 }
 
 /// 슬롯을 비우고, 취소된 상태였는지 반환한다. `guard.take()`가 통째로
@@ -649,7 +770,10 @@ pub fn cancel_claude_auth_login() {
         state.canceled = true;
         // 취소 시 stdin을 반드시 닫는다(작업 지시) — piped stdin을 아무도
         // 안 닫으면 자식이 EOF를 못 받아 또 다른 얼굴의 무한 대기에 빠질 수
-        // 있다. `.take()`가 반환한 값을 곧장 drop해 쓰기 끝을 닫는다.
+        // 있다. `.take()`가 반환한 값을 곧장 drop해 쓰기 끝을 닫는다. 코드 제출이
+        // 핸들을 쥐고 있어 여기서 `None`이면, `stdin_closed`가 그 제출의 반납
+        // 시점에 닫기를 이어받는다(`InFlightStdin::drop`).
+        state.stdin_closed = true;
         drop(state.stdin.take());
         state.pid
     };
@@ -664,24 +788,28 @@ pub fn cancel_claude_auth_login() {
 /// 글자만 붙인다 — 파이프(비TTY) stdin을 읽는 Node 계열 입력은 LF만으로 한
 /// 줄 입력이 완결되고, CRLF를 붙이면 오히려 CR이 코드 문자열에 섞여 들어갈
 /// 위험이 있다.
+///
+/// async + `spawn_blocking`: sync 커맨드는 메인 스레드에서 돌아, 파이프가 찬 write가
+/// 블로킹되면 앱 전체(같은 메인 스레드로 들어오는 취소 커맨드 포함)가 멈춘다.
 #[tauri::command]
-pub fn submit_claude_auth_login_code(code: String) -> Result<(), String> {
+pub async fn submit_claude_auth_login_code(code: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || submit_login_code_blocking(&code))
+        .await
+        .map_err(|e| format!("코드 전달 작업이 비정상 종료되었습니다: {e}"))?
+}
+
+/// 제출 본체. `LOGIN_STATE` 락은 핸들을 꺼낼 때(`take_login_stdin`)와 반납할 때
+/// (`InFlightStdin::drop`)만 잡고, 사이의 `write_all`은 락 밖에서 일어난다.
+fn submit_login_code_blocking(code: &str) -> Result<(), String> {
     let trimmed = code.trim();
     if trimmed.is_empty() {
         return Err("코드를 입력해주세요.".to_string());
     }
-    let mut guard = login_state().lock().unwrap();
-    let Some(state) = guard.as_mut() else {
-        return Err("진행 중인 로그인이 없습니다.".to_string());
-    };
-    let Some(stdin) = state.stdin.as_mut() else {
-        return Err("로그인 프로세스가 아직 입력을 받을 준비가 되지 않았습니다. 잠시 후 다시 시도해주세요.".to_string());
-    };
+    let mut in_flight = take_login_stdin().map_err(|e| e.message().to_string())?;
     let mut payload = trimmed.as_bytes().to_vec();
     payload.push(b'\n');
-    stdin
-        .write_all(&payload)
-        .and_then(|_| stdin.flush())
+    in_flight
+        .write_line(&payload)
         .map_err(|e| format!("코드를 전달하지 못했습니다: {e}"))
 }
 
@@ -690,6 +818,18 @@ pub fn submit_claude_auth_login_code(code: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `LOGIN_STATE`를 건드리는 모든 테스트가 이 락으로 직렬화된다(전역 단일 슬롯 —
+    /// 아래 "전역 단일 슬롯" 절 주석 참고). 한 테스트가 패닉해도 다음 테스트가
+    /// 연쇄 실패하지 않게 poison은 무시한다.
+    static LOGIN_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn serial_login_state() -> std::sync::MutexGuard<'static, ()> {
+        let guard = LOGIN_STATE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 앞선 테스트가 남긴 슬롯이 있으면 비운다.
+        let _ = finish_login();
+        guard
+    }
 
     #[test]
     fn parse_claude_auth_status_reads_real_shape() {
@@ -803,6 +943,7 @@ mod tests {
     // 함수 안에서 순차적으로만 검증한다(테스트 간 병렬 공유 상태 없음).
     #[test]
     fn login_slot_lifecycle_register_cancel_finish() {
+        let _serial = serial_login_state();
         // 1) 첫 등록은 성공하고, 진행 중일 때 두 번째 등록은 거부된다.
         assert!(register_login().is_ok());
         let second = register_login();
@@ -823,14 +964,14 @@ mod tests {
         assert!(!canceled);
 
         // 4) 로그인이 없을 때 코드를 제출하면 명확한 에러를 반환한다(패닉 아님).
-        let no_login_err = submit_claude_auth_login_code("ABC".to_string());
+        let no_login_err = submit_login_code_blocking("ABC");
         assert!(no_login_err.is_err());
 
         // 5) 로그인은 등록됐지만 아직 stdin이 준비되지 않았을 때(spawn 직후
         //    ~ set_login_stdin 호출 사이의 창)도 마찬가지로 명확한 에러여야
         //    한다 — run_login이 아직 자식을 spawn하지 못한 상태를 흉내낸다.
         assert!(register_login().is_ok());
-        let not_ready_err = submit_claude_auth_login_code("ABC".to_string());
+        let not_ready_err = submit_login_code_blocking("ABC");
         assert!(not_ready_err.is_err());
         // 슬롯을 비워 다음 단계(6)가 이어서 register_login()할 수 있게 한다.
         let _ = finish_login();
@@ -898,7 +1039,7 @@ mod tests {
 
             // 감지 후 실제 프론트 "코드 제출" 버튼이 부르는 것과 동일한
             // 커맨드로 코드를 전달한다.
-            submit_claude_auth_login_code("HARNESS-CODE-123".to_string()).expect("코드 제출 실패");
+            submit_login_code_blocking("HARNESS-CODE-123").expect("코드 제출 실패");
 
             reader.join().expect("stdout 리더 스레드 조인 실패");
             child.wait().expect("가짜 자식 프로세스 회수 실패");
@@ -911,5 +1052,225 @@ mod tests {
                 "submit_claude_auth_login_code로 보낸 코드가 가짜 자식이 기록한 파일에 그대로 나타나야 합니다"
             );
         }
+    }
+
+    // ==================== P1-7: stdin write가 LOGIN_STATE 락 밖에서 일어난다 ====================
+
+    /// 락 안에서 `take`만 하고 쓰기는 락 밖 — 슬롯을 만들고 `cat > file` 자식에
+    /// stdin을 연결해 둔 상태를 돌려준다.
+    #[cfg(unix)]
+    fn spawn_login_child(script: &str) -> std::process::Child {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(script).stdin(Stdio::piped()).stdout(Stdio::null());
+        command.process_group(0);
+        let mut child = command.spawn().expect("가짜 자식(/bin/sh) spawn 실패");
+        set_login_pid(child.id());
+        set_login_stdin(child.stdin.take().expect("stdin 파이프 없음"));
+        child
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(child: &mut std::process::Child, max: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = std::time::Instant::now() + max;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// 핵심 회귀: 자식이 stdin을 읽지 않아 파이프가 차서 write가 블로킹돼도
+    /// ① 락이 풀려 있어 다른 경로(상태 조회·두 번째 제출)가 즉시 반응하고
+    /// ② 취소가 지연 없이 처리되며 ③ 취소가 자식을 죽이면 블로킹된 write가
+    /// EPIPE로 풀려 제출 스레드가 끝나고 ④ 반납된 핸들은 재보관되지 않고 닫힌다.
+    /// (이전 구현은 락을 쥔 채 write해 ①②가 모두 교착이었다.)
+    #[cfg(unix)]
+    #[test]
+    fn blocked_stdin_write_does_not_hold_lock_and_cancel_unblocks_it() {
+        let _serial = serial_login_state();
+        assert!(register_login().is_ok());
+        // stdin을 읽지 않고 30초 자는 자식 — 파이프 버퍼(16~64KB)가 차면 write 블로킹.
+        let mut child = spawn_login_child("sleep 30");
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            let big = "x".repeat(4 * 1024 * 1024);
+            let result = submit_login_code_blocking(&big);
+            let _ = done_tx.send(result);
+        });
+
+        // write가 시작돼 핸들이 슬롯 밖으로 나갈 때까지 대기(락을 잡을 수 있어야 가능).
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let in_flight = login_state().lock().unwrap().as_ref().map(|s| s.stdin_in_flight).unwrap_or(false);
+            if in_flight {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "제출이 시작되지 않았다");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // write가 실제로 블로킹 중인지(아직 끝나지 않았는지) 잠시 확인.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(done_rx.try_recv().is_err(), "write가 블로킹되지 않았다 — 테스트 전제 불성립");
+
+        // ① 블로킹 중에도 락이 비어 있다: 동시 제출은 즉시 Busy로 거절된다.
+        let t = std::time::Instant::now();
+        let busy = submit_login_code_blocking("second");
+        assert!(t.elapsed() < Duration::from_secs(1), "락에 막혀 지연됐다");
+        assert!(busy.unwrap_err().contains("전달하는 중"));
+
+        // ② 취소는 즉시 반환한다(락 대기 없음) — 그룹 SIGTERM으로 자식이 죽는다.
+        let t = std::time::Instant::now();
+        cancel_claude_auth_login();
+        assert!(t.elapsed() < Duration::from_secs(1), "취소가 write에 막혔다");
+
+        // ③ 자식이 죽으며 블로킹된 write가 풀린다.
+        let result = done_rx.recv_timeout(Duration::from_secs(10)).expect("취소 후에도 write가 풀리지 않았다");
+        assert!(result.is_err(), "죽은 자식에 대한 write는 실패해야 한다");
+        submitter.join().unwrap();
+        assert!(wait_for_exit(&mut child, Duration::from_secs(5)).is_some(), "자식이 종료되지 않았다");
+
+        // ④ 취소가 끼어들었으므로 반납된 핸들은 슬롯에 재보관되지 않는다.
+        {
+            let guard = login_state().lock().unwrap();
+            let state = guard.as_ref().expect("슬롯은 finish_login 전까지 남아 있다");
+            assert!(state.stdin.is_none(), "취소 후 stdin 핸들이 재보관됐다");
+            assert!(!state.stdin_in_flight);
+            assert!(state.canceled);
+        }
+        assert!(submit_login_code_blocking("after-cancel").is_err());
+        assert!(finish_login(), "취소 표식이 유지돼야 한다");
+    }
+
+    /// 쓰기 성공 후 핸들이 슬롯에 돌아와 연속 제출이 가능하고, 정상 종료
+    /// (`finish_login`)가 남은 핸들을 닫아 자식이 EOF로 끝난다.
+    #[cfg(unix)]
+    #[test]
+    fn handle_is_returned_after_write_and_closed_on_normal_finish() {
+        let _serial = serial_login_state();
+        assert!(register_login().is_ok());
+        let out = std::env::temp_dir().join(format!("claude_auth_two_lines_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let mut child = spawn_login_child(&format!("cat > '{}'", out.display()));
+
+        submit_login_code_blocking("A").expect("첫 제출");
+        submit_login_code_blocking("B").expect("핸들이 반납되지 않으면 두 번째 제출이 실패한다");
+        // 아직 EOF 전: cat은 살아 있다.
+        assert!(child.try_wait().unwrap().is_none());
+
+        finish_login(); // 슬롯 통째로 drop → stdin 닫힘(정상 종료 경로)
+        let status = wait_for_exit(&mut child, Duration::from_secs(5)).expect("EOF를 받고 종료해야 한다");
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "A\nB\n");
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// 앱 자체 타임아웃 경로(`close_login_stdin`)가 stdin을 닫아 자식이 EOF로 끝난다.
+    #[cfg(unix)]
+    #[test]
+    fn close_login_stdin_delivers_eof_to_child() {
+        let _serial = serial_login_state();
+        assert!(register_login().is_ok());
+        let mut child = spawn_login_child("cat > /dev/null");
+        submit_login_code_blocking("A").expect("제출");
+        close_login_stdin();
+        let status = wait_for_exit(&mut child, Duration::from_secs(5)).expect("EOF를 받지 못했다");
+        assert!(status.success());
+        assert!(submit_login_code_blocking("B").is_err(), "닫힌 뒤 제출은 거절돼야 한다");
+        finish_login();
+    }
+
+    /// 취소 경로: 핸들이 슬롯에 있을 때 취소하면 stdin이 닫힌다. SIGTERM을
+    /// 무시하는 자식으로 "닫힘(EOF)만으로 끝난다"를 증명한다 — 시그널이 아니라
+    /// EOF가 자식을 끝내는지 보려는 것이라 3초 유예 뒤 SIGKILL이 오기 전에 종료한다.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_closes_stdin_even_if_child_ignores_sigterm() {
+        let _serial = serial_login_state();
+        assert!(register_login().is_ok());
+        let mut child = spawn_login_child("trap '' TERM; cat > /dev/null");
+        // cat이 trap을 설치한 뒤 시작될 시간을 준다.
+        std::thread::sleep(Duration::from_millis(200));
+        let t = std::time::Instant::now();
+        cancel_claude_auth_login();
+        let status = wait_for_exit(&mut child, Duration::from_millis(2500))
+            .expect("취소가 stdin을 닫지 않았다(SIGTERM 무시 자식이 유예 전에 안 끝남)");
+        assert!(t.elapsed() < Duration::from_secs(3));
+        let _ = status;
+        assert!(finish_login());
+    }
+
+    /// 반납 경합: 제출이 핸들을 쥔 사이 로그인이 끝나고 새 로그인이 등록돼도
+    /// 이전 핸들이 새 로그인의 stdin 자리로 들어가지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn returned_handle_is_not_stored_into_a_newer_login() {
+        let _serial = serial_login_state();
+        assert!(register_login().is_ok());
+        let mut child = spawn_login_child("cat > /dev/null");
+        let in_flight = take_login_stdin().ok().expect("핸들을 꺼낼 수 있어야 한다");
+
+        // 제출 도중 로그인이 정상 종료되고 새 로그인이 시작된 상황.
+        finish_login();
+        assert!(register_login().is_ok());
+
+        drop(in_flight); // 반납 시도 — 세대가 달라 닫혀야 한다.
+        {
+            let guard = login_state().lock().unwrap();
+            let state = guard.as_ref().unwrap();
+            assert!(state.stdin.is_none(), "이전 로그인의 핸들이 새 로그인에 섞였다");
+            assert!(!state.stdin_in_flight);
+        }
+        // 옛 핸들이 닫혔으니 cat이 EOF로 끝난다.
+        assert!(wait_for_exit(&mut child, Duration::from_secs(5)).is_some());
+        finish_login();
+    }
+
+    /// 반납 경합: 제출이 핸들을 쥔 사이 취소가 오면 반납 시 재보관하지 않고 닫는다
+    /// (write 성공 직후에 취소가 낀 경우 — 블로킹 없이 결정론적으로 재현).
+    #[cfg(unix)]
+    #[test]
+    fn cancel_during_submit_wins_over_restoring_the_handle() {
+        let _serial = serial_login_state();
+        assert!(register_login().is_ok());
+        let mut child = spawn_login_child("cat > /dev/null");
+        let mut in_flight = take_login_stdin().ok().expect("핸들을 꺼낼 수 있어야 한다");
+        in_flight.write_line(b"A\n").expect("쓰기");
+
+        cancel_claude_auth_login(); // 핸들이 슬롯 밖이라 여기선 닫을 게 없다 → stdin_closed 표식만.
+        drop(in_flight);
+
+        {
+            let guard = login_state().lock().unwrap();
+            assert!(guard.as_ref().unwrap().stdin.is_none());
+        }
+        assert!(wait_for_exit(&mut child, Duration::from_secs(5)).is_some(), "반납된 핸들이 닫히지 않았다");
+        assert!(finish_login());
+    }
+
+    /// 패닉 안전: 쓰기 도중 제출이 패닉해도(unwind) Drop이 `stdin_in_flight`를 해제해
+    /// 슬롯이 영구 Busy로 남지 않는다.
+    #[cfg(unix)]
+    #[test]
+    fn in_flight_flag_is_released_even_if_submit_panics() {
+        let _serial = serial_login_state();
+        assert!(register_login().is_ok());
+        let mut child = spawn_login_child("cat > /dev/null");
+        let result = std::panic::catch_unwind(|| {
+            let _in_flight = take_login_stdin().ok().expect("핸들");
+            panic!("제출 중 패닉 흉내");
+        });
+        assert!(result.is_err());
+        {
+            let guard = login_state().lock().unwrap();
+            let state = guard.as_ref().unwrap();
+            assert!(!state.stdin_in_flight, "패닉 후 Busy가 풀리지 않았다");
+            assert!(state.stdin.is_some(), "패닉 후 핸들이 반납되지 않았다");
+        }
+        assert!(submit_login_code_blocking("A").is_ok());
+        finish_login();
+        assert!(wait_for_exit(&mut child, Duration::from_secs(5)).is_some());
     }
 }
