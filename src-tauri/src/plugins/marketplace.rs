@@ -18,7 +18,9 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{run_claude_command, CommandResult};
+use super::{
+    run_claude_command, CommandResult, TIMEOUT_MARKETPLACE_LOCAL, TIMEOUT_MARKETPLACE_SYNC,
+};
 
 #[derive(Serialize, Debug)]
 pub(crate) struct MarketplaceInfo {
@@ -135,7 +137,7 @@ pub(crate) fn run_add_marketplace(source: String) -> CommandResult {
     match build_marketplace_add_args(&source) {
         Ok(args) => {
             let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            run_claude_command(&arg_refs)
+            run_claude_command(&arg_refs, TIMEOUT_MARKETPLACE_SYNC)
         }
         Err(message) => CommandResult {
             success: false,
@@ -152,7 +154,7 @@ pub(crate) fn run_remove_marketplace(name: String) -> CommandResult {
     match build_marketplace_remove_args(&name) {
         Ok(args) => {
             let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            run_claude_command(&arg_refs)
+            run_claude_command(&arg_refs, TIMEOUT_MARKETPLACE_LOCAL)
         }
         Err(message) => CommandResult {
             success: false,

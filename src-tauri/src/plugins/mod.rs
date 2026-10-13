@@ -18,8 +18,37 @@ mod installed;
 mod marketplace;
 
 use crate::dev_tools::platform::{self, Platform};
-use crate::process_util::SilentCommand;
 use serde::Serialize;
+use std::time::Duration;
+
+// ---------------- claude 자식 프로세스 상한 시간 ----------------
+// 이 모듈이 띄우는 모든 `claude` 자식 프로세스는 아래 셋 중 하나를 상한으로 받는다
+// (`run_claude_command`의 필수 인자 — 상한 없는 호출 경로가 구조적으로 없다).
+// 초과하면 `dev_tools::run_process_with_timeout_cancellable`이 프로세스 그룹을
+// SIGTERM → 3초 유예 → SIGKILL 하고 wait()까지 끝낸 뒤(고아 없음)
+// 사용자에게 "시간 초과" 의미의 실패 메시지를 돌려준다.
+//
+// 값의 근거(실측값이 아니라 판단 — 이 코드베이스의 기존 상한과 같은 결): 같은
+// 앱 안의 `dev_tools` 설치 계획이 npm 전역 설치·`claude update`에 300초를
+// (plan_table.rs), 버전 조회에 10초를 쓴다. 정상 완료 시간의 수 배 여유를 두되
+// 사용자가 스피너를 하염없이 보지 않는 선에서 끊는다. 거짓 타임아웃의 비용은
+// "사용자가 다시 누른다"(세 종류 모두 재실행해도 안전 — 마켓플레이스 갱신은
+// git fetch, install/update는 같은 id 재처리)이고, 무한 대기의 비용은 앱
+// 프리즈·고아 프로세스라서 상한은 넉넉한 쪽으로 잡았다.
+//
+// 상한은 아래 세 상수가 정본이다 — 다른 곳에 숫자를 복사해 두지 않는다(시간 초과
+// 메시지의 초 값도 인자에서 동적 생성). 값을 바꿀 때 같이 볼 곳은 이 파일의
+// `update_plugin`(두 단계 합산 최악 시간)뿐이다.
+
+/// 마켓플레이스 git clone/fetch 계열 — `marketplace add`, `marketplace update`
+/// (전체 갱신은 등록된 마켓플레이스를 순차로 fetch하므로 이 계열 최악 케이스),
+/// `update_plugin`의 1단계(단일 마켓플레이스 갱신). 네트워크 의존.
+pub(crate) const TIMEOUT_MARKETPLACE_SYNC: Duration = Duration::from_secs(180);
+/// `marketplace remove` — 로컬 설정/캐시 디렉터리 정리뿐이라 네트워크가 없다.
+pub(crate) const TIMEOUT_MARKETPLACE_LOCAL: Duration = Duration::from_secs(30);
+/// `plugin install`/`plugin update` — 플러그인 소스 fetch + 캐시 복사.
+/// `dev_tools`의 `claude update`/npm 전역 설치 상한(300초)과 같은 값.
+pub(crate) const TIMEOUT_PLUGIN_INSTALL: Duration = Duration::from_secs(300);
 
 /// `check_dev_tools`(dev_tools.rs)와 동일한 이유·관용구 — sync 커맨드가
 /// 메인 스레드를 막는 P0 버그 계열이라 async + `spawn_blocking`으로 옮긴다.
@@ -199,7 +228,12 @@ fn diagnostic_block_unresolved() -> String {
     )
 }
 
-fn run_claude_command(args: &[&str]) -> CommandResult {
+/// `claude`를 찾아 `run_claude_binary`로 실행한다. `timeout`은 필수 — 작업 종류별
+/// 상수(`TIMEOUT_*`)를 호출부가 고른다.
+///
+/// 동기 함수다(자식이 끝나거나 상한에 걸릴 때까지 블로킹) — tauri 커맨드
+/// 진입점은 반드시 `run_blocking`(spawn_blocking)을 거쳐 부른다.
+pub(crate) fn run_claude_command(args: &[&str], timeout: Duration) -> CommandResult {
     let Some(resolved) =
         crate::cli_launcher::resolve_binary_expand_home(claude_path_candidates(), "claude")
     else {
@@ -223,47 +257,122 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
     // exe·workspace 미설정 사용자 등)를 피하기 위해서다.
     let cwd = crate::global_cwd::default_global_cwd();
 
-    let mut command = std::process::Command::new(&resolved);
-    command.args(args).env("PATH", &path_env).silent();
-    if let Some(dir) = &cwd {
-        command.current_dir(dir);
+    run_claude_binary(&resolved, args, &path_env, cwd.as_deref(), timeout)
+}
+
+/// 이미 해석된 실행 파일로 자식을 띄우고 상한 시간 안에 결과를 받는다. 타임아웃·
+/// kill·파이프 소비는 `dev_tools::run_process_with_timeout_cancellable`을
+/// 재사용한다(stdin=null, stdout/stderr 리더 스레드 동시 소비로 파이프 버퍼
+/// 교착 없음, 새 프로세스 그룹 스폰 + 상한 초과 시 그룹 kill→wait, Windows는
+/// 직속 자식 TerminateProcess + `.silent()`). `.output()` 직접 호출은 상한도
+/// kill도 없어 CLI가 멈추면 워커 스레드가 영구히 묶였다.
+///
+/// 테스트가 실제 `claude` 없이 `/bin/sh` 등으로 이 경로를 검증할 수 있게
+/// `run_claude_command`와 분리했다.
+fn run_claude_binary(
+    resolved: &str,
+    args: &[&str],
+    path_env: &str,
+    cwd: Option<&std::path::Path>,
+    timeout: Duration,
+) -> CommandResult {
+    let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let output = crate::dev_tools::run_process_with_timeout_cancellable(
+        resolved,
+        &owned_args,
+        path_env,
+        &[],
+        timeout,
+        None,
+        None,
+        cwd,
+    );
+
+    if let Some(spawn_error) = output.spawn_error {
+        // spawn_error는 "실행할 수 없습니다: {e}" 형태 — 기존 메시지와 같은 문장이 된다.
+        return CommandResult {
+            success: false,
+            message: format!("claude 명령을 {spawn_error}{}", diagnostic_block(resolved, path_env, cwd)),
+        };
     }
 
-    match command.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if output.status.success() {
-                CommandResult {
-                    success: true,
-                    message: if stdout.is_empty() {
-                        "완료되었습니다.".to_string()
-                    } else {
-                        stdout
-                    },
-                }
-            } else {
-                let msg = if !stderr.is_empty() {
-                    stderr
-                } else if !stdout.is_empty() {
-                    stdout
-                } else {
-                    "알 수 없는 오류로 실패했습니다.".to_string()
-                };
-                CommandResult {
-                    success: false,
-                    message: format!("{msg}{}", diagnostic_block(&resolved, &path_env, cwd.as_deref())),
-                }
-            }
-        }
-        Err(e) => CommandResult {
+    let stdout = output.stdout.trim().to_string();
+    let stderr = output.stderr.trim().to_string();
+
+    if output.timed_out {
+        return CommandResult {
             success: false,
             message: format!(
-                "claude 명령을 실행할 수 없습니다: {e}{}",
-                diagnostic_block(&resolved, &path_env, cwd.as_deref())
+                "{}{}",
+                timeout_message(args, timeout, &stdout, &stderr),
+                diagnostic_block(resolved, path_env, cwd)
             ),
-        },
+        };
     }
+
+    if output.exit_code == Some(0) {
+        CommandResult {
+            success: true,
+            message: if stdout.is_empty() {
+                "완료되었습니다.".to_string()
+            } else {
+                stdout
+            },
+        }
+    } else {
+        let msg = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "알 수 없는 오류로 실패했습니다.".to_string()
+        };
+        CommandResult {
+            success: false,
+            message: format!("{msg}{}", diagnostic_block(resolved, path_env, cwd)),
+        }
+    }
+}
+
+/// 상한 초과 시 사용자에게 보이는 첫 문단. "시간 초과"와 "프로세스를 종료했다"를
+/// 명시하고, 그때까지 나온 출력의 끝부분을 덧붙여 어디서 멈췄는지 가늠하게 한다
+/// (git clone 진행 로그 등). 상한 초는 인자에서 계산해 상수와 어긋날 수 없다.
+fn timeout_message(args: &[&str], timeout: Duration, stdout: &str, stderr: &str) -> String {
+    let partial = if !stderr.is_empty() { stderr } else { stdout };
+    let tail = tail_chars(partial, 500);
+    let mut msg = format!(
+        "시간 초과: `claude {}` 명령이 {}초 안에 끝나지 않아 중단하고 프로세스를 종료했습니다. \
+         네트워크 상태를 확인한 뒤 다시 시도하세요.",
+        args.join(" "),
+        timeout.as_secs()
+    );
+    if !tail.is_empty() {
+        msg.push_str(&format!("\n\n[중단 직전 출력]\n{tail}"));
+    }
+    msg
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    format!("…{}", text.chars().skip(count - max_chars).collect::<String>())
+}
+
+/// 블로킹 작업(자식 프로세스 대기)을 tokio 워커가 아니라 blocking 풀에서 돌린다 —
+/// `list_installed_plugins`/`usage_stats`와 같은 관용구. 조인 실패(작업 패닉)는
+/// 프론트가 그대로 보여줄 수 있는 실패 결과로 변환한다.
+async fn run_blocking<F>(job: F) -> CommandResult
+where
+    F: FnOnce() -> CommandResult + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(job)
+        .await
+        .unwrap_or_else(|e| CommandResult {
+            success: false,
+            message: format!("작업 스레드가 비정상 종료되었습니다: {e}"),
+        })
 }
 
 /// `plugin_id`는 `installed_plugins.json`의 키(예: "malgn-agent@malgnsoft-plugins")
@@ -276,37 +385,43 @@ fn run_claude_command(args: &[&str]) -> CommandResult {
 /// `plugin update`는 실행하지 않는다(캐시가 stale한 채로 업데이트해봐야 신뢰 불가).
 /// 성공해도 재시작해야 적용된다 — 프론트엔드가 안내 문구를 붙인다.
 #[tauri::command]
-pub fn update_plugin(plugin_id: String) -> CommandResult {
-    if let Some((_, marketplace)) = plugin_id.split_once('@') {
-        let refresh_result =
-            run_claude_command(&["plugin", "marketplace", "update", marketplace]);
-        if !refresh_result.success {
-            return refresh_result;
+pub async fn update_plugin(plugin_id: String) -> CommandResult {
+    run_blocking(move || {
+        // 두 단계가 각자 상한을 가진다(최악 합계 = SYNC + INSTALL).
+        if let Some((_, marketplace)) = plugin_id.split_once('@') {
+            let refresh_result = run_claude_command(
+                &["plugin", "marketplace", "update", marketplace],
+                TIMEOUT_MARKETPLACE_SYNC,
+            );
+            if !refresh_result.success {
+                return refresh_result;
+            }
         }
-    }
-    run_claude_command(&["plugin", "update", &plugin_id])
+        run_claude_command(&["plugin", "update", &plugin_id], TIMEOUT_PLUGIN_INSTALL)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn refresh_marketplaces() -> CommandResult {
-    run_claude_command(&["plugin", "marketplace", "update"])
+pub async fn refresh_marketplaces() -> CommandResult {
+    run_blocking(|| run_claude_command(&["plugin", "marketplace", "update"], TIMEOUT_MARKETPLACE_SYNC)).await
 }
 
 /// 마켓플레이스 설정 탭의 "추가" — 실행 로직·입력 검증·고정 마켓플레이스 보호는
 /// 전부 `marketplace::run_add_marketplace`에 있다(marketplace.rs 참고). 여기서는
 /// `#[tauri::command]` 진입점만 둔다(이 파일의 다른 커맨드들과 동일한 얇은 래퍼
 /// 패턴 — `list_known_marketplaces`가 `marketplace::read_known_marketplaces()`를
-/// 감싸는 것과 같다).
+/// 감싸는 것과 같다). 자식 프로세스를 띄우므로 async + spawn_blocking.
 #[tauri::command]
-pub fn add_marketplace(source: String) -> CommandResult {
-    marketplace::run_add_marketplace(source)
+pub async fn add_marketplace(source: String) -> CommandResult {
+    run_blocking(move || marketplace::run_add_marketplace(source)).await
 }
 
 /// 마켓플레이스 설정 탭의 "제거" — 실행 로직·입력 검증·고정 마켓플레이스 보호는
 /// 전부 `marketplace::run_remove_marketplace`에 있다.
 #[tauri::command]
-pub fn remove_marketplace(name: String) -> CommandResult {
-    marketplace::run_remove_marketplace(name)
+pub async fn remove_marketplace(name: String) -> CommandResult {
+    run_blocking(move || marketplace::run_remove_marketplace(name)).await
 }
 
 /// `plugin_id`는 "name@marketplace" 형식(예: "malgn-agent@malgnsoft-plugins")만 받는다
@@ -314,8 +429,14 @@ pub fn remove_marketplace(name: String) -> CommandResult {
 /// `-s user`로 설치 스코프를 user로 고정한다(installed_plugins.json에서
 /// scope="user"만 "설치된 플러그인"으로 취급하는 기존 규칙과 맞춘다 — plugins/installed.rs 참고).
 #[tauri::command]
-pub fn install_plugin(plugin_id: String) -> CommandResult {
-    run_claude_command(&["plugin", "install", &plugin_id, "-y", "-s", "user"])
+pub async fn install_plugin(plugin_id: String) -> CommandResult {
+    run_blocking(move || {
+        run_claude_command(
+            &["plugin", "install", &plugin_id, "-y", "-s", "user"],
+            TIMEOUT_PLUGIN_INSTALL,
+        )
+    })
+    .await
 }
 
 // ⚠️ update_plugin()/refresh_marketplaces()/install_plugin()을 실제로 호출하는
@@ -485,5 +606,171 @@ mod diagnostic_block_tests {
         let combined = format!("{original}{}", diagnostic_block("claude", "PATH", None));
         assert!(combined.starts_with(original));
         assert!(combined.len() > original.len());
+    }
+}
+
+// ---------------- 상한 시간 · kill · 파이프 교착 테스트 ----------------
+// 실제 `claude`는 절대 띄우지 않는다(위 경고) — `run_claude_binary`가 실행 파일
+// 경로를 인자로 받으므로 `/bin/sh`·`ping` 같은 무해한 프로세스로 같은 경로(
+// 타임아웃 → 그룹 kill → wait → 실패 결과)를 그대로 실행 검증한다.
+#[cfg(test)]
+mod run_claude_binary_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn timeout_message_mentions_timeout_seconds_and_partial_output() {
+        let msg = timeout_message(
+            &["plugin", "marketplace", "update"],
+            Duration::from_secs(180),
+            "",
+            "Cloning into 'x'...",
+        );
+        assert!(msg.starts_with("시간 초과"));
+        assert!(msg.contains("180초"));
+        assert!(msg.contains("claude plugin marketplace update"));
+        assert!(msg.contains("종료"));
+        assert!(msg.contains("Cloning into 'x'..."));
+    }
+
+    #[test]
+    fn timeout_message_omits_output_block_when_nothing_was_printed() {
+        let msg = timeout_message(&["plugin", "install", "a@b"], Duration::from_secs(300), "", "");
+        assert!(!msg.contains("중단 직전 출력"));
+    }
+
+    #[test]
+    fn tail_chars_keeps_only_the_end_with_ellipsis() {
+        assert_eq!(tail_chars("abc", 10), "abc");
+        assert_eq!(tail_chars("abcdefghij", 3), "…hij");
+        // 멀티바이트도 문자 경계에서 자른다(패닉 없음).
+        assert_eq!(tail_chars("가나다라마", 2), "…라마");
+    }
+
+    #[test]
+    fn timeouts_are_ordered_by_task_kind() {
+        // 로컬 정리 < 네트워크 갱신 < 설치/업데이트.
+        assert!(TIMEOUT_MARKETPLACE_LOCAL < TIMEOUT_MARKETPLACE_SYNC);
+        assert!(TIMEOUT_MARKETPLACE_SYNC < TIMEOUT_PLUGIN_INSTALL);
+    }
+
+    /// 정상 종료: stdout이 메시지로, exit 0이 success로 매핑된다.
+    #[cfg(unix)]
+    #[test]
+    fn success_maps_stdout_to_message() {
+        let r = run_claude_binary("/bin/sh", &["-c", "echo done"], "/usr/bin:/bin", None, Duration::from_secs(5));
+        assert!(r.success, "{}", r.message);
+        assert_eq!(r.message, "done");
+    }
+
+    /// 비정상 종료: stderr가 메시지 앞에, 진단 블록이 뒤에 붙는다(기존 계약).
+    #[cfg(unix)]
+    #[test]
+    fn nonzero_exit_maps_stderr_to_message_with_diagnostics() {
+        let r = run_claude_binary(
+            "/bin/sh",
+            &["-c", "echo boom >&2; exit 3"],
+            "/usr/bin:/bin",
+            None,
+            Duration::from_secs(5),
+        );
+        assert!(!r.success);
+        assert!(r.message.starts_with("boom"));
+        assert!(r.message.contains("[진단 정보"));
+        assert!(!r.message.contains("시간 초과"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_failure_reports_cannot_execute() {
+        let r = run_claude_binary(
+            "/nonexistent/claude-binary",
+            &["plugin", "update"],
+            "/usr/bin:/bin",
+            None,
+            Duration::from_secs(5),
+        );
+        assert!(!r.success);
+        assert!(r.message.starts_with("claude 명령을 실행할 수 없습니다"));
+    }
+
+    /// 핵심: 멈춘 자식은 상한에 끊기고 "시간 초과" 실패로 돌아오며, 자식(sh)과
+    /// 손자(sleep) 모두 실제로 종료·회수된다(고아 없음). sh가 자기 pid와 손자
+    /// pid를 파일에 남기게 해 사후에 `pid_alive`로 확인한다. 손자는 sh 사망 후
+    /// init이 회수하므로 비동기 — 최대 2초 폴링한다.
+    #[cfg(unix)]
+    #[test]
+    fn hanging_child_is_killed_and_reaped_with_timeout_result() {
+        use crate::process_util::pid_alive;
+        let dir = std::env::temp_dir().join(format!("plugins_timeout_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (pid_file, grandchild_file) = (dir.join("pid"), dir.join("grandchild"));
+        let script = format!(
+            "echo $$ > '{}'; sleep 30 & echo $! > '{}'; wait",
+            pid_file.display(),
+            grandchild_file.display()
+        );
+
+        let started = Instant::now();
+        let r = run_claude_binary(
+            "/bin/sh",
+            &["-c", &script],
+            "/usr/bin:/bin",
+            None,
+            Duration::from_millis(600),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(!r.success);
+        assert!(r.message.starts_with("시간 초과"), "{}", r.message);
+        // 상한 0.6초 + SIGTERM 유예(최대 3초) 안에 끝나야 한다 — 30초 sleep을 기다렸다면 kill 실패.
+        assert!(elapsed < Duration::from_secs(5), "kill이 동작하지 않음: {elapsed:?}");
+
+        let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let grandchild: u32 = std::fs::read_to_string(&grandchild_file).unwrap().trim().parse().unwrap();
+        // 직속 자식은 run_claude_binary 반환 시점에 wait()까지 끝나 있어야 한다.
+        assert!(!pid_alive(pid), "직속 자식이 회수되지 않았다");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pid_alive(grandchild) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!pid_alive(grandchild), "손자 프로세스가 고아로 남았다");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 파이프 교착: 64KB 파이프 버퍼를 훨씬 넘는 stdout·stderr를 동시에 쏟아도
+    /// (둘 중 하나를 먼저 다 읽으려는 순차 소비라면 교착) 상한 안에 끝난다.
+    #[cfg(unix)]
+    #[test]
+    fn large_stdout_and_stderr_do_not_deadlock() {
+        let started = Instant::now();
+        let r = run_claude_binary(
+            "/bin/sh",
+            &["-c", "head -c 2000000 /dev/zero | tr '\\0' 'o' >&2 & head -c 2000000 /dev/zero | tr '\\0' 'x'; wait"],
+            "/usr/bin:/bin",
+            None,
+            Duration::from_secs(20),
+        );
+        assert!(r.success, "{}", &r.message[..r.message.len().min(200)]);
+        assert!(r.message.len() >= 2_000_000);
+        assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    /// Windows 등가물 — `dev_tools` 테스트와 같은 `PING.EXE` 기법. 미검증:
+    /// Windows CI에서만 컴파일·실행된다.
+    #[cfg(windows)]
+    #[test]
+    fn hanging_child_times_out_on_windows() {
+        let started = Instant::now();
+        let r = run_claude_binary(
+            r"C:\Windows\System32\PING.EXE",
+            &["-n", "31", "127.0.0.1"],
+            r"C:\Windows\System32;C:\Windows",
+            None,
+            Duration::from_millis(500),
+        );
+        assert!(!r.success);
+        assert!(r.message.starts_with("시간 초과"), "{}", r.message);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
