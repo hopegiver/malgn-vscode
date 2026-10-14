@@ -81,25 +81,72 @@ pub enum IngestKeyState {
 }
 
 /// 프론트로 나가는 수집키 상태. 원문 필드가 없다.
+///
+/// 발급 화면 URL은 싣지 않는다 — 허브에 수집키 발급·폐기 셀프서비스 화면이 아직 없다
+/// (`/keys`는 MCP 기기 토큰 `mhd_` 전용이라 거기서 만든 토큰은 수집키가 아니다). 허브 UI가
+/// 생기면 그 URL을 여기에 다시 싣는다.
 #[derive(Serialize, Clone, Debug)]
 pub struct IngestKeyStatus {
     pub state: IngestKeyState,
     /// `state == Set`일 때만 `mhk_AbCd…` 형태. 그 외에는 `None`.
     pub masked: Option<String>,
-    /// 허브 인증키 관리 화면 URL(프론트가 기존 외부 링크 열기로 연다).
-    #[serde(rename = "issueUrl")]
-    pub issue_url: String,
 }
 
 impl IngestKeyStatus {
-    pub(crate) fn from_headers(raw_headers: Option<&str>, issue_url: String) -> Self {
+    pub(crate) fn from_headers(raw_headers: Option<&str>) -> Self {
         let (state, masked) = classify(raw_headers);
-        Self {
-            state,
-            masked,
-            issue_url,
+        Self { state, masked }
+    }
+}
+
+/// 수집키(`OTEL_EXPORTER_OTLP_HEADERS`)는 설정된 **모든** 엔드포인트로 나간다. 그래서 화면이
+/// "허브가 거부한다/수집되지 않는다"고 말해도 되는지, 키가 평문·허브 밖으로 나가지 않는지
+/// 판단할 수 있게 유효 엔드포인트(metrics/logs)의 성격만 요약해 내려보낸다(URL 자체는 싣지 않는다).
+#[derive(Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndpointAssessment {
+    /// 하나라도 허브 origin이면 true — 이때만 "허브가 인증 실패로 거부한다"는 경고가 맞다.
+    #[serde(rename = "targetsHub")]
+    pub targets_hub: bool,
+    /// 하나라도 평문 `http://`(루프백 제외)이면 true — 키가 암호화 없이 전송될 수 있다.
+    pub insecure: bool,
+    /// 하나라도 허브가 아닌 호스트면 true — 키가 허브 밖(사내 collector 등)으로도 간다.
+    #[serde(rename = "foreignHost")]
+    pub foreign_host: bool,
+}
+
+/// 유효 엔드포인트 문자열들을 허브 origin과 대조한다. 빈 문자열은 건너뛴다(미설정).
+/// 해석할 수 없는 값은 허브가 아닌 것으로 본다(`foreign_host`). 저장은 막지 않는다 —
+/// 사내 collector(http 루프백 포함)를 쓰는 PC를 막지 않고 화면 경고로만 알린다.
+pub(crate) fn assess_endpoints<'a>(
+    endpoints: impl IntoIterator<Item = &'a str>,
+    hub_origin: &str,
+) -> EndpointAssessment {
+    let mut out = EndpointAssessment::default();
+    for raw in endpoints {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(url) = url::Url::parse(raw) else {
+            out.foreign_host = true;
+            continue;
+        };
+        if url.origin().ascii_serialization() == hub_origin {
+            out.targets_hub = true;
+        } else {
+            out.foreign_host = true;
+        }
+        let loopback = match url.host() {
+            Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        };
+        if url.scheme() == "http" && !loopback {
+            out.insecure = true;
         }
     }
+    out
 }
 
 /// `settings.json`의 `OTEL_EXPORTER_OTLP_HEADERS` 값에 가할 변경.
@@ -452,17 +499,14 @@ mod tests {
     #[test]
     fn status_serialization_has_no_raw_key() {
         let key = fake_key('Q');
-        let status = IngestKeyStatus::from_headers(
-            Some(&format!("Authorization=Bearer {key}")),
-            "https://hub.example/keys".to_string(),
-        );
+        let status = IngestKeyStatus::from_headers(Some(&format!("Authorization=Bearer {key}")));
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("mhk_QQQQ…"));
         assert!(!json.contains(&key));
         assert!(!json.contains("QQQQQ"), "마스킹 이상으로 노출됨: {json}");
         assert!(!format!("{status:?}").contains("QQQQQ"));
         assert!(json.contains(r#""state":"set""#));
-        assert!(json.contains("issueUrl"));
+        assert!(!json.contains("issueUrl"), "발급 화면 URL은 더 이상 싣지 않는다: {json}");
     }
 
     // ---- 변경 적용: 다른 헤더 보존 ----
@@ -570,5 +614,75 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    // ---- 엔드포인트 성격(RV-002) ----
+
+    const HUB: &str = "https://hub.example";
+
+    #[test]
+    fn hub_endpoints_are_hub_and_not_insecure() {
+        let a = assess_endpoints(
+            ["https://hub.example/v1/metrics", "https://hub.example/v1/logs"],
+            HUB,
+        );
+        assert_eq!(
+            a,
+            EndpointAssessment {
+                targets_hub: true,
+                insecure: false,
+                foreign_host: false
+            }
+        );
+    }
+
+    #[test]
+    fn internal_https_collector_is_foreign_not_hub() {
+        // 사내 collector(①경로): "허브가 거부" 경고를 띄우면 안 되는 케이스.
+        let a = assess_endpoints(["https://collector.corp.example:4318/v1/logs"], HUB);
+        assert!(!a.targets_hub);
+        assert!(a.foreign_host);
+        assert!(!a.insecure);
+    }
+
+    #[test]
+    fn plain_http_is_insecure_even_for_hub_host() {
+        // 같은 호스트라도 스킴이 다르면 origin이 달라 허브가 아니다 + 평문.
+        let a = assess_endpoints(["http://hub.example/v1/logs"], HUB);
+        assert!(a.insecure);
+        assert!(!a.targets_hub);
+        assert!(a.foreign_host);
+    }
+
+    #[test]
+    fn loopback_http_is_not_insecure() {
+        for ep in [
+            "http://localhost:4318/v1/logs",
+            "http://127.0.0.1:4318",
+            "http://[::1]:4318",
+        ] {
+            let a = assess_endpoints([ep], HUB);
+            assert!(!a.insecure, "{ep}");
+            assert!(a.foreign_host, "{ep}");
+        }
+    }
+
+    #[test]
+    fn mixed_endpoints_flag_each_property_and_skip_empty() {
+        let a = assess_endpoints(["https://hub.example/v1/metrics", "", "http://10.0.0.5:4318"], HUB);
+        assert!(a.targets_hub && a.insecure && a.foreign_host);
+        assert_eq!(assess_endpoints(["", "  "], HUB), EndpointAssessment::default());
+        // 해석 불가 값은 허브로 취급하지 않는다.
+        let bad = assess_endpoints(["not a url"], HUB);
+        assert!(bad.foreign_host && !bad.targets_hub && !bad.insecure);
+    }
+
+    #[test]
+    fn assessment_serializes_flags_only() {
+        let json = serde_json::to_string(&assess_endpoints(["http://x.example/v1"], HUB)).unwrap();
+        assert!(json.contains(r#""targetsHub":false"#), "{json}");
+        assert!(json.contains(r#""insecure":true"#), "{json}");
+        assert!(json.contains(r#""foreignHost":true"#), "{json}");
+        assert!(!json.contains("x.example"), "URL은 싣지 않는다: {json}");
     }
 }

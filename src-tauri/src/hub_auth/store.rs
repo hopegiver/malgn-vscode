@@ -279,6 +279,7 @@ pub(crate) mod testing {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    // pragma: allowlist-secret — 테스트 전용 가짜 토큰(실제 토큰 아님). pre-push 스캔 패턴(mhd_ 47자)과 모양이 같아 표시한다.
     pub(crate) const TEST_TOKEN: &str = "mhd_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCDe";
 
     pub(crate) fn test_token(seed: char) -> String {

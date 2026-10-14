@@ -282,7 +282,8 @@ export async function buildBaseFixtures() {
       endpointDefaultsInjected: true,
       // 허브 수집키 상태(원문은 응답에 없다) — 기본은 미설정. 수집키 UI 전용 시나리오는
       // flows/otelIngestKey.mjs가 override한다.
-      ingestKey: { state: 'unset', masked: null, issueUrl: 'https://malgnai-hub.apiserver.kr/keys' },
+      ingestKey: { state: 'unset', masked: null },
+      ingestEndpoint: { targetsHub: true, insecure: false, foreignHost: false },
     },
     malgn_agent_config_get: config,
     github_status: { connected: false, username: null },

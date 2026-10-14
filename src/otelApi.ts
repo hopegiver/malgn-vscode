@@ -25,8 +25,18 @@ export interface IngestKeyStatus {
   readonly state: IngestKeyState;
   // state === 'set'일 때만 `mhk_AbCd…` 형태.
   readonly masked: string | null;
-  // 허브 인증키 관리 화면 URL(허브 origin 정본 + /keys).
-  readonly issueUrl: string;
+}
+
+// 수집키는 설정된 모든 엔드포인트로 나간다 — 유효 엔드포인트(파일 값 → 기본값)의 성격 요약.
+// URL 자체는 오지 않는다. 허브 거부 경고는 targetsHub일 때만, 평문/허브 밖 경고는 키가 설정된
+// 경우에만 의미가 있다.
+export interface IngestEndpointAssessment {
+  // 하나라도 허브 origin.
+  readonly targetsHub: boolean;
+  // 하나라도 평문 http://(루프백 제외) — 키가 암호화 없이 전송될 수 있다.
+  readonly insecure: boolean;
+  // 하나라도 허브가 아닌 호스트 — 키가 허브 밖으로도 나간다.
+  readonly foreignHost: boolean;
 }
 
 // keep: 기존 키 유지(생략과 같다) / set: 사용자가 새로 입력한 원문만 / clear: 키 삭제.
@@ -50,6 +60,7 @@ export interface OtelSettings {
   // 빌드) — 엔드포인트 필드는 빈 값 + placeholder로 보여주고 직접 입력을 안내한다.
   readonly endpointDefaultsInjected: boolean;
   readonly ingestKey: IngestKeyStatus;
+  readonly ingestEndpoint: IngestEndpointAssessment;
 }
 
 export interface OtelSavePayload {

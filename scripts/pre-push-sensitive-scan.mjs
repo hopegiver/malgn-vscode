@@ -22,6 +22,12 @@ const PATTERNS = [
   // 안 잡힌다 — Anthropic 키 전용 패턴을 별도로 둔다.
   { name: "Anthropic API key", re: /sk-ant-[A-Za-z0-9_-]{20,}/g },
   { name: "Generic API key literal", re: /sk-[A-Za-z0-9]{20,}/g },
+  // malgnai-hub 토큰 — 접두사 4자 + base64url 43자(총 47자, 허브 otlp-limits.js·tokens.js와 같은 형식).
+  // mhk_는 OTLP 수집키(쓰기 전용), mhd_는 기기 토큰(MCP 전권)이다. 이 앱은 둘을 로컬에서 다루므로
+  // 디버깅 중 붙여넣기 사고를 막는다. 테스트용 가짜 값은 repeat() 등으로 조립하거나
+  // `pragma: allowlist-secret`를 단다.
+  { name: "malgnai-hub ingest key (mhk_)", re: /mhk_[A-Za-z0-9_-]{43}/g },
+  { name: "malgnai-hub device token (mhd_)", re: /mhd_[A-Za-z0-9_-]{43}/g },
   { name: "PEM private key block", re: /-----BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----/g },
   // minisign/rsign 개인키 파일 첫 줄 형식 탐지(업데이터 서명키가 이 형식이라 가장 중요).
   // pragma: allowlist-secret — 이 정규식 리터럴이 자기 자신과 자기참조 매치되는 걸 막는 마커(실제 키 아님, 지우면 이 파일 push마다 자기차단됨).

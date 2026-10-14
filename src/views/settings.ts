@@ -4,7 +4,6 @@ import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
 import type { OtelSettings, IngestKeyChange } from '../otelApi';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID, renderInstallFallbackNote } from './catalog';
 import { successToastWithFallbackNote } from '../installFallbackNote';
 import { renderAppLinksPanel } from './appLinks';
@@ -98,6 +97,33 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
 // 입력하지 않고 저장하면 기존 키는 그대로 유지된다(ingestKey 생략=keep).
 const INGEST_KEY_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
 
+// 허브 수집키 안내 문구 — 한 곳에서 관리한다.
+// 현재 사실: 허브에는 수집키(mhk_) 발급·폐기 셀프서비스 화면이 아직 없다. 허브 "인증키 관리"
+// (/keys)는 MCP 기기 토큰(mhd_)만 다루고, 거기서 만든 토큰은 수집키가 아니라 여기에 넣을 수 없다.
+// 그래서 발급·폐기는 관리자에게 요청하게 안내하고 /keys로 보내는 버튼은 두지 않는다.
+// 허브에 수집키 UI가 생기면: 이 객체의 `issue`·`revoke` 문구를 바꾸고, 발급 화면 URL을
+// Rust `IngestKeyStatus`에 다시 실어(otel_ingest_key.rs) 버튼을 되살린다.
+const INGEST_KEY_COPY = {
+  issue:
+    '수집키(mhk_…)는 아직 이 화면이나 허브 웹에서 직접 발급할 수 없습니다. 허브 관리자에게 수집키 발급을 요청해 받은 키를 아래에 붙여넣고 저장하세요. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
+  storage:
+    '저장하면 settings.json에 Authorization=Bearer … 형태로 기록되며 값은 이 화면에 다시 표시되지 않습니다. 비워 두고 저장하면 기존 키를 그대로 둡니다.',
+  scope: '저장·삭제한 수집키는 새로 시작하는 Claude Code 세션부터 적용됩니다. 이미 실행 중인 세션은 이전 설정을 계속 쓸 수 있습니다.',
+  revoke:
+    '이 값은 Claude Code가 실행하는 명령에서 보일 수 있습니다. 대화·이슈·채팅에 붙여 넣지 마세요. 유출이 의심되면 허브 관리자에게 해당 수집키의 즉시 폐기를 요청하세요.',
+  clearConfirm:
+    '이 PC에 저장된 허브 수집키를 삭제할까요? 삭제하면 이 PC의 사용량이 허브에 수집되지 않습니다(다른 OTel 설정은 그대로입니다). 새로 시작하는 Claude Code 세션부터 적용됩니다. 이 삭제는 이 PC의 설정 파일(백업 포함)에서만 키를 지웁니다. 허브에 등록된 키는 폐기되지 않으므로, 유출이 의심되면 허브 관리자에게 폐기를 요청하세요.',
+  savedToast: 'OTel 설정을 저장했습니다. 새로 시작하는 Claude Code 세션부터 적용됩니다.',
+  clearedToast: '허브 수집키를 이 PC에서 삭제했습니다. 새로 시작하는 Claude Code 세션부터 적용되며, 허브의 키는 폐기되지 않았습니다.',
+  warnUnsetHub:
+    '텔레메트리가 켜져 있지만 수집키가 없어 사용량이 허브에 수집되지 않습니다(허브가 인증 실패로 거부합니다). 허브 관리자에게 수집키 발급을 요청해 아래에 등록하세요.',
+  warnUnrecognizedHub: '설정된 Authorization 값이 허브 수집키 형식이 아니라 허브가 거부할 수 있습니다. 새 수집키를 입력하고 저장하면 교체됩니다.',
+  warnInsecure:
+    '수집키가 설정돼 있는데 OTLP 엔드포인트가 http://(암호화 없음)입니다. 키가 평문으로 전송될 수 있으니 https:// 주소인지 확인하세요.',
+  warnForeignHost:
+    '수집키가 허브가 아닌 주소로도 전송됩니다(OTLP 엔드포인트 확인). 의도한 사내 collector가 아니라면 엔드포인트를 확인하세요.',
+} as const;
+
 export async function loadOtelEnv(): Promise<void> {
   state.otel.loading = true;
   state.otel.error = null;
@@ -124,7 +150,7 @@ async function handleSaveOtelSettings(values: Record<string, string>, ingestKey:
     // 저장에 성공하면 입력해 둔 수집키 원문을 즉시 버린다(settings 참조가 안 바뀌어 드래프트
     // 재초기화가 일어나지 않는 경우에도 원문이 메모리/입력칸에 남지 않게).
     otelDraft.ingestKey = '';
-    showToast('OTel 설정을 저장했습니다.');
+    showToast(INGEST_KEY_COPY.savedToast);
   } catch (err) {
     showToast(`OTel 설정 저장에 실패했습니다: ${errorMessage(err)}`);
   } finally {
@@ -136,10 +162,7 @@ async function handleSaveOtelSettings(values: Record<string, string>, ingestKey:
 // 수집키 삭제 — 다른 필드는 건드리지 않는다(values 비움, identity null → 백엔드는
 // ingestKey만 처리). 저장되지 않은 다른 입력 드래프트는 응답 후에도 유지한다.
 async function handleClearIngestKey(): Promise<void> {
-  const ok = await confirmDialog(
-    '이 PC에 저장된 허브 수집키를 삭제할까요? 삭제하면 이 PC의 사용량이 허브에 수집되지 않습니다(다른 OTel 설정은 그대로입니다).',
-    { title: '수집키 삭제', confirmLabel: '삭제', danger: true }
-  );
+  const ok = await confirmDialog(INGEST_KEY_COPY.clearConfirm, { title: '수집키 삭제', confirmLabel: '삭제', danger: true });
   if (!ok) return;
   state.otel.saving = true;
   notifyChange();
@@ -149,19 +172,13 @@ async function handleClearIngestKey(): Promise<void> {
     // 입력은 보존하고 수집키 입력칸만 비운다.
     otelDraft = { forSettings: result, values: otelDraft.values, ingestKey: '' };
     state.otel.settings = result;
-    showToast('허브 수집키를 삭제했습니다.');
+    showToast(INGEST_KEY_COPY.clearedToast);
   } catch (err) {
     showToast(`수집키를 삭제하지 못했습니다: ${errorMessage(err)}`);
   } finally {
     state.otel.saving = false;
     notifyChange();
   }
-}
-
-function handleOpenIngestKeyIssuePage(url: string): void {
-  void openUrl(url).catch(() => {
-    showToast('브라우저를 여는 데 실패했습니다. 허브의 "인증키 관리" 화면을 직접 열어주세요.');
-  });
 }
 
 // ---------------- OTel 자동 세팅 (설정이 한 번도 없었을 때만, 세션당 1회) ----------------
@@ -392,19 +409,21 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
         : null;
   const statusRow = withId(el('div', {}, [statusBadge, ...(statusText ? [' ', statusText] : [])]), 'otel-ingest-key-status');
 
+  const ep = settings.ingestEndpoint;
+  const alertBlock = (id: string, message: string): HTMLElement => withId(el('div', { className: 'alert' }, [el('span', {}, [message])]), id);
   const blocks: HTMLElement[] = [];
-  if (telemetryOn && ing.state === 'unset') {
-    blocks.push(
-      withId(el('div', { className: 'alert' }, [
-        el('span', {}, ['텔레메트리가 켜져 있지만 수집키가 없어 사용량이 허브에 수집되지 않습니다(허브가 인증 실패로 거부합니다). 아래에 수집키를 등록하세요.']),
-      ]), 'otel-ingest-key-warning')
-    );
-  } else if (telemetryOn && ing.state === 'unrecognized') {
-    blocks.push(
-      withId(el('div', { className: 'alert' }, [
-        el('span', {}, ['설정된 Authorization 값이 허브 수집키 형식이 아니라 허브가 거부할 수 있습니다. 새 수집키를 입력하고 저장하면 교체됩니다.']),
-      ]), 'otel-ingest-key-warning')
-    );
+  // "허브가 거부한다/수집되지 않는다"는 엔드포인트가 허브일 때만 맞다(사내 collector 등은 오경고).
+  if (telemetryOn && ep.targetsHub && ing.state === 'unset') {
+    blocks.push(alertBlock('otel-ingest-key-warning', INGEST_KEY_COPY.warnUnsetHub));
+  } else if (telemetryOn && ep.targetsHub && ing.state === 'unrecognized') {
+    blocks.push(alertBlock('otel-ingest-key-warning', INGEST_KEY_COPY.warnUnrecognizedHub));
+  }
+  // 키가 실제로 설정돼 전송될 때: 평문 전송 / 허브 밖 전송 경고. 저장은 막지 않는다.
+  if (telemetryOn && ing.state === 'set' && ep.insecure) {
+    blocks.push(alertBlock('otel-ingest-key-insecure-warning', INGEST_KEY_COPY.warnInsecure));
+  }
+  if (telemetryOn && ing.state === 'set' && ep.foreignHost) {
+    blocks.push(alertBlock('otel-ingest-key-foreign-warning', INGEST_KEY_COPY.warnForeignHost));
   }
 
   const input = boundField(
@@ -424,9 +443,7 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
   input.spellcheck = false;
   input.placeholder = ing.state === 'set' ? '새 수집키 붙여넣기 (비워 두면 기존 키 유지)' : 'mhk_로 시작하는 수집키 붙여넣기';
 
-  const issueBtn = el('button', { className: 'btn btn-sm', onClick: () => handleOpenIngestKeyIssuePage(ing.issueUrl) }, ['허브에서 수집키 발급 ↗']);
-  issueBtn.type = 'button';
-  const actions: HTMLElement[] = [issueBtn];
+  const actions: HTMLElement[] = [];
   if (ing.state !== 'unset') {
     const clearBtn = el('button', { className: 'btn btn-sm', disabled: state.otel.saving, onClick: () => void handleClearIngestKey() }, ['수집키 삭제']);
     clearBtn.type = 'button';
@@ -441,13 +458,11 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
     statusRow,
     ...blocks,
     input,
-    el('div', { className: 'settings-form-hint' }, [
-      '허브 "인증키 관리" 화면에서 수집키를 발급받아 붙여넣고 저장하세요. 저장하면 settings.json에 Authorization=Bearer … 형태로 기록되며 값은 이 화면에 다시 표시되지 않습니다. 비워 두고 저장하면 기존 키를 그대로 둡니다.',
-    ]),
-    el('div', { className: 'settings-form-hint' }, [
-      '이 값은 Claude Code가 실행하는 명령에서 보일 수 있습니다. 대화·이슈·채팅에 붙여 넣지 마세요. 유출이 의심되면 허브에서 "즉시 폐기"를 누르세요.',
-    ]),
-    el('div', { className: 'settings-form-actions' }, actions),
+    withId(el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.issue]), 'otel-ingest-key-issue-hint'),
+    el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.storage]),
+    withId(el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.scope]), 'otel-ingest-key-scope-hint'),
+    el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.revoke]),
+    ...(actions.length > 0 ? [el('div', { className: 'settings-form-actions' }, actions)] : []),
   ]), 'otel-ingest-key-block');
 }
 

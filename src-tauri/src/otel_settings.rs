@@ -11,7 +11,8 @@ use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
 use crate::otel_ingest_key::{
-    apply_change, HeadersEdit, IngestKeyChange, IngestKeyStatus, HEADERS_ENV_KEY,
+    apply_change, assess_endpoints, EndpointAssessment, HeadersEdit, IngestKeyChange,
+    IngestKeyStatus, HEADERS_ENV_KEY,
 };
 
 pub(crate) const MANAGED_OTEL_KEYS: [&str; 15] = [
@@ -117,11 +118,26 @@ pub struct OtelSettings {
     /// 허브 수집키 상태(설정됨/미설정/형식 불명 + 마스킹). 원문은 어디에도 싣지 않는다.
     #[serde(rename = "ingestKey")]
     pub ingest_key: IngestKeyStatus,
+    /// 유효 엔드포인트(파일 값 → 기본값)가 허브인지·평문인지·허브 밖인지 — 수집키가 어디로
+    /// 나가는지에 대한 화면 경고 근거. URL 자체는 싣지 않는다.
+    #[serde(rename = "ingestEndpoint")]
+    pub ingest_endpoint: EndpointAssessment,
 }
 
-/// 허브 키 관리 화면 URL — 앱이 이미 고정해 둔 허브 origin 정본을 재사용한다.
-fn ingest_key_issue_url() -> String {
-    format!("{}/keys", crate::hub_auth::consts::hub_origin())
+/// 수집키가 실려 나가는 유효 엔드포인트의 성격. 파일에 값이 있으면 그것, 없으면 기본값을 본다
+/// (Claude Code가 실제로 쓰는 값과 같은 우선순위).
+fn assess_effective_endpoints(
+    values: &std::collections::BTreeMap<String, String>,
+    defaults: &std::collections::BTreeMap<String, String>,
+) -> EndpointAssessment {
+    let effective = [
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+    ]
+    .into_iter()
+    .filter_map(|k| values.get(k).or_else(|| defaults.get(k)))
+    .map(String::as_str);
+    assess_endpoints(effective, &crate::hub_auth::consts::hub_origin())
 }
 
 fn read_managed_values(
@@ -155,13 +171,14 @@ fn read_managed_values(
             Err(e) => parse_error = Some(format!("설정 파일을 해석하지 못했습니다: {e}")),
         }
     }
-    let ingest_key = IngestKeyStatus::from_headers(raw_headers.as_deref(), ingest_key_issue_url());
+    let ingest_key = IngestKeyStatus::from_headers(raw_headers.as_deref());
     (values, parse_error, ingest_key)
 }
 
 fn build_status(path: &Path, path_display: String, file_exists: bool) -> OtelSettings {
     let (defaults, injected) = build_defaults();
     let (values, parse_error, ingest_key) = read_managed_values(path);
+    let ingest_endpoint = assess_effective_endpoints(&values, &defaults);
     OtelSettings {
         settings_path: path_display,
         file_exists,
@@ -172,6 +189,7 @@ fn build_status(path: &Path, path_display: String, file_exists: bool) -> OtelSet
         defaults,
         endpoint_defaults_injected: injected,
         ingest_key,
+        ingest_endpoint,
     }
 }
 
@@ -322,6 +340,32 @@ fn validate_value(key: &str, value: &str) -> Result<(), String> {
 // `app_links`가 생기면서 공용 모듈화 — `docs/design-app-links.md` §2-4).
 use crate::fs_atomic::{backup_path_for, write_atomically_private};
 
+/// 수집키 헤더 변경을 `env` 객체에 적용한다(본 파일과 Clear 백업이 같은 규칙을 쓴다).
+fn apply_headers_edit(env_obj: &mut Map<String, Value>, edit: &HeadersEdit) {
+    match edit {
+        HeadersEdit::Unchanged => {}
+        HeadersEdit::Remove => {
+            env_obj.remove(HEADERS_ENV_KEY);
+        }
+        HeadersEdit::Replace(headers) => {
+            env_obj.insert(HEADERS_ENV_KEY.to_string(), Value::String(headers.clone()));
+        }
+    }
+}
+
+/// 직전 원본에서 수집키(`Authorization`)만 뺀 백업 내용. `Authorization` 외 헤더와 나머지
+/// 설정은 그대로 둔다(키가 든 `env.OTEL_EXPORTER_OTLP_HEADERS`에만 본 저장과 같은 변경을 적용).
+/// 이미 파싱에 성공한 파일이라 해석 실패는 일어나지 않지만, 실패하면 원문을 쓰는 대신 Err로
+/// 멈춘다(키를 백업에 남기는 쪽으로 조용히 폴백하지 않는다).
+fn backup_without_ingest_key(content: &str, edit: &HeadersEdit) -> Result<String, String> {
+    let mut root: Value = serde_json::from_str(content)
+        .map_err(|e| format!("백업을 만들지 못해 저장을 중단합니다: {e}"))?;
+    if let Some(env_obj) = root.get_mut("env").and_then(|v| v.as_object_mut()) {
+        apply_headers_edit(env_obj, edit);
+    }
+    serde_json::to_string_pretty(&root).map_err(|e| format!("백업을 직렬화하지 못했습니다: {e}"))
+}
+
 /// 저장 알고리즘(순서 고정, 설계 §7):
 /// 1. 파싱 실패 시 즉시 `Err` — 파싱 못 한 파일을 절대 덮어쓰지 않는다.
 /// 2. allowlist 밖 키는 `Err`(조용히 무시하지 않는다). readOnly 키(프라이버시
@@ -333,7 +377,8 @@ use crate::fs_atomic::{backup_path_for, write_atomically_private};
 /// 5. `env` 객체에 upsert(빈 문자열=삭제 신호). allowlist 밖 키·최상위 키는
 ///    전부 보존한다(이 함수는 "env"라는 이름의 하위 객체 하나만 건드리고,
 ///    그 안에서도 allowlist 키만 만진다 — 그 외 모든 값은 손대지 않는다).
-/// 6. 쓰기 전 원본을 `settings.json.malgn-bak`으로 백업(롤링 1세대).
+/// 6. 쓰기 전 원본을 `settings.json.malgn-bak`으로 백업(롤링 1세대). 수집키 삭제(Clear)일
+///    때만 백업에서도 `Authorization`을 뺀다.
 /// 7. 원자적 쓰기. 수집키(`OTEL_EXPORTER_OTLP_HEADERS`)가 이 파일과 백업에 들어갈 수 있어
 ///    둘 다 unix에서 `0600`으로 쓴다(`write_atomically_private`) — 키가 없는 저장에서도
 ///    일관되게 적용한다(파일에 키를 손으로 넣은 사용자의 경우까지 덮는다).
@@ -407,15 +452,7 @@ fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), St
             env_obj.insert(key, Value::String(value));
         }
     }
-    match headers_edit {
-        HeadersEdit::Unchanged => {}
-        HeadersEdit::Remove => {
-            env_obj.remove(HEADERS_ENV_KEY);
-        }
-        HeadersEdit::Replace(headers) => {
-            env_obj.insert(HEADERS_ENV_KEY.to_string(), Value::String(headers));
-        }
-    }
+    apply_headers_edit(env_obj, &headers_edit);
 
     // 저장 검증: 텔레메트리가 켜져 있는데 엔드포인트가 비었거나 형식이
     // 틀리면 저장을 거부한다(반쯤 켜진 상태로 저장되면 원인 모를 미수집이 된다).
@@ -439,7 +476,15 @@ fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), St
 
     if let Some(content) = &existing_content {
         let backup_path = backup_path_for(path);
-        write_atomically_private(&backup_path, content)
+        // 수집키 삭제(Clear)는 직전 키가 백업에 남지 않게 한다 — 안 그러면 "삭제"해도 키가
+        // `settings.json.malgn-bak`에 평문으로 한 세대 남고, 다음 저장 때까지 지워지지 않는다.
+        // 그 밖의 저장은 백업이 "저장 직전 원본"이다(롤백 가치 유지).
+        let backup_content = if matches!(payload.ingest_key, IngestKeyChange::Clear) {
+            backup_without_ingest_key(content, &headers_edit)?
+        } else {
+            content.clone()
+        };
+        write_atomically_private(&backup_path, &backup_content)
             .map_err(|e| format!("백업 파일을 쓰지 못했습니다: {e}"))?;
     }
 
@@ -987,14 +1032,101 @@ mod tests {
         assert!(backup.is_file());
         assert_eq!(mode_of(&backup), 0o600, "백업");
 
-        // 키가 이미 들어 있는 상태에서 다시 저장 — 백업(이전 키 포함)도 0600 유지.
+        // 키가 이미 들어 있는 상태에서 키를 바꿔 저장 — 백업(이전 키 포함)도 0600 유지.
         // 백업이 이미 0644로 존재했던 경우도 좁혀진다.
         std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o644)).unwrap();
-        save_to_settings_file(&path, clear_key_payload()).unwrap();
+        let rotated = format!("mhk_{}", "B".repeat(43));
+        save_to_settings_file(&path, set_key_payload(&rotated)).unwrap();
         assert_eq!(mode_of(&path), 0o600);
         assert_eq!(mode_of(&backup), 0o600, "기존 백업 파일도 좁혀져야 한다");
         let backup_content = std::fs::read_to_string(&backup).unwrap();
-        assert!(backup_content.contains(&fake_ingest_key()), "백업은 직전 원본");
+        assert!(backup_content.contains(&fake_ingest_key()), "교체 저장의 백업은 직전 원본");
+        cleanup(&path);
+    }
+
+    // RV-004: 수집키 삭제는 백업(.malgn-bak)에도 직전 키를 남기지 않는다. 앞선 저장이 남긴
+    // 백업(키 포함 가능)도 이번 백업으로 덮이고, Authorization 외 헤더·설정은 그대로다.
+    #[cfg(unix)]
+    #[test]
+    fn clear_key_leaves_no_key_in_backup() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_settings_path("ingest-clear-backup");
+        let original = serde_json::json!({
+            "permissions": { "allow": ["Bash(ls)"] },
+            "env": { "OTEL_EXPORTER_OTLP_HEADERS": "x-team=platform" }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+        save_to_settings_file(&path, set_key_payload(&fake_ingest_key())).unwrap();
+        let backup = backup_path_for(&path);
+
+        // 키가 든 본 파일을 지운다. 이 시점 백업(set 직전 원본)에는 키가 없지만, 한 번 더 키를
+        // 바꿔 백업에 직전 키가 있는 상태를 만든 뒤 삭제해 덮이는지 본다.
+        let rotated = format!("mhk_{}", "B".repeat(43));
+        save_to_settings_file(&path, set_key_payload(&rotated)).unwrap();
+        assert!(std::fs::read_to_string(&backup).unwrap().contains(&fake_ingest_key()));
+
+        save_to_settings_file(&path, clear_key_payload()).unwrap();
+        let backup_content = std::fs::read_to_string(&backup).unwrap();
+        assert!(!backup_content.contains(&fake_ingest_key()), "이전 백업의 키가 남음");
+        assert!(!backup_content.contains(&rotated), "직전 키가 백업에 남음");
+        assert!(!backup_content.contains("mhk_"), "백업에 mhk_ 키가 남음");
+        let backup_json: Value = serde_json::from_str(&backup_content).unwrap();
+        assert_eq!(backup_json["env"]["OTEL_EXPORTER_OTLP_HEADERS"], "x-team=platform");
+        assert_eq!(backup_json["permissions"], original["permissions"]);
+        let mode = std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // 본 파일도 동일하게 키가 없다.
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("mhk_"));
+        cleanup(&path);
+    }
+
+    // RV-004: 헤더가 키뿐이던 파일을 지우면 백업에서도 env 항목 자체가 사라진다.
+    #[test]
+    fn clear_key_backup_drops_headers_entry_when_only_key() {
+        let path = temp_settings_path("ingest-clear-backup-only");
+        save_to_settings_file(&path, set_key_payload(&fake_ingest_key())).unwrap();
+        save_to_settings_file(&path, clear_key_payload()).unwrap();
+        let backup_json: Value =
+            serde_json::from_str(&std::fs::read_to_string(backup_path_for(&path)).unwrap()).unwrap();
+        assert!(backup_json["env"].get("OTEL_EXPORTER_OTLP_HEADERS").is_none());
+        cleanup(&path);
+    }
+
+    // RV-004 대조군: Clear가 아닌 저장(keep)의 백업은 여전히 "저장 직전 원본"이다.
+    #[test]
+    fn keep_save_backup_is_verbatim_original() {
+        let path = temp_settings_path("ingest-keep-backup");
+        save_to_settings_file(&path, set_key_payload(&fake_ingest_key())).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        save_to_settings_file(&path, keep_key_payload(&[("OTEL_METRICS_EXPORTER", "none")])).unwrap();
+        assert_eq!(std::fs::read_to_string(backup_path_for(&path)).unwrap(), before);
+        cleanup(&path);
+    }
+
+    // RV-002: 유효 엔드포인트(파일 값 → 기본값) 성격이 상태에 실린다.
+    #[test]
+    fn status_reports_endpoint_assessment() {
+        // 파일 없음 → 기본값(허브) 기준.
+        let path = temp_settings_path("ingest-endpoint-default");
+        let st = build_status(&path, String::new(), false);
+        assert!(st.ingest_endpoint.targets_hub);
+        assert!(!st.ingest_endpoint.insecure && !st.ingest_endpoint.foreign_host);
+        cleanup(&path);
+
+        // 사내 http collector로 바꾸면 허브 경고 근거가 꺼지고 평문·허브 밖이 켜진다.
+        let path = temp_settings_path("ingest-endpoint-http");
+        let original = serde_json::json!({
+            "env": {
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://collector.corp.example:4318/v1/metrics",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://collector.corp.example:4318/v1/logs"
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+        let st = build_status(&path, String::new(), true);
+        assert!(!st.ingest_endpoint.targets_hub);
+        assert!(st.ingest_endpoint.insecure && st.ingest_endpoint.foreign_host);
+        let json = serde_json::to_string(&st).unwrap();
+        assert!(json.contains(r#""ingestEndpoint":{"targetsHub":false,"insecure":true,"foreignHost":true}"#), "{json}");
         cleanup(&path);
     }
 
@@ -1026,14 +1158,5 @@ mod tests {
             format!("Authorization=Bearer {}", fake_ingest_key())
         );
         cleanup(&path);
-    }
-
-    // 이슈 URL은 허브 origin 정본 + /keys.
-    #[test]
-    fn issue_url_points_to_hub_keys_page() {
-        assert_eq!(
-            ingest_key_issue_url(),
-            format!("{}/keys", crate::hub_auth::consts::hub_origin())
-        );
     }
 }

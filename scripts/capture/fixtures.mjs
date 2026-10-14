@@ -410,7 +410,8 @@ const OTEL_NORMAL = {
   },
   defaults: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://otel-collector.malgnsoft.com:4318' },
   endpointDefaultsInjected: true,
-  ingestKey: { state: 'set', masked: 'mhk_AAAA…', issueUrl: 'https://malgnai-hub.apiserver.kr/keys' },
+  ingestKey: { state: 'set', masked: 'mhk_AAAA…' },
+  ingestEndpoint: { targetsHub: true, insecure: false, foreignHost: false },
 };
 
 const OTEL_EMPTY = {
@@ -422,7 +423,8 @@ const OTEL_EMPTY = {
   values: {},
   defaults: {},
   endpointDefaultsInjected: false,
-  ingestKey: { state: 'unset', masked: null, issueUrl: 'https://malgnai-hub.apiserver.kr/keys' },
+  ingestKey: { state: 'unset', masked: null },
+  ingestEndpoint: { targetsHub: true, insecure: false, foreignHost: false },
 };
 
 const GITHUB_NORMAL = { installed: true, connected: true, login: 'hopegiver', name: '하근호', avatarUrl: 'https://avatars.githubusercontent.com/u/9081726?v=4' };
