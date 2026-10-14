@@ -134,3 +134,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
   — 재사용 사유: 새 주석·하네스·테스트 주장 범위 대조가 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: cargo test 777건 재실행, 엔드포인트 우선순위 주석 과대(N-7), pragma 효과 범위(N-8).
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
+  — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 커밋 범위(문구·하네스·캡처만) 실측, 하네스 정규식이 issue 힌트가 아닌 경고 문구에만 맞는 탐지 범위 축소(N-9).

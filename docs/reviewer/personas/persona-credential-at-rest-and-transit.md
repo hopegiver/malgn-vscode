@@ -49,3 +49,6 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
   — 재사용 사유: 백업 키 제거(RV-004)와 엔드포인트 목적지 경고(RV-002)가 역할개념 C4·C5 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: Clear 백업 실패 경로(원문 폴백 없음), 이전 세대 백업 덮어쓰기, assess_endpoints 응답 표면, 허브 관리자 폐기 권한 실재.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
+  — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 저장·전송 로직 무변경 확인, 관리자 폐기 권한(DELETE /:id administrator) 재확인, 공용 키 우회 유도 제거.

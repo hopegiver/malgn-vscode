@@ -63,3 +63,6 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
   — 재사용 사유: 바뀐 안내로 키 획득까지 완주하는지 재시뮬레이션이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: 기기 토큰 막다른 골목 해소 확인, 관리자 경유 경로의 문서 부재.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
+  — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 새 문구로 완주 재시뮬레이션, 관리자 대리 발급 기대 제거 확인.

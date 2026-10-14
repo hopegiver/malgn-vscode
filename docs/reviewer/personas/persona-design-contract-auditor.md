@@ -93,3 +93,6 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
   — 재사용 사유: 앱 문구를 허브 정본(keys.vue·ingest-credentials.js·설계 §5.6)과 조항 단위로 대조하는 일이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: 관리자 발급 주체(공용 워크스테이션 한정) 대 앱 문구 '관리자에게 발급 요청'(RV-006).
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
+  — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 앱 문구·주석 3주장(웹 발급 화면 없음/관리자 대리 발급 불가/관리자 폐기 가능)을 ingest-credentials.js 권한 분기와 대조 — RV-006 해소.
