@@ -90,3 +90,6 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
   — 재사용 사유: 허브 정본(`otlp-limits.js` CREDENTIAL_TOKEN_BODY_RE, `otlp-ingest.md` §5.3 전달 방식·안내문 상수화 조항)과 앱 구현을 조항 단위로 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: 정규식 동치, 헤더 형식, 안내문 상수 출처, OTLP_CLIENT_ENV 대비 앱 기본값.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
+  — 재사용 사유: 앱 문구를 허브 정본(keys.vue·ingest-credentials.js·설계 §5.6)과 조항 단위로 대조하는 일이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: 관리자 발급 주체(공용 워크스테이션 한정) 대 앱 문구 '관리자에게 발급 요청'(RV-006).

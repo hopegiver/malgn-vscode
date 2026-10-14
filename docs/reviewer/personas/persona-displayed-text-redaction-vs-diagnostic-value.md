@@ -49,3 +49,6 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
   — 재사용 사유: 수집키 원문이 화면(DOM·토스트·입력칸)에 새지 않으면서 마스킹(`mhk_`+4자)이 사용자가 "어느 키인지" 식별하는 값을 남기는지가 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: 프론트 errorMessage 경로, 저장 후 입력칸 비움, 하네스 DOM 덤프 실효성, 스크린샷 3장 직접 확인.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
+  — 재사용 사유: 새 응답 필드·토스트·확인 문구·경고의 원문 비노출 확인이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: ingestEndpoint 불리언 전용, INGEST_KEY_COPY 상수, 스크린샷 4장.

@@ -131,3 +131,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
   — 재사용 사유: 모듈 머리말 불변식·주석("Debug derive 안전", "input.value 점검")과 테스트·하네스가 실제로 검증하는 범위를 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: cargo test 768건 재실행, pnpm build, 하네스 assertNoRawKey의 미사용 values, 주석 과대 주장.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
+  — 재사용 사유: 새 주석·하네스·테스트 주장 범위 대조가 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: cargo test 777건 재실행, 엔드포인트 우선순위 주석 과대(N-7), pragma 효과 범위(N-8).

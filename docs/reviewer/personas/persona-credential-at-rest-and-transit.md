@@ -46,3 +46,6 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
   — 신규 사유: INDEX의 기존 역할개념 중 "자격증명이 디스크(본 파일·백업·임시 파일)에 남는 자리의 권한·수명과 전송 목적지"를 다루는 행이 없다. 가장 가까운 `process-execution-security`는 실행 명령의 argv·셸·env·프로세스 수명, `displayed-text-redaction-vs-diagnostic-value`는 화면 텍스트의 가림, `delegated-authority-blast-radius`는 자식 프로세스에 넘긴 권한의 사용자 인지다.
   — 이번 라운드 집중: 0600 생성 시점·백업·임시 파일, 원문 경계 이탈 grep, 엔드포인트 스킴/호스트, settings.json 평문 결정 평가, 허브 측 폐기 수단 실재 여부.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 2차(재검토, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2nd-2026-10-14.md`
+  — 재사용 사유: 백업 키 제거(RV-004)와 엔드포인트 목적지 경고(RV-002)가 역할개념 C4·C5 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: Clear 백업 실패 경로(원문 폴백 없음), 이전 세대 백업 덮어쓰기, assess_endpoints 응답 표면, 허브 관리자 폐기 권한 실재.
