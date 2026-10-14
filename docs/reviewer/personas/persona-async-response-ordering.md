@@ -55,3 +55,6 @@
 - 2026-10-14 / target_id `r13b-daily-series` / 1차(최초, Standard) / `docs/reviewer/review-r13b-daily-series-2026-10-14.md`
   — 재사용 사유: 기준 A4(같은 지표는 한 정의) — 일별·요약·프로젝트 추이가 한 창(`usage_window_for`)과 한 dedup 규칙을 쓰는지가 과녁 그 자체. 6대 요소 무수정.
   — 이번 라운드 집중: scan_file_daily_usage vs scan_file_for_summary 줄 단위 대조, 과거분 캐시(skip_date)+오늘 스캔 합성 경계, RV-007 해소 확인.
+- 2026-10-14 / target_id `r13b-daily-series` / 2차(재검토, 축소) / `docs/reviewer/review-r13b-daily-series-2026-10-14-r2.md`
+  — 재사용 사유: 기준 A4 — 상단 카드가 주간 표·차트·목록과 같은 ≥ 규칙(fmtCost 단일 함수)을 쓰는지. 6대 요소 무수정.
+  — 이번 라운드 집중: costStat의 fmtCost 교체, 화면 내 비용 표기 단일화 확인.

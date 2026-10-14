@@ -149,3 +149,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-14 / target_id `r13b-daily-series` / 1차(최초, Standard) / `docs/reviewer/review-r13b-daily-series-2026-10-14.md`
   — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
   — 이번 라운드 집중: 주간 "세션 수(일별 합)" 대신 일평균 세션(RT-1), 비용 표기 단일 진입점(RT-2).
+- 2026-10-14 / target_id `r13b-daily-series` / 2차(재검토, 축소) / `docs/reviewer/review-r13b-daily-series-2026-10-14-r2.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: RT-1 유지(라벨 정직화는 질문에 답하지 못함), RT-2 부분 완화(카드 fmtCost 편입) 판단.
