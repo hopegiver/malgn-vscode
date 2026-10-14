@@ -16,7 +16,7 @@ function dayKey(offset) {
 
 // items: [{ input, output, creation, read }] — 0번째가 가장 최근.
 function daily(items) {
-  return items.map((v, i) => ({ date: dayKey(i), inputTokens: v.input, outputTokens: v.output, cacheCreationTokens: v.creation, cacheReadTokens: v.read }));
+  return items.map((v, i) => ({ date: dayKey(i), inputTokens: v.input, outputTokens: v.output, cacheCreationTokens: v.creation, cacheReadTokens: v.read, costUsd: 0, unpricedTokens: 0, toolCalls: 0, sessionCount: 0 }));
 }
 
 function summaryWithModels(models) {

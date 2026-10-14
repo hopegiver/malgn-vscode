@@ -82,7 +82,7 @@ function dailyUsageSample() {
   const out = [];
   for (let i = 0; i < 3; i++) {
     const d = new Date(Date.now() - i * 86400_000).toISOString().slice(0, 10);
-    out.push({ date: d, inputTokens: 12000 + i * 500, outputTokens: 3400 + i * 100, cacheCreationTokens: 800, cacheReadTokens: 52000 });
+    out.push({ date: d, inputTokens: 12000 + i * 500, outputTokens: 3400 + i * 100, cacheCreationTokens: 800, cacheReadTokens: 52000, costUsd: 0.42 + i * 0.05, unpricedTokens: 0, toolCalls: 31 + i * 4, sessionCount: 2 + i });
   }
   return out;
 }

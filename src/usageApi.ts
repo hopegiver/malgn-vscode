@@ -12,6 +12,14 @@ export interface DailyUsage {
   readonly outputTokens: number;
   readonly cacheCreationTokens: number;
   readonly cacheReadTokens: number;
+  /** 그날 추정 비용(USD). 단가표에 있는 모델분만 — `unpricedTokens > 0`이면 과소 표기다. */
+  readonly costUsd: number;
+  /** 단가표에 없는 모델의 그날 토큰 합(비용 미산정분). 0이면 `costUsd`는 전액 실단가 기준. */
+  readonly unpricedTokens: number;
+  /** 그날 도구 호출 수(tool_use.id당 1회). */
+  readonly toolCalls: number;
+  /** 그날 assistant 사용 기록이 있는 고유 세션 수(서브에이전트 파일은 부모 세션에 합산). */
+  readonly sessionCount: number;
 }
 
 export async function fetchDailyUsage(): Promise<DailyUsage[]> {

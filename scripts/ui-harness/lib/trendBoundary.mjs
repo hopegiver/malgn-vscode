@@ -198,6 +198,72 @@ export function runTrendBoundaryChecks(mod) {
     check('캐시 히트율 하락은 음수 %p (80% -> 50% = -30)', w.delta?.cacheHitPointDiff === -30, String(w.delta?.cacheHitPointDiff));
   }
 
+  // ---- 비용·세션 수·도구 호출(주간 합산·증감·미산정 표기 근거) ----
+  // 입력은 백엔드가 날짜별로 집계한 값 — 여기서는 합산·비교만 한다.
+  const full = (offset, total_, cost, tools, sessions, unpriced = 0) => rec(offset, total_, { costUsd: cost, toolCalls: tools, sessionCount: sessions, unpricedTokens: unpriced });
+  {
+    const t = trendOf([full(1, 100, 1.5, 10, 2), full(3, 100, 2.25, 5, 1), full(8, 100, 1, 6, 2), full(10, 100, 1, 4, 1), full(14, 100, 0.5, 2, 1)]);
+    const w = t.weekly;
+    check('새 지표: 최근 완료 7일 합(비용 3.75·도구 15·세션 3)', w.current?.costUsd === 3.75 && w.current.toolCalls === 15 && w.current.sessionCount === 3, JSON.stringify(w.current));
+    check('새 지표: 그 전 7일 합(비용 2.5·도구 12·세션 4)', w.previous?.costUsd === 2.5 && w.previous.toolCalls === 12 && w.previous.sessionCount === 4, JSON.stringify(w.previous));
+    check('새 지표: 증감 비용 +1.25(+50.0%), 도구 +3(+25.0%), 세션 -1(-25.0%)', w.delta?.costAbs === 1.25 && w.delta.costPct === 50 && w.delta.toolCallsAbs === 3 && w.delta.toolCallsPct === 25 && w.delta.sessionsAbs === -1 && w.delta.sessionsPct === -25, JSON.stringify(w.delta));
+    check('새 지표: 미산정이 없으면 costPartial=false, unpricedTokens=0', w.delta?.costPartial === false && w.current?.unpricedTokens === 0 && w.previous?.unpricedTokens === 0, JSON.stringify([w.delta?.costPartial, w.current?.unpricedTokens]));
+    check('새 지표: 시계열 점에 일별 값 보존(오늘-1: 비용 1.5·도구 10·세션 2)', t.series[28].costUsd === 1.5 && t.series[28].toolCalls === 10 && t.series[28].sessionCount === 2, JSON.stringify(t.series[28]));
+    check('새 지표: 결과의 모든 숫자가 유한수', allFinite(t), 'NaN/Infinity 존재');
+  }
+  {
+    // 미산정: 한쪽 창에만 있어도 costPartial, 창별 합이 각각 나온다. 이상치 판정(토큰)은 미산정과 무관.
+    const w = trendOf([full(1, 100, 1, 1, 1, 500), full(2, 100, 1, 1, 1, 250), full(9, 100, 1, 1, 1, 0), full(14, 100, 0, 0, 0, 0)]).weekly;
+    check('미산정: 최근 완료 7일 750·그 전 7일 0, costPartial=true(한쪽만이어도)', w.current?.unpricedTokens === 750 && w.previous?.unpricedTokens === 0 && w.delta?.costPartial === true, JSON.stringify([w.current?.unpricedTokens, w.previous?.unpricedTokens, w.delta?.costPartial]));
+    const a = trendOf([full(1, 300_000, 1, 1, 1), ...[2, 3, 4, 5, 6].map((o) => full(o, 300_000, 1, 1, 1))]).anomalies.points.map((p) => p.kind).join();
+    const b = trendOf([full(1, 300_000, 1, 1, 1, 999_999), ...[2, 3, 4, 5, 6].map((o) => full(o, 300_000, 1, 1, 1, 999_999))]).anomalies.points.map((p) => p.kind).join();
+    check('이상치 판정은 토큰만 본다: 미산정 토큰이 있어도 판정 결과 동일', a === b, `${a} vs ${b}`);
+  }
+  {
+    // 그 전 7일 0: 절대 증감은 값 그대로, % 는 null(0 나누기 없음) — 비용·세션·도구 호출 각각.
+    const w = trendOf([full(20, 100, 9, 9, 9), full(1, 100, 2.5, 7, 3)]).weekly;
+    check('전주 0(새 지표): 비용 +2.5·도구 +7·세션 +3, 각 %는 null', w.delta?.costAbs === 2.5 && w.delta.costPct === null && w.delta.toolCallsAbs === 7 && w.delta.toolCallsPct === null && w.delta.sessionsAbs === 3 && w.delta.sessionsPct === null && allFinite(w), JSON.stringify(w.delta));
+  }
+  {
+    // 기록 일부만 0인 날: 토큰은 있고 비용 0(전부 미산정) — 활동일 정의(토큰 기준)는 그대로.
+    const w = trendOf([full(1, 100, 0, 0, 1, 100), full(14, 100, 0, 0, 1, 100)]).weekly;
+    check('비용 0·미산정만 있는 주: 비용 0, % null, costPartial=true, 활동일 1', w.current?.costUsd === 0 && w.delta?.costPct === null && w.delta.costPartial === true && w.current.activeDays === 1, JSON.stringify([w.current, w.delta]));
+  }
+  {
+    // 부동소수 합산 오차: 0.1 x 3 = 0.30000000000000004 → 4자리 반올림, 증감은 센트 단위
+    const w = trendOf([full(1, 1, 0.1, 0, 0), full(2, 1, 0.1, 0, 0), full(3, 1, 0.1, 0, 0), full(8, 1, 0.2, 0, 0), full(14, 1, 0, 0, 0)]).weekly;
+    check('부동소수 오차: 0.1x3 = 0.3, 증감 +0.1(센트 반올림)', w.current?.costUsd === 0.3 && w.delta?.costAbs === 0.1, JSON.stringify([w.current?.costUsd, w.delta?.costAbs]));
+  }
+  {
+    // 오늘 부분일 격리는 새 지표에도 적용: 오늘 값이 크든 작든 주간 표(두 주·증감)가 같고, 오늘 값은 today에만.
+    const base = [full(1, 100, 1, 1, 1), full(8, 100, 1, 1, 1), full(14, 100, 1, 1, 1)];
+    const a = trendOf(base).weekly;
+    const b = trendOf([...base, full(0, 999, 777.5, 888, 66, 4321)]).weekly;
+    const strip = (w) => JSON.stringify({ current: w.current, previous: w.previous, delta: w.delta });
+    check('오늘 부분일 격리(새 지표): 오늘 비용·도구·세션·미산정이 주간 표에 섞이지 않음', strip(a) === strip(b), `${strip(a)} vs ${strip(b)}`);
+    check('오늘 부분일: today에 새 지표 값이 담김', b.today?.costUsd === 777.5 && b.today.toolCalls === 888 && b.today.sessionCount === 66 && b.today.unpricedTokens === 4321, JSON.stringify(b.today));
+  }
+  {
+    // 이상한 입력: 음수·NaN·Infinity·문자열 누락(undefined)은 0으로 — 던지지 않고 유한수.
+    const s = buildDailySeries(
+      [
+        { date: TODAY, inputTokens: 1, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, costUsd: NaN, unpricedTokens: -5, toolCalls: Infinity, sessionCount: undefined },
+        { date: day(1), inputTokens: 1, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+      ],
+      TODAY,
+      deps
+    );
+    check('새 필드 NaN/음수/Infinity/누락은 0으로 취급, 유한수', allFinite(s) && s[29].costUsd === 0 && s[29].unpricedTokens === 0 && s[29].toolCalls === 0 && s[29].sessionCount === 0 && s[28].costUsd === 0, JSON.stringify([s[28], s[29]]));
+  }
+  {
+    // 같은 날짜가 여러 건이면 새 지표도 합산, metricValue가 지표별 값을 고른다.
+    const s = buildDailySeries([full(0, 10, 1.25, 3, 1, 7), full(0, 10, 0.75, 4, 2, 3)], TODAY, deps);
+    const p = s[29];
+    const { metricValue } = mod;
+    check('같은 날짜 새 지표 합산(비용 2·도구 7·세션 3·미산정 10)', p.costUsd === 2 && p.toolCalls === 7 && p.sessionCount === 3 && p.unpricedTokens === 10, JSON.stringify(p));
+    check('metricValue: tokens/cost/sessions/toolCalls', metricValue(p, 'tokens') === 20 && metricValue(p, 'cost') === 2 && metricValue(p, 'sessions') === 3 && metricValue(p, 'toolCalls') === 7, JSON.stringify(p));
+  }
+
   // ---- P3-2: 이상치 ----
   // target 날(offset)에 값을 넣고, baselineOffsets(과거 offset들)에 baselineValues를 채운 뒤 그 날의 AnomalyPoint를 돌려준다.
   const probe = (targetOffset, targetValue, baselineOffsets, baselineValues) => {

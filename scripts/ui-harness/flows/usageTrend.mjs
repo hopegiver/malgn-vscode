@@ -5,6 +5,8 @@
 // 데이터 부족/그 전 7일 비교 불가/그 전 7일 0 상태를 만들고, 화면에 나온 숫자를 이 파일이 독립적으로
 // 다시 계산한 기대값과 대조한다. 순수 함수 경계값은 lib/trendBoundary.mjs를 Vite가 서빙하는
 // 실제 모듈에 대해 실행한다(boundary 시나리오).
+// 비용·세션 수·도구 호출 지표(추정 비용 ≥ 표기, 미산정 안내, 차트 지표 전환, 일별 목록 열)도 같은
+// 방식으로 독립 계산 기대값과 대조한다.
 import { usageSummarySample } from '../lib/fixtures.mjs';
 import { runTrendBoundaryChecks } from '../lib/trendBoundary.mjs';
 
@@ -25,26 +27,53 @@ function fmt(v) {
 }
 
 // 합성 한 줄: total 토큰을 input 10% / creation 5% / output 5% / read(나머지, readShare)로 나눈다.
-function rec(offset, total, readShare) {
+// 비용·도구 호출·세션 수는 기본값(토큰 비례)을 두고 extra로 덮어쓴다. 비용은 센트 단위(합산 오차 방지).
+function rec(offset, total, readShare, extra = {}) {
   const read = Math.round(total * readShare);
   const input = Math.round(total * 0.1);
   const creation = Math.round(total * 0.05);
   const output = total - read - input - creation;
-  return { date: localKey(offset), inputTokens: input, outputTokens: output, cacheCreationTokens: creation, cacheReadTokens: read };
+  return {
+    date: localKey(offset),
+    inputTokens: input,
+    outputTokens: output,
+    cacheCreationTokens: creation,
+    cacheReadTokens: read,
+    costUsd: Math.round(total * 0.00001 * 100) / 100,
+    unpricedTokens: 0,
+    toolCalls: Math.round(total / 6000),
+    sessionCount: 2,
+    ...extra,
+  };
 }
 const tot = (r) => r.inputTokens + r.outputTokens + r.cacheCreationTokens + r.cacheReadTokens;
 
 // offset 0..29, 6/7번째 날(i%7 in {5,6})은 기록 없음(주말 모사). 최근 완료 7일(어제=1 ~ 7)은 x1.25, 캐시 read 80% / 그 이전 70%.
 // 오늘(offset 0)은 주간 비교에 들어가지 않는 부분일이다.
+// 새 지표는 토큰과 다른 방향/크기로 움직이게 한다: 비용 x1.1 단가(토큰 +25%인데 비용은 더 크게), 도구 호출은
+// 토큰 대비 x0.8(토큰은 늘었는데 호출은 덜 늘거나 줄 수 있음), 세션 수는 최근 3 / 이전 2.
 function steadyItems() {
   const out = [];
   for (let i = 0; i < 30; i++) {
     if (i % 7 === 5 || i % 7 === 6) continue;
     const base = 200_000 + ((i * 37) % 11) * 20_000;
     const recent = i >= 1 && i <= 7;
-    out.push(rec(i, recent ? Math.round(base * 1.25) : base, recent ? 0.8 : 0.7));
+    const total = recent ? Math.round(base * 1.25) : base;
+    out.push(
+      rec(i, total, recent ? 0.8 : 0.7, {
+        costUsd: Math.round(total * 0.00001 * (recent ? 1.1 : 1) * 100) / 100,
+        toolCalls: Math.round((total / 6000) * (recent ? 0.8 : 1)),
+        sessionCount: recent ? 3 : 2,
+      })
+    );
   }
   return out;
+}
+
+// steadyItems에서 offsets 날짜에 단가 미산정 토큰을 얹는다(비용은 그대로 — 미산정분은 비용에서 빠져 있다).
+function withUnpriced(offsets, unpriced = 120_000) {
+  const dates = new Set(offsets.map(localKey));
+  return steadyItems().map((r) => (dates.has(r.date) ? { ...r, unpricedTokens: unpriced } : r));
 }
 
 function withSpikeAndDrop() {
@@ -59,6 +88,7 @@ function expectedWeekly(items) {
   const cur = sum(1, 7); // 어제까지 끝난 7일(오늘 제외)
   const prev = sum(8, 14);
   const t = (rs) => rs.reduce((a, r) => a + tot(r), 0);
+  const f = (rs, k) => rs.reduce((a, r) => a + r[k], 0);
   const hit = (rs) => {
     const i = rs.reduce((a, r) => a + r.inputTokens, 0);
     const c = rs.reduce((a, r) => a + r.cacheCreationTokens, 0);
@@ -66,8 +96,29 @@ function expectedWeekly(items) {
     return i + c + rd > 0 ? Math.round((rd / (i + c + rd)) * 100) : null;
   };
   const todayRows = sum(0, 0);
-  return { todayTotal: t(todayRows), curTotal: t(cur), prevTotal: t(prev), curActive: cur.length, prevActive: prev.length, curHit: hit(cur), prevHit: hit(prev) };
+  return {
+    todayTotal: t(todayRows),
+    curTotal: t(cur),
+    prevTotal: t(prev),
+    curActive: cur.length,
+    prevActive: prev.length,
+    curHit: hit(cur),
+    prevHit: hit(prev),
+    curCost: f(cur, 'costUsd'),
+    prevCost: f(prev, 'costUsd'),
+    curTools: f(cur, 'toolCalls'),
+    prevTools: f(prev, 'toolCalls'),
+    curSessions: f(cur, 'sessionCount'),
+    prevSessions: f(prev, 'sessionCount'),
+    curUnpriced: f(cur, 'unpricedTokens'),
+    prevUnpriced: f(prev, 'unpricedTokens'),
+  };
 }
+
+const usd = (v) => `$${v.toFixed(2)}`;
+const cnt = (v) => v.toLocaleString('ko-KR');
+const sgn = (v, fmtFn) => (v > 0 ? `+${fmtFn(v)}` : v < 0 ? `-${fmtFn(-v)}` : fmtFn(0));
+const pct1 = (abs, base) => (base > 0 ? `${abs > 0 ? '+' : ''}${((abs / base) * 100).toFixed(1)}%` : null);
 
 async function tallShot(page, shot, name) {
   await page.setViewportSize({ width: 1280, height: 1320 });
@@ -77,6 +128,83 @@ async function tallShot(page, shot, name) {
 
 async function text(page, selector) {
   return page.locator(selector).first().textContent().catch(() => null);
+}
+
+// 주간 표의 새 지표 행(추정 비용·세션 수·도구 호출)을 독립 계산 기대값과 대조한다.
+async function checkWeeklyNewMetrics(page, t, e, bugs, { partial }) {
+  const rows = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => r.innerText.replace(/\n/g, ' | ')));
+  const row = (label) => rows.find((r) => r.startsWith(label)) ?? '';
+  const costRow = row('추정 비용');
+  const sessRow = row('세션 수');
+  const toolRow = row('도구 호출');
+  if (!costRow || !sessRow || !toolRow) {
+    bugs.push({ severity: 'Critical', symptom: `주간 표에 추정 비용/세션 수/도구 호출 행이 없음: ${JSON.stringify(rows.map((r) => r.slice(0, 12)))}`, file: 'src/views/usage.ts:renderWeeklySummary' });
+    return;
+  }
+  const mark = partial ? '≥' : '';
+  const costAbs = Math.round((e.curCost - e.prevCost) * 100) / 100;
+  const want = [
+    [costRow, `${mark}${usd(e.curCost)}`, '추정 비용 현재값'],
+    [costRow, `${mark}${usd(e.prevCost)}`, '추정 비용 직전값'],
+    [costRow, sgn(costAbs, usd), '추정 비용 절대 증감'],
+    [costRow, pct1(e.curCost - e.prevCost, e.prevCost), '추정 비용 증감%'],
+    [sessRow, `${cnt(e.curSessions)}개`, '세션 수 현재값'],
+    [sessRow, `${cnt(e.prevSessions)}개`, '세션 수 직전값'],
+    [sessRow, sgn(e.curSessions - e.prevSessions, (v) => `${cnt(v)}개`), '세션 수 절대 증감'],
+    [sessRow, pct1(e.curSessions - e.prevSessions, e.prevSessions), '세션 수 증감%'],
+    [toolRow, `${cnt(e.curTools)}회`, '도구 호출 현재값'],
+    [toolRow, `${cnt(e.prevTools)}회`, '도구 호출 직전값'],
+    [toolRow, sgn(e.curTools - e.prevTools, (v) => `${cnt(v)}회`), '도구 호출 절대 증감'],
+    [toolRow, pct1(e.curTools - e.prevTools, e.prevTools), '도구 호출 증감%'],
+  ];
+  for (const [r, w, what] of want) {
+    if (w !== null && !r.includes(w)) bugs.push({ severity: 'Major', symptom: `${what} "${w}"이(가) 없음: ${r}`, file: 'src/views/usage.ts:renderWeeklySummary' });
+  }
+  if (!costRow.includes('추정')) bugs.push({ severity: 'Major', symptom: '비용 행 라벨에 "추정" 표기가 없음', file: 'src/views/usage.ts' });
+}
+
+// 차트 지표 전환 — 네 버튼, 눌러진 지표가 aria-pressed/data 속성/막대 높이에 반영되고 토큰만 이상치 막대를 가진다.
+async function checkMetricSwitch(page, items, bugs, { partialDays, onCost }) {
+  const keys = await page.locator('[data-trend-metric]').evaluateAll((els) => els.map((b) => b.getAttribute('data-trend-metric')));
+  if (keys.join(',') !== 'tokens,cost,sessions,toolCalls') bugs.push({ severity: 'Major', symptom: `지표 전환 버튼이 tokens,cost,sessions,toolCalls가 아님: ${keys}`, file: 'src/views/usage.ts:renderMetricSwitch' });
+  if ((await page.locator('.trend-chart').getAttribute('data-trend-chart-metric')) !== 'tokens') bugs.push({ severity: 'Major', symptom: '처음 차트 지표가 tokens가 아님', file: 'src/views/usage.ts' });
+  for (const key of ['cost', 'sessions', 'toolCalls']) {
+    await page.locator(`[data-trend-metric="${key}"]`).click();
+    await page.waitForTimeout(150);
+    const cur = await page.locator('.trend-chart').getAttribute('data-trend-chart-metric');
+    const pressed = await page.locator(`[data-trend-metric="${key}"]`).getAttribute('aria-pressed');
+    if (cur !== key || pressed !== 'true') bugs.push({ severity: 'Major', symptom: `${key} 버튼 클릭 후 차트 지표=${cur}, aria-pressed=${pressed}`, file: 'src/views/usage.ts:renderMetricSwitch' });
+    const bars = await page.locator('.trend-bar').count();
+    if (bars !== 30) bugs.push({ severity: 'Major', symptom: `${key} 지표에서 막대가 30개가 아님(${bars})`, file: 'src/views/usage.ts' });
+    // 막대 높이가 그 지표의 값에 비례하는가: 가장 큰 값의 날이 100%
+    const field = { cost: 'costUsd', sessions: 'sessionCount', toolCalls: 'toolCalls' }[key];
+    const heights = await page.locator('.trend-bar').evaluateAll((els) => els.map((b) => b.style.height));
+    const max = Math.max(...items.map((r) => r[field]));
+    const maxDate = items.find((r) => r[field] === max)?.date;
+    const idx = [...Array(30).keys()].find((i) => localKey(29 - i) === maxDate);
+    if (idx === undefined || heights[idx] !== '100%') bugs.push({ severity: 'Major', symptom: `${key} 지표 최대일(${maxDate}) 막대 높이가 100%가 아님(${heights[idx]})`, file: 'src/views/usage.ts:renderDailyTrendChart' });
+    const axis = (await text(page, '.trend-axis')) ?? '';
+    const maxFmt = { cost: usd(max), sessions: `${cnt(max)}개`, toolCalls: `${cnt(max)}회` }[key];
+    if (!axis.includes(`일 최대 ${maxFmt}`) && !axis.includes(`일 최대 ≥${maxFmt}`)) bugs.push({ severity: 'Major', symptom: `${key} 지표 축 라벨에 "일 최대 ${maxFmt}"가 없음: ${axis}`, file: 'src/views/usage.ts' });
+    if (!axis.includes('(오늘, 집계 중')) bugs.push({ severity: 'Minor', symptom: `축 오른쪽에 오늘 집계 중 수치가 없음: ${axis}`, file: 'src/views/usage.ts' });
+    if ((await page.locator('.trend-bar-spike, .trend-bar-drop').count()) !== 0) bugs.push({ severity: 'Major', symptom: `${key} 지표인데 토큰 기준 급증/급락 막대 강조가 남아 있음`, file: 'src/views/usage.ts' });
+    const chartNote = (await text(page, '.trend-chart-wrap')) ?? '';
+    if (!chartNote.includes('토큰 기준 판정')) bugs.push({ severity: 'Major', symptom: `${key} 지표에서 이상치가 토큰 기준이라는 안내가 없음`, file: 'src/views/usage.ts' });
+    if (key === 'cost') {
+      if (onCost) await onCost();
+      const pd = await page.locator('.trend-chart-wrap').getAttribute('data-trend-partial-days');
+      const striped = await page.locator('.trend-bar-partial').count();
+      if (pd !== String(partialDays) || striped !== partialDays) bugs.push({ severity: 'Major', symptom: `미산정이 있는 날 줄무늬 막대가 ${partialDays}개여야 하는데 attr=${pd}, 막대 ${striped}개`, file: 'src/views/usage.ts' });
+      if (!chartNote.includes('추정치')) bugs.push({ severity: 'Major', symptom: '비용 지표에 추정치 안내가 없음', file: 'src/views/usage.ts' });
+      if (partialDays > 0 && !chartNote.includes('실제보다 작게')) bugs.push({ severity: 'Major', symptom: '줄무늬 막대(과소 표기) 설명이 없음', file: 'src/views/usage.ts' });
+      if (partialDays === 0 && chartNote.includes('줄무늬')) bugs.push({ severity: 'Minor', symptom: '미산정이 없는데 줄무늬 설명이 나옴', file: 'src/views/usage.ts' });
+    } else if ((await page.locator('.trend-bar-partial').count()) !== 0) {
+      bugs.push({ severity: 'Major', symptom: `${key} 지표에 비용 과소 줄무늬가 섞임`, file: 'src/views/usage.ts' });
+    }
+  }
+  // 막대 툴팁은 어느 지표에서도 그날 네 수치를 모두 담는다.
+  const title = await page.locator('.trend-bar').last().getAttribute('title');
+  if (!title || !title.includes('토큰') || !title.includes('추정 비용') || !title.includes('세션') || !title.includes('도구 호출')) bugs.push({ severity: 'Major', symptom: `막대 툴팁에 네 지표가 없음: ${title}`, file: 'src/views/usage.ts' });
 }
 
 // 모든 시나리오 공통 — 화면에 NaN/Infinity/undefined, 원인 단정이 없고 기존 8타일이 유지되는가.
@@ -89,7 +217,9 @@ async function commonChecks(page, bugs, { expectBox }) {
   const t = (await text(page, '.trend-box')) ?? '';
   if (/NaN|Infinity|undefined|null/.test(t)) bugs.push({ severity: 'Critical', symptom: `사용 추이 영역에 NaN/Infinity/undefined/null 문자열 노출: ${t.slice(0, 200)}`, file: 'src/views/usage.ts' });
   if (/때문|원인은 .*입니다|덕분/.test(t.replace('원인은 판정하지 않으며', ''))) bugs.push({ severity: 'Major', symptom: '사용 추이 문구에 인과 단정 표현이 있음', file: 'src/views/usage.ts' });
-  if (/\$/.test(t)) bugs.push({ severity: 'Major', symptom: '사용 추이 영역에 달러($) 표기가 있음(비용은 범위 밖)', file: 'src/views/usage.ts' });
+  // 비용은 추정임이 드러나야 한다: 달러 표기가 있으면 "추정"이라는 말도 함께 있어야 한다.
+  if (/\$/.test(t) && !t.includes('추정')) bugs.push({ severity: 'Major', symptom: '사용 추이 영역에 달러($) 표기가 있는데 "추정" 표기가 없음', file: 'src/views/usage.ts' });
+  if (/\$/.test(t) && !t.includes('실제 청구액이 아닙니다')) bugs.push({ severity: 'Major', symptom: '비용이 청구액이 아닌 추정임을 밝히는 문구가 없음', file: 'src/views/usage.ts' });
   const statCount = await page.locator('.stat-row .stat').count();
   if (statCount !== 8) bugs.push({ severity: 'Major', symptom: `사용 추이 추가 후 통계 타일이 8개가 아님(${statCount})`, file: 'src/views/usage.ts' });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
@@ -136,10 +266,35 @@ export function scenarios(base) {
         const flagged = await page.locator('.trend-bar-spike, .trend-bar-drop').count();
         if (state !== 'none' || flagged !== 0) bugs.push({ severity: 'Major', symptom: `이상치 없는 안정 픽스처인데 이상치 상태=${state}, 강조 막대 ${flagged}개`, file: 'src/usageTrend.ts' });
         if (!t.includes('모두 기준 이내')) bugs.push({ severity: 'Minor', symptom: '이상치 없음 안내("판정한 N일 모두 기준 이내")가 없음', file: 'src/views/usage.ts:renderAnomalies' });
+
+        // ---- 비용·세션 수·도구 호출 (주간 비교)
+        await checkWeeklyNewMetrics(page, t, e, bugs, { partial: false });
+        if (t.includes('≥') || (await page.locator('[data-trend-cost-partial]').count())) bugs.push({ severity: 'Major', symptom: '미산정 토큰이 없는데 "≥"/과소 안내가 나옴', file: 'src/views/usage.ts' });
+        // 오늘 한 줄에도 새 지표가 같이 나온다(표에는 넣지 않는다).
+        const todayRow = steadyItems().find((r) => r.date === localKey(0));
+        if (!t.includes(`추정 비용 ${usd(todayRow.costUsd)}`) || !t.includes(`세션 ${todayRow.sessionCount}개`) || !t.includes(`도구 호출 ${cnt(todayRow.toolCalls)}회`)) {
+          bugs.push({ severity: 'Major', symptom: `오늘 집계 중 줄에 새 지표(${usd(todayRow.costUsd)}/세션 ${todayRow.sessionCount}/도구 ${todayRow.toolCalls})가 없음`, file: 'src/views/usage.ts:renderWeeklySummary' });
+        }
+
+        // ---- 차트 지표 전환
+        await checkMetricSwitch(page, steadyItems(), bugs, { partialDays: 0, onCost: () => tallShot(page, shot, '02-trend-metric-cost') });
+
+        // ---- 일별 목록 열: 머리글 + 날짜 수만큼 행, 값이 그날 픽스처와 일치
+        const items = steadyItems();
+        const listRows = await page.locator('.bar-row-daily:not(.bar-row-head)').count();
+        if (listRows !== items.length) bugs.push({ severity: 'Major', symptom: `일별 목록 행이 ${items.length}개여야 하는데 ${listRows}개`, file: 'src/views/usage.ts:renderDailyUsageSection' });
+        const headTxt = (await text(page, '.bar-row-head')) ?? '';
+        if (!['토큰', '추정 비용', '세션', '도구 호출'].every((h) => headTxt.includes(h))) bugs.push({ severity: 'Major', symptom: `일별 목록 머리글에 열 이름이 없음: ${headTxt}`, file: 'src/views/usage.ts' });
+        const firstRow = await page.locator('.bar-row-daily:not(.bar-row-head)').first().innerText();
+        const newest = [...items].sort((a, b) => b.date.localeCompare(a.date))[0];
+        for (const want of [newest.date, usd(newest.costUsd), String(newest.sessionCount), cnt(newest.toolCalls)]) {
+          if (!firstRow.includes(want)) bugs.push({ severity: 'Major', symptom: `일별 목록 최신 행에 "${want}"이(가) 없음: ${firstRow.replace(/\n/g, ' | ')}`, file: 'src/views/usage.ts:renderDailyUsageSection' });
+        }
       },
     },
     {
       id: 'spike',
+
       fixtures: { ...common, get_daily_usage: withSpikeAndDrop() },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
@@ -162,6 +317,14 @@ export function scenarios(base) {
           bugs.push({ severity: 'Major', symptom: '차트의 급증/급락 막대 강조가 각 1개가 아님', file: 'src/views/usage.ts:renderDailyTrendChart' });
         }
         if (!t.includes('규칙:') || !t.includes('직전 14일')) bugs.push({ severity: 'Major', symptom: '이상치 판정 규칙 설명이 화면에 없음', file: 'src/views/usage.ts:renderAnomalies' });
+        // 토큰 이상치 판정은 새 지표 때문에 바뀌지 않는다: 지표를 바꿨다가 토큰으로 돌아오면 같은 막대가 강조된다.
+        await page.locator('[data-trend-metric="toolCalls"]').click();
+        await page.waitForTimeout(150);
+        if ((await page.locator('.trend-bar-spike, .trend-bar-drop').count()) !== 0) bugs.push({ severity: 'Major', symptom: '도구 호출 지표에서 급증/급락 막대가 남아 있음', file: 'src/views/usage.ts' });
+        if ((await page.locator('[data-anomaly]').count()) !== 2) bugs.push({ severity: 'Major', symptom: '지표 전환이 아래 이상치 목록(토큰 기준)을 바꿈', file: 'src/views/usage.ts' });
+        await page.locator('[data-trend-metric="tokens"]').click();
+        await page.waitForTimeout(150);
+        if ((await page.locator('.trend-bar-spike').count()) !== 1 || (await page.locator('.trend-bar-drop').count()) !== 1) bugs.push({ severity: 'Major', symptom: '토큰 지표로 돌아와도 급증/급락 막대가 복원되지 않음', file: 'src/views/usage.ts' });
       },
     },
     {
@@ -194,6 +357,18 @@ export function scenarios(base) {
         if (status !== 'no-baseline') bugs.push({ severity: 'Critical', symptom: `10일 데이터인데 주간 상태가 no-baseline이 아님(${status})`, file: 'src/usageTrend.ts' });
         if (!t.includes('비교하지 않습니다')) bugs.push({ severity: 'Major', symptom: '그 전 7일 비교 불가 안내가 없음', file: 'src/views/usage.ts' });
         if (/[+-]\d+(\.\d)?%(?!p)/.test(t.replace(/\s/g, '')) && /전주 대비\s*[+-]/.test(t)) bugs.push({ severity: 'Major', symptom: '그 전 7일이 없는데 증감%가 표시됨', file: 'src/views/usage.ts' });
+        // 새 지표도 최근 완료 7일 값만 보이고 그 전 7일·증감은 '—'.
+        const items = Array.from({ length: 10 }, (_, i) => rec(i, 300_000 + i * 10_000, 0.7));
+        const cur = items.filter((r) => { for (let o = 1; o <= 7; o++) if (r.date === localKey(o)) return true; return false; });
+        const rows = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => [...r.children].map((c) => c.innerText.replace(/\n/g, ' '))));
+        for (const [label, wantCur] of [
+          ['추정 비용', usd(cur.reduce((a, r) => a + r.costUsd, 0))],
+          ['세션 수', `${cnt(cur.reduce((a, r) => a + r.sessionCount, 0))}개`],
+          ['도구 호출', `${cnt(cur.reduce((a, r) => a + r.toolCalls, 0))}회`],
+        ]) {
+          const r = rows.find((c) => c[0] === label);
+          if (!r || r[1] !== wantCur || r[2] !== '—' || r[3] !== '—') bugs.push({ severity: 'Major', symptom: `no-baseline ${label} 행이 [${wantCur}, —, —]이어야 하는데 ${JSON.stringify(r)}`, file: 'src/views/usage.ts:renderWeeklySummary' });
+        }
       },
     },
     {
@@ -210,6 +385,44 @@ export function scenarios(base) {
         if (!t.includes('그 전 7일 0') || !t.includes('% 계산 안 함')) bugs.push({ severity: 'Major', symptom: '전주 0일 때 "% 계산 안 함" 표기가 없음', file: 'src/views/usage.ts' });
         if (!t.includes('+250.0K')) bugs.push({ severity: 'Major', symptom: '전주 0이어도 절대 증감(+250.0K, 오늘 제외)은 표시되어야 함', file: 'src/views/usage.ts' });
         if (t.includes('+350.0K')) bugs.push({ severity: 'Critical', symptom: '오늘 부분일(100K)이 주간 비교에 섞임(+350.0K)', file: 'src/usageTrend.ts:summarizeWeeks' });
+        // 새 지표: 그 전 7일이 0이면 절대 증감은 값 그대로, %는 계산하지 않는다(토큰·비용·세션·도구 호출 4행 모두).
+        const zeroPct = (t.match(/그 전 7일 0 — % 계산 안 함/g) ?? []).length;
+        if (zeroPct !== 4) bugs.push({ severity: 'Major', symptom: `그 전 7일 0일 때 "% 계산 안 함"이 4행(토큰·비용·세션·도구)에 나와야 하는데 ${zeroPct}번`, file: 'src/views/usage.ts' });
+        const r2 = rec(2, 250_000, 0.8);
+        if (!t.includes(`+${usd(r2.costUsd)}`) || t.includes(`+${usd(r2.costUsd + 1)}`)) bugs.push({ severity: 'Major', symptom: `전주 0 비용 절대 증감(+${usd(r2.costUsd)}, 오늘 제외)이 아님`, file: 'src/views/usage.ts' });
+        if (!t.includes(`+${r2.sessionCount}개`) || !t.includes(`+${cnt(r2.toolCalls)}회`)) bugs.push({ severity: 'Major', symptom: `전주 0 세션/도구 호출 절대 증감(+${r2.sessionCount}개/+${cnt(r2.toolCalls)}회)이 없음`, file: 'src/views/usage.ts' });
+        const rows = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => [...r.children].map((c) => c.innerText.replace(/\n/g, ' '))));
+        const costRow = rows.find((c) => c[0] === '추정 비용');
+        if (!costRow || costRow[2] !== usd(0)) bugs.push({ severity: 'Major', symptom: `그 전 7일 비용이 $0.00으로 표시되어야 함(${JSON.stringify(costRow)})`, file: 'src/views/usage.ts' });
+      },
+    },
+    {
+      id: 'unpriced',
+      // 비용 미산정 토큰이 있는 날(최근 완료 7일 안 2일 -> 어제가 아닌 offset 2, 그 전 7일 안 offset 9, 창 밖 18).
+      // 숨기지 않는다: 값은 "≥"로, 칸마다 제외된 토큰 수, 표 아래 과소 안내, 비용 차트의 줄무늬 막대, 일별 목록 "≥".
+      fixtures: { ...common, get_daily_usage: withUnpriced([2, 9, 18]) },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(300);
+        await tallShot(page, shot, '01-trend-unpriced');
+        const t = await commonChecks(page, bugs, { expectBox: true });
+        const items = withUnpriced([2, 9, 18]);
+        const e = expectedWeekly(items);
+        await checkWeeklyNewMetrics(page, t, e, bugs, { partial: true });
+        if (e.curUnpriced !== 120_000 || e.prevUnpriced !== 120_000) bugs.push({ severity: 'Minor', symptom: '픽스처 오류: 각 창에 미산정 120K 1일이어야 함', file: 'scripts/ui-harness/flows/usageTrend.mjs' });
+        const subs = (t.match(/미산정 120\.0K 토큰 제외/g) ?? []).length;
+        if (subs < 2) bugs.push({ severity: 'Major', symptom: `각 주 비용 칸에 "미산정 120.0K 토큰 제외"가 있어야 하는데 ${subs}번`, file: 'src/views/usage.ts:renderWeeklySummary' });
+        if (!t.includes('미산정 포함 — 증감은 참고용')) bugs.push({ severity: 'Major', symptom: '비용 증감이 참고용이라는 표기가 없음', file: 'src/views/usage.ts' });
+        const note = (await text(page, '[data-trend-cost-partial]')) ?? '';
+        if (!note.includes('실제보다 작게') || !note.includes('최근 완료 7일 120.0K') || !note.includes('그 전 7일 120.0K')) bugs.push({ severity: 'Major', symptom: `과소 안내(창별 미산정 토큰 수 포함)가 없음: ${note}`, file: 'src/views/usage.ts' });
+        // 토큰·세션·도구 호출 칸은 영향받지 않는다(≥가 붙지 않는다).
+        const sessRow = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => r.innerText).find((x) => x.startsWith('세션 수')) ?? '');
+        if (sessRow.includes('≥')) bugs.push({ severity: 'Major', symptom: '세션 수 행에 ≥가 붙음', file: 'src/views/usage.ts' });
+        await checkMetricSwitch(page, items, bugs, { partialDays: 3, onCost: () => tallShot(page, shot, '02-trend-unpriced-cost-chart') });
+        // 일별 목록: 미산정 있는 3일만 "≥", title에 제외 토큰 수.
+        const listCosts = await page.locator('.bar-row-daily:not(.bar-row-head)').evaluateAll((els) => els.filter((r) => r.innerText.includes('≥')).map((r) => r.children[3].title));
+        if (listCosts.length !== 3 || !listCosts.every((x) => x.includes('미산정 120.0K 토큰 제외') && x.includes('실제보다 작게'))) bugs.push({ severity: 'Major', symptom: `일별 목록의 ≥ 행이 3개(title에 제외 토큰 수)여야 하는데 ${JSON.stringify(listCosts)}`, file: 'src/views/usage.ts:dailyCostCell' });
+        // 이상치 판정(토큰)은 미산정 토큰과 무관하다.
+        if ((await page.locator('[data-trend-anomalies]').getAttribute('data-trend-anomalies')) !== 'none') bugs.push({ severity: 'Major', symptom: '미산정 토큰이 이상치 판정을 바꿈', file: 'src/usageTrend.ts' });
       },
     },
     {

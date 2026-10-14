@@ -230,6 +230,10 @@ function buildDailyUsage() {
       outputTokens: Math.round(base * 0.15),
       cacheCreationTokens: Math.round(base * 0.1),
       cacheReadTokens: Math.round(base * 0.45),
+      costUsd: Math.round(base * 0.00002 * 100) / 100,
+      unpricedTokens: i % 5 === 2 ? Math.round(base * 0.1) : 0,
+      toolCalls: Math.round(base / 5000),
+      sessionCount: 2 + (i % 3),
     });
   }
   return items;

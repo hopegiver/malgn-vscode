@@ -858,6 +858,10 @@ textarea.settings-input { resize: vertical; }
 .bar-row-value-num { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .bar-track { height: 6px; border-radius: var(--radius-0); background: var(--panel-bg-alt); border: var(--border-width) solid var(--border-soft); overflow: hidden; }
 .bar-fill { height: 100%; border-radius: var(--radius-0); background: var(--accent); }
+/* 일별 목록(views/usage.ts renderDailyUsageSection) — 토큰 막대 뒤에 추정 비용·세션·도구 호출 열. */
+.bar-row-daily { grid-template-columns: 120px 1fr 110px 84px 52px 64px; }
+.bar-row-head { font-size: var(--font-size-caption); font-weight: 700; color: var(--color-ink-muted); }
+.bar-row-head .bar-row-value { color: var(--color-ink-muted); }
 .bar-row-clickable { cursor: pointer; border-radius: var(--radius-0); padding: var(--space-1) var(--space-1-5); margin: calc(var(--space-1) * -1) calc(var(--space-1-5) * -1); }
 .bar-row-clickable:hover { background: var(--panel-bg-alt); }
 .bar-row-clickable:active { background: var(--border-soft); }
@@ -1513,11 +1517,26 @@ textarea.settings-input { resize: vertical; }
   display: flex; align-items: flex-end; gap: 2px; height: 72px; padding: 0 var(--space-05);
   border-bottom: var(--border-width) solid var(--border);
 }
-.trend-bar { flex: 1 1 0; min-width: 3px; background: var(--accent); border-radius: var(--radius-0); }
+.trend-bar { position: relative; flex: 1 1 0; min-width: 3px; background: var(--accent); border-radius: var(--radius-0); }
 .trend-bar-zero { background: var(--text-muted); }
 .trend-bar-spike { background: var(--status-warn); }
-.trend-bar-drop { background: var(--color-ink-muted); } /* 급락은 좋고 나쁨이 없는 사실이라 상태색(빨강)을 쓰지 않는다 */
+/* 급락은 좋고 나쁨이 없는 사실이라 상태색(빨강)을 쓰지 않는다. 0인 날의 회색 얇은 막대(.trend-bar-zero)와
+   색만으로 구별되지 않게 속이 빈 윤곽 막대로 그린다(높이도 0이 아니라 실제 값이다). */
+.trend-bar-drop { background: transparent; box-shadow: inset 0 0 0 2px var(--color-ink-muted); }
+/* 급락일은 값이 작아 막대가 몇 px뿐이다 — 윤곽만으로는 0인 날의 회색 선과 구별이 어려워 막대 위에 ▼를 함께 둔다. */
+.trend-bar-drop::after {
+  content: "▼"; position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); margin-bottom: 1px;
+  font-size: 9px; line-height: 1; color: var(--text-secondary);
+}
+/* 추정 비용 지표에서 단가 미산정 토큰이 있는 날 — 줄무늬 = "실제보다 작게 표시된 값". 색이 아니라 무늬로 구별한다. */
+.trend-bar-partial {
+  background-image: repeating-linear-gradient(135deg, transparent 0 3px, var(--win-bg) 3px 5px);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .trend-bar-today { opacity: 0.6; } /* 집계 중인 오늘 */
+.trend-metric-switch { margin-bottom: 0; }
+.trend-metric-switch .filter-btn { padding: var(--space-1) var(--space-3); font-size: var(--font-size-caption); }
+.trend-chart-note { margin-top: 0; }
 .trend-axis { display: flex; justify-content: space-between; font-size: var(--font-size-caption); color: var(--text-muted-aa); font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 .trend-subhead { font-size: var(--font-size-caption); font-weight: 700; color: var(--color-ink-muted); margin-bottom: var(--space-2); }
 .trend-anomaly-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-1-5); font-size: var(--font-size-small); }

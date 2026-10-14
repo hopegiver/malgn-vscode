@@ -12,29 +12,93 @@
 // 새로 스캔한다(대상 파일이 훨씬 적어 가볍다). 두 경우 다 파일 단위로 rayon
 // 병렬 스캔한다 — 파일마다 독립이라 합치기 쉽다.
 //
-// `lib.rs`에 있던 코드를 그대로 옮긴 것이다 — 로직은 한 글자도 바꾸지 않았다.
+// 같은 스캔에서 날짜별 비용(USD)·미산정 토큰·도구 호출 수·고유 세션 수도 함께
+// 집계한다(파일을 두 번 읽지 않는다). 규칙은 `summary.rs`의 요약 집계와 한 치도
+// 어긋나지 않아야 한다 — 같은 기간이면 일별 합 = 요약 합:
+//   - 토큰·비용: message.id당 첫 줄의 usage만, 단가는 `pricing::cost_for_usage`
+//     (캐시 쓰기 5m/1h 분리). 단가표에 없는 모델은 비용 0 + `unpricedTokens`로 노출.
+//   - 도구 호출: tool_use.id당 1회(같은 message.id가 여러 줄로 쪼개져도 각 줄의
+//     tool_use를 센다). id가 없는 블록은 블록마다 센다.
+//   - 세션 수: 그날 usage 또는 tool_use가 집계된 줄의 sessionId 집합 크기. 파일 간
+//     병합은 카운트 덧셈이 아니라 집합 합집합이다(본 세션 + subagents/*.jsonl이
+//     같은 sessionId를 쓰므로 1로 센다).
 
-use chrono::{DateTime, Local, TimeZone, Utc};
-use serde::Serialize;
+use super::pricing;
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
+use serde::{Serialize, Serializer};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-/// `pub(crate)`: `summary.rs`가 요약 집계에서도 같은 룩백 범위를 쓴다(정본
-/// 하나를 공유해야 30일 합계가 서로 어긋나지 않는다).
+/// 집계 창의 길이 = "오늘을 포함한 로컬 달력일 N개". `pub(crate)`: `summary.rs`가
+/// 요약 집계에서도 같은 창을 쓴다(정본 하나를 공유해야 30일 합계가 어긋나지 않는다).
+/// 창의 시작 시각은 반드시 `usage_window_for`로 구한다 — 롤링 `now - 720h`는
+/// 로컬 날짜 31개에 걸칠 수 있어 쓰지 않는다.
 pub(crate) const USAGE_LOOKBACK_DAYS: i64 = 30;
 
+/// 집계 창: 오늘 포함 최근 `USAGE_LOOKBACK_DAYS`개 로컬 달력일.
+pub(crate) struct UsageWindow {
+    /// 창 시작(= 오늘 - (N-1)일의 로컬 00:00). 이 시각 이상의 줄만 센다.
+    pub(crate) start_dt: DateTime<Utc>,
+    /// 파일 선정용 mtime 컷오프(`start_dt`와 같은 시각). append-only 로그라 이보다
+    /// 오래전에 마지막으로 수정된 파일은 창 안의 줄을 담을 수 없다.
+    pub(crate) start_mtime: std::time::SystemTime,
+}
+
+/// `today`(로컬 날짜)를 기준으로 한 집계 창.
+pub(crate) fn usage_window_for(today: NaiveDate) -> UsageWindow {
+    let start_date = today - chrono::Duration::days(USAGE_LOOKBACK_DAYS - 1);
+    let naive_midnight = start_date.and_hms_opt(0, 0, 0).unwrap_or_default();
+    let local_start = match Local.from_local_datetime(&naive_midnight) {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(dt, _) => dt,
+        // 그 자정이 DST 건너뜀으로 존재하지 않는 시간대 — 존재하는 가장 이른 시각으로 보정.
+        chrono::LocalResult::None => Local
+            .from_local_datetime(&(naive_midnight + chrono::Duration::hours(1)))
+            .earliest()
+            .unwrap_or_else(|| Local::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS)),
+    };
+    let start_dt = local_start.with_timezone(&Utc);
+    UsageWindow {
+        start_dt,
+        start_mtime: start_dt.into(),
+    }
+}
+
+/// 지금(로컬 달력) 기준 집계 창.
+pub(crate) fn current_usage_window() -> UsageWindow {
+    usage_window_for(Local::now().date_naive())
+}
+
+fn serialize_set_len<S: Serializer>(set: &HashSet<String>, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u64(set.len() as u64)
+}
+
+/// 날짜별 사용량. IPC 계약(camelCase): `costUsd`(USD, 단가표 매칭 모델분만),
+/// `unpricedTokens`(단가표에 없는 모델의 토큰 합 — 0보다 크면 `costUsd`는 과소 표기),
+/// `toolCalls`(tool_use.id당 1회), `sessionCount`(고유 세션 수).
 #[derive(Serialize, Debug, Default, Clone)]
 pub(crate) struct DailyUsage {
     pub(crate) date: String,
     #[serde(rename = "inputTokens")]
-    input_tokens: u64,
+    pub(crate) input_tokens: u64,
     #[serde(rename = "outputTokens")]
-    output_tokens: u64,
+    pub(crate) output_tokens: u64,
     #[serde(rename = "cacheCreationTokens")]
-    cache_creation_tokens: u64,
+    pub(crate) cache_creation_tokens: u64,
     #[serde(rename = "cacheReadTokens")]
-    cache_read_tokens: u64,
+    pub(crate) cache_read_tokens: u64,
+    #[serde(rename = "costUsd")]
+    pub(crate) cost_usd: f64,
+    #[serde(rename = "unpricedTokens")]
+    pub(crate) unpriced_tokens: u64,
+    #[serde(rename = "toolCalls")]
+    pub(crate) tool_calls: u64,
+    /// 직렬화 때 집합 크기(`sessionCount`)로만 나간다 — 세션 ID 자체는 IPC로
+    /// 나가지 않는다. 병합은 합집합이라 파일 간 중복 세션이 두 번 세어지지 않는다.
+    #[serde(rename = "sessionCount", serialize_with = "serialize_set_len")]
+    pub(crate) session_ids: HashSet<String>,
 }
 
 pub(crate) fn parse_iso_timestamp(s: &str) -> Option<DateTime<Utc>> {
@@ -98,7 +162,12 @@ pub(crate) fn scan_file_daily_usage(
     // 등장하며 매번 그 턴의 usage를 그대로 다시 실어 나른다(실측: 한 세션에서
     // 고유 메시지 124개인데 usage가 실린 줄은 238개 — 거의 2배 중복). id별로
     // 파일 안에서 한 번만 센다 — 안 세면 토큰이 최대 ~2배 부풀려진다.
+    // 단 tool_use는 같은 message.id의 줄마다 다른 블록이 실리므로 줄 단위 dedup 대상이
+    // 아니다 — tool_use.id 단위로 따로 센다(`summary.rs`와 같은 규칙).
     let mut seen_message_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_tool_use_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // sessionId 필드가 없는 줄을 위한 경로 기반 대체값(지연 계산).
+    let mut fallback_session: Option<String> = None;
     for line in BufReader::new(f).lines() {
         let Ok(line) = line else { continue };
         if line.trim().is_empty() {
@@ -123,14 +192,38 @@ pub(crate) fn scan_file_daily_usage(
         let Some(msg) = value.get("message") else {
             continue;
         };
-        if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-            if !seen_message_ids.insert(id.to_string()) {
-                continue;
+        let first_line_of_message = match msg.get("id").and_then(|v| v.as_str()) {
+            Some(id) => seen_message_ids.insert(id.to_string()),
+            None => true,
+        };
+        let usage = if first_line_of_message {
+            msg.get("usage")
+        } else {
+            None
+        };
+
+        // 이 줄에서 새로 세어질 tool_use 개수. seen 집합 갱신은 skip_date 판정보다
+        // 앞서야 한다(오늘 줄을 건너뛰어도 id는 소비돼 전체 스캔과 같은 결과가 된다).
+        let mut new_tool_calls: u64 = 0;
+        if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+            for item in content {
+                if item.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                    continue;
+                }
+                if let Some(tid) = item.get("id").and_then(|v| v.as_str()) {
+                    if !seen_tool_use_ids.insert(tid.to_string()) {
+                        continue;
+                    }
+                }
+                // summary.rs와 같이 name이 있는 블록만 센다.
+                if item.get("name").and_then(|n| n.as_str()).is_some() {
+                    new_tool_calls += 1;
+                }
             }
         }
-        let Some(usage) = msg.get("usage") else {
+        if usage.is_none() && new_tool_calls == 0 {
             continue;
-        };
+        }
 
         let key = local_date_key(&ts);
         if skip_date.is_some_and(|d| d == key) {
@@ -140,24 +233,82 @@ pub(crate) fn scan_file_daily_usage(
             date: key,
             ..Default::default()
         });
-        entry.input_tokens += usage
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        entry.output_tokens += usage
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        entry.cache_creation_tokens += usage
-            .get("cache_creation_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        entry.cache_read_tokens += usage
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        entry.tool_calls += new_tool_calls;
+
+        if let Some(usage) = usage {
+            let model = msg
+                .get("model")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            let input = usage
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let output = usage
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_creation = usage
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_read = usage
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            entry.input_tokens += input;
+            entry.output_tokens += output;
+            entry.cache_creation_tokens += cache_creation;
+            entry.cache_read_tokens += cache_read;
+
+            // 비용은 summary.rs와 같은 경로: 토큰 합계(cache_creation_input_tokens)와
+            // 별개로 비용에는 5m/1h 분해값을 쓴다.
+            let (cache_write_5m, cache_write_1h) = pricing::split_cache_write_tokens(usage);
+            let cost = pricing::cost_for_usage(
+                model,
+                input,
+                output,
+                cache_write_5m,
+                cache_write_1h,
+                cache_read,
+            );
+            entry.cost_usd += cost.cost_usd;
+            if !cost.pricing_matched {
+                entry.unpriced_tokens += input + output + cache_creation + cache_read;
+            }
+        }
+
+        let session = match value.get("sessionId").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => s,
+            _ => fallback_session
+                .get_or_insert_with(|| session_id_from_path(path))
+                .as_str(),
+        };
+        if !entry.session_ids.contains(session) {
+            entry.session_ids.insert(session.to_string());
+        }
     }
     buckets
+}
+
+/// 줄에 `sessionId`가 없을 때의 대체 식별자. 실제 로그 구조: 본 세션은
+/// `<projectKey>/<sessionId>.jsonl`, 서브에이전트는
+/// `<projectKey>/<sessionId>/subagents/agent-*.jsonl` — 둘 다 같은 sessionId를 낸다.
+fn session_id_from_path(path: &Path) -> String {
+    let parent = path.parent();
+    if parent.and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("subagents") {
+        if let Some(name) = parent
+            .and_then(|p| p.parent())
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+        {
+            return name.to_string();
+        }
+    }
+    path.file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 /// `pub(crate)`: `summary.rs`의 `get_project_daily_trend`가 파일 단위 병렬
@@ -175,6 +326,11 @@ pub(crate) fn merge_daily_usage_maps(
         entry.output_tokens += v.output_tokens;
         entry.cache_creation_tokens += v.cache_creation_tokens;
         entry.cache_read_tokens += v.cache_read_tokens;
+        entry.cost_usd += v.cost_usd;
+        entry.unpriced_tokens += v.unpriced_tokens;
+        entry.tool_calls += v.tool_calls;
+        // 세션은 카운트가 아니라 집합으로 합친다 — 같은 세션이 여러 파일에 걸쳐도 1.
+        entry.session_ids.extend(v.session_ids);
     }
     a
 }
@@ -225,14 +381,14 @@ fn compute_historical_daily_usage(today: &str) -> Vec<DailyUsage> {
         return Vec::new();
     }
 
-    let lookback = std::time::Duration::from_secs(USAGE_LOOKBACK_DAYS as u64 * 24 * 60 * 60);
-    let cutoff_mtime = std::time::SystemTime::now()
-        .checked_sub(lookback)
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    let cutoff_dt = Utc::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS);
+    // 캐시 키(`today`)와 같은 날짜로 창을 만든다 — 자정 경계에서 캐시 날짜와 창이 어긋나지 않게.
+    let window = usage_window_for(
+        NaiveDate::parse_from_str(today, "%Y-%m-%d").unwrap_or_else(|_| Local::now().date_naive()),
+    );
+    let cutoff_dt = window.start_dt;
 
     let mut files = Vec::new();
-    find_recent_jsonl_files(&projects_dir, cutoff_mtime, &mut files);
+    find_recent_jsonl_files(&projects_dir, window.start_mtime, &mut files);
 
     let buckets = files
         .par_iter()
@@ -279,7 +435,13 @@ fn compute_today_daily_usage(today: &str) -> Option<DailyUsage> {
     }
     let cutoff_mtime =
         local_midnight_as_system_time(today).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    let cutoff_dt = Utc::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS);
+    // 줄 필터는 과거분 스캔과 같은 창 시작을 써야 한다 — message.id 첫 줄이 어제에 있으면
+    // 오늘 줄은 중복으로 빠지는 규칙이 전체 스캔·요약과 같게 유지된다. 파일 선정만 오늘
+    // 자정으로 좁힌다.
+    let cutoff_dt = usage_window_for(
+        NaiveDate::parse_from_str(today, "%Y-%m-%d").unwrap_or_else(|_| Local::now().date_naive()),
+    )
+    .start_dt;
 
     let mut files = Vec::new();
     find_recent_jsonl_files(&projects_dir, cutoff_mtime, &mut files);
@@ -309,13 +471,330 @@ pub(crate) fn aggregate_daily_usage() -> Vec<DailyUsage> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
     fn parses_rfc3339_timestamp() {
         assert!(parse_iso_timestamp("2026-09-02T09:01:16.983Z").is_some());
         assert!(parse_iso_timestamp("완전히 이상한 문자열").is_none());
+    }
+
+    // ---- 합성 fixture 헬퍼 (실제 로그 원문이 아니라 필드 모양만 흉내 낸 가짜 데이터) ----
+
+    static TEST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    pub(crate) fn test_dir() -> PathBuf {
+        let seq = TEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "malgn-vscode-daily-test-{}-{}",
+            std::process::id(),
+            seq
+        ));
+        std::fs::create_dir_all(&dir).expect("fixture 디렉터리 생성 실패");
+        dir
+    }
+
+    /// 로컬 `date`의 `h:m`을 RFC3339(UTC)로.
+    pub(crate) fn ts_local(date: NaiveDate, h: u32, m: u32) -> String {
+        let naive = date.and_hms_opt(h, m, 0).unwrap();
+        Local
+            .from_local_datetime(&naive)
+            .earliest()
+            .expect("로컬 시각 변환 실패")
+            .with_timezone(&Utc)
+            .to_rfc3339()
+    }
+
+    pub(crate) struct L<'a> {
+        pub ts: String,
+        pub session: Option<&'a str>,
+        pub msg_id: &'a str,
+        pub model: &'a str,
+        /// None이면 usage 필드 자체가 없는 줄.
+        pub usage: Option<(u64, u64)>,
+        /// (tool_use.id, name)
+        pub tools: Vec<(Option<&'a str>, &'a str)>,
+    }
+
+    impl<'a> L<'a> {
+        pub(crate) fn json(&self) -> String {
+            let content: Vec<Value> = self
+                .tools
+                .iter()
+                .map(|(id, name)| match id {
+                    Some(id) => serde_json::json!({"type":"tool_use","id":id,"name":name}),
+                    None => serde_json::json!({"type":"tool_use","name":name}),
+                })
+                .collect();
+            let mut message = serde_json::json!({
+                "id": self.msg_id, "model": self.model, "content": content
+            });
+            if let Some((i, o)) = self.usage {
+                message["usage"] = serde_json::json!({
+                    "input_tokens": i, "output_tokens": o,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
+                });
+            }
+            let mut v = serde_json::json!({
+                "type": "assistant", "timestamp": self.ts, "message": message
+            });
+            if let Some(sid) = self.session {
+                v["sessionId"] = serde_json::json!(sid);
+            }
+            v.to_string()
+        }
+    }
+
+    pub(crate) fn write_lines(path: &Path, lines: &[L]) {
+        let body: Vec<String> = lines.iter().map(|l| l.json()).collect();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body.join("\n") + "\n").expect("fixture 쓰기 실패");
+    }
+
+    fn far_cutoff() -> DateTime<Utc> {
+        Utc::now() - chrono::Duration::days(3650)
+    }
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    // 규칙 3: 같은 세션이 본 세션 파일 + subagents 파일에 걸쳐도 1로 센다(합집합).
+    // 다른 세션은 따로 센다.
+    #[test]
+    fn session_count_is_union_across_files_not_sum() {
+        let dir = test_dir();
+        let day = d(2026, 10, 10);
+        let mk = |sid: &'static str, id: &'static str| L {
+            ts: ts_local(day, 10, 0),
+            session: Some(sid),
+            msg_id: id,
+            model: "claude-sonnet-4-6",
+            usage: Some((10, 5)),
+            tools: vec![],
+        };
+        let main = dir.join("proj").join("sess-A.jsonl");
+        let sub1 = dir.join("proj").join("sess-A").join("subagents").join("agent-1.jsonl");
+        let sub2 = dir.join("proj").join("sess-A").join("subagents").join("agent-2.jsonl");
+        let other = dir.join("proj").join("sess-B.jsonl");
+        write_lines(&main, &[mk("sess-A", "m1"), mk("sess-A", "m2")]);
+        write_lines(&sub1, &[mk("sess-A", "s1")]);
+        write_lines(&sub2, &[mk("sess-A", "s2")]);
+        write_lines(&other, &[mk("sess-B", "o1")]);
+
+        let merged = [&main, &sub1, &sub2, &other]
+            .iter()
+            .map(|p| scan_file_daily_usage(p, far_cutoff(), None))
+            .fold(std::collections::BTreeMap::new(), merge_daily_usage_maps);
+        let bucket = &merged["2026-10-10"];
+        assert_eq!(bucket.session_ids.len(), 2, "sess-A가 파일 수만큼 중복 집계됐습니다");
+        assert_eq!(bucket.input_tokens, 50);
+
+        // 병합 순서(rayon reduce 트리 모양)에 상관없이 같아야 한다.
+        let rev = [&other, &sub2, &sub1, &main]
+            .iter()
+            .map(|p| scan_file_daily_usage(p, far_cutoff(), None))
+            .fold(std::collections::BTreeMap::new(), merge_daily_usage_maps);
+        assert_eq!(rev["2026-10-10"].session_ids.len(), 2);
+
+        // 직렬화는 세션 ID가 아니라 개수만 내보낸다.
+        let json = serde_json::to_value(bucket).unwrap();
+        assert_eq!(json["sessionCount"], 2);
+        assert!(!json.to_string().contains("sess-A"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // sessionId 필드가 없는 줄은 경로로 대체한다: 본 세션은 파일명, 서브에이전트는
+    // subagents 상위 디렉터리명 — 실제 로그에서도 두 값이 줄의 sessionId와 일치한다.
+    #[test]
+    fn session_id_falls_back_to_path_when_field_missing() {
+        let dir = test_dir();
+        let day = d(2026, 10, 10);
+        let line = |id| L {
+            ts: ts_local(day, 10, 0),
+            session: None,
+            msg_id: id,
+            model: "claude-sonnet-4-6",
+            usage: Some((1, 1)),
+            tools: vec![],
+        };
+        let main = dir.join("proj").join("sess-A.jsonl");
+        let sub = dir.join("proj").join("sess-A").join("subagents").join("agent-9.jsonl");
+        write_lines(&main, &[line("a")]);
+        write_lines(&sub, &[line("b")]);
+        let merged = [&main, &sub]
+            .iter()
+            .map(|p| scan_file_daily_usage(p, far_cutoff(), None))
+            .fold(std::collections::BTreeMap::new(), merge_daily_usage_maps);
+        assert_eq!(merged["2026-10-10"].session_ids.len(), 1);
+        assert!(merged["2026-10-10"].session_ids.contains("sess-A"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 규칙 2: 같은 message.id가 여러 줄로 쪼개져도 각 줄의 tool_use를 센다.
+    // usage 없는 줄의 tool_use도 센다. 같은 tool_use.id는 1회, id 없는 블록은 각각.
+    // 토큰은 message.id당 한 번.
+    #[test]
+    fn counts_tool_use_across_split_lines_and_usage_less_lines() {
+        let dir = test_dir();
+        let day = d(2026, 10, 10);
+        let path = dir.join("p").join("s.jsonl");
+        let l = |usage, tools| L {
+            ts: ts_local(day, 11, 0),
+            session: Some("s"),
+            msg_id: "msg_split",
+            model: "claude-sonnet-4-6",
+            usage,
+            tools,
+        };
+        write_lines(
+            &path,
+            &[
+                l(Some((100, 0)), vec![(Some("t_a"), "Read")]),
+                l(Some((100, 0)), vec![(Some("t_b"), "Bash")]),
+                l(Some((100, 0)), vec![(Some("t_b"), "Bash"), (Some("t_c"), "Bash")]), // t_b 중복
+                l(None, vec![(Some("t_d"), "Grep")]),                                  // usage 없는 줄
+                l(Some((100, 0)), vec![(None, "Edit"), (None, "Edit")]),               // id 없음
+            ],
+        );
+        let buckets = scan_file_daily_usage(&path, far_cutoff(), None);
+        let b = &buckets["2026-10-10"];
+        assert_eq!(b.tool_calls, 6, "Read1 + Bash2 + Grep1 + Edit2");
+        assert_eq!(b.input_tokens, 100, "토큰은 message.id당 첫 줄만");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 규칙 2 보조: 오늘 줄을 건너뛰는 과거분 스캔(skip_date)에서도 tool_use.id는 소비되어,
+    // (과거분 + 오늘) 합이 전체 스캔과 같다. 또 오늘 줄은 과거분에 들어가지 않는다.
+    #[test]
+    fn skip_date_split_matches_full_scan() {
+        let dir = test_dir();
+        let (yday, today) = (d(2026, 10, 9), d(2026, 10, 10));
+        let path = dir.join("p").join("s.jsonl");
+        let mk = |ts: String, id, tools| L {
+            ts,
+            session: Some("s"),
+            msg_id: id,
+            model: "claude-sonnet-4-6",
+            usage: Some((10, 0)),
+            tools,
+        };
+        write_lines(
+            &path,
+            &[
+                mk(ts_local(yday, 23, 59), "m1", vec![(Some("t1"), "Read")]),
+                // 같은 message.id가 자정을 넘겨 오늘 줄로 이어진다(usage는 어제 첫 줄 몫).
+                mk(ts_local(today, 0, 1), "m1", vec![(Some("t2"), "Bash"), (Some("t1"), "Read")]),
+                mk(ts_local(today, 9, 0), "m2", vec![(Some("t3"), "Edit")]),
+            ],
+        );
+        let full = scan_file_daily_usage(&path, far_cutoff(), None);
+        let hist = scan_file_daily_usage(&path, far_cutoff(), Some("2026-10-10"));
+        assert!(!hist.contains_key("2026-10-10"));
+        let sum = |m: &std::collections::BTreeMap<String, DailyUsage>| {
+            m.values().fold((0u64, 0u64), |a, b| (a.0 + b.tool_calls, a.1 + b.input_tokens))
+        };
+        assert_eq!(sum(&full), (3, 20));
+        assert_eq!(full["2026-10-09"].tool_calls, 1);
+        assert_eq!(full["2026-10-10"].tool_calls, 2);
+        assert_eq!(hist["2026-10-09"].tool_calls, 1);
+        assert_eq!(hist["2026-10-09"].input_tokens, 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 규칙 1: 비용은 summary와 같은 단가 경로(5m/1h 분리), 미매칭 모델은 비용 0 +
+    // unpricedTokens에 토큰 전량. 손계산(sonnet-4-6: cache_write 5m 3.75, 1h 6.0 / 1M):
+    //   40_000*3.75/1e6 + 60_000*6.0/1e6 = 0.15 + 0.36 = 0.51
+    #[test]
+    fn cost_uses_cache_ttl_split_and_flags_unpriced_models() {
+        let dir = test_dir();
+        let day = d(2026, 10, 10);
+        let path = dir.join("p").join("s.jsonl");
+        let priced = serde_json::json!({
+            "type":"assistant","timestamp":ts_local(day, 9, 0),"sessionId":"s",
+            "message":{"id":"m1","model":"claude-sonnet-4-6","usage":{
+                "input_tokens":0,"output_tokens":0,
+                "cache_creation_input_tokens":100000,"cache_read_input_tokens":0,
+                "cache_creation":{"ephemeral_5m_input_tokens":40000,"ephemeral_1h_input_tokens":60000}}}
+        });
+        let unpriced = serde_json::json!({
+            "type":"assistant","timestamp":ts_local(day, 10, 0),"sessionId":"s",
+            "message":{"id":"m2","model":"some-unreleased-model","usage":{
+                "input_tokens":1000,"output_tokens":200,
+                "cache_creation_input_tokens":30,"cache_read_input_tokens":70}}
+        });
+        let other_day = serde_json::json!({
+            "type":"assistant","timestamp":ts_local(d(2026, 10, 9), 10, 0),"sessionId":"s",
+            "message":{"id":"m3","model":"claude-sonnet-4-6","usage":{
+                "input_tokens":10,"output_tokens":0,
+                "cache_creation_input_tokens":0,"cache_read_input_tokens":0}}
+        });
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{priced}\n{unpriced}\n{other_day}\n")).unwrap();
+        let buckets = scan_file_daily_usage(&path, far_cutoff(), None);
+        let b = &buckets["2026-10-10"];
+        assert!((b.cost_usd - 0.51).abs() < 1e-9, "비용: {}", b.cost_usd);
+        assert_eq!(b.unpriced_tokens, 1000 + 200 + 30 + 70);
+        // 토큰 합계는 미매칭 모델도 포함(기존 계약 유지).
+        assert_eq!(b.input_tokens, 1000);
+        assert_eq!(b.cache_creation_tokens, 100_030);
+        // 미매칭이 없는 날은 unpriced 0.
+        assert_eq!(buckets["2026-10-09"].unpriced_tokens, 0);
+        let json = serde_json::to_value(b).unwrap();
+        for key in ["costUsd", "unpricedTokens", "toolCalls", "sessionCount"] {
+            assert!(json.get(key).is_some_and(|v| v.is_number()), "{key} 누락");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 규칙 4 (RV-007): 일별 결과의 날짜는 오늘 포함 30개. 41일치 하루 3줄(00:30/12:00/23:30)을
+    // 넣고 창 경계(시작일 00:30 포함, 전날 23:30 제외)를 확인한다.
+    #[test]
+    fn window_yields_exactly_30_local_calendar_days() {
+        let dir = test_dir();
+        let today = d(2026, 10, 14);
+        let path = dir.join("p").join("s.jsonl");
+        let mut lines = Vec::new();
+        let mut n = 0;
+        let ids: Vec<String> = (0..41 * 3).map(|i| format!("m{i}")).collect();
+        for back in 0..=40 {
+            let date = today - chrono::Duration::days(back);
+            for (h, m) in [(0, 30), (12, 0), (23, 30)] {
+                lines.push(L {
+                    ts: ts_local(date, h, m),
+                    session: Some("s"),
+                    msg_id: &ids[n],
+                    model: "claude-sonnet-4-6",
+                    usage: Some((1, 0)),
+                    tools: vec![],
+                });
+                n += 1;
+            }
+        }
+        write_lines(&path, &lines);
+        let window = usage_window_for(today);
+        let buckets = scan_file_daily_usage(&path, window.start_dt, None);
+        assert_eq!(buckets.len() as i64, USAGE_LOOKBACK_DAYS, "날짜 수: {:?}", buckets.keys());
+        assert_eq!(buckets.keys().next().unwrap(), "2026-09-15"); // 오늘-29
+        assert_eq!(buckets.keys().last().unwrap(), "2026-10-14");
+        // 창 첫날은 00:30부터 3줄 전부, 그 전날 23:30은 제외.
+        assert_eq!(buckets["2026-09-15"].input_tokens, 3);
+        assert!(!buckets.contains_key("2026-09-14"));
+        assert_eq!(window.start_mtime, std::time::SystemTime::from(window.start_dt));
+
+        // 롤링 720h 컷오프(이전 방식)는 같은 데이터에서 31개 날짜를 만든다 — 회귀 근거.
+        let rolling = scan_file_daily_usage(
+            &path,
+            ts_local_dt(today, 12, 0) - chrono::Duration::days(USAGE_LOOKBACK_DAYS),
+            None,
+        );
+        assert_eq!(rolling.len() as i64, USAGE_LOOKBACK_DAYS + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn ts_local_dt(date: NaiveDate, h: u32, m: u32) -> DateTime<Utc> {
+        parse_iso_timestamp(&ts_local(date, h, m)).unwrap()
     }
 
     // 이 세션 자체가 지금 malgn-vscode 프로젝트에서 대량의 assistant 메시지를

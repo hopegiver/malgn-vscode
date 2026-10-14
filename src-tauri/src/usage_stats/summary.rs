@@ -315,11 +315,11 @@ pub(crate) fn aggregate_usage_summary() -> UsageSummaryReport {
         return report;
     }
 
-    let lookback = std::time::Duration::from_secs(USAGE_LOOKBACK_DAYS as u64 * 24 * 60 * 60);
-    let cutoff_mtime = std::time::SystemTime::now()
-        .checked_sub(lookback)
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    let cutoff_dt = Utc::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS);
+    // 일별 집계(`daily.rs`)와 같은 창(오늘 포함 로컬 달력일 30개)을 쓴다 — 롤링 720h를
+    // 쓰면 일별 결과가 날짜 31개에 걸쳐 합계가 어긋난다.
+    let window = daily::current_usage_window();
+    let cutoff_mtime = window.start_mtime;
+    let cutoff_dt = window.start_dt;
 
     let mut files = Vec::new();
     daily::find_recent_jsonl_files(&projects_dir, cutoff_mtime, &mut files);
@@ -441,11 +441,11 @@ pub(crate) fn aggregate_project_daily_trend(project_key: &str) -> Vec<daily::Dai
         return Vec::new();
     };
 
-    let lookback = std::time::Duration::from_secs(USAGE_LOOKBACK_DAYS as u64 * 24 * 60 * 60);
-    let cutoff_mtime = std::time::SystemTime::now()
-        .checked_sub(lookback)
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    let cutoff_dt = Utc::now() - chrono::Duration::days(USAGE_LOOKBACK_DAYS);
+    // 일별 집계(`daily.rs`)와 같은 창(오늘 포함 로컬 달력일 30개)을 쓴다 — 롤링 720h를
+    // 쓰면 일별 결과가 날짜 31개에 걸쳐 합계가 어긋난다.
+    let window = daily::current_usage_window();
+    let cutoff_mtime = window.start_mtime;
+    let cutoff_dt = window.start_dt;
 
     let mut files = Vec::new();
     daily::find_recent_jsonl_files(&project_dir, cutoff_mtime, &mut files);
@@ -852,6 +852,88 @@ mod tests {
         }
     }
 
+    // 규칙 1·2: 같은 기간이면 일별(`daily::scan_file_daily_usage`) 합 = 요약
+    // (`scan_file_for_summary`) 합 — 토큰·비용·미산정 토큰·도구 호출 총계. 쪼개진
+    // message.id, usage 없는 tool_use 줄, 자정을 넘는 쪼개짐, 미매칭 모델, 서브에이전트
+    // 파일을 한 fixture에 섞어 두 집계 경로를 같은 파일들에 돌린다.
+    #[test]
+    fn daily_sums_match_summary_sums_on_same_files() {
+        use super::daily::tests::{test_dir, ts_local, write_lines, L};
+        let dir = test_dir();
+        let (d1, d2) = (
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 9).unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(),
+        );
+        let main = dir.join("proj").join("sess-A.jsonl");
+        let sub = dir.join("proj").join("sess-A").join("subagents").join("agent-1.jsonl");
+        let other = dir.join("proj2").join("sess-B.jsonl");
+        let l = |ts: String, sid, id, model, usage, tools| L {
+            ts,
+            session: Some(sid),
+            msg_id: id,
+            model,
+            usage,
+            tools,
+        };
+        write_lines(
+            &main,
+            &[
+                l(ts_local(d1, 23, 59), "sess-A", "m1", "claude-opus-4-8", Some((100_000, 50_000)), vec![(Some("t1"), "Read")]),
+                // 같은 message.id가 자정을 넘어 이어진다.
+                l(ts_local(d2, 0, 1), "sess-A", "m1", "claude-opus-4-8", Some((100_000, 50_000)), vec![(Some("t2"), "Bash"), (Some("t1"), "Read")]),
+                l(ts_local(d2, 9, 0), "sess-A", "m2", "claude-sonnet-4-6", None, vec![(Some("t3"), "Grep")]),
+                l(ts_local(d2, 9, 5), "sess-A", "m3", "claude-sonnet-4-6", Some((200_000, 80_000)), vec![(None, "Edit"), (None, "Edit")]),
+            ],
+        );
+        write_lines(
+            &sub,
+            &[l(ts_local(d2, 10, 0), "sess-A", "s1", "claude-haiku-4-5", Some((3000, 4000)), vec![(Some("t4"), "Read")])],
+        );
+        write_lines(
+            &other,
+            &[
+                l(ts_local(d1, 8, 0), "sess-B", "o1", "some-unreleased-model", Some((1_000_000, 0)), vec![]),
+                l(ts_local(d2, 8, 0), "sess-B", "o2", "claude-sonnet-4-6", Some((10, 10)), vec![(Some("t5"), "Read")]),
+            ],
+        );
+
+        let window = daily::usage_window_for(chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap());
+        let files = [main, sub, other];
+        let daily_merged = files
+            .iter()
+            .map(|f| daily::scan_file_daily_usage(f, window.start_dt, None))
+            .fold(BTreeMap::new(), daily::merge_daily_usage_maps);
+        let summary = files
+            .iter()
+            .map(|f| scan_file_for_summary(f, "p", window.start_dt))
+            .fold(PartialSummary::default(), merge_partial);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let tokens = |f: fn(&daily::DailyUsage) -> u64| daily_merged.values().map(f).sum::<u64>();
+        assert_eq!(tokens(|d| d.input_tokens), summary.input_tokens);
+        assert_eq!(tokens(|d| d.output_tokens), summary.output_tokens);
+        assert_eq!(tokens(|d| d.cache_creation_tokens), summary.cache_creation_tokens);
+        assert_eq!(tokens(|d| d.cache_read_tokens), summary.cache_read_tokens);
+        assert_eq!(tokens(|d| d.unpriced_tokens), summary.unpriced_tokens);
+        assert_eq!(summary.unpriced_tokens, 1_000_000);
+        let daily_cost: f64 = daily_merged.values().map(|d| d.cost_usd).sum();
+        assert!(
+            (daily_cost - summary.cost_usd).abs() < 1e-9,
+            "일별 비용 합 {daily_cost} != 요약 {}",
+            summary.cost_usd
+        );
+        assert!(daily_cost > 0.0);
+        let summary_tools: u64 = summary.tool_counts.values().map(|c| *c as u64).sum();
+        assert_eq!(tokens(|d| d.tool_calls), summary_tools);
+        // Read(t1,t4,t5) 3 + Bash 1 + Grep 1 + Edit 2 = 7
+        assert_eq!(summary_tools, 7);
+        // 미매칭 모델만 있는 날(d1)에 unpriced가 표시된다.
+        assert_eq!(daily_merged["2026-10-09"].unpriced_tokens, 1_000_000);
+        assert_eq!(daily_merged["2026-10-10"].unpriced_tokens, 0);
+        // 세션: d2에는 sess-A(본+서브)와 sess-B 두 개.
+        assert_eq!(daily_merged["2026-10-10"].session_ids.len(), 2);
+    }
+
     // 실제 로컬 데이터로 30일 전체 요약 합계가 `daily::aggregate_daily_usage()`의
     // 30일 합계와 정확히 일치하는지 확인한다(요구사항: "새 요약의 30일 토큰 합
     // = 기존 get_daily_usage 30일 합"). 머신 의존(실제 대화 로그 필요) — CI
@@ -880,5 +962,52 @@ mod tests {
             "요약 30일 합계({})가 get_daily_usage 30일 합계({})와 다릅니다",
             summary.total_tokens, daily_total
         );
+    }
+
+    // 실제 로컬 데이터 대조(수치만 출력 — 로그 원문은 다루지 않는다): 일별 날짜 수 ≤ 30,
+    // 일별 비용·도구·토큰·미산정 합 = 요약 합. 머신 의존이라 #[ignore]. 활성 세션이
+    // 스캔 사이에 로그를 쓰면 미세하게 어긋날 수 있다.
+    // 로컬 실행: cargo test -- --ignored --nocapture usage_stats::summary::tests::real_data_daily_matches_summary
+    #[test]
+    #[ignore]
+    fn real_data_daily_matches_summary() {
+        use rayon::prelude::*;
+        let home = dirs::home_dir().unwrap();
+        let projects_dir = home.join(".claude").join("projects");
+        let window = daily::current_usage_window();
+        let mut files = Vec::new();
+        daily::find_recent_jsonl_files(&projects_dir, window.start_mtime, &mut files);
+        let partial = files
+            .par_iter()
+            .map(|f| scan_file_for_summary(f, "p", window.start_dt))
+            .reduce(PartialSummary::default, merge_partial);
+        let summary = aggregate_usage_summary();
+        let daily_all = daily::aggregate_daily_usage();
+
+        let cost: f64 = daily_all.iter().map(|d| d.cost_usd).sum();
+        let tools: u64 = daily_all.iter().map(|d| d.tool_calls).sum();
+        let unpriced: u64 = daily_all.iter().map(|d| d.unpriced_tokens).sum();
+        let tokens: u64 = daily_all
+            .iter()
+            .map(|d| d.input_tokens + d.output_tokens + d.cache_creation_tokens + d.cache_read_tokens)
+            .sum();
+        let partial_tools: u64 = partial.tool_counts.values().map(|c| *c as u64).sum();
+        let max_sessions = daily_all.iter().map(|d| d.session_ids.len()).max().unwrap_or(0);
+        println!(
+            "dates={} first={:?} last={:?}",
+            daily_all.len(),
+            daily_all.first().map(|d| d.date.clone()),
+            daily_all.last().map(|d| d.date.clone())
+        );
+        println!("daily cost={cost:.6} summary cost={:.6}", summary.total_cost_usd);
+        println!("daily tools={tools} summary tools={partial_tools}");
+        println!("daily tokens={tokens} summary tokens={}", summary.total_tokens);
+        println!("daily unpriced={unpriced} summary unpriced={}", summary.unpriced_tokens);
+        println!("max sessions/day={max_sessions}");
+        assert!(daily_all.len() as i64 <= USAGE_LOOKBACK_DAYS);
+        assert!((cost - summary.total_cost_usd).abs() < 1e-6 * summary.total_cost_usd.max(1.0));
+        assert_eq!(tools, partial_tools);
+        assert_eq!(tokens, summary.total_tokens);
+        assert_eq!(unpriced, summary.unpriced_tokens);
     }
 }

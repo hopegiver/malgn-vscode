@@ -2,7 +2,10 @@
 //
 // 원칙(바꾸기 전에 읽을 것):
 //   1. 입력은 fetchDailyUsage()가 이미 돌려주는 최근 30일 DailyUsage[]뿐이다. 새
-//      수집·새 로그 파싱·비용 계산을 하지 않는다(비용·세션 수·툴 호출은 범위 밖).
+//      수집·새 로그 파싱·단가 계산을 하지 않는다. 비용·세션 수·도구 호출은 백엔드가 날짜별로
+//      이미 집계해 준 값(costUsd/unpricedTokens/sessionCount/toolCalls)을 합산·비교만 한다.
+//      비용은 단가표에 있는 모델분만이라 unpricedTokens>0이면 과소 값이다(숨기지 않고 그대로
+//      노출한다). 이상치 판정 대상은 토큰뿐이다.
 //   2. 계산된 수치만 낸다. 원인을 추정하지 않는다("~때문" 금지) — 이 코드는 원인을 모른다.
 //   3. 경계(0 나누기·그 전 7일 0·데이터 부족)는 NaN/Infinity 대신 null + 사유 상태로 낸다.
 //      반환값의 모든 number는 유한수(finite)다.
@@ -49,6 +52,10 @@ export interface TrendDayInput {
   readonly outputTokens: number;
   readonly cacheCreationTokens: number;
   readonly cacheReadTokens: number;
+  readonly costUsd: number; // 단가표에 있는 모델분만(추정). unpricedTokens>0이면 과소
+  readonly unpricedTokens: number; // 단가 미매칭 모델 토큰(비용 미산정분)
+  readonly toolCalls: number;
+  readonly sessionCount: number; // 그날 고유 세션 수
 }
 
 export interface TrendDeps {
@@ -66,6 +73,17 @@ export interface SeriesPoint {
   readonly cacheCreation: number;
   readonly cacheRead: number;
   readonly total: number;
+  readonly costUsd: number; // 추정 비용. unpricedTokens>0이면 과소
+  readonly unpricedTokens: number;
+  readonly toolCalls: number;
+  readonly sessionCount: number;
+}
+
+// 일별 추이 차트가 고를 수 있는 지표. 이상치 판정은 항상 tokens 기준이다.
+export type TrendMetric = 'tokens' | 'cost' | 'sessions' | 'toolCalls';
+
+export function metricValue(p: SeriesPoint, m: TrendMetric): number {
+  return m === 'tokens' ? p.total : m === 'cost' ? p.costUsd : m === 'sessions' ? p.sessionCount : p.toolCalls;
 }
 
 export interface WeekMetrics {
@@ -74,6 +92,11 @@ export interface WeekMetrics {
   readonly totalTokens: number;
   readonly activeDays: number;
   readonly cacheHitRate: number | null; // 정수(%), 분모 0이면 null
+  readonly costUsd: number; // 창 안 날짜별 추정 비용의 합 — unpricedTokens>0이면 과소
+  readonly unpricedTokens: number; // 창 안 비용 미산정 토큰 합
+  readonly toolCalls: number;
+  // 날짜별 고유 세션 수의 합 — 날짜를 걸친 세션은 걸친 날마다 센다(창 단위 고유 세션 수가 아니다).
+  readonly sessionCount: number;
 }
 
 export interface WeekDelta {
@@ -81,6 +104,15 @@ export interface WeekDelta {
   readonly tokensPct: number | null; // 그 전 7일 토큰이 0이면 null(0 나누기 방지), 소수 1자리
   readonly activeDaysAbs: number;
   readonly cacheHitPointDiff: number | null; // 퍼센트포인트(%p) 차, 어느 한쪽이 null이면 null
+  readonly costAbs: number; // 최근 완료 7일 - 그 전 7일 (센트 단위 반올림)
+  readonly costPct: number | null; // 그 전 7일 비용이 0이면 null, 소수 1자리
+  // 어느 한쪽 창이라도 unpricedTokens>0이면 true — 두 창의 비용 모두 "단가표 모델분"이라
+  // 미산정 비중이 다르면 증감이 실제와 다를 수 있다. 화면이 "참고용"으로 표기한다.
+  readonly costPartial: boolean;
+  readonly sessionsAbs: number;
+  readonly sessionsPct: number | null;
+  readonly toolCallsAbs: number;
+  readonly toolCallsPct: number | null;
 }
 
 // 경과일은 "어제까지 끝난 날"만 센다(오늘은 하루가 끝나지 않아 제외).
@@ -92,6 +124,10 @@ export type WeeklyStatus = 'insufficient' | 'no-baseline' | 'ok';
 export interface TodayPartial {
   readonly date: string;
   readonly totalTokens: number; // 아직 끝나지 않은 오늘의 누적 — 주간 비교 창에 넣지 않는다
+  readonly costUsd: number;
+  readonly unpricedTokens: number;
+  readonly toolCalls: number;
+  readonly sessionCount: number;
 }
 
 export interface WeeklySummary {
@@ -183,24 +219,50 @@ export function buildDailySeries(items: readonly TrendDayInput[], today: string,
   const n = TREND_THRESHOLDS.windowDays;
   const first = addDays(today, -(n - 1));
   if (first === null) return [];
-  const byDate = new Map<string, { input: number; output: number; cacheCreation: number; cacheRead: number }>();
+  const emptyDay = () => ({ input: 0, output: 0, cacheCreation: 0, cacheRead: 0, cost: 0, unpriced: 0, tools: 0, sessions: 0 });
+  const byDate = new Map<string, ReturnType<typeof emptyDay>>();
   for (const d of items) {
     if (parseDateKey(d.date) === null) continue;
-    const acc = byDate.get(d.date) ?? { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+    const acc = byDate.get(d.date) ?? emptyDay();
     acc.input += finiteOrZero(d.inputTokens);
     acc.output += finiteOrZero(d.outputTokens);
     acc.cacheCreation += finiteOrZero(d.cacheCreationTokens);
     acc.cacheRead += finiteOrZero(d.cacheReadTokens);
+    acc.cost += finiteOrZero(d.costUsd);
+    acc.unpriced += finiteOrZero(d.unpricedTokens);
+    acc.tools += finiteOrZero(d.toolCalls);
+    acc.sessions += finiteOrZero(d.sessionCount);
     byDate.set(d.date, acc);
   }
   const series: SeriesPoint[] = [];
   for (let i = 0; i < n; i++) {
     const date = addDays(first, i) as string;
-    const v = byDate.get(date) ?? { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+    const v = byDate.get(date) ?? emptyDay();
     const total = finiteOrZero(
-      deps.dayTotal({ date, inputTokens: v.input, outputTokens: v.output, cacheCreationTokens: v.cacheCreation, cacheReadTokens: v.cacheRead })
+      deps.dayTotal({
+        date,
+        inputTokens: v.input,
+        outputTokens: v.output,
+        cacheCreationTokens: v.cacheCreation,
+        cacheReadTokens: v.cacheRead,
+        costUsd: v.cost,
+        unpricedTokens: v.unpriced,
+        toolCalls: v.tools,
+        sessionCount: v.sessions,
+      })
     );
-    series.push({ date, input: v.input, output: v.output, cacheCreation: v.cacheCreation, cacheRead: v.cacheRead, total });
+    series.push({
+      date,
+      input: v.input,
+      output: v.output,
+      cacheCreation: v.cacheCreation,
+      cacheRead: v.cacheRead,
+      total,
+      costUsd: round(v.cost, 4),
+      unpricedTokens: v.unpriced,
+      toolCalls: v.tools,
+      sessionCount: v.sessions,
+    });
   }
   return series;
 }
@@ -211,11 +273,19 @@ function weekMetrics(points: readonly SeriesPoint[], deps: TrendDeps): WeekMetri
   let creation = 0;
   let read = 0;
   let active = 0;
+  let cost = 0;
+  let unpriced = 0;
+  let tools = 0;
+  let sessions = 0;
   for (const p of points) {
     total += p.total;
     input += p.input;
     creation += p.cacheCreation;
     read += p.cacheRead;
+    cost += p.costUsd;
+    unpriced += p.unpricedTokens;
+    tools += p.toolCalls;
+    sessions += p.sessionCount;
     if (p.total > 0) active += 1;
   }
   return {
@@ -224,7 +294,16 @@ function weekMetrics(points: readonly SeriesPoint[], deps: TrendDeps): WeekMetri
     totalTokens: total,
     activeDays: active,
     cacheHitRate: deps.cacheHitRate(input, creation, read),
+    costUsd: round(cost, 4),
+    unpricedTokens: unpriced,
+    toolCalls: tools,
+    sessionCount: sessions,
   };
+}
+
+// 증감률(%) — 비교 기준(그 전 7일)이 0이면 0 나누기 대신 null. 소수 1자리.
+function pctChange(abs: number, base: number): number | null {
+  return base > 0 ? round((abs / base) * 100, 1) : null;
 }
 
 /**
@@ -238,7 +317,10 @@ function weekMetrics(points: readonly SeriesPoint[], deps: TrendDeps): WeekMetri
  */
 export function summarizeWeeks(series: readonly SeriesPoint[], deps: TrendDeps): WeeklySummary {
   const W = TREND_THRESHOLDS.weekDays;
-  const today: TodayPartial | null = series.length > 0 ? { date: series[series.length - 1].date, totalTokens: series[series.length - 1].total } : null;
+  const last = series.length > 0 ? series[series.length - 1] : null;
+  const today: TodayPartial | null = last
+    ? { date: last.date, totalTokens: last.total, costUsd: last.costUsd, unpricedTokens: last.unpricedTokens, toolCalls: last.toolCalls, sessionCount: last.sessionCount }
+    : null;
   const done = series.slice(0, Math.max(0, series.length - 1)); // 어제까지 끝난 날
   const firstActive = done.findIndex((p) => p.total > 0);
   const spanDays = firstActive < 0 ? 0 : done.length - firstActive;
@@ -251,11 +333,21 @@ export function summarizeWeeks(series: readonly SeriesPoint[], deps: TrendDeps):
   }
   const prev = weekMetrics(done.slice(done.length - W * 2, done.length - W), deps);
   const tokensAbs = cur.totalTokens - prev.totalTokens;
+  const costAbs = cur.costUsd - prev.costUsd;
+  const sessionsAbs = cur.sessionCount - prev.sessionCount;
+  const toolCallsAbs = cur.toolCalls - prev.toolCalls;
   const delta: WeekDelta = {
     tokensAbs,
-    tokensPct: prev.totalTokens > 0 ? round((tokensAbs / prev.totalTokens) * 100, 1) : null,
+    tokensPct: pctChange(tokensAbs, prev.totalTokens),
     activeDaysAbs: cur.activeDays - prev.activeDays,
     cacheHitPointDiff: cur.cacheHitRate !== null && prev.cacheHitRate !== null ? cur.cacheHitRate - prev.cacheHitRate : null,
+    costAbs: round(costAbs, 2),
+    costPct: pctChange(costAbs, prev.costUsd),
+    costPartial: cur.unpricedTokens > 0 || prev.unpricedTokens > 0,
+    sessionsAbs,
+    sessionsPct: pctChange(sessionsAbs, prev.sessionCount),
+    toolCallsAbs,
+    toolCallsPct: pctChange(toolCallsAbs, prev.toolCalls),
   };
   return { status: 'ok', spanDays, current: cur, previous: prev, delta, today };
 }
