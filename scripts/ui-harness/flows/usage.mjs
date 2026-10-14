@@ -19,11 +19,11 @@ export function scenarios(base) {
         await shot('01-daily');
         const statCount = await page.locator('.stat-row .stat').count();
         if (statCount !== 8) {
-          bugs.push({ severity: 'Major', symptom: `daily 탭 통계 타일이 8개(기존 4개+최고 사용일/캐시 절대량/입출력 비율/예상 비용)여야 하는데 ${statCount}개`, file: 'src/views/usage.ts:renderUsageStatCards' });
+          bugs.push({ severity: 'Major', symptom: `daily 탭 통계 타일이 8개(기존 4개+최고 사용일/캐시 절대량/입출력 비율/추정 비용)여야 하는데 ${statCount}개`, file: 'src/views/usage.ts:renderUsageStatCards' });
         }
         // frontend-dev 수정(1280/1180/900폭 값 줄바꿈 정돈, 2026-09-24) — daily
         // 탭 통계 타일을 "핵심 지표"(.stat-row)/"세부 지표"(.stat-row
-        // .stat-row-detail) 두 줄로 나눴다. "최고 사용일"/"예상 비용"은 세부
+        // .stat-row-detail) 두 줄로 나눴다. "최고 사용일"/"추정 비용"은 세부
         // 지표 줄에 있어 .first()만 보면 못 찾으므로, 두 .stat-row 텍스트를
         // 모두 합쳐 검사한다.
         const statText = await page
@@ -31,11 +31,20 @@ export function scenarios(base) {
           .allTextContents()
           .then((arr) => arr.join(' '))
           .catch(() => null);
-        if (!statText || !statText.includes('최고 사용일') || !statText.includes('예상 비용')) {
-          bugs.push({ severity: 'Major', symptom: `daily 탭 통계 타일에 "최고 사용일"/"예상 비용" 라벨이 보이지 않음(실제: ${statText})`, file: 'src/views/usage.ts:renderUsageStatCards' });
+        if (!statText || !statText.includes('최고 사용일') || !statText.includes('추정 비용')) {
+          bugs.push({ severity: 'Major', symptom: `daily 탭 통계 타일에 "최고 사용일"/"추정 비용" 라벨이 보이지 않음(실제: ${statText})`, file: 'src/views/usage.ts:renderUsageStatCards' });
         }
         if (!statText || !statText.includes('$')) {
-          bugs.push({ severity: 'Major', symptom: '예상 비용 타일에 "$" 표기가 없음(usageSummary.totalCostUsd 미반영 의심)', file: 'src/views/usage.ts:costStat' });
+          bugs.push({ severity: 'Major', symptom: '추정 비용 타일에 "$" 표기가 없음(usageSummary.totalCostUsd 미반영 의심)', file: 'src/views/usage.ts:costStat' });
+        }
+        // 요약 리포트에 단가 미산정 토큰(픽스처 300K)이 있으면 카드도 주간 표·차트와 같은 "≥"로 과소 표기를 드러낸다.
+        const costTile = await page.locator('.stat-row .stat').filter({ hasText: '최근 30일 추정 비용' }).first().innerText().catch(() => '');
+        if (!costTile.includes('≥$128.42')) {
+          bugs.push({ severity: 'Major', symptom: `미산정 토큰이 있는데 "최근 30일 추정 비용" 카드 값이 ≥$128.42가 아님(실제: ${costTile.replace(/\n/g, ' | ')})`, file: 'src/views/usage.ts:costStat' });
+        }
+        const dailyBoxTitle = await page.locator('main').textContent().catch(() => '');
+        if (!dailyBoxTitle || !dailyBoxTitle.includes('일별 사용량 (최근 30일)')) {
+          bugs.push({ severity: 'Minor', symptom: '일별 목록 박스 제목이 "일별 사용량 (최근 30일)"이 아님', file: 'src/views/usage.ts:renderDailyUsageSection' });
         }
 
         // ---- 서브뷰 이동: daily -> projects ----

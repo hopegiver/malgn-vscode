@@ -135,11 +135,15 @@ async function checkWeeklyNewMetrics(page, t, e, bugs, { partial }) {
   const rows = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => r.innerText.replace(/\n/g, ' | ')));
   const row = (label) => rows.find((r) => r.startsWith(label)) ?? '';
   const costRow = row('추정 비용');
-  const sessRow = row('세션 수');
+  const sessRow = row('세션 수(일별 합)');
   const toolRow = row('도구 호출');
   if (!costRow || !sessRow || !toolRow) {
     bugs.push({ severity: 'Critical', symptom: `주간 표에 추정 비용/세션 수/도구 호출 행이 없음: ${JSON.stringify(rows.map((r) => r.slice(0, 12)))}`, file: 'src/views/usage.ts:renderWeeklySummary' });
     return;
+  }
+  // 세션 수는 날짜별 고유 세션 수의 합이라 표 라벨 자체가 "(일별 합)"임을 드러낸다 — 각주에만 의존하지 않는다.
+  if (!rows.some((r) => r.startsWith('세션 수(일별 합) |'))) {
+    bugs.push({ severity: 'Major', symptom: `주간 표 세션 행 라벨이 "세션 수(일별 합)"가 아님: ${JSON.stringify(rows.map((r) => r.slice(0, 12)))}`, file: 'src/views/usage.ts:renderWeeklySummary' });
   }
   const mark = partial ? '≥' : '';
   const costAbs = Math.round((e.curCost - e.prevCost) * 100) / 100;
@@ -363,7 +367,7 @@ export function scenarios(base) {
         const rows = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => [...r.children].map((c) => c.innerText.replace(/\n/g, ' '))));
         for (const [label, wantCur] of [
           ['추정 비용', usd(cur.reduce((a, r) => a + r.costUsd, 0))],
-          ['세션 수', `${cnt(cur.reduce((a, r) => a + r.sessionCount, 0))}개`],
+          ['세션 수(일별 합)', `${cnt(cur.reduce((a, r) => a + r.sessionCount, 0))}개`],
           ['도구 호출', `${cnt(cur.reduce((a, r) => a + r.toolCalls, 0))}회`],
         ]) {
           const r = rows.find((c) => c[0] === label);
@@ -415,7 +419,7 @@ export function scenarios(base) {
         const note = (await text(page, '[data-trend-cost-partial]')) ?? '';
         if (!note.includes('실제보다 작게') || !note.includes('최근 완료 7일 120.0K') || !note.includes('그 전 7일 120.0K')) bugs.push({ severity: 'Major', symptom: `과소 안내(창별 미산정 토큰 수 포함)가 없음: ${note}`, file: 'src/views/usage.ts' });
         // 토큰·세션·도구 호출 칸은 영향받지 않는다(≥가 붙지 않는다).
-        const sessRow = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => r.innerText).find((x) => x.startsWith('세션 수')) ?? '');
+        const sessRow = await page.locator('.trend-week-row').evaluateAll((els) => els.map((r) => r.innerText).find((x) => x.startsWith('세션 수(일별 합)')) ?? '');
         if (sessRow.includes('≥')) bugs.push({ severity: 'Major', symptom: '세션 수 행에 ≥가 붙음', file: 'src/views/usage.ts' });
         await checkMetricSwitch(page, items, bugs, { partialDays: 3, onCost: () => tallShot(page, shot, '02-trend-unpriced-cost-chart') });
         // 일별 목록: 미산정 있는 3일만 "≥", title에 제외 토큰 수.

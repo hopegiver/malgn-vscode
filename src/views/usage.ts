@@ -424,18 +424,19 @@ function renderDailyUsageSection(): HTMLElement {
     }
   }
 
-  return el('div', { className: 'box' }, [boxHead('토큰 사용량 (최근 30일)'), el('div', { className: 'box-body' }, [body])]);
+  return el('div', { className: 'box' }, [boxHead('일별 사용량 (최근 30일)'), el('div', { className: 'box-body' }, [body])]);
 }
 
-// 최근 30일 예상 비용 타일 — usageApi.ts가 아니라 별도 로딩 사이클인
+// 최근 30일 추정 비용 타일 — usageApi.ts가 아니라 별도 로딩 사이클인
 // state.usageSummary에서 값을 가져오므로(30일 요약, jsonl 1회 스캔) 다른
-// 타일과 로딩/에러 상태가 독립적이다. 라벨의 "예상"이 비용이 실측이 아니라
-// 단가표 기반 추정임을 드러낸다(정직성 원칙).
+// 타일과 로딩/에러 상태가 독립적이다. 라벨의 "추정"이 비용이 실측이 아니라
+// 단가표 기반 추정임을 드러내고, 단가 미산정 토큰이 있으면 주간 표·차트·일별
+// 목록과 같은 fmtCost로 "≥"를 붙여 과소 표기임을 드러낸다(정직성 원칙).
 function costStat(): UsageStat {
   const s = state.usageSummary;
-  if (s.loading && !s.loaded) return { label: '최근 30일 예상 비용', value: '계산 중…' };
-  if (s.error || !s.report) return { label: '최근 30일 예상 비용', value: '—' };
-  return { label: '최근 30일 예상 비용', value: formatUsd(s.report.totalCostUsd) };
+  if (s.loading && !s.loaded) return { label: '최근 30일 추정 비용', value: '계산 중…' };
+  if (s.error || !s.report) return { label: '최근 30일 추정 비용', value: '—' };
+  return { label: '최근 30일 추정 비용', value: fmtCost(s.report.totalCostUsd, s.report.unpricedTokens) };
 }
 
 function renderUsageStatCards(): HTMLElement {
@@ -639,7 +640,7 @@ function renderWeeklySummary(trend: UsageTrend): HTMLElement {
       d ? trendDeltaCell(signed(d.costAbs, formatUsd), pctSub(d.costPct), ...(d.costPartial ? ['미산정 포함 — 증감은 참고용'] : [])) : trendDeltaCell('—'),
     ]),
     trendRow([
-      '세션 수',
+      '세션 수(일별 합)',
       `${fmtCount(cur.sessionCount)}개`,
       prev ? `${fmtCount(prev.sessionCount)}개` : '—',
       d ? trendDeltaCell(signed(d.sessionsAbs, (v) => `${fmtCount(v)}개`), pctSub(d.sessionsPct)) : trendDeltaCell('—'),
