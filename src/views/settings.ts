@@ -3,7 +3,8 @@ import { errorMessage, errorMessagePersistent, sanitizeBackendText } from '../er
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
-import type { OtelSettings } from '../otelApi';
+import type { OtelSettings, IngestKeyChange } from '../otelApi';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID, renderInstallFallbackNote } from './catalog';
 import { successToastWithFallbackNote } from '../installFallbackNote';
 import { renderAppLinksPanel } from './appLinks';
@@ -77,7 +78,7 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
 }
 
 // ---------------- OTel 설정 (실제 저장) ----------------
-// ~/.claude/settings.json의 관리대상(allowlist) 14키를 otel_settings_get()으로
+// ~/.claude/settings.json의 관리대상(allowlist) 15키를 otel_settings_get()으로
 // 읽고 otel_settings_save()로 실제 파일에 기록한다. 화면 진입만으로는 절대
 // 저장을 호출하지 않는다(저장 버튼을 눌렀을 때만).
 //
@@ -91,6 +92,11 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
 // ensureOtelAutoConfigured()가 미설정 시 "0" 기본값을 채우는 것은 예외).
 // OTEL_RESOURCE_ATTRIBUTES는 employee.* 조립이 전적으로 Rust 책임이라(§8)
 // 편집 불가한 읽기 전용 안내로만 보여준다.
+//
+// OTEL_EXPORTER_OTLP_HEADERS(허브 수집키)는 일반 필드로 그리지 않는다 — 원문이 프론트로
+// 오지 않으므로(상태+마스킹만) 별도 블록에서 "새 키 입력(password) / 삭제"만 제공한다.
+// 입력하지 않고 저장하면 기존 키는 그대로 유지된다(ingestKey 생략=keep).
+const INGEST_KEY_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
 
 export async function loadOtelEnv(): Promise<void> {
   state.otel.loading = true;
@@ -107,14 +113,17 @@ export async function loadOtelEnv(): Promise<void> {
   }
 }
 
-async function handleSaveOtelSettings(values: Record<string, string>): Promise<void> {
+async function handleSaveOtelSettings(values: Record<string, string>, ingestKey: IngestKeyChange): Promise<void> {
   state.otel.saving = true;
   notifyChange();
   try {
     // 비로그인이면 identity: null — 백엔드가 이 경우 OTEL_RESOURCE_ATTRIBUTES를
     // 손대지 않는다(기존 귀속 정보를 지우는 것이 가장 나쁜 결과라서).
     const identity = state.auth.userEmail ? { email: state.auth.userEmail, name: state.auth.userName } : null;
-    state.otel.settings = await saveOtelSettings({ values, identity });
+    state.otel.settings = await saveOtelSettings({ values, identity, ingestKey });
+    // 저장에 성공하면 입력해 둔 수집키 원문을 즉시 버린다(settings 참조가 안 바뀌어 드래프트
+    // 재초기화가 일어나지 않는 경우에도 원문이 메모리/입력칸에 남지 않게).
+    otelDraft.ingestKey = '';
     showToast('OTel 설정을 저장했습니다.');
   } catch (err) {
     showToast(`OTel 설정 저장에 실패했습니다: ${errorMessage(err)}`);
@@ -122,6 +131,37 @@ async function handleSaveOtelSettings(values: Record<string, string>): Promise<v
     state.otel.saving = false;
     notifyChange();
   }
+}
+
+// 수집키 삭제 — 다른 필드는 건드리지 않는다(values 비움, identity null → 백엔드는
+// ingestKey만 처리). 저장되지 않은 다른 입력 드래프트는 응답 후에도 유지한다.
+async function handleClearIngestKey(): Promise<void> {
+  const ok = await confirmDialog(
+    '이 PC에 저장된 허브 수집키를 삭제할까요? 삭제하면 이 PC의 사용량이 허브에 수집되지 않습니다(다른 OTel 설정은 그대로입니다).',
+    { title: '수집키 삭제', confirmLabel: '삭제', danger: true }
+  );
+  if (!ok) return;
+  state.otel.saving = true;
+  notifyChange();
+  try {
+    const result = await saveOtelSettings({ values: {}, identity: null, ingestKey: { action: 'clear' } });
+    // 새 settings 객체로 바뀌면 드래프트가 초기화되므로, 아직 저장 안 된 다른 필드
+    // 입력은 보존하고 수집키 입력칸만 비운다.
+    otelDraft = { forSettings: result, values: otelDraft.values, ingestKey: '' };
+    state.otel.settings = result;
+    showToast('허브 수집키를 삭제했습니다.');
+  } catch (err) {
+    showToast(`수집키를 삭제하지 못했습니다: ${errorMessage(err)}`);
+  } finally {
+    state.otel.saving = false;
+    notifyChange();
+  }
+}
+
+function handleOpenIngestKeyIssuePage(url: string): void {
+  void openUrl(url).catch(() => {
+    showToast('브라우저를 여는 데 실패했습니다. 허브의 "인증키 관리" 화면을 직접 열어주세요.');
+  });
 }
 
 // ---------------- OTel 자동 세팅 (설정이 한 번도 없었을 때만, 세션당 1회) ----------------
@@ -151,7 +191,7 @@ export async function ensureOtelAutoConfigured(): Promise<void> {
 
   const values: Record<string, string> = {};
   for (const key of settings.managedKeys) {
-    if (key === 'OTEL_RESOURCE_ATTRIBUTES') continue;
+    if (key === 'OTEL_RESOURCE_ATTRIBUTES' || key === INGEST_KEY_ENV) continue;
     if (settings.readOnlyKeys.includes(key)) {
       // 프라이버시 4키는 아직 한 번도 설정되지 않았을 때만(=파일에 키 자체가
       // 없을 때만) 기본값(0)을 채운다. 이미 값이 있으면(예: 수동 편집으로 1)
@@ -192,7 +232,11 @@ export async function ensureOtelAutoConfigured(): Promise<void> {
 // 객체로 교체될 때만) 드래프트를 다시 채운다. 배경 이벤트로 인한 재렌더는
 // state.otel.settings 참조를 바꾸지 않으므로 드래프트가 그대로 남아 입력값이
 // 보존된다.
-let otelDraft: { forSettings: OtelSettings | null; values: Record<string, string> } = { forSettings: null, values: {} };
+let otelDraft: { forSettings: OtelSettings | null; values: Record<string, string>; ingestKey: string } = {
+  forSettings: null,
+  values: {},
+  ingestKey: '',
+};
 
 function renderOtelPanel(): HTMLElement {
   if (state.otel.loading && !state.otel.loaded) {
@@ -229,18 +273,19 @@ function renderOtelPanel(): HTMLElement {
   if (otelDraft.forSettings !== settings) {
     const values: Record<string, string> = {};
     for (const key of settings.managedKeys) {
-      if (key === 'OTEL_RESOURCE_ATTRIBUTES') continue;
+      if (key === 'OTEL_RESOURCE_ATTRIBUTES' || key === INGEST_KEY_ENV) continue;
       const hasValue = key in settings.values;
       const hasDefault = key in settings.defaults;
       values[key] = hasValue ? settings.values[key] : hasDefault ? settings.defaults[key] : '';
     }
-    otelDraft = { forSettings: settings, values };
+    otelDraft = { forSettings: settings, values, ingestKey: '' };
   }
 
   const inputs = new Map<string, HTMLInputElement>();
   const fields: HTMLElement[] = [];
 
   for (const key of settings.managedKeys) {
+    if (key === INGEST_KEY_ENV) continue; // 별도 블록(renderIngestKeyBlock)이 그린다.
     if (key === 'OTEL_RESOURCE_ATTRIBUTES') {
       const hasValue = key in settings.values;
       const currentValue = hasValue ? settings.values[key] : key in settings.defaults ? settings.defaults[key] : '(없음)';
@@ -300,6 +345,7 @@ function renderOtelPanel(): HTMLElement {
     el('div', { className: 'settings-form-hint' }, [
       '~/.claude/settings.json의 관리대상 OTel 키를 실제로 읽고 저장합니다. 저장 시 파일 형식이 정규화됩니다(키가 알파벳순으로 재정렬되고, 저장 직전 원본이 settings.json.malgn-bak으로 백업됩니다).',
     ]),
+    renderIngestKeyBlock(settings),
     ...fields,
   ]);
 
@@ -310,7 +356,11 @@ function renderOtelPanel(): HTMLElement {
       if (settings.readOnlyKeys.includes(key)) continue;
       values[key] = input.value;
     }
-    void handleSaveOtelSettings(values);
+    // 새 키를 입력했을 때만 set — 비워 두면 keep(기존 키 유지). 마스킹 표시값은 어디에도
+    // 입력 필드 값으로 쓰이지 않으므로 되돌려 보낼 일이 없다.
+    const typed = otelDraft.ingestKey;
+    const ingestKey: IngestKeyChange = typed.trim() === '' ? { action: 'keep' } : { action: 'set', key: typed };
+    void handleSaveOtelSettings(values, ingestKey);
   });
 
   const saveBtn = el('button', { className: 'btn btn-primary', disabled: state.otel.saving }, [state.otel.saving ? '저장 중…' : '저장']);
@@ -318,6 +368,92 @@ function renderOtelPanel(): HTMLElement {
   form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
 
   return el('div', { className: 'box' }, [boxHead('OTel 환경변수'), el('div', { className: 'box-body' }, [form])]);
+}
+
+// 허브 수집키 블록 — 상태(설정됨/미설정/형식 불명)와 마스킹만 보여준다. 입력칸은
+// password 타입이고 기존 키 값을 채우지 않는다(원문이 프론트에 없다).
+function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
+  const ing = settings.ingestKey;
+  const telemetryOn = settings.values['CLAUDE_CODE_ENABLE_TELEMETRY'] === '1';
+
+  let statusBadge: HTMLElement;
+  if (ing.state === 'set') {
+    statusBadge = el('span', { className: 'badge badge-active' }, ['설정됨']);
+  } else if (ing.state === 'unrecognized') {
+    statusBadge = el('span', { className: 'badge badge-unknown' }, ['형식 불명']);
+  } else {
+    statusBadge = el('span', { className: 'badge badge-unknown' }, ['미설정']);
+  }
+  const statusText =
+    ing.state === 'set' && ing.masked
+      ? withId(el('code', {}, [ing.masked]), 'otel-ingest-key-masked')
+      : ing.state === 'unrecognized'
+        ? el('span', { className: 'settings-form-hint' }, ['허브 수집키 형식(mhk_…)이 아닌 Authorization 값이 있습니다. 보안을 위해 값은 표시하지 않습니다.'])
+        : null;
+  const statusRow = withId(el('div', {}, [statusBadge, ...(statusText ? [' ', statusText] : [])]), 'otel-ingest-key-status');
+
+  const blocks: HTMLElement[] = [];
+  if (telemetryOn && ing.state === 'unset') {
+    blocks.push(
+      withId(el('div', { className: 'alert' }, [
+        el('span', {}, ['텔레메트리가 켜져 있지만 수집키가 없어 사용량이 허브에 수집되지 않습니다(허브가 인증 실패로 거부합니다). 아래에 수집키를 등록하세요.']),
+      ]), 'otel-ingest-key-warning')
+    );
+  } else if (telemetryOn && ing.state === 'unrecognized') {
+    blocks.push(
+      withId(el('div', { className: 'alert' }, [
+        el('span', {}, ['설정된 Authorization 값이 허브 수집키 형식이 아니라 허브가 거부할 수 있습니다. 새 수집키를 입력하고 저장하면 교체됩니다.']),
+      ]), 'otel-ingest-key-warning')
+    );
+  }
+
+  const input = boundField(
+    document.createElement('input'),
+    () => otelDraft.ingestKey,
+    (v) => {
+      otelDraft.ingestKey = v;
+    },
+    'input',
+    'otel-ingest-key'
+  );
+  input.id = 'otel-ingest-key';
+  // 원문이 화면에 남지 않게 password 타입 + 브라우저/비밀번호 관리자 자동완성 끔.
+  input.type = 'password';
+  input.className = 'settings-input';
+  input.autocomplete = 'new-password';
+  input.spellcheck = false;
+  input.placeholder = ing.state === 'set' ? '새 수집키 붙여넣기 (비워 두면 기존 키 유지)' : 'mhk_로 시작하는 수집키 붙여넣기';
+
+  const issueBtn = el('button', { className: 'btn btn-sm', onClick: () => handleOpenIngestKeyIssuePage(ing.issueUrl) }, ['허브에서 수집키 발급 ↗']);
+  issueBtn.type = 'button';
+  const actions: HTMLElement[] = [issueBtn];
+  if (ing.state !== 'unset') {
+    const clearBtn = el('button', { className: 'btn btn-sm', disabled: state.otel.saving, onClick: () => void handleClearIngestKey() }, ['수집키 삭제']);
+    clearBtn.type = 'button';
+    clearBtn.id = 'otel-ingest-key-clear';
+    actions.push(clearBtn);
+  }
+
+  const label = el('label', { className: 'settings-field-label' }, ['허브 수집키 (OTEL_EXPORTER_OTLP_HEADERS)']);
+  label.htmlFor = 'otel-ingest-key';
+  return withId(el('div', { className: 'settings-field' }, [
+    label,
+    statusRow,
+    ...blocks,
+    input,
+    el('div', { className: 'settings-form-hint' }, [
+      '허브 "인증키 관리" 화면에서 수집키를 발급받아 붙여넣고 저장하세요. 저장하면 settings.json에 Authorization=Bearer … 형태로 기록되며 값은 이 화면에 다시 표시되지 않습니다. 비워 두고 저장하면 기존 키를 그대로 둡니다.',
+    ]),
+    el('div', { className: 'settings-form-hint' }, [
+      '이 값은 Claude Code가 실행하는 명령에서 보일 수 있습니다. 대화·이슈·채팅에 붙여 넣지 마세요. 유출이 의심되면 허브에서 "즉시 폐기"를 누르세요.',
+    ]),
+    el('div', { className: 'settings-form-actions' }, actions),
+  ]), 'otel-ingest-key-block');
+}
+
+function withId<T extends HTMLElement>(node: T, id: string): T {
+  node.id = id;
+  return node;
 }
 
 // ---------------- GitHub 설정 (CLI 위임, 이 앱은 토큰을 취급하지 않는다) ----------------

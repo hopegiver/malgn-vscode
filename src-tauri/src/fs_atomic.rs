@@ -23,6 +23,20 @@ pub(crate) fn backup_path_for(path: &Path) -> PathBuf {
 
 /// 원자적 쓰기 — 같은 디렉터리에 임시 파일을 쓰고 `fs::rename`한다.
 pub(crate) fn write_atomically(path: &Path, content: &str) -> Result<(), String> {
+    write_atomically_inner(path, content, false)
+}
+
+/// 원자적 쓰기 + 소유자 전용 권한 — `write_atomically`와 같되, unix에서는 임시
+/// 파일을 처음부터 `0600`으로 만들어 그룹/기타 읽기를 막는다(자격증명이 든
+/// 파일용). 임시 파일이 umask 기본 권한(보통 0644)으로 잠깐이라도 존재하는
+/// 구간이 없도록 *생성 시점*에 모드를 지정하고, 같은 이름의 잔여 파일이 이미
+/// 있었던 경우를 대비해 내용을 쓰기 전에 `set_permissions`로 한 번 더 조인다.
+/// Windows 등 비-unix에서는 `write_atomically`와 동작이 같다(ACL 변경 없음).
+pub(crate) fn write_atomically_private(path: &Path, content: &str) -> Result<(), String> {
+    write_atomically_inner(path, content, true)
+}
+
+fn write_atomically_inner(path: &Path, content: &str, private: bool) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| "설정 파일의 상위 디렉터리를 확인할 수 없습니다.".to_string())?;
@@ -35,7 +49,39 @@ pub(crate) fn write_atomically(path: &Path, content: &str) -> Result<(), String>
         std::process::id()
     );
     let tmp_path = dir.join(tmp_name);
-    std::fs::write(&tmp_path, content).map_err(|e| format!("임시 파일을 쓰지 못했습니다: {e}"))?;
-    std::fs::rename(&tmp_path, path).map_err(|e| format!("설정 파일 교체에 실패했습니다: {e}"))?;
+    if private {
+        write_private_file(&tmp_path, content)
+            .map_err(|e| format!("임시 파일을 쓰지 못했습니다: {e}"))?;
+    } else {
+        std::fs::write(&tmp_path, content)
+            .map_err(|e| format!("임시 파일을 쓰지 못했습니다: {e}"))?;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        if private {
+            // 자격증명이 든 임시 파일이 남지 않게 치운다(실패해도 원 오류가 우선).
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+        return Err(format!("설정 파일 교체에 실패했습니다: {e}"));
+    }
     Ok(())
+}
+
+#[cfg(unix)]
+fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    // 같은 이름의 잔여 파일이 더 넓은 권한으로 이미 있었다면 `mode()`는 무시된다.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(content.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
+    std::fs::write(path, content)
 }

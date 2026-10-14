@@ -15,6 +15,7 @@ mod google_oauth;
 mod hub_auth;
 mod loopback_oauth;
 mod mcp_manager;
+mod otel_ingest_key;
 mod otel_settings;
 mod plugins;
 mod process_util;
