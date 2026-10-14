@@ -137,3 +137,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
   — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
   — 이번 라운드 집중: 이월 이슈를 stdout 상한 사본이 아닌 공용 run_streaming_bounded 수렴으로 잡을 것 권고.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 붙여넣기 UI 대신 이미 연결된 기기 토큰으로 수집키 자동 발급(RT-1), 15키 폼 전체 저장에 묶이지 않는 독립 카드(RT-2).

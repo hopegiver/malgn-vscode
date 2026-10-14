@@ -128,3 +128,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
   — 재사용 사유: 정정 주석(보장 범위 한정) vs 코드 재대조가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: RV-001 주석 정정·N-1·N-2 반영 확인, 해제 수단 미기재(N-5) Nit 강등.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
+  — 재사용 사유: 모듈 머리말 불변식·주석("Debug derive 안전", "input.value 점검")과 테스트·하네스가 실제로 검증하는 범위를 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: cargo test 768건 재실행, pnpm build, 하네스 assertNoRawKey의 미사용 values, 주석 과대 주장.

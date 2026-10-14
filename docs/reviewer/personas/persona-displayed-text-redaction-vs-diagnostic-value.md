@@ -46,3 +46,6 @@
   — 신규 사유: INDEX의 기존 역할개념 중 "화면에 찍는 텍스트의 비밀값 가림과 그 오탐·절단으로 잃는 진단 가치"를 다루는 행이 없다(가장 가까운 `screen-state-honesty`는 로딩·빈·에러 상태 구분, `process-execution-security`는 argv·env·프로세스 수명).
   — 이번 라운드 집중: 진단 블록 절단, OAuth URL 쿼리 마스킹, SECRET_KEY 오탐, 정규식 비용.
 - 2026-10-13 / target_id `r4-error-text-plugin-fallback-badge` / 2차(증분, 재사용) / `docs/reviewer/review-r4-error-text-plugin-fallback-badge-2026-10-13-r2.md`
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
+  — 재사용 사유: 수집키 원문이 화면(DOM·토스트·입력칸)에 새지 않으면서 마스킹(`mhk_`+4자)이 사용자가 "어느 키인지" 식별하는 값을 남기는지가 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: 프론트 errorMessage 경로, 저장 후 입력칸 비움, 하네스 DOM 덤프 실효성, 스크린샷 3장 직접 확인.

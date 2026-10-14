@@ -57,3 +57,6 @@
 - 2026-10-13 / target_id `r7-onboarding-install-order-efficiency-guide` / 1차(최초, Standard) / `docs/reviewer/review-r7-onboarding-install-order-efficiency-guide-2026-10-13.md`
   — 재사용 사유: 홈 온보딩 체크리스트(P2-1)는 "신입이 첫 실행에서 다음 행동을 찾는가"의 과녁 그 자체. 6대 요소 무수정.
   — 이번 라운드 집중: Claude 미설치 신규 머신에서 체크리스트 단계가 중복 없이 한 방향을 가리키는지(P2-2의 required=true와 교차), 건너뜀 사유 패널이 다음 행동을 알려주는지.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
+  — 재사용 사유: "수집키가 없다"는 경고를 본 사용자가 버튼 하나로 키를 얻어 완주할 수 있는가가 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: "허브에서 수집키 발급 ↗" → 허브 /keys 실제 화면(기기 토큰 발급만 존재) 완주 시뮬레이션, 재시작 필요 안내.

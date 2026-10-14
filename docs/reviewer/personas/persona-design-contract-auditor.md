@@ -87,3 +87,6 @@
 - 2026-10-06 / target_id `project-agent-progress-v1` / 1차(최초, 약식 2인 — Standard) / `docs/reviewer/review-project-agent-progress-v1-2026-10-06.md`
   — 재사용 사유: 설계 정본 `docs/design/project-agent-progress.md`의 §2-1 매칭 규칙·§2-2 갱신·§3 화면 조항이 구현에 조항 단위로 반영됐는지 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
   — 이번 라운드 집중: `match_workspace_project` 4규칙·불변식("목록 행 = projectPath 보유") 실데이터 단언, 게이트 의미 보존(`#[cfg(test)]` 전환), 홈 문구·타일 라벨의 설계 대비 드리프트.
+- 2026-10-14 / target_id `r12-otlp-ingest-key` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-2026-10-14.md`
+  — 재사용 사유: 허브 정본(`otlp-limits.js` CREDENTIAL_TOKEN_BODY_RE, `otlp-ingest.md` §5.3 전달 방식·안내문 상수화 조항)과 앱 구현을 조항 단위로 대조하는 것이 역할개념 그대로다. 6대 요소 무수정.
+  — 이번 라운드 집중: 정규식 동치, 헤더 형식, 안내문 상수 출처, OTLP_CLIENT_ENV 대비 앱 기본값.
