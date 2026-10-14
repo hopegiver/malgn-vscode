@@ -146,3 +146,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
   — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 신규 Rethink 없음, RT-1·RT-3 유지 판단.
+- 2026-10-14 / target_id `r13b-daily-series` / 1차(최초, Standard) / `docs/reviewer/review-r13b-daily-series-2026-10-14.md`
+  — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
+  — 이번 라운드 집중: 주간 "세션 수(일별 합)" 대신 일평균 세션(RT-1), 비용 표기 단일 진입점(RT-2).

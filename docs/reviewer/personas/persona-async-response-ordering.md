@@ -52,3 +52,6 @@
 - 2026-10-13 / target_id `r8-usage-trend-and-tool-count` / 2차(증분) / `docs/reviewer/review-r8-usage-trend-tool-count-2026-10-13-r2.md`
   — 재사용 사유: 주간 요약의 "오늘"(series 마지막 점)과 이상치의 "오늘"(today 인자)이 한 정의인지. 6대 요소 무수정.
   — 이번 라운드 집중: computeUsageTrend의 today 단일 주입, 지표 주입 유지.
+- 2026-10-14 / target_id `r13b-daily-series` / 1차(최초, Standard) / `docs/reviewer/review-r13b-daily-series-2026-10-14.md`
+  — 재사용 사유: 기준 A4(같은 지표는 한 정의) — 일별·요약·프로젝트 추이가 한 창(`usage_window_for`)과 한 dedup 규칙을 쓰는지가 과녁 그 자체. 6대 요소 무수정.
+  — 이번 라운드 집중: scan_file_daily_usage vs scan_file_for_summary 줄 단위 대조, 과거분 캐시(skip_date)+오늘 스캔 합성 경계, RV-007 해소 확인.
