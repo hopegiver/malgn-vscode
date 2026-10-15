@@ -93,7 +93,8 @@ export function describeUnmetDependencies(unmetIds: readonly string[], items: re
 // 경로는 찾았는데 `--version`에 응답하지 않아 installed=false인 도구(백엔드 query.rs: installed =
 // version.is_some(), path는 따로 채움). "설치돼 있지 않다"가 아니라 "버전을 확인하지 못했다"이고,
 // 실행하면 설치가 아니라 업데이트가 돈다(actions.rs: 경로가 있으면 install → update 위임).
-export function isVersionUnverified(tool: ChainTool): boolean {
+// 이 판정의 유일한 정의다 — 화면 문구·배지(devToolsText.ts)도 이 함수를 그대로 쓴다.
+export function isVersionUnverified(tool: Pick<ChainTool, 'installed' | 'path'>): boolean {
   return !tool.installed && !!tool.path;
 }
 

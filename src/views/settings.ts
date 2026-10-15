@@ -28,7 +28,7 @@ import {
 } from '../hubAuthApi';
 import type { HubAuthStatus, HubDisconnectResult } from '../hubAuthApi';
 import { navigate, parseRoute } from '../route';
-import { AUTO_LINK_CHANGES_NOTE, computeOnboarding, DEVICE_KEY_MANAGED_NOTE, REISSUE_CONFIRM_MESSAGE, withoutAutoLinkNote } from '../onboarding';
+import { AUTO_LINK_CHANGES_NOTE, computeOnboarding, DEVICE_KEY_MANAGED_NOTE, fileKeyLiveness, fileKeyNote, REISSUE_CONFIRM_MESSAGE, withoutAutoLinkNote } from '../onboarding';
 import { baselineValues, mergeDraftOnRefresh, sameFormContent, valuesToSave } from '../otelForm';
 import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueToast } from '../otelLinkText';
 import type { OnboardingStep } from '../onboarding';
@@ -564,6 +564,19 @@ const INGEST_LINK_BADGE: Readonly<Record<string, { readonly label: string; reado
   error: { label: '확인 불가', tone: 'archived' },
 };
 
+/**
+ * [허브 연결 열기]: 허브 연결 화면으로 간다. OTel 카드가 "연결이 해제되었습니다"(reconnectRequired)라고 말하는 중인데 허브 연결 행은
+ * hub_auth가 폐기를 알아채기 전까지 "연결됨"으로 남는다(RV-003) — 그래서 이 원인일 때만 허브 연결 상태 확인을 1회 먼저 시킨다
+ * (기존 [지금 확인·갱신]과 같은 커맨드). 서버가 연결을 폐기했다면 행이 "연결 해제됨 · 다시 연결"로 바뀌어 버튼 한 번으로 이어진다.
+ * 유출 의심 차단(blocked)·데스크톱 토큰 아님은 연결이 살아 있거나 갱신으로 풀리지 않으므로 이 확인을 하지 않는다.
+ */
+export async function openHubConnection(): Promise<void> {
+  navigate('#/settings/mcp');
+  if (state.ingestLink.status?.failure?.cause !== 'reconnectRequired') return;
+  if (!state.hubAuth.loaded && !state.hubAuth.loading) await loadHubAuth();
+  if (state.hubAuth.status?.connected && !state.hubAuth.busy) await handleRenewHub();
+}
+
 // 체크리스트 행과 설정 패널이 공유하는 버튼. inSettings면 "OTel 설정 열기"는 이미 여기라 그리지 않는다.
 export function otelLinkActionButton(step: OnboardingStep, opts?: { readonly inSettings?: boolean }): HTMLElement | null {
   switch (step.action) {
@@ -574,7 +587,7 @@ export function otelLinkActionButton(step: OnboardingStep, opts?: { readonly inS
       return b;
     }
     case 'connect-hub': {
-      const b = el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/mcp') }, ['허브 연결 열기']);
+      const b = el('button', { className: 'btn btn-sm', onClick: () => void openHubConnection() }, ['허브 연결 열기']);
       b.type = 'button';
       return b;
     }
@@ -617,8 +630,13 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
   const ing = settings.ingestKey;
   const telemetryOn = settings.values['CLAUDE_CODE_ENABLE_TELEMETRY'] === '1';
 
+  // 파일에 키가 있다는 사실과 그 키가 지금 수집에 쓰인다는 말은 다르다 — 허브가 폐기했거나 폐기했을 수 있으면 "설정됨"이라 하지 않는다(RV-001).
+  const liveness = ing.state === 'set' ? fileKeyLiveness(state.ingestLink.status) : 'noSignal';
+  const livenessNote = ing.state === 'set' ? fileKeyNote(liveness, null) : null;
   let statusBadge: HTMLElement;
-  if (ing.state === 'set') {
+  if (ing.state === 'set' && liveness !== 'noSignal') {
+    statusBadge = el('span', { className: 'badge badge-archived' }, [liveness === 'revoked' ? '폐기됨 · 파일에 남음' : '파일에 남음 · 폐기됐을 수 있음']);
+  } else if (ing.state === 'set') {
     statusBadge = el('span', { className: 'badge badge-active' }, ['설정됨']);
   } else if (ing.state === 'unrecognized') {
     statusBadge = el('span', { className: 'badge badge-unknown' }, ['형식 불명']);
@@ -689,6 +707,7 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
   return withId(el('div', { className: 'settings-field' }, [
     label,
     statusRow,
+    ...(livenessNote ? [withId(el('div', { className: 'settings-form-hint' }, [livenessNote]), 'otel-ingest-key-liveness-note')] : []),
     ...blocks,
     input,
     withId(el('div', { className: 'settings-form-hint' }, [managed ? INGEST_KEY_COPY.issueManaged : INGEST_KEY_COPY.issue]), 'otel-ingest-key-issue-hint'),

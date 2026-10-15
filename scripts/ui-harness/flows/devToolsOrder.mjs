@@ -399,6 +399,22 @@ function chainScenarios(base) {
         await page.locator('.modal-body').getByRole('button', { name: '취소' }).click();
       }
       await waitIdle(page);
+      // RV-007: 행 배지의 "버전 미확인"은 사이드바 점과 같은 경고 톤이다 — 미설치("설치 안 됨")와 같은 회색이 아니다.
+      const tone = await page.evaluate(() => {
+        const colorOf = (el) => getComputedStyle(el).color;
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--status-warn)';
+        document.body.appendChild(probe);
+        const warn = colorOf(probe);
+        probe.remove();
+        const badgeOf = (id) => document.querySelector(`#devtool-row-${id} .badge`);
+        const node = badgeOf('node');
+        const dep = badgeOf('pnpm');
+        return { warn, nodeLabel: node?.textContent ?? null, nodeColor: node ? colorOf(node) : null, depLabel: dep?.textContent ?? null, depColor: dep ? colorOf(dep) : null };
+      });
+      if (tone.nodeLabel !== '버전 미확인') bugs.push({ severity: 'Major', symptom: `[unverified] Node 행 배지가 "버전 미확인"이 아님: ${tone.nodeLabel}`, file: 'src/views/devTools.ts:renderDevToolItem' });
+      if (tone.nodeColor !== tone.warn) bugs.push({ severity: 'Major', symptom: `[unverified] "버전 미확인" 배지가 경고색이 아님(실제 ${tone.nodeColor}, 경고 ${tone.warn})`, file: 'src/views/devTools.ts:renderDevToolItem' });
+      if (tone.depLabel === '설치 안 됨' && tone.depColor === tone.warn) bugs.push({ severity: 'Major', symptom: '[unverified] 미설치 배지까지 경고색이 됨', file: 'src/views/devTools.ts:renderDevToolItem' });
       await shot('01-unverified-batch-skip-reasons');
       let calls = await callsOf(page);
       if (anyOn(calls, ['node', ...DEPS]).some((c) => !c.startsWith('check_dev_tools'))) bugs.push({ severity: 'Critical', symptom: `[unverified] 버전 미확인 Node 때문에 의존 도구/Node에 커맨드가 호출됨: ${JSON.stringify(calls)}`, file: 'src/views/devTools.ts:handleUpdateAll' });

@@ -10,15 +10,23 @@ export interface StatusTool {
   readonly path?: string | null;
 }
 
-// 경로는 있는데 버전을 확인하지 못한 도구 — 설치 여부를 "없음"으로 말하면 안 된다(devToolsOrder.isVersionUnverified와 같은 정의).
-export function isVersionUnverifiedTool(tool: Pick<StatusTool, 'installed' | 'path'>): boolean {
-  return !tool.installed && !!tool.path;
+// 경로는 있는데 버전을 확인하지 못한 도구의 판정은 devToolsOrder.ts의 한 정의를 그대로 쓴다(두 곳에 같은 식을 두지 않는다).
+// 상대 import에 .ts를 붙인 것은 Node 타입 스트리핑 시험(scripts/tests)이 이 모듈을 번들러 없이 불러오기 때문이다.
+import { isVersionUnverified } from './devToolsOrder.ts';
+export { isVersionUnverified };
+
+// 도구 한 줄의 상태 종류 — 행 배지 톤과 사이드바 점이 같은 판정을 쓴다("버전 미확인"은 어디서나 경고 톤).
+export type ToolStatusKind = 'installed' | 'versionUnverified' | 'missing';
+
+export function toolStatusKind(tool: Pick<StatusTool, 'installed' | 'path'>): ToolStatusKind {
+  if (tool.installed) return 'installed';
+  return isVersionUnverified(tool) ? 'versionUnverified' : 'missing';
 }
 
 // 행 배지·사이드바 메타에 쓰는 상태 라벨.
 export function toolStatusLabel(tool: StatusTool, missingLabel: string): string {
   if (tool.installed) return tool.version ?? '설치됨';
-  return isVersionUnverifiedTool(tool) ? '버전 미확인' : missingLabel;
+  return isVersionUnverified(tool) ? '버전 미확인' : missingLabel;
 }
 
 export type RunKind = 'install' | 'update' | 'updateUnverified';

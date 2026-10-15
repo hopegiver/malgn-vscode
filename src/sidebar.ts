@@ -23,7 +23,7 @@ import { groupSessionsByProject } from './projectActivity';
 import { loadDailyUsage, loadUsageSummary } from './views/usage';
 import { highlightDevTool } from './views/devTools';
 import type { DevToolStatus } from './devToolsApi';
-import { isVersionUnverifiedTool, toolStatusLabel } from './devToolsText';
+import { toolStatusKind, toolStatusLabel } from './devToolsText';
 import type { AutonomousTask } from './state';
 import { enabledAppLinks, openLink } from './views/appLinks';
 import type { AppLink } from './appLinksApi';
@@ -479,7 +479,8 @@ function devToolNarrowRow(t: DevToolStatus): HTMLElement {
   // 선택인데 미설치=idle. 별도 아이콘 요소를 추가하지 않고 이미 있는 dot
   // 채널을 재사용한 것이 이번 결정이다.
   // 경로는 있는데 버전만 못 읽은 도구는 "미설치"가 아니라 "버전 미확인"(경고색)으로 말한다(R20 RV-007).
-  const dotClass: DotClass = t.installed ? 'good' : isVersionUnverifiedTool(t) ? 'warn' : t.required ? 'bad' : 'idle';
+  const kind = toolStatusKind(t);
+  const dotClass: DotClass = kind === 'installed' ? 'good' : kind === 'versionUnverified' ? 'warn' : t.required ? 'bad' : 'idle';
   return narrowRow({
     dotClass,
     name: t.name,

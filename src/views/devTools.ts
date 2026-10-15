@@ -45,7 +45,7 @@ import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, ope
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 import { parseRoute } from '../route';
 import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, describeUnmetDependencies, pendingDependentsOf, planInstallChain, planBatchInstall, describeBatchConsent } from '../devToolsOrder';
-import { isVersionUnverifiedTool, toolStatusLabel, classifyRun, updatedSummary, versionChangeNote, chainStuckToast, chainConsentMessage } from '../devToolsText';
+import { isVersionUnverified, toolStatusKind, toolStatusLabel, classifyRun, updatedSummary, versionChangeNote, chainStuckToast, chainConsentMessage } from '../devToolsText';
 import type { RunKind } from '../devToolsText';
 
 // IA §4-5(§7-6): 개발 도구 사이드바 행을 클릭하면 본문의 해당 행으로 스크롤 +
@@ -624,9 +624,10 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   const lastResult = state.devTools.lastResult[tool.id] ?? null;
 
   // 경로는 있는데 버전을 못 읽은 도구는 "설치 안 됨"이 아니라 "버전 미확인"으로 말한다(R20 RV-007).
-  const statusBadge = tool.installed
-    ? el('span', { className: 'badge badge-active' }, [toolStatusLabel(tool, '설치 안 됨')])
-    : el('span', { className: 'badge badge-archived' }, [toolStatusLabel(tool, '설치 안 됨')]);
+  // 배지 톤도 사이드바 점과 같은 판정(toolStatusKind)을 쓴다: 버전 미확인은 미설치와 같은 회색이 아니라 경고색이다.
+  const statusKind = toolStatusKind(tool);
+  const statusBadge = el('span', { className: `badge ${statusKind === 'installed' ? 'badge-active' : 'badge-archived'}` }, [toolStatusLabel(tool, '설치 안 됨')]);
+  if (statusKind === 'versionUnverified') statusBadge.style.color = 'var(--status-warn)';
 
   const metaParts = [tool.id, tool.installMethod, tool.path].filter((v): v is string => !!v);
   const metaLine = el('div', { className: 'devtool-binary' }, [metaParts.join(' · ')]);
@@ -637,7 +638,7 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   const badges = [statusBadge];
   if (tool.required) {
     const requiredBadge = el('span', { className: 'badge badge-archived' }, ['필수']);
-    if (!tool.installed && !isVersionUnverifiedTool(tool)) requiredBadge.style.color = 'var(--color-danger)';
+    if (!tool.installed && !isVersionUnverified(tool)) requiredBadge.style.color = 'var(--color-danger)';
     badges.push(requiredBadge);
   }
 

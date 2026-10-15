@@ -82,6 +82,16 @@ test('r20: 연결이 끊겨 실패한 재발급 토스트는 재발급이 아니
   assert.ok(!t.text.includes('[다시 시도]'), t.text);
 });
 
+test('r20 RV-005: 서버에 기능이 없는 동안(self 200)의 실패 토스트에는 "[다시 시도]로 다시 발급" 꼬리가 붙지 않는다', () => {
+  const msg = '허브에 수집키 자동 발급 기능이 아직 없습니다. 허브 연결은 정상이며 1시간 뒤 다시 확인합니다.';
+  const t = reissueToast({ kind: 'failed', failure: fail('featureUnavailable', msg), transient: true });
+  assert.equal(t.kind, 'failed');
+  assert.ok(t.text.includes(msg), t.text);
+  assert.ok(!t.text.includes('[다시 시도]') && !t.text.includes('다시 발급할 수 있습니다'), t.text);
+  // 다른 일시 원인은 그대로 길을 남긴다.
+  assert.match(reissueToast({ kind: 'failed', failure: fail('rateLimited', '잠시 후 다시'), transient: true }).text, /\[다시 시도\]로 다시 발급할 수 있습니다/);
+});
+
 test('RV-06: 해제 토스트는 이 PC의 수집키를 실제로 지웠을 때만 "지웠습니다"라고 말한다', () => {
   assert.match(disconnectToast(null, 'removed'), /허브 연결을 해제했습니다\. 이 PC의 설정 파일에서 수집키도 지웠습니다/);
   for (const removal of ['notPresent', 'failed', undefined]) {

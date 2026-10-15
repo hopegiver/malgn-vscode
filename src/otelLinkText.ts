@@ -43,7 +43,8 @@ export function reissueToast(outcome: IngestReissueOutcome): ReissueToast {
       const f = outcome.failure;
       // 연결이 끊긴 경우는 "다시 발급"으로 풀리지 않는다 — 다시 로그인해 연결하는 일이다.
       if (f.cause === 'reconnectRequired') return { kind: 'failed', text: `수집키를 받지 못했습니다: ${f.message}` };
-      const left = outcome.transient ? ' 아직 새 수집키가 적용되지 않았습니다. [다시 시도]로 다시 발급할 수 있습니다.' : '';
+      // 서버에 기능이 없는 동안(self 200)은 [다시 시도]해도 같은 결과라 그 길을 권하지 않는다(RV-005).
+      const left = outcome.transient && f.cause !== 'featureUnavailable' ? ' 아직 새 수집키가 적용되지 않았습니다. [다시 시도]로 다시 발급할 수 있습니다.' : '';
       return { kind: 'failed', text: `수집키를 다시 발급하지 못했습니다: ${f.message}${left}` };
     }
   }

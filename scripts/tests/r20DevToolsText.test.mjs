@@ -3,12 +3,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  chainConsentMessage, chainStuckToast, classifyRun, isVersionUnverifiedTool, toolStatusLabel, updatedSummary, versionChangeNote,
+  chainConsentMessage, chainStuckToast, classifyRun, isVersionUnverified, toolStatusKind, toolStatusLabel, updatedSummary, versionChangeNote,
 } from '../../src/devToolsText.ts';
+import { isVersionUnverified as orderIsVersionUnverified } from '../../src/devToolsOrder.ts';
 
 test('r20 RV-007: 경로는 있는데 버전을 못 읽은 도구는 "설치 안 됨/미설치"가 아니라 "버전 미확인"으로 표시한다', () => {
   const unverified = { installed: false, version: null, path: '/opt/homebrew/bin/node' };
-  assert.equal(isVersionUnverifiedTool(unverified), true);
+  assert.equal(isVersionUnverified(unverified), true);
   assert.equal(toolStatusLabel(unverified, '설치 안 됨'), '버전 미확인');
   assert.equal(toolStatusLabel(unverified, '미설치'), '버전 미확인');
 });
@@ -18,7 +19,7 @@ test('r20 RV-007: 경로가 없으면 사실대로 미설치, 설치됨이면 �
   assert.equal(toolStatusLabel({ installed: false, version: null }, '미설치'), '미설치');
   assert.equal(toolStatusLabel({ installed: true, version: '22.1.0', path: '/x/node' }, '설치 안 됨'), '22.1.0');
   assert.equal(toolStatusLabel({ installed: true, version: null, path: '/x/node' }, '설치 안 됨'), '설치됨');
-  assert.equal(isVersionUnverifiedTool({ installed: true, path: '/x/node' }), false);
+  assert.equal(isVersionUnverified({ installed: true, path: '/x/node' }), false);
 });
 
 test('r20 RV-010: 실행 전 경로가 있던 도구의 이전 버전 미확인 실행은 "신규 설치"가 아니다', () => {
@@ -60,4 +61,12 @@ test('r20 RV-002: 후보와 함께 자동 설치 불가 도구가 있으면 확�
   const without = chainConsentMessage('Node.js', 'pnpm', 1, '');
   assert.doesNotMatch(without, /자동 설치 불가/);
   assert.match(without, /설치합니다: pnpm\. 각 도구는/);
+});
+
+test('r20 RV-007: 버전 미확인의 판정은 한 곳(devToolsOrder)에만 있고, 배지·사이드바 톤이 같은 종류를 쓴다', () => {
+  assert.equal(isVersionUnverified, orderIsVersionUnverified, '같은 식을 두 곳에 두지 않는다');
+  assert.equal(toolStatusKind({ installed: true, path: '/x/node' }), 'installed');
+  assert.equal(toolStatusKind({ installed: false, path: '/opt/homebrew/bin/node' }), 'versionUnverified');
+  assert.equal(toolStatusKind({ installed: false, path: null }), 'missing');
+  assert.equal(toolStatusKind({ installed: false }), 'missing');
 });

@@ -500,6 +500,40 @@ fn r20_accept_confirm_returns_what_happened_for_every_outcome() {
     assert!(rig.api.calls().is_empty());
 }
 
+/// RT-4가 막으려던 거짓 성공 토스트의 마지막 자리: 동의한 뒤 201은 받았지만 설정 파일에 쓰지 못했다.
+/// Minted는 키가 파일에 실제로 적용됐을 때만 나온다 — 쓰기 실패는 Minted도, 프론트의 "다시 발급해 적용했습니다"도 아니다.
+#[cfg(unix)]
+#[test]
+fn r20_accept_confirm_that_cannot_write_the_settings_file_never_reports_minted() {
+    use crate::otel_link::{reissue_outcome, IngestReissueOutcome};
+    use std::os::unix::fs::PermissionsExt;
+
+    let rig = Rig::new("r20-outcome-writefail");
+    write_ready(&rig.path, Some(&fake_key('S')));
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    let engine = LinkEngine::new();
+    engine.run_check(&rig.env(), Trigger::Startup, T0);
+    assert_eq!(engine.view().phase, Phase::ConfirmRequired);
+    rig.api.push_create(created('N'));
+    let dir = rig.path.parent().unwrap().to_path_buf();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let got = engine.accept_confirm(&rig.env(), T0 + 5_000);
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(got, ReissueResult::Ended(Phase::WriteFailed), "쓰지 못했는데 Minted로 보고했다");
+    match reissue_outcome(got) {
+        IngestReissueOutcome::Failed { failure, transient } => {
+            assert_eq!(failure.cause, LinkFailureCause::ApplyFailed);
+            assert!(!transient, "쓰기 실패는 앱이 스스로 다시 시도하는 일시 원인이 아니다");
+        }
+        other => panic!("프론트는 새 키를 적용했다고 말하면 안 된다: {other:?}"),
+    }
+    let saved = std::fs::read_to_string(&rig.path).unwrap();
+    assert!(saved.contains(&fake_key('S')) && !saved.contains(&fake_key('N')), "파일은 그대로다");
+    assert!(engine.with(|m| m.pending_write.is_some()), "받은 키는 메모리에 보관한다(다음 점검이 같은 키로 다시 쓴다)");
+}
+
 #[test]
 fn r20_accept_confirm_while_another_check_runs_reports_busy_and_sends_nothing() {
     let rig = Rig::new("r20-outcome-busy");

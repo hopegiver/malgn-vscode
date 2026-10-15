@@ -136,6 +136,20 @@ async function panel(page) {
   };
 }
 
+// 설정 > OTel의 수집키 영역(상태 배지 + 폐기 가능성 안내). 배지가 초록 "설정됨"이면 폐기됐을 수 있는 파일 키를 사용 중인 키처럼 보이게 한다(RV-001).
+async function keyBlockCheck(page, bugs, { badge, note }) {
+  const st = page.locator('#otel-ingest-key-status');
+  if ((await st.count()) === 0) return bugs.push({ severity: 'Critical', symptom: '설정 > OTel에 수집키 상태 줄이 없음', file: 'src/views/settings.ts:renderIngestKeyBlock' });
+  const text = (await st.textContent()) ?? '';
+  const cls = (await st.locator('.badge').first().getAttribute('class')) ?? '';
+  if (!text.includes(badge)) bugs.push({ severity: 'Major', symptom: `수집키 배지에 "${badge}"가 없음(실제: ${text})`, file: 'src/views/settings.ts:renderIngestKeyBlock' });
+  if (text.includes('설정됨') && !text.includes('폐기')) bugs.push({ severity: 'Critical', symptom: `폐기됐을 수 있는 파일 키에 "설정됨"을 말함(${text})`, file: 'src/views/settings.ts:renderIngestKeyBlock' });
+  if (cls.includes('badge-active')) bugs.push({ severity: 'Major', symptom: `폐기됐을 수 있는 파일 키 배지가 초록(badge-active)임(${cls})`, file: 'src/views/settings.ts:renderIngestKeyBlock' });
+  const n = (await page.locator('#otel-ingest-key-liveness-note').textContent().catch(() => null)) ?? '';
+  if (!n.includes(note)) bugs.push({ severity: 'Major', symptom: `수집키 영역 안내에 "${note}"가 없음(실제: ${n})`, file: 'src/views/settings.ts:renderIngestKeyBlock' });
+  if (!text.includes('mhk_AbCd…')) bugs.push({ severity: 'Minor', symptom: `마스킹된 키 표시가 사라짐(${text})`, file: 'src/views/settings.ts:renderIngestKeyBlock' });
+}
+
 async function checkHome(page, bugs, { state, include = [], exclude = [], buttons, allowConfirmed = false }) {
   const row = await homeRow(page);
   if (!row) {
@@ -250,7 +264,9 @@ const AUTH_OUT = { loggedIn: false, authMethod: null, email: null, orgName: null
 export function scenarios(base) {
   // 필수 3단계 중 2개 완료(설치 완료·미로그인) — 체크리스트 박스가 열려 있어 OTEL 행이 보인다.
   const open = { ...base, check_claude_auth_status: AUTH_OUT };
-  const withLink = (s, extra = {}) => ({ ...open, otel_ingest_link_status: s, otel_link_retry: s, otel_link_recheck: s, ...extra });
+  // hub_auth_renew_now: [허브 연결 열기]가 재연결 필요(reconnectRequired)일 때 시키는 허브 상태 확인(RV-003). 기본은 서버가 연결을 폐기한 응답.
+  const REVOKED_HUB = { connected: false, state: 'REVOKED', device_name: null, expires_at: null, renew_after: null, reason: 'UNAUTHORIZED' };
+  const withLink = (s, extra = {}) => ({ ...open, otel_ingest_link_status: s, otel_link_retry: s, otel_link_recheck: s, hub_auth_renew_now: REVOKED_HUB, ...extra });
   const homeCase = (id, shotName, s, expect, after) => ({
     id,
     fixtures: withLink(s),
@@ -316,8 +332,8 @@ export function scenarios(base) {
     }),
     homeCase('blocked-suspected-leak', '01-blocked-leak', failed('blocked', { ...OFF, blockedReason: 'suspectedLeak' }), {
       state: 'failed',
-      include: ['사유: 유출 의심', '이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기', '다시 로그인해 연결하세요'],
-      exclude: ['다시 발급'],
+      include: ['사유: 유출 의심', '이 기기에 유출 의심으로 폐기된 수집키가 있어 이 연결로는 발급이 막혔습니다', '다시 로그인해 연결하세요'],
+      exclude: ['다시 발급', '연결이 해제되었습니다', '연결과 이 기기의 다른 수집키도 함께 폐기'],
       buttons: ['허브 연결 열기'],
     }),
     homeCase('rotate-budget-exceeded', '01-rotate-budget', failed('rotateBudgetExceeded', { masked: 'mhk_AbCd…', retryAt: '2099-10-16T01:02:03.456Z' }), {
@@ -715,6 +731,7 @@ export function scenarios(base) {
         }
         for (const t of ['적용됨', '수신 확인됨', '수집키가 적용되었습니다', '거절']) if (p.text.replace('폐기됨 · 재확인 필요', '').includes(t)) bugs.push({ severity: 'Critical', symptom: `폐기 판정이 이어지는데 패널이 "${t}"를 말함(${p.text})`, file: PANEL });
         if (JSON.stringify(p.buttons) !== JSON.stringify(['다시 시도'])) bugs.push({ severity: 'Major', symptom: `패널 버튼이 [다시 시도]가 아님(${JSON.stringify(p.buttons)})`, file: PANEL });
+        await keyBlockCheck(page, bugs, { badge: '폐기됨 · 파일에 남음', note: '허브에서 폐기되어 수집되지 않습니다' });
         await noSecrets(page, bugs, PANEL);
       },
     },
@@ -793,8 +810,12 @@ export function scenarios(base) {
     // 유출 의심 폐기: 맑은에이전트 연결과 이 기기의 다른 수집키까지 폐기 — 파일에 키가 남아 있어도 "다시 발급"이 아니라 "다시 로그인해 연결".
     homeCase('r20-leak-reconnect-required-key-on-file', 'r20-04-leak-reconnect-required', failed('reconnectRequired', { masked: 'mhk_AbCd…', collectionReady: true }), {
       state: 'failed',
-      include: ['이 PC의 맑은에이전트 연결이 해제되었습니다', '유출 의심으로 폐기했다면 이 연결과 이 기기의 다른 수집키도 함께 폐기', '앱에서 다시 로그인해 연결하세요', 'mhk_AbCd…'],
-      exclude: ['다시 발급', '[다시 시도]', '폐기됨 · 재발급'],
+      include: [
+        '이 PC의 맑은에이전트 연결이 해제되었습니다', '유출 의심으로 폐기했다면 이 연결과 이 기기의 다른 수집키도 함께 폐기', '앱에서 다시 로그인해 연결하세요',
+        // RV-001: 파일의 키는 "적용된"이 아니라 폐기됐을 수 있는 키로 말한다.
+        '설정 파일에 남아 있는 수집키(mhk_AbCd…)는 허브에서 함께 폐기됐을 수 있어 수집되지 않을 수 있습니다',
+      ],
+      exclude: ['다시 발급', '[다시 시도]', '폐기됨 · 재발급', '적용된 수집키'],
       buttons: ['허브 연결 열기'],
     }, async (page, { bugs }) => {
       await page.locator('.onboard-row[data-step="otel-link"]').getByRole('button', { name: '허브 연결 열기' }).click();
@@ -803,8 +824,9 @@ export function scenarios(base) {
     }),
     homeCase('r20-leak-blocked-suspected-leak-key-on-file', 'r20-05-leak-blocked-suspected-leak', failed('blocked', { masked: 'mhk_AbCd…', blockedReason: 'suspectedLeak' }), {
       state: 'failed',
-      include: ['사유: 유출 의심', '이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기', '다시 로그인해 연결하세요'],
-      exclude: ['다시 발급', '[다시 시도]'],
+      // RV-002: GET 200 = 연결은 살아 있다. "연결이 해제되었습니다"가 아니라 "발급이 막혔다 → 연결을 해제한 뒤 다시 로그인".
+      include: ['사유: 유출 의심', '이 기기에 유출 의심으로 폐기된 수집키가 있어 이 연결로는 발급이 막혔습니다', '앱의 허브 연결을 해제한 뒤 다시 로그인해 연결하세요', '폐기됐을 수 있어 수집되지 않을 수 있습니다'],
+      exclude: ['다시 발급', '[다시 시도]', '연결이 해제되었습니다', '연결과 이 기기의 다른 수집키도 함께 폐기', '적용된 수집키'],
       buttons: ['허브 연결 열기'],
     }),
     // 설정 > OTel 패널에서도 같다.
@@ -821,7 +843,60 @@ export function scenarios(base) {
         for (const t of ['이 PC의 맑은에이전트 연결이 해제되었습니다', '앱에서 다시 로그인해 연결하세요']) if (!p.text.includes(t)) bugs.push({ severity: 'Major', symptom: `패널에 "${t}"가 없음(실제: ${p.text})`, file: PANEL });
         if (p.text.includes('다시 발급')) bugs.push({ severity: 'Critical', symptom: `연결이 끊겼는데 패널이 "다시 발급"을 말함(${p.text})`, file: PANEL });
         if (JSON.stringify(p.buttons) !== JSON.stringify(['허브 연결 열기'])) bugs.push({ severity: 'Major', symptom: `패널 버튼이 [허브 연결 열기]가 아님(${JSON.stringify(p.buttons)})`, file: PANEL });
+        if (p.text.includes('적용된 수집키')) bugs.push({ severity: 'Major', symptom: `연결이 끊겼는데 패널이 파일의 키를 "적용된 수집키"라고 말함(${p.text})`, file: PANEL });
+        await keyBlockCheck(page, bugs, { badge: '파일에 남음 · 폐기됐을 수 있음', note: '허브에서 함께 폐기됐을 수 있어 수집되지 않을 수 있습니다' });
         await noSecrets(page, bugs, PANEL);
+      },
+    },
+    // RV-001 대조군: 폐기 신호가 없는 정상 적용 상태는 그대로 초록 "설정됨"이다(배지를 일괄로 바꾸지 않았다).
+    {
+      id: 'r20fix-settings-key-badge-normal-applied-stays-set',
+      startHash: '#/settings/otel',
+      fixtures: withLink(status('confirmed', { masked: 'mhk_AbCd…' }), { otel_settings_get: settingsFixture({ ingestKey: KEY_SET }) }),
+      async run(page, { bugs }) {
+        await page.waitForTimeout(500);
+        const text = (await page.locator('#otel-ingest-key-status').textContent().catch(() => '')) ?? '';
+        const cls = (await page.locator('#otel-ingest-key-status .badge').first().getAttribute('class').catch(() => '')) ?? '';
+        if (!text.includes('설정됨') || !cls.includes('badge-active')) bugs.push({ severity: 'Major', symptom: `정상 적용 상태의 수집키 배지가 초록 "설정됨"이 아님(${text} / ${cls})`, file: 'src/views/settings.ts:renderIngestKeyBlock' });
+        if ((await page.locator('#otel-ingest-key-liveness-note').count()) !== 0) bugs.push({ severity: 'Major', symptom: '정상 적용 상태에 폐기 가능성 안내가 보임', file: 'src/views/settings.ts:renderIngestKeyBlock' });
+      },
+    },
+    // RV-003: OTel 카드가 "연결이 해제되었습니다"(reconnectRequired)라고 말하면, [허브 연결 열기]가 허브 상태 확인을 1회 먼저 시켜
+    // 허브 연결 행이 "연결됨"으로 남지 않고 "연결 해제됨 · [다시 연결]"이 된다(라이브 허브 호출 없이: hub_auth_renew_now 스텁이 REVOKED를 돌려준다).
+    {
+      id: 'r20fix-reconnect-required-opens-hub-row-already-revoked',
+      fixtures: withLink(failed('reconnectRequired', { masked: 'mhk_AbCd…', collectionReady: true })),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(500);
+        await page.locator('.onboard-row[data-step="otel-link"]').getByRole('button', { name: '허브 연결 열기' }).click();
+        await page.waitForTimeout(700);
+        if (!(await page.evaluate(() => location.hash)).startsWith('#/settings/mcp')) bugs.push({ severity: 'Major', symptom: '"허브 연결 열기"가 #/settings/mcp로 이동하지 않음', file: CHECKLIST });
+        if ((await invoked(page, 'hub_auth_renew_now')).length !== 1) bugs.push({ severity: 'Major', symptom: `재연결 필요인데 허브 상태 확인(hub_auth_renew_now)이 1회가 아님(${(await invoked(page, 'hub_auth_renew_now')).length})`, file: 'src/views/settings.ts:openHubConnection' });
+        const hubRow = page.locator('.mcp-row', { hasText: '허브 연결(기기 토큰)' });
+        const text = (await hubRow.textContent()) ?? '';
+        const buttons = await hubRow.locator('button').allTextContents();
+        await shot('01-hub-row-after-open');
+        if (!text.includes('연결 해제됨')) bugs.push({ severity: 'Major', symptom: `OTel 카드는 연결 해제라는데 허브 연결 행이 "연결 해제됨"이 아님(${text})`, file: 'src/views/settings.ts:openHubConnection' });
+        if (text.includes('연결됨') && !text.includes('연결 해제됨')) bugs.push({ severity: 'Critical', symptom: `허브 연결 행이 "연결됨"을 말함(${text})`, file: 'src/views/settings.ts:openHubConnection' });
+        if (JSON.stringify(buttons) !== JSON.stringify(['다시 연결'])) bugs.push({ severity: 'Major', symptom: `허브 연결 행 버튼이 [다시 연결]이 아님(${JSON.stringify(buttons)})`, file: 'src/views/settings.ts:renderHubAuthRow' });
+        await noSecrets(page, bugs, 'src/views/settings.ts:openHubConnection');
+      },
+    },
+    // RV-003 대조군: 유출 의심 차단(GET 200)은 연결이 실제로 살아 있다 — 상태 확인(갱신)을 시키지 않고, 행에는 안내대로 [연결 해제]가 있다.
+    {
+      id: 'r20fix-blocked-suspected-leak-hub-row-stays-connected-with-disconnect',
+      fixtures: withLink(failed('blocked', { masked: 'mhk_AbCd…', blockedReason: 'suspectedLeak' })),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(500);
+        await page.locator('.onboard-row[data-step="otel-link"]').getByRole('button', { name: '허브 연결 열기' }).click();
+        await page.waitForTimeout(700);
+        if ((await invoked(page, 'hub_auth_renew_now')).length !== 0) bugs.push({ severity: 'Major', symptom: '연결이 살아 있는 차단 상태에서 허브 갱신을 시켰음', file: 'src/views/settings.ts:openHubConnection' });
+        const hubRow = page.locator('.mcp-row', { hasText: '허브 연결(기기 토큰)' });
+        const text = (await hubRow.textContent()) ?? '';
+        const buttons = await hubRow.locator('button').allTextContents();
+        await shot('01-hub-row-connected-disconnect-available');
+        if (!text.includes('연결됨')) bugs.push({ severity: 'Major', symptom: `연결이 살아 있는데 허브 연결 행이 "연결됨"이 아님(${text})`, file: 'src/views/settings.ts:renderHubAuthRow' });
+        if (!buttons.includes('연결 해제')) bugs.push({ severity: 'Major', symptom: `안내가 "연결을 해제한 뒤"인데 [연결 해제] 버튼이 없음(${JSON.stringify(buttons)})`, file: 'src/views/settings.ts:renderHubAuthRow' });
       },
     },
     // self 200(서버에 기능 없음): 재로그인도 재발급도 아니다 — 키가 없는 PC의 문구와 버튼 없음.

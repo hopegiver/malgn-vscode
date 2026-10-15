@@ -258,7 +258,53 @@ function formatRetryAt(iso: string | null): string | null {
 }
 
 const BLOCKED_REASON_TEXT = { suspectedLeak: '유출 의심', quota: '사용량 한도 초과' } as const;
-const LEAK_REVOKE_FACT = '웹에서 유출 의심으로 폐기하면 이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기됩니다.';
+// blocked/suspectedLeak은 허브 조회(GET)가 200으로 응답한 상태다 — 연결은 살아 있다. 연결이 끊겼다고 말하지 않고 "발급이 막혔다"고만 말한다(RV-002).
+const LEAK_REVOKE_FACT = '이 기기에 유출 의심으로 폐기된 수집키가 있어 이 연결로는 발급이 막혔습니다.';
+
+/**
+ * 설정 파일에 남아 있는 수집키를 화면이 어떻게 불러야 하는지. 파일 사실(키가 있다)과 키의 생사는 다르다.
+ *  - revoked: 허브가 이미 폐기했다고 알렸다(웹 폐기 판정·사용량 한도 차단) — 파일에 남아 있어도 수집되지 않는다.
+ *  - maybeRevoked: 연결이 끊겼거나(재연결 필요·데스크톱 토큰 아님) 유출 의심 차단이다 — 허브가 이 기기 키를 함께 폐기했을 수 있다.
+ *  - noSignal: 폐기를 의심할 신호가 없다 — 파일 사실 그대로 "적용됨"으로 말해도 된다.
+ * 파일의 키를 자동으로 지우지는 않는다(재연결하면 새 키로 교체된다). 홈 OTel 줄·설정의 수집키 배지/안내가 이 값 하나로 같은 말을 한다.
+ */
+export type FileKeyLiveness = 'noSignal' | 'maybeRevoked' | 'revoked';
+
+/** 웹에서 폐기됐다는 허브의 판정이 있고 허브 연결이 살아 있다(키가 파일에 남아 있어도 이 판정이 먼저다, RV-01). */
+function webRevoked(status: IngestLinkStatus): boolean {
+  const flagged = status.confirmRequired || status.confirmDeclined || status.revokedByHub === true;
+  return status.hubConnected && flagged && (status.state === 'unlinked' || status.state === 'applied' || status.state === 'confirmed');
+}
+
+export function fileKeyLiveness(status: IngestLinkStatus | null): FileKeyLiveness {
+  if (!status) return 'noSignal';
+  if (status.state === 'failed') {
+    switch (status.failure?.cause) {
+      case 'blocked':
+        // 사용량 한도 차단은 현행 키까지 폐기한다. 유출 의심은 GET 200이라 이 기기 키가 폐기됐는지 단정할 수 없다.
+        return status.blockedReason === 'quota' ? 'revoked' : 'maybeRevoked';
+      case 'reconnectRequired':
+      case 'notDesktopToken':
+        return 'maybeRevoked';
+      default:
+        return status.confirmRequired || status.confirmDeclined || status.revokedByHub === true ? 'revoked' : 'noSignal';
+    }
+  }
+  return webRevoked(status) ? 'revoked' : 'noSignal';
+}
+
+/** 파일에 남은 수집키에 대한 사실 한 문장. noSignal이면 null(호출부가 "적용된 수집키"로 말한다). */
+export function fileKeyNote(liveness: FileKeyLiveness, masked: string | null): string | null {
+  const key = masked ? `(${masked})` : '';
+  switch (liveness) {
+    case 'revoked':
+      return `설정 파일에 남아 있는 수집키${key}는 허브에서 폐기되어 수집되지 않습니다.`;
+    case 'maybeRevoked':
+      return `설정 파일에 남아 있는 수집키${key}는 허브에서 함께 폐기됐을 수 있어 수집되지 않을 수 있습니다.`;
+    default:
+      return null;
+  }
+}
 
 type OtelLink = NonNullable<OnboardingInput['ingestLink']>;
 
@@ -427,7 +473,9 @@ function failedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
     if (at) msg += ` 다시 교체할 수 있는 시각: ${at}.`;
   }
   const action = cause ? FAILURE_ACTION[cause] : 'open-settings';
-  const detail = masked ? `${msg} 적용된 수집키 (${masked}).` : msg;
+  // 연결이 끊겼거나 차단된 상태에서 파일의 키를 "적용된"이라고 부르지 않는다 — 허브에서 이미 폐기됐을 수 있다(RV-001).
+  const keyNote = masked ? fileKeyNote(fileKeyLiveness(status), masked) : null;
+  const detail = masked ? `${msg} ${keyNote ?? `적용된 수집키 (${masked}).`}` : msg;
   const withAction = action ? { action } : {};
 
   // 서버에 기능이 아직 없다 — 오류가 아니라 "아직 적용 안 됨"이다(연결은 정상).
@@ -447,7 +495,7 @@ function failedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
   }
   const slim =
     cause === 'blocked' && status.blockedReason === 'suspectedLeak'
-      ? '선택 · 웹에서 유출 의심으로 폐기되어 이 PC의 맑은에이전트 연결이 해제되었습니다. 앱에서 다시 로그인해 연결하세요.'
+      ? '선택 · 유출 의심 폐기 이력 때문에 이 연결로는 수집키를 발급할 수 없습니다. 허브 연결을 해제한 뒤 다시 로그인해 연결하세요.'
       : cause
         ? FAILURE_SLIM[cause]
         : '선택 · 사용량 수집키 연동에 문제가 있습니다. 설정 > OTel에서 확인하세요.';
@@ -467,10 +515,7 @@ function otelLinkStep(link: OtelLink): OnboardingStep {
   const status = link.status;
   if (!link.loaded || !status) return { ...base, state: 'loading', detail: '수집키 적용 상태 확인 중…' };
   // 웹에서 폐기됐다는 허브의 판정이 있으면 파일에 키가 남아 있어도(applied/confirmed) 그 판정이 먼저다(RV-01).
-  const revoked = status.confirmRequired || status.confirmDeclined || status.revokedByHub === true;
-  if (status.hubConnected && revoked && (status.state === 'unlinked' || status.state === 'applied' || status.state === 'confirmed')) {
-    return revokedStep(base, status);
-  }
+  if (webRevoked(status)) return revokedStep(base, status);
   switch (status.state) {
     case 'unlinked':
       return unlinkedStep(base, status);

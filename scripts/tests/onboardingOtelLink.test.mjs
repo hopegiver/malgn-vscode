@@ -7,7 +7,9 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AUTO_LINK_CHANGES_NOTE, AUTO_LINK_SERVER_KEYS, computeOnboarding, DEVICE_KEY_MANAGED_NOTE, REISSUE_CONFIRM_MESSAGE, withoutAutoLinkNote } from '../../src/onboarding.ts';
+import {
+  AUTO_LINK_CHANGES_NOTE, AUTO_LINK_SERVER_KEYS, computeOnboarding, DEVICE_KEY_MANAGED_NOTE, fileKeyLiveness, fileKeyNote, REISSUE_CONFIRM_MESSAGE, withoutAutoLinkNote,
+} from '../../src/onboarding.ts';
 
 const tool = (id, installed, required = true) => ({ id, name: id, installed, version: installed ? '1.0.0' : null, path: installed ? `/bin/${id}` : null, required });
 const base = {
@@ -503,11 +505,76 @@ test('r20: 연결이 끊김 — 맑은에이전트 연결 해제를 말하고 �
     assert.ok(s.slim && RELOGIN_REQUIRED.test(s.slim) && !REISSUE_ACTION.test(s.slim), `${label}: 홈 한 줄: ${s.slim}`);
     assert.ok(!(s.tag ?? '').includes('폐기됨 · 재발급'), `${label}: 재발급 배지를 달지 않는다`);
   }
-  // 유출 의심은 연결과 다른 수집키까지 폐기된다는 사실을 밝힌다.
+  // 유출 의심 차단은 GET 200 — 연결은 살아 있다. 이 기기에 폐기된 키가 있어 발급이 막혔다는 사실만 말한다(R20 RV-002).
   const leak = step(cases[2][1]).detail;
   assert.match(leak, /사유: 유출 의심/);
-  assert.match(leak, /이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기/);
-  assert.match(slim(cases[2][1]), /맑은에이전트 연결이 해제되었습니다/);
+  assert.match(leak, /이 기기에 유출 의심으로 폐기된 수집키가 있어 이 연결로는 발급이 막혔습니다/);
+  assert.ok(!/연결이 해제되었습니다|연결과 이 기기의 다른 수집키도 함께 폐기/.test(leak), leak);
+});
+
+test('r20 RV-002: blocked/suspectedLeak(연결 생존)과 reconnectRequired(연결 끊김)의 홈 한 줄이 사실대로 갈린다', () => {
+  const leakSlim = slim(failed('blocked', { blockedReason: 'suspectedLeak', failure: { cause: 'blocked', message: rustMessage('Blocked') } }));
+  // 연결이 살아 있으므로 "해제되었습니다"가 아니다. 할 일은 "허브 연결을 해제한 뒤 다시 로그인해 연결".
+  assert.ok(!/해제되었습니다/.test(leakSlim), leakSlim);
+  assert.match(leakSlim, /유출 의심 폐기 이력 때문에 이 연결로는 수집키를 발급할 수 없습니다/);
+  assert.match(leakSlim, /허브 연결을 해제한 뒤 다시 로그인해 연결하세요/);
+  assert.ok(!REISSUE_ACTION.test(leakSlim), leakSlim);
+  // 401→self 401 경로는 연결이 실제로 끊겼다 — 문구 그대로 "연결 해제됨 → 다시 로그인".
+  const lostSlim = slim(failed('reconnectRequired', { failure: { cause: 'reconnectRequired', message: rustMessage('ReconnectRequired') } }));
+  assert.match(lostSlim, /맑은에이전트 연결이 해제되어/);
+  assert.match(lostSlim, /앱에서 다시 로그인해 연결하세요/);
+  assert.notEqual(leakSlim, lostSlim);
+  // 사용량 한도 차단은 유출 의심 문구를 섞지 않고 기존 안내를 쓴다.
+  const quotaSlim = slim(failed('blocked', { blockedReason: 'quota', failure: { cause: 'blocked', message: rustMessage('Blocked') } }));
+  assert.ok(!/유출 의심/.test(quotaSlim), quotaSlim);
+});
+
+test('r20 RV-001: 재연결 필요·차단·데스크톱 토큰 아님에서 파일에 남은 키를 "적용된 수집키"라고 말하지 않고, 폐기됐을 수 있다고 말한다', () => {
+  const cases = [
+    ['reconnectRequired', failed('reconnectRequired', { masked: KEY })],
+    ['blocked/suspectedLeak', failed('blocked', { masked: KEY, blockedReason: 'suspectedLeak' })],
+    ['notDesktopToken', failed('notDesktopToken', { masked: KEY })],
+  ];
+  for (const [label, status] of cases) {
+    const d = step(status).detail;
+    assert.ok(!/적용된 수집키/.test(d), `${label}: ${d}`);
+    assert.ok(d.includes(`설정 파일에 남아 있는 수집키(${KEY})는 허브에서 함께 폐기됐을 수 있어 수집되지 않을 수 있습니다.`), `${label}: ${d}`);
+  }
+  // 사용량 한도 차단은 현행 키까지 폐기되므로 단정해도 된다.
+  const quota = step(failed('blocked', { masked: KEY, blockedReason: 'quota' })).detail;
+  assert.ok(quota.includes(`설정 파일에 남아 있는 수집키(${KEY})는 허브에서 폐기되어 수집되지 않습니다.`), quota);
+  assert.ok(!/적용된 수집키|폐기됐을 수/.test(quota), quota);
+  // 키가 파일에 없으면 있는 것처럼 말하지 않는다.
+  for (const [label, status] of cases) assert.ok(!/설정 파일에 남아 있는 수집키/.test(step({ ...status, masked: null }).detail), label);
+  // 폐기를 의심할 신호가 없는 실패는 파일 사실 그대로 말한다(기존 동작).
+  assert.ok(step(failed('hubRejected', { masked: KEY })).detail.endsWith(`적용된 수집키 (${KEY}).`));
+});
+
+test('r20 RV-001: fileKeyLiveness — 허브가 폐기를 알린 경우와 폐기를 의심하는 경우를 가르고, 신호가 없으면 건드리지 않는다', () => {
+  // 허브가 이미 폐기했다고 알림: 웹 폐기 확인 대기·거절·재확인 필요(applied/confirmed/unlinked), 사용량 한도 차단.
+  for (const over of [{ confirmRequired: true }, { confirmDeclined: true }, { revokedByHub: true }]) {
+    for (const state of ['unlinked', 'applied', 'confirmed']) assert.equal(fileKeyLiveness(st(state, { masked: KEY, ...over })), 'revoked', `${state} ${JSON.stringify(over)}`);
+  }
+  assert.equal(fileKeyLiveness(failed('blocked', { blockedReason: 'quota' })), 'revoked');
+  // 의심: 연결이 끊김 / 데스크톱 토큰 아님 / 유출 의심 차단(GET 200이라 단정 못 함).
+  assert.equal(fileKeyLiveness(failed('reconnectRequired')), 'maybeRevoked');
+  assert.equal(fileKeyLiveness(failed('notDesktopToken')), 'maybeRevoked');
+  assert.equal(fileKeyLiveness(failed('blocked', { blockedReason: 'suspectedLeak' })), 'maybeRevoked');
+  // 신호 없음: 정상 적용·수신 확인·그 밖의 실패·상태 미확인. 허브 연결이 없으면 웹 폐기 판정도 쓰지 않는다(홈 화면과 같은 규칙).
+  for (const s of [st('applied', { masked: KEY }), st('confirmed', { masked: KEY }), failed('hubRejected'), failed('unreachable'), failed('featureUnavailable'), null]) {
+    assert.equal(fileKeyLiveness(s), 'noSignal');
+  }
+  assert.equal(fileKeyLiveness(st('applied', { masked: KEY, revokedByHub: true, hubConnected: false })), 'noSignal');
+  // 문구: 마스킹을 붙이거나 생략하고, 신호가 없으면 문구가 없다.
+  assert.match(fileKeyNote('revoked', KEY), /폐기되어 수집되지 않습니다\.$/);
+  assert.match(fileKeyNote('maybeRevoked', null), /^설정 파일에 남아 있는 수집키는 허브에서 함께 폐기됐을 수 있어/);
+  assert.equal(fileKeyNote('noSignal', KEY), null);
+});
+
+test('r20 RV-001: 웹 폐기 확인 대기에서도 파일의 키를 "적용"이라 하지 않는다(홈 문구)', () => {
+  const d = step(st('applied', { masked: KEY, confirmRequired: true })).detail;
+  assert.ok(!/적용된|적용되었습니다/.test(d), d);
+  assert.ok(d.includes(`설정 파일에 남아 있는 키(${KEY})로는 수집되지 않습니다`), d);
 });
 
 test('r20: 연결이 끊긴 상태에서는 이전의 폐기 확인 표시가 화면을 가리지 않는다(failed 상태가 revokedByHub보다 먼저 보인다)', () => {
