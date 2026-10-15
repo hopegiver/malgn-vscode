@@ -134,6 +134,313 @@ async function expectDependentsSkipped(page, bugs, label, expectedOrder) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// R14 P2-9 — 선행 도구(Node.js) 설치 확인 뒤 이어서 설치.
+//
+// 픽스처는 "백엔드가 실제로 만들 수 있는 응답 모양"만 쓴다(근거는 각 함수 주석):
+//  - 미설치 분기 query.rs:34-60 — path:null, actionKind = resolve_install_plan 결과
+//    (install_resolver.rs:223-249: 러너를 못 찾으면 Manual, 찾으면 Run)
+//  - 설치됨 분기 query.rs:82-101 — path:Some, installed = version.is_some(), actionKind = resolve_plan(업데이트 표)
+//  - Claude/pnpm/Wrangler는 npm(또는 pnpm) 러너가 있어야 Run(install_resolver.rs:159-188, 233-235)이고
+//    npm은 Node가 있어야 해석된다 → Node 미설치 머신에서는 manual, Node 설치 후 재조회에서 run.
+//  - Windows Node 설치는 winget 후보(install_resolver.rs:195-199)이고 winget 미리보기는 불신뢰
+//    (query.rs:115-117, 232-239) → previewReliable=false. npm/pnpm 설치는 preview_args:None이라
+//    previewReliable=true, affected 1개(query.rs:338-349, plan_table.rs RUN_NPM_*·RUN_PNPM_GLOBAL_ADD).
+//  - macOS Node는 구조적 manual(install_resolver.rs:125-128 주석, mac에서 Runner::Winget은 항상 None).
+// ---------------------------------------------------------------------------------------------
+function backendTool(id, name, o) {
+  return {
+    id,
+    name,
+    installed: o.installed,
+    version: o.installed ? (o.version ?? '1.0.0') : null,
+    path: o.path ?? null,
+    installMethod: o.installMethod ?? null,
+    actionKind: o.actionKind,
+    manualHint: o.manualHint ?? null,
+    required: o.required ?? false,
+    installDependsOn: o.installDependsOn ?? [],
+  };
+}
+
+const WIN_NO_NPM_HINT = 'Claude Code가 설치되어 있지 않습니다. npm을 찾을 수 없다면 Node.js를 먼저 설치해주세요(winget install OpenJS.NodeJS.LTS).';
+const MAC_NODE_HINT = 'Node.js가 설치되어 있지 않습니다. 이미 nvm/fnm/volta 등으로 관리 중이라면 그쪽에서 설치해주세요. 그렇지 않고 Homebrew가 있다면 아래 명령으로 설치할 수 있습니다.';
+const MAC_NO_RUNNER_HINT = '필요한 실행 도구(brew/npm)를 찾을 수 없어 앱이 자동으로 실행하지 않습니다.';
+
+// platform: 'win' | 'mac'.  phase: 'beforeNode'(Node 없음) | 'nodeUnverified'(Node 파일은 있으나 --version 무응답) | 'afterNode'(Node 설치 확인됨)
+function chainList(platform, phase) {
+  const win = platform === 'win';
+  const nodePath = win ? 'C:\\Program Files\\nodejs\\node.exe' : '/opt/homebrew/bin/node';
+  const hint = win ? WIN_NO_NPM_HINT : MAC_NO_RUNNER_HINT;
+  const depRun = phase === 'afterNode' || phase === 'nodeUnverified' ? 'run' : 'manual';
+  const dep = (id, name, extra = {}) =>
+    backendTool(id, name, { installed: false, actionKind: depRun, manualHint: depRun === 'manual' ? hint : null, installDependsOn: ['node'], ...extra });
+  let node;
+  if (phase === 'beforeNode') {
+    // 미설치 분기: Windows는 winget 후보가 있어 run, macOS는 구조적 manual.
+    node = backendTool('node', 'Node.js', { installed: false, actionKind: win ? 'run' : 'manual', manualHint: win ? null : MAC_NODE_HINT, required: true });
+  } else if (phase === 'nodeUnverified') {
+    // 설치됨 분기이지만 version=None: installed=false, path는 채워짐. Windows Node의 업데이트 경로는 manual.
+    node = backendTool('node', 'Node.js', { installed: false, path: nodePath, installMethod: win ? 'MSI 설치본' : 'Homebrew', actionKind: 'manual', manualHint: '업데이트는 앱이 대신 실행하지 않습니다.', required: true });
+  } else {
+    node = backendTool('node', 'Node.js', { installed: true, version: '22.11.0', path: nodePath, installMethod: win ? 'MSI 설치본' : 'Homebrew', actionKind: win ? 'manual' : 'run', manualHint: win ? '업데이트는 앱이 대신 실행하지 않습니다.' : null, required: true });
+  }
+  return [
+    dep('claude', 'Claude Code', { required: true }),
+    node,
+    backendTool('gh', 'GitHub CLI', { installed: true, path: win ? 'C:\\Program Files\\GitHub CLI\\gh.exe' : '/opt/homebrew/bin/gh', installMethod: 'winget/Homebrew', actionKind: 'run' }),
+    backendTool('git', 'Git', { installed: true, path: win ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/opt/homebrew/bin/git', installMethod: 'Homebrew', actionKind: 'manual', manualHint: '업데이트는 앱이 대신 실행하지 않습니다.', required: true }),
+    dep('pnpm', 'pnpm'),
+    dep('wrangler', 'Wrangler'),
+  ];
+}
+
+// 스텁: 모든 invoke를 window.__calls에 `cmd:toolId`로 기록한다. check_dev_tools는 window.__list를 돌려주고,
+// 설치 성공이면 그 도구를 installed로 바꾼다(Node 성공 시에는 afterList로 통째 교체 — 재조회 후 의존 도구가 run이 된 응답).
+function installChainStub({ afterList, nodeOutcome }) {
+  const orig = window.__TAURI_INTERNALS__.invoke;
+  window.__calls = [];
+  window.__afterList = afterList;
+  window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+    const id = args && args.toolId;
+    if (['check_dev_tools', 'preview_dev_tool_update', 'install_dev_tool', 'update_dev_tool', 'open_manual_instruction'].includes(cmd)) {
+      window.__calls.push(id ? `${cmd}:${id}${cmd === 'open_manual_instruction' ? `:${args.execute}` : ''}` : cmd);
+    }
+    if (cmd === 'check_dev_tools') return window.__list;
+    if (cmd === 'preview_dev_tool_update') {
+      return { id, planId: `plan-${id}`, willRun: true, commandDisplay: id === 'node' ? 'winget install --id OpenJS.NodeJS.LTS -e' : `npm install -g ${id}`, affected: [id], notes: id === 'node' ? 'winget은 사전 시뮬레이션을 제공하지 않아 함께 변경될 항목을 미리 확인할 수 없습니다.' : '', previewReliable: id !== 'node' };
+    }
+    if (cmd === 'install_dev_tool' || cmd === 'update_dev_tool') {
+      const outcome = id === 'node' ? nodeOutcome : 'updated';
+      if (outcome === 'updated') {
+        if (id === 'node') window.__list = window.__afterList;
+        else window.__list = window.__list.map((t) => (t.id === id ? { ...t, installed: true, version: '2.0.0', path: `/stub/${id}`, actionKind: 'run' } : t));
+      }
+      return {
+        id,
+        outcome,
+        verified: outcome === 'updated',
+        versionBefore: null,
+        versionAfter: outcome === 'updated' ? '2.0.0' : null,
+        normalizedAfter: null,
+        installMethod: 'stub',
+        durationMs: 10,
+        message: outcome === 'failed' ? 'harness: 설치 실패(스텁)' : 'ok',
+        logTail: '',
+        pathVisible: true,
+      };
+    }
+    if (cmd === 'open_manual_instruction') {
+      return { opened: !!args.execute, message: args.execute ? '터미널을 열었습니다(스텁)' : '다음 명령을 실행합니다: brew install node' };
+    }
+    return orig(cmd, args);
+  };
+}
+
+const EXEC_CMDS = ['install_dev_tool', 'update_dev_tool', 'open_manual_instruction'];
+const DEPS = ['claude', 'pnpm', 'wrangler'];
+const callsOf = (page) => page.evaluate(() => window.__calls ?? []);
+const execOn = (calls, ids) => calls.filter((c) => EXEC_CMDS.some((e) => c.startsWith(`${e}:`)) && ids.includes(c.split(':')[1]));
+const anyOn = (calls, ids) => calls.filter((c) => ids.includes(c.split(':')[1]));
+
+async function waitIdle(page) {
+  await page.waitForFunction(() => !/중…/.test(document.querySelector('.devtool-header-actions')?.textContent ?? '') && !document.querySelector('.devtool-spinner'), null, { timeout: 8000 });
+  await page.waitForTimeout(200);
+}
+
+async function modalText(page) {
+  return (await page.locator('.modal-body').count()) > 0 ? ((await page.locator('.modal-body').first().textContent()) ?? '') : null;
+}
+
+function chainScenarios(base) {
+  const FILE_C = 'src/views/devTools.ts:offerInstallChain';
+  const mk = (id, { platform, phase = 'beforeNode', nodeOutcome = 'updated' }, body) => ({
+    id,
+    startHash,
+    fixtures: { ...base, check_dev_tools: chainList(platform, phase) },
+    async run(page, ctx) {
+      await page.evaluate((arg) => { window.__list = arg.list; }, { list: chainList(platform, phase) });
+      await page.evaluate(installChainStub, { afterList: chainList(platform, 'afterNode'), nodeOutcome });
+      // 초기 로드는 스텁 설치 전에 끝났으므로 목록을 스텁 기준으로 다시 맞춘다.
+      await page.getByRole('button', { name: '↻ 다시 확인' }).click();
+      await page.waitForSelector('.devtool-row');
+      await page.waitForTimeout(150);
+      await page.evaluate(() => { window.__calls = []; });
+      await body(page, ctx);
+    },
+  });
+
+  const installNodeIndividually = async (page) => {
+    await page.locator('#devtool-row-node').getByRole('button', { name: '설치' }).click();
+    await page.waitForSelector('.devtool-panel-actions');
+    await page.locator('.devtool-panel-actions').getByRole('button', { name: '실행' }).click();
+  };
+
+  const expectChainOrder = (calls, bugs, label) => {
+    const want = ['preview_dev_tool_update:claude', 'install_dev_tool:claude', 'preview_dev_tool_update:pnpm', 'install_dev_tool:pnpm', 'preview_dev_tool_update:wrangler', 'install_dev_tool:wrangler'];
+    const got = calls.filter((c) => /^(preview_dev_tool_update|install_dev_tool|update_dev_tool):(claude|pnpm|wrangler)$/.test(c));
+    if (!arrEq(got, want)) bugs.push({ severity: 'Critical', symptom: `[${label}] 이어서 설치 호출이 기대와 다름 — 기대 ${JSON.stringify(want)}, 실제 ${JSON.stringify(got)}`, file: FILE_C });
+  };
+
+  return [
+    // (a) Windows 형태: Node 개별 확인 설치 성공 → 재조회 → 이어서 설치 동의 → 의존 도구 실행.
+    mk('chain-win-consent-then-run', { platform: 'win' }, async (page, { shot, bugs }) => {
+      // Node 미리보기 패널: 이어서 설치가 "한 번 더 묻는다"고만 말하고 한 번에 된다고 주장하지 않는다.
+      await page.locator('#devtool-row-node').getByRole('button', { name: '설치' }).click();
+      await page.waitForSelector('.devtool-panel-actions');
+      await shot('01-node-preview-with-chain-hint');
+      const panel = (await page.locator('.devtool-chain-hint').first().textContent()) ?? '';
+      if (!panel.includes('Claude Code') || !panel.includes('한 번 더 묻습니다')) bugs.push({ severity: 'Major', symptom: `[win] Node 미리보기에 이어서 설치 안내가 없거나 부정확함: ${panel}`, file: 'src/views/devTools.ts:renderChainHint' });
+      await page.locator('.devtool-panel-actions').getByRole('button', { name: '실행' }).click();
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      const text = (await modalText(page)) ?? '';
+      await shot('02-chain-consent-dialog');
+      for (const n of ['Claude Code', 'pnpm', 'Wrangler', 'Node.js 설치가 확인되었습니다']) {
+        if (!text.includes(n)) bugs.push({ severity: 'Critical', symptom: `[win] 동의 문구에 "${n}"이 없음: ${text}`, file: FILE_C });
+      }
+      if (/GitHub CLI|Git\b/.test(text.replace('GitHub', ''))) bugs.push({ severity: 'Critical', symptom: `[win] 동의 문구에 실행 대상이 아닌 도구가 있음: ${text}`, file: FILE_C });
+      // 동의 전: 의존 도구에 대한 실행 커맨드 0건(미리보기도 0건).
+      const before = await callsOf(page);
+      if (anyOn(before, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[win] 동의 전에 의존 도구 커맨드가 호출됨: ${JSON.stringify(anyOn(before, DEPS))}`, file: FILE_C });
+      if (execOn(before, ['node']).join() !== 'install_dev_tool:node') bugs.push({ severity: 'Critical', symptom: `[win] Node 개별 설치가 정확히 1회가 아님: ${JSON.stringify(before)}`, file: FILE_C });
+      await page.locator('.modal-body').getByRole('button', { name: '이어서 설치' }).click();
+      await waitIdle(page);
+      await shot('03-after-chain');
+      const calls = await callsOf(page);
+      expectChainOrder(calls, bugs, 'win');
+      const nodeExec = execOn(calls, ['node']);
+      if (nodeExec.length !== 1) bugs.push({ severity: 'Critical', symptom: `[win] Node 실행이 ${nodeExec.length}회 (중복 실행)`, file: FILE_C });
+      const rows = await page.locator('.devtool-row').evaluateAll((rs) => rs.map((r) => [r.id.replace('devtool-row-', ''), r.textContent ?? '']));
+      for (const [id, t] of rows) if (['claude', 'node', 'pnpm', 'wrangler'].includes(id) && t.includes('설치 안 됨')) bugs.push({ severity: 'Major', symptom: `[win] ${id}가 이어서 설치 뒤에도 미설치로 보임`, file: FILE_C });
+      if ((await page.locator('.modal-body').count()) !== 0) bugs.push({ severity: 'Major', symptom: '[win] 흐름이 끝났는데 확인창이 남아 있음(연쇄가 끝나지 않음)', file: FILE_C });
+    }),
+
+    // (b) 동의 거부: 어떤 의존 도구도 미리보기·실행되지 않고, 항목은 개별 "설치"로 남는다.
+    mk('chain-win-declined', { platform: 'win' }, async (page, { shot, bugs }) => {
+      await installNodeIndividually(page);
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      await page.locator('.modal-body').getByRole('button', { name: '취소' }).click();
+      await page.waitForTimeout(400);
+      await shot('01-after-decline');
+      const calls = await callsOf(page);
+      if (anyOn(calls, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[declined] 거부했는데 의존 도구 커맨드가 호출됨: ${JSON.stringify(anyOn(calls, DEPS))}`, file: FILE_C });
+      for (const id of DEPS) {
+        const btn = await page.locator(`#devtool-row-${id}`).getByRole('button', { name: '설치' }).count();
+        if (btn !== 1) bugs.push({ severity: 'Major', symptom: `[declined] ${id}에 개별 "설치" 버튼이 남아 있지 않음`, file: FILE_C });
+      }
+      // 같은 상태에서 다시 확인해도(변화 없음) 다시 묻지 않는다 — 유한성.
+      await page.getByRole('button', { name: '↻ 다시 확인' }).click();
+      await page.waitForTimeout(400);
+      if ((await page.locator('.modal-body').count()) !== 0) bugs.push({ severity: 'Major', symptom: '[declined] 변화 없는 재조회가 이어서 설치를 다시 물음(무한 제안)', file: FILE_C });
+    }),
+
+    // (c) Node 설치 실패/unknownAfter/timedOut → 연쇄 없음, 의존 도구 호출 0건.
+    ...['failed', 'unknownAfter', 'timedOut'].map((nodeOutcome) =>
+      mk(`chain-win-node-${nodeOutcome}`, { platform: 'win', nodeOutcome }, async (page, { shot, bugs }) => {
+        await installNodeIndividually(page);
+        await page.waitForTimeout(700);
+        await shot('01-node-not-confirmed');
+        if ((await page.locator('.modal-body').count()) !== 0) bugs.push({ severity: 'Critical', symptom: `[node-${nodeOutcome}] Node 설치가 확인되지 않았는데 이어서 설치 확인창이 뜸`, file: FILE_C });
+        const calls = await callsOf(page);
+        if (anyOn(calls, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[node-${nodeOutcome}] 선행 설치 미확인인데 의존 도구 커맨드가 호출됨: ${JSON.stringify(anyOn(calls, DEPS))}`, file: FILE_C });
+        // 실패 사유(결과 패널)는 Node 행에 남는다.
+        const item = await page.locator('#devtool-row-node').locator('xpath=ancestor::div[contains(@class,"devtool-item")]').textContent();
+        if (!item.includes(nodeOutcome === 'failed' ? '실행 실패' : nodeOutcome === 'timedOut' ? '시간이 초과' : '확인하지 못했습니다')) bugs.push({ severity: 'Major', symptom: `[node-${nodeOutcome}] Node 결과 사유가 화면에 없음: ${item}`, file: 'src/views/devTools.ts:renderResultPanel' });
+      })
+    ),
+
+    // (d) macOS 형태: Node는 manual. 문구가 한 번에 설치된다고 주장하지 않고, 직접 설치 뒤 다시 확인하면 같은 이어서 설치 흐름.
+    mk('chain-mac-manual-node-then-recheck', { platform: 'mac' }, async (page, { shot, bugs }) => {
+      await page.locator('#devtool-row-node').getByRole('button', { name: '안내 보기' }).click();
+      await page.waitForSelector('.devtool-chain-hint');
+      await shot('01-mac-node-manual-guide');
+      const hint = (await page.locator('.devtool-chain-hint').first().textContent()) ?? '';
+      if (!hint.includes('직접 설치한 뒤') || !hint.includes('Claude Code') || !hint.includes('설치를 대신하지는 않습니다')) bugs.push({ severity: 'Major', symptom: `[mac] Node 안내의 이어서 설치 문구가 부정확함: ${hint}`, file: 'src/views/devTools.ts:renderChainHint' });
+      const bodyText = (await page.locator('body').textContent()) ?? '';
+      if (/한 번에|한번에|자동으로 (모두|함께) 설치/.test(bodyText)) bugs.push({ severity: 'Major', symptom: '[mac] 화면이 macOS에서 한 번에 설치된다고 주장함', file: 'src/views/devTools.ts' });
+      // 전체 업데이트: 설치 대상(run)이 없으므로 확인창이 뜨지 않고 Node/의존 도구에 아무 것도 하지 않는다.
+      await page.getByRole('button', { name: '전체 업데이트' }).click();
+      await page.waitForTimeout(500);
+      if ((await page.locator('.modal-body').count()) !== 0) bugs.push({ severity: 'Major', symptom: '[mac] 설치 대상이 없는데 전체 업데이트가 설치 확인창을 띄움', file: 'src/views/devTools.ts:handleUpdateAll' });
+      let calls = await callsOf(page);
+      if (anyOn(calls, ['node', ...DEPS]).filter((c) => !c.startsWith('check_dev_tools')).length > 0) bugs.push({ severity: 'Critical', symptom: `[mac] 전체 업데이트가 manual 도구에 커맨드를 호출함: ${JSON.stringify(calls)}`, file: 'src/views/devTools.ts:handleUpdateAll' });
+      // 사용자가 터미널에서 Node를 직접 설치했다고 가정: 다음 조회에서 Node 설치됨 + 의존 도구 run.
+      await page.evaluate(() => { window.__list = window.__afterList; });
+      await page.evaluate(() => { window.__calls = []; });
+      await page.getByRole('button', { name: '↻ 다시 확인' }).click();
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      await shot('02-mac-chain-consent-after-manual-install');
+      const text = (await modalText(page)) ?? '';
+      if (!text.includes('Claude Code') || !text.includes('pnpm') || !text.includes('Wrangler')) bugs.push({ severity: 'Critical', symptom: `[mac] 동의 문구에 대상 도구 이름이 없음: ${text}`, file: FILE_C });
+      calls = await callsOf(page);
+      if (execOn(calls, ['node', ...DEPS]).length > 0 || anyOn(calls, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[mac] 동의 전에 설치 관련 커맨드가 호출됨: ${JSON.stringify(calls)}`, file: FILE_C });
+      await page.locator('.modal-body').getByRole('button', { name: '이어서 설치' }).click();
+      await waitIdle(page);
+      await shot('03-mac-after-chain');
+      calls = await callsOf(page);
+      expectChainOrder(calls, bugs, 'mac');
+      if (anyOn(calls, ['node']).some((c) => !c.startsWith('check_dev_tools'))) bugs.push({ severity: 'Critical', symptom: `[mac] 앱이 Node.js에 설치/미리보기를 시도함(P2-3 범위 밖): ${JSON.stringify(calls)}`, file: FILE_C });
+    }),
+
+    // R7 RV-002 예외 경로: Node 파일은 있는데 --version 무응답(installed=false, path 있음) + npm 해석됨(의존 도구 run).
+    // 오판 1) "설치가 확인되지 않아"라고 단정하거나 2) 그 상태로 Claude 등을 설치 시도하면 안 된다.
+    mk('chain-node-unverified-timeout', { platform: 'win', phase: 'nodeUnverified' }, async (page, { shot, bugs }) => {
+      await page.getByRole('button', { name: '전체 업데이트' }).click();
+      await page.waitForTimeout(400);
+      // 의존 3종은 이번 배치에서 실행될 수 없으므로 동의창에 이름이 오르지 않는다(동의 == 실행 대상). 설치 대상이 없어 창이 없다.
+      if ((await page.locator('.modal-body').count()) !== 0) {
+        bugs.push({ severity: 'Critical', symptom: `[unverified] 실행할 수 없는 도구가 설치 동의창에 오름: ${await modalText(page)}`, file: 'src/views/devTools.ts:handleUpdateAll' });
+        await page.locator('.modal-body').getByRole('button', { name: '취소' }).click();
+      }
+      await waitIdle(page);
+      await shot('01-unverified-batch-skip-reasons');
+      let calls = await callsOf(page);
+      if (anyOn(calls, ['node', ...DEPS]).some((c) => !c.startsWith('check_dev_tools'))) bugs.push({ severity: 'Critical', symptom: `[unverified] 버전 미확인 Node 때문에 의존 도구/Node에 커맨드가 호출됨: ${JSON.stringify(calls)}`, file: 'src/views/devTools.ts:handleUpdateAll' });
+      for (const id of DEPS) {
+        const panel = page.locator(`#devtool-row-${id}`).locator('xpath=ancestor::div[contains(@class,"devtool-item")]').locator('.devtool-panel-skipped');
+        const t = (await panel.count()) > 0 ? ((await panel.first().textContent()) ?? '') : null;
+        if (t === null) bugs.push({ severity: 'Critical', symptom: `[unverified] ${id}: 건너뜀 사유가 없음`, file: 'src/views/devTools.ts:renderSkipPanel' });
+        else {
+          if (!t.includes('버전을 확인하지 못해') || !t.includes('파일이 발견됐지만')) bugs.push({ severity: 'Major', symptom: `[unverified] ${id}: 사유가 "파일은 있으나 버전 미확인"을 말하지 않음: ${t}`, file: 'src/devToolsOrder.ts:describeUnmetDependencies' });
+          if (t.includes('설치가 확인되지 않아')) bugs.push({ severity: 'Major', symptom: `[unverified] ${id}: 있는 Node를 "설치 안 됨"으로 단정하는 문구: ${t}`, file: 'src/devToolsOrder.ts:describeUnmetDependencies' });
+        }
+      }
+      // 이후 Node가 응답하면(재조회) 같은 이어서 설치 흐름으로 회복된다.
+      await page.evaluate(() => { window.__list = window.__afterList; window.__calls = []; });
+      await page.getByRole('button', { name: '↻ 다시 확인' }).click();
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      await shot('02-unverified-recovers-consent');
+      await page.locator('.modal-body').getByRole('button', { name: '이어서 설치' }).click();
+      await waitIdle(page);
+      calls = await callsOf(page);
+      expectChainOrder(calls, bugs, 'unverified-recover');
+      if ((await page.locator('.devtool-panel-skipped').count()) !== 0) bugs.push({ severity: 'Major', symptom: '[unverified] 설치 확인 뒤에도 건너뜀 패널이 남음', file: 'src/views/devTools.ts:renderDevToolItem' });
+    }),
+
+    // 배치 경로: 전체 업데이트로 Node(개별 확인 대기) → 개별 확인 설치 → 이어서 설치. 배치 동의창은 Node 한 개만 올린다.
+    mk('chain-win-batch-then-individual', { platform: 'win' }, async (page, { shot, bugs }) => {
+      await page.getByRole('button', { name: '전체 업데이트' }).click();
+      await page.waitForSelector('.modal-body');
+      const t = (await modalText(page)) ?? '';
+      if (!t.includes('1개 도구를 설치합니다: Node.js') || /Claude|pnpm|Wrangler/.test(t)) bugs.push({ severity: 'Critical', symptom: `[batch] 배치 동의창이 실행 대상과 다름: ${t}`, file: 'src/views/devTools.ts:handleUpdateAll' });
+      await shot('01-batch-summary-node-only');
+      await page.locator('.modal-body').getByRole('button', { name: '확인' }).click();
+      await waitIdle(page);
+      // Node는 winget이라 previewReliable=false → 개별 확인 대기(배치는 실행하지 않음). 이 시점에 의존 도구 커맨드 0건.
+      let calls = await callsOf(page);
+      if (execOn(calls, ['node', ...DEPS]).some((c) => c !== 'update_dev_tool:gh') || anyOn(calls, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[batch] 개별 확인 전에 Node/의존 도구가 실행됨: ${JSON.stringify(calls)}`, file: 'src/views/devTools.ts:handleUpdateAll' });
+      await page.locator('.devtool-panel-actions').getByRole('button', { name: '실행' }).click();
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      await page.locator('.modal-body').getByRole('button', { name: '이어서 설치' }).click();
+      await waitIdle(page);
+      await shot('02-batch-then-chain-done');
+      calls = await callsOf(page);
+      expectChainOrder(calls, bugs, 'batch');
+      if (execOn(calls, ['node']).length !== 1) bugs.push({ severity: 'Critical', symptom: `[batch] Node 실행 횟수가 1이 아님: ${JSON.stringify(execOn(calls, ['node']))}`, file: FILE_C });
+    }),
+  ];
+}
+
 export function scenarios(base) {
   const mk = (id, nodeInstalled, stub, check) => ({
     id,
@@ -242,7 +549,10 @@ export function scenarios(base) {
         window.__TAURI_INTERNALS__.invoke = async (cmd, args) => (cmd === 'check_dev_tools' ? installedNodeList : orig(cmd, args));
       }, toolList({ nodeInstalled: true }));
       await page.getByRole('button', { name: '↻ 다시 확인' }).click();
-      await page.waitForFunction(() => document.querySelector('#devtool-row-node')?.textContent?.includes('설치됨') || !document.querySelector('.devtool-panel-skipped'), null, { timeout: 4000 }).catch(() => {});
+      // R14 P2-9: 사용자가 Node를 직접 설치한 뒤 재조회하면 이어서 설치 확인창이 뜬다. 이 시나리오의 관심사는
+      // 건너뜀 패널 소거이므로 확인창은 거절한다(거절하면 아무것도 실행되지 않는다).
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      await page.locator('.modal-body').getByRole('button', { name: '취소' }).click();
       await page.waitForTimeout(200);
       await shot('02-skip-panels-after-node-installed');
       const left = await page.locator('.devtool-panel-skipped').count();
@@ -284,6 +594,8 @@ export function scenarios(base) {
       },
     },
 
+    ...chainScenarios(base),
+
     // 순수 함수(devToolsOrder.ts) 단위 검증 — Vite가 모듈을 그대로 서빙하므로 브라우저에서 import한다.
     {
       id: 'pure-order-functions',
@@ -305,6 +617,26 @@ export function scenarios(base) {
             unmetMissingField: m.unmetInstallDependencies({ id: 'gh' }, new Set()),
             confirmed: ['updated', 'alreadyLatest'].map(m.isInstallConfirmedOutcome),
             notConfirmed: ['failed', 'unknownAfter', 'timedOut', 'notSupported'].map(m.isInstallConfirmedOutcome),
+            ...(() => {
+              const c = (id, o = {}) => ({ id, name: id.toUpperCase(), installed: false, actionKind: 'run', installDependsOn: [], path: null, ...o });
+              const before = [c('claude', { installDependsOn: ['node'], actionKind: 'manual' }), c('node'), c('pnpm', { installDependsOn: ['node'], actionKind: 'manual' }), c('gh', { installed: true })];
+              const after = [c('claude', { installDependsOn: ['node'] }), c('node', { installed: true }), c('pnpm', { installDependsOn: ['node'] }), c('gh', { installed: true })];
+              const ids = (p) => (p ? { causes: p.causes.map((t) => t.id), candidates: p.candidates.map((t) => t.id), stuck: p.stuck.map((t) => t.id) } : null);
+              return {
+                chainNew: ids(m.planInstallChain(before, after, new Set())),
+                chainNoPrev: ids(m.planInstallChain([], after, new Set())),
+                chainNoChange: ids(m.planInstallChain(after, after, new Set())),
+                chainNodeStillMissing: ids(m.planInstallChain(before, before, new Set())),
+                chainHandled: ids(m.planInstallChain(before, after, new Set(['claude', 'pnpm']))),
+                chainPartialHandled: ids(m.planInstallChain(before, after, new Set(['claude']))),
+                chainStuck: ids(m.planInstallChain(before, [after[0], after[1], { ...after[2], actionKind: 'manual' }, after[3]], new Set())),
+                chainTwoDeps: ids(m.planInstallChain(
+                  [c('x', { installDependsOn: ['node', 'git'], actionKind: 'manual' }), c('node'), c('git')],
+                  [c('x', { installDependsOn: ['node', 'git'] }), c('node', { installed: true }), c('git')], new Set())),
+                unverifiedText: m.describeUnmetDependencies(['node'], [{ id: 'node', name: 'Node.js', installed: false, actionKind: 'manual', path: 'C:/node.exe' }]),
+                missingText: m.describeUnmetDependencies(['node'], [{ id: 'node', name: 'Node.js', installed: false, actionKind: 'manual', path: null }]),
+              };
+            })(),
           };
         });
         const expect = (name, actual, expected) => {
@@ -322,6 +654,16 @@ export function scenarios(base) {
         expect('unmetMissingField', out.unmetMissingField, []);
         expect('confirmed', out.confirmed, [true, true]);
         expect('notConfirmed', out.notConfirmed, [false, false, false, false]);
+        expect('chainNew', out.chainNew, { causes: ['node'], candidates: ['claude', 'pnpm'], stuck: [] });
+        expect('chainNoPrev(첫 조회는 제안 없음)', out.chainNoPrev, null);
+        expect('chainNoChange', out.chainNoChange, null);
+        expect('chainNodeStillMissing', out.chainNodeStillMissing, null);
+        expect('chainHandled(이미 다룬 도구는 재제안 안 함)', out.chainHandled, null);
+        expect('chainPartialHandled', out.chainPartialHandled, { causes: ['node'], candidates: ['pnpm'], stuck: [] });
+        expect('chainStuck(run이 아니면 후보 아님)', out.chainStuck, { causes: ['node'], candidates: ['claude'], stuck: ['pnpm'] });
+        expect('chainTwoDeps(다른 선행 도구 미설치면 후보 아님)', out.chainTwoDeps, { causes: ['node'], candidates: [], stuck: ['x'] });
+        expect('unverifiedText', out.unverifiedText.includes('파일이 발견됐지만') && !out.unverifiedText.includes('설치가 확인되지 않아'), true);
+        expect('missingText', out.missingText, '선행 도구(Node.js) 설치가 확인되지 않아 건너뜀');
       },
     },
   ];

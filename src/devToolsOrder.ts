@@ -54,3 +54,74 @@ export function isInstallConfirmedOutcome(outcome: string): boolean {
 export function skipReasonForUnmet(unmetNames: readonly string[]): string {
   return `선행 도구(${unmetNames.join(', ')}) 설치가 확인되지 않아 건너뜀`;
 }
+
+// ---------------- 선행 도구 설치 확인 뒤 "이어서 설치" (R14 P2-9) ----------------
+// 아래는 전부 부수효과 없는 순수 함수다(화면·invoke 의존 없음). 정본 입력은 역시 백엔드가
+// 내려주는 목록(installed/actionKind/path/installDependsOn)뿐이다.
+
+export interface ChainTool extends OrderableTool {
+  readonly name: string;
+  readonly installed: boolean;
+  readonly actionKind: string;
+  readonly path?: string | null;
+}
+
+// 선행 도구 중 "설치가 확인되지 않은" 것을 사람이 읽는 사유로 바꾼다. 두 갈래를 구분한다:
+//  - 경로도 없다 → 정말 설치가 확인되지 않음(기존 문구 그대로).
+//  - 경로는 있는데 installed=false → 백엔드는 `--version` 응답이 없을 때 이렇게 내려준다
+//    (query.rs: installed = version.is_some(), path는 따로 채움). 이때 "설치가 확인되지
+//    않았다"는 사실이지만 "없다"는 뜻은 아니다 — 있는 것을 없다고 말하거나(거짓 문장) 있다고
+//    믿고 의존 도구를 실행하지 않도록(미확인) 문구로 구분해 말한다.
+export function describeUnmetDependencies(unmetIds: readonly string[], items: readonly ChainTool[]): string {
+  const byId = new Map(items.map((t) => [t.id, t]));
+  const missing: string[] = [];
+  const unverifiable: string[] = [];
+  for (const id of unmetIds) {
+    const tool = byId.get(id);
+    const name = tool?.name ?? id;
+    if (tool && !tool.installed && tool.path) unverifiable.push(name);
+    else missing.push(name);
+  }
+  const parts: string[] = [];
+  if (missing.length > 0) parts.push(skipReasonForUnmet(missing));
+  if (unverifiable.length > 0) {
+    parts.push(`선행 도구(${unverifiable.join(', ')})는 이 PC에서 파일이 발견됐지만 버전을 확인하지 못해(응답 지연 등) 설치 여부를 판정할 수 없어 건너뜀`);
+  }
+  return parts.join(' / ');
+}
+
+// 이 도구를 선행 도구로 삼는데 아직 설치되지 않은 도구들(화면 안내 문구용).
+export function pendingDependentsOf<T extends ChainTool>(toolId: string, items: readonly T[]): T[] {
+  return items.filter((t) => !t.installed && (t.installDependsOn ?? []).includes(toolId));
+}
+
+export interface InstallChainPlan<T extends ChainTool> {
+  // 이번 재조회에서 새로 설치된 것으로 확인된 선행 도구(이어 설치 대상의 원인이 되는 것만).
+  readonly causes: T[];
+  // 지금 `run`으로 설치할 수 있고 선행 도구가 모두 설치 확인된 의존 도구(의존 순서로 정렬).
+  readonly candidates: T[];
+  // 새 선행 도구에 의존하지만 아직 `run`이 아니거나 다른 선행 도구가 미설치라 이어 설치할 수 없는 도구.
+  readonly stuck: T[];
+}
+
+// 재조회 전(prev)/후(next) 목록을 비교해 "이어서 설치" 제안 대상을 계산한다.
+//  - 새로 설치된 선행 도구 = prev에서는 installed=false로 존재했고 next에서 installed=true.
+//    (prev가 비었거나 그 도구가 prev에 없으면 비교 기준이 없으므로 제안하지 않는다 — 앱
+//    시작 직후 첫 조회가 제안을 띄우지 않게 하는 장치.)
+//  - handled(이번 흐름에서 이미 동의·실행·보류 처리한 도구)는 다시 제안하지 않는다 — 같은
+//    도구가 두 번 제안·실행되지 않게 하는 상한.
+//  - 후보는 `actionKind==='run'` + 선행 도구가 전부 next에서 installed=true인 미설치 도구만.
+// 제안할 것도, 막힌 것도 없으면 null.
+export function planInstallChain<T extends ChainTool>(prev: readonly ChainTool[], next: readonly T[], handled: ReadonlySet<string>): InstallChainPlan<T> | null {
+  if (prev.length === 0) return null;
+  const prevById = new Map(prev.map((t) => [t.id, t]));
+  const nowInstalled = new Set(next.filter((t) => t.installed).map((t) => t.id));
+  const newly = new Set(next.filter((t) => t.installed && prevById.get(t.id) && !prevById.get(t.id)!.installed).map((t) => t.id));
+  if (newly.size === 0) return null;
+  const dependents = next.filter((t) => !t.installed && !handled.has(t.id) && (t.installDependsOn ?? []).some((dep) => newly.has(dep)));
+  if (dependents.length === 0) return null;
+  const candidates = orderByInstallDependency(dependents.filter((t) => t.actionKind === 'run' && (t.installDependsOn ?? []).every((dep) => nowInstalled.has(dep))));
+  const stuck = dependents.filter((t) => !candidates.includes(t));
+  const causeIds = new Set(dependents.flatMap((t) => (t.installDependsOn ?? []).filter((dep) => newly.has(dep))));
+  return { causes: next.filter((t) => causeIds.has(t.id)), candidates, stuck };
+}

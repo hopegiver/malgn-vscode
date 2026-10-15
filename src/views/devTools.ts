@@ -33,13 +33,18 @@
 // "전체 업데이트" 배치는 이 값으로 선행 도구(Node.js)를 먼저 실행하고, 선행 도구가
 // 설치 확인되지 않은 채 끝나면 그에 의존하는 미설치 도구는 실행하지 않고 사유와
 // 함께 건너뛴다(handleUpdateAll, 순서/판정 로직은 devToolsOrder.ts).
+//
+// 이어서 설치(R14 P2-9): 선행 도구가 "새로 설치된 것으로 재조회에서 확인"되면(개별 설치·
+// 배치·사용자가 직접 설치한 뒤의 "↻ 다시 확인" 모두) offerInstallChain이 그 결과로 새로
+// 설치 가능해진 의존 도구를 도구 이름을 적어 한 번 더 묻고, 동의한 경우에만 같은 안전장치
+// (미리보기 → 신뢰성/영향 범위 검사 → 실행)로 이어 설치한다.
 import { el, showToast, confirmDialog } from '../dom';
 import { errorMessage, sanitizeBackendText, maskLogText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 import { parseRoute } from '../route';
-import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, skipReasonForUnmet } from '../devToolsOrder';
+import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, describeUnmetDependencies, pendingDependentsOf, planInstallChain } from '../devToolsOrder';
 
 // IA §4-5(§7-6): 개발 도구 사이드바 행을 클릭하면 본문의 해당 행으로 스크롤 +
 // 일시 강조한다(새 라우트·API 없음, 순수 클라이언트 동작). 강조는 영속 상태가
@@ -239,7 +244,19 @@ async function handleConfirmRun(tool: DevToolStatus): Promise<void> {
   const preview = state.devTools.preview[tool.id];
   if (!preview) return;
   state.devTools.preview[tool.id] = null;
+  // 실행 전 목록을 잡아둔다 — 설치가 끝나 재조회된 목록과 비교해 "새로 설치된 선행 도구"를
+  // 알아내는 기준이다(planInstallChain). runPlan이 목록을 배열째 교체하므로 참조가 유지된다.
+  const itemsBefore = state.devTools.items;
   await runPlan(tool, preview);
+  await offerInstallChain(itemsBefore, new Set([tool.id]));
+}
+
+// "↻ 다시 확인" — 사용자가 선행 도구(예: macOS의 Node.js)를 앱 밖에서 직접 설치한 경우에도
+// 같은 이어서 설치 흐름을 탄다. 조회 전 목록과 비교해 새로 설치된 선행 도구가 있을 때만 묻는다.
+async function handleRecheck(): Promise<void> {
+  const itemsBefore = state.devTools.items;
+  await loadDevTools();
+  await offerInstallChain(itemsBefore, new Set());
 }
 
 function toggleManual(toolId: string): void {
@@ -338,16 +355,36 @@ function toggleLog(toolId: string): void {
 // 남았을 때도 마찬가지다. 동의 모델(미설치 N개 요약 확인, 미리보기 신뢰성/다중
 // 영향 제외)은 그대로이고 순서와 건너뜀만 바뀐다.
 async function handleUpdateAll(): Promise<void> {
+  const itemsBefore = state.devTools.items;
   const runnable = state.devTools.items.filter((t) => t.actionKind === 'run');
   const updateTargets = runnable.filter((t) => t.installed);
   const installTargets = runnable.filter((t) => !t.installed);
 
+  // 이전 배치의 건너뜀 사유는 새 배치 시작과 함께 지운다.
+  for (const t of state.devTools.items) batchSkipReason[t.id] = null;
+  const installedNow = new Set(state.devTools.items.filter((t) => t.installed).map((t) => t.id));
+  const runnableIds = new Set(runnable.map((t) => t.id));
+  let skippedCount = 0;
+
+  // 동의 문구가 실제 실행될 대상과 일치하도록(R14): 선행 도구가 설치돼 있지 않은데 그
+  // 선행 도구가 이번 배치의 실행 대상도 아니면(예: Node.js가 `--version` 응답 없음으로
+  // installed=false이고 manual이라 배치에 못 들어오는 경우) 이 도구는 어떤 동의를 받아도 이번
+  // 배치에서 실행될 수 없다 — "설치합니다" 요약에 이름을 올리지 않고 처음부터 사유와 함께
+  // 건너뛴다.
+  const blocked = installTargets.filter((t) => unmetInstallDependencies(t, installedNow).some((dep) => !runnableIds.has(dep)));
+  for (const t of blocked) {
+    batchSkipReason[t.id] = describeUnmetDependencies(unmetInstallDependencies(t, installedNow), state.devTools.items);
+    state.devTools.lastResult[t.id] = null;
+    skippedCount += 1;
+  }
+  const askable = installTargets.filter((t) => !blocked.includes(t));
+
   let confirmedInstallTargets: DevToolStatus[] = [];
-  if (installTargets.length > 0) {
-    const names = installTargets.map((t) => t.name).join(', ');
-    const proceed = await confirmDialog(`다음 ${installTargets.length}개 도구를 설치합니다: ${names}. 계속할까요?`);
+  if (askable.length > 0) {
+    const names = askable.map((t) => t.name).join(', ');
+    const proceed = await confirmDialog(`다음 ${askable.length}개 도구를 설치합니다: ${names}. 계속할까요?`);
     if (proceed) {
-      confirmedInstallTargets = installTargets;
+      confirmedInstallTargets = askable;
     }
   }
 
@@ -355,69 +392,155 @@ async function handleUpdateAll(): Promise<void> {
   // installDependsOn이고 정렬은 devToolsOrder.ts. 업데이트/설치 구분 없이 한 줄로
   // 세워 Node.js가 Claude Code·pnpm·Wrangler보다 항상 먼저 실행된다.
   const targets = orderByInstallDependency([...updateTargets, ...confirmedInstallTargets]);
-  if (targets.length === 0) return;
+  if (targets.length === 0) {
+    if (skippedCount > 0) showToast(`${skippedCount}개 도구는 선행 도구 설치가 확인되지 않아 건너뛰었습니다 — 각 항목에서 사유를 확인하세요`);
+    notifyChange();
+    return;
+  }
 
   // "설치가 확인된 도구" — 배치 시작 전부터 설치돼 있던 도구 + 이번 배치에서 설치
   // 재조회까지 통과한(updated/alreadyLatest) 도구. 선행 도구가 이 집합에 없으면
   // (실패·unknownAfter·timedOut·개별 확인 대기·미설치) 그에 의존하는 도구는
   // 실행하지 않는다.
-  const confirmedInstalled = new Set(state.devTools.items.filter((t) => t.installed).map((t) => t.id));
-  const nameById = new Map(state.devTools.items.map((t) => [t.id, t.name]));
-  for (const t of state.devTools.items) batchSkipReason[t.id] = null;
-  let skippedCount = 0;
+  const confirmedInstalled = new Set(installedNow);
 
   state.devTools.updatingAll = true;
   notifyChange();
 
-  for (const tool of targets) {
-    // 선행 도구 의존은 "새로 설치"에만 적용한다(백엔드 install_depends_on 주석):
-    // 이미 설치된 도구의 업데이트는 선행 도구와 무관하게 기존대로 진행한다.
-    if (!tool.installed) {
-      const unmet = unmetInstallDependencies(tool, confirmedInstalled);
-      if (unmet.length > 0) {
-        batchSkipReason[tool.id] = skipReasonForUnmet(unmet.map((id) => nameById.get(id) ?? id));
-        state.devTools.lastResult[tool.id] = null;
-        skippedCount += 1;
-        notifyChange();
-        continue;
+  try {
+    for (const tool of targets) {
+      // 선행 도구 의존은 "새로 설치"에만 적용한다(백엔드 install_depends_on 주석):
+      // 이미 설치된 도구의 업데이트는 선행 도구와 무관하게 기존대로 진행한다.
+      if (!tool.installed) {
+        const unmet = unmetInstallDependencies(tool, confirmedInstalled);
+        if (unmet.length > 0) {
+          batchSkipReason[tool.id] = describeUnmetDependencies(unmet, state.devTools.items);
+          state.devTools.lastResult[tool.id] = null;
+          skippedCount += 1;
+          notifyChange();
+          continue;
+        }
       }
-    }
 
-    state.devTools.previewLoading[tool.id] = true;
-    notifyChange();
-    let preview: DevToolPreview | null = null;
-    try {
-      preview = await previewDevToolUpdate(tool.id);
-    } catch (err) {
-      showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${errorMessage(err)}`);
-    } finally {
-      state.devTools.previewLoading[tool.id] = false;
+      const result = await previewAndRun(tool);
+      if (result && isInstallConfirmedOutcome(result.outcome)) confirmedInstalled.add(tool.id);
     }
-    if (!preview) continue;
-
-    if (!preview.previewReliable) {
-      state.devTools.preview[tool.id] = preview;
-      showToast(`${tool.name}: 미리보기로 영향 범위를 확인할 수 없습니다 — 개별 확인이 필요합니다`);
-      notifyChange();
-      continue;
-    }
-
-    if (preview.affected.length > 1) {
-      state.devTools.preview[tool.id] = preview;
-      showToast(`${tool.name}: ${preview.affected.length}개 항목이 함께 바뀝니다 — 개별 확인이 필요합니다`);
-      notifyChange();
-      continue;
-    }
-
-    const result = await runPlan(tool, preview);
-    if (result && isInstallConfirmedOutcome(result.outcome)) confirmedInstalled.add(tool.id);
+  } finally {
+    state.devTools.updatingAll = false;
   }
 
-  state.devTools.updatingAll = false;
   if (skippedCount > 0) {
     showToast(`${skippedCount}개 도구는 선행 도구 설치가 확인되지 않아 건너뛰었습니다 — 각 항목에서 사유를 확인하세요`);
   }
   notifyChange();
+
+  // 배치가 끝난 뒤 새로 확인된 선행 도구가 있으면 이어서 설치를 제안한다. 이번 배치가 이미
+  // 다룬 도구(runnable 전체 — 실행·건너뜀·개별 확인 대기·요약 거절 모두)는 다시 제안하지 않는다.
+  await offerInstallChain(itemsBefore, runnableIds);
+}
+
+// 한 도구의 "미리보기 → 신뢰성/영향 범위 검사 → 실행" 한 단계. 배치와 이어서 설치가 같은
+// 안전장치를 쓰도록 한 곳에 둔다. 반환: 실행해 결과를 받았으면 그 결과, 미리보기를 못
+// 받았거나 개별 확인 대기로 남겼거나 예외면 null.
+async function previewAndRun(tool: DevToolStatus): Promise<DevToolActionResult | null> {
+  state.devTools.previewLoading[tool.id] = true;
+  notifyChange();
+  let preview: DevToolPreview | null = null;
+  try {
+    preview = await previewDevToolUpdate(tool.id);
+  } catch (err) {
+    showToast(`${tool.name}: 미리보기를 가져오지 못했습니다 — ${errorMessage(err)}`);
+  } finally {
+    state.devTools.previewLoading[tool.id] = false;
+  }
+  if (!preview) return null;
+
+  if (!preview.previewReliable) {
+    state.devTools.preview[tool.id] = preview;
+    showToast(`${tool.name}: 미리보기로 영향 범위를 확인할 수 없습니다 — 개별 확인이 필요합니다`);
+    notifyChange();
+    return null;
+  }
+
+  if (preview.affected.length > 1) {
+    state.devTools.preview[tool.id] = preview;
+    showToast(`${tool.name}: ${preview.affected.length}개 항목이 함께 바뀝니다 — 개별 확인이 필요합니다`);
+    notifyChange();
+    return null;
+  }
+
+  return runPlan(tool, preview);
+}
+
+// ---------------- 선행 도구 설치 확인 뒤 이어서 설치 (R14 P2-9) ----------------
+// 신규 머신은 Node.js가 없으면 백엔드가 Claude Code/pnpm/Wrangler를 `manual`로 내려
+// 배치에 못 들어온다. 그래서 Node.js 설치(개별 확인 설치든, 사용자가 앱 밖에서 직접 설치한
+// 뒤의 "↻ 다시 확인"이든)가 재조회로 확인된 시점에, 그 결과 새로 `run`이 된 의존 도구를 한 번
+// 더 묻고 이어서 설치한다. 불변식:
+//  1. 실행은 오직 이 함수의 확인 대화상자에서 "도구 이름이 적힌 목록"에 동의한 뒤에만 한다.
+//     목록 = planInstallChain이 재조회 결과로 계산한 candidates 그대로(동의한 것 == 실행할 것).
+//  2. 재조회로 실제 설치가 확인된 선행 도구가 있을 때만 제안한다(prev→next에서 installed
+//     false→true). 실패/unknownAfter/timedOut은 runPlan이 목록을 재조회하지 않으므로 여기서
+//     비교할 변화가 없어 제안 자체가 없다.
+//  3. 유한: 한 흐름에서 이미 다룬 도구(handled)는 다시 제안하지 않고, 라운드는
+//     MAX_CHAIN_ROUNDS로 끊는다. 이 함수는 재진입하지 않는다(chainRunning).
+//  4. 각 도구는 배치와 같은 previewAndRun을 거치므로 previewReliable=false·영향 항목 2개 이상은
+//     실행하지 않고 개별 확인 대기로 남는다.
+// macOS에서 Node.js는 자동 설치 대상이 아니므로(구조적 manual) 이 흐름은 사용자가 직접 설치한
+// 뒤의 "다시 확인"에서만 시작된다.
+let chainRunning = false;
+const MAX_CHAIN_ROUNDS = 3;
+
+async function offerInstallChain(prevItems: readonly DevToolStatus[], handled: ReadonlySet<string>): Promise<void> {
+  if (chainRunning) return;
+  chainRunning = true;
+  const done = new Set(handled);
+  let prev = prevItems;
+  try {
+    for (let round = 0; round < MAX_CHAIN_ROUNDS; round += 1) {
+      const plan = planInstallChain(prev, state.devTools.items, done);
+      if (!plan) return;
+      const causeNames = plan.causes.map((t) => t.name).join(', ');
+      if (plan.candidates.length === 0) {
+        // 선행 도구는 확인됐지만 앱이 이어 설치할 수 있는 경로를 아직 찾지 못했다 — 말없이
+        // 끝내지 않고 사실대로 알린다(각 항목의 "안내 보기"로 수동 진행).
+        showToast(`${causeNames} 설치가 확인되었지만 ${plan.stuck.map((t) => t.name).join(', ')}은(는) 앱이 아직 설치 경로를 찾지 못했습니다 — 각 항목의 안내를 확인하세요`);
+        return;
+      }
+      const names = plan.candidates.map((t) => t.name).join(', ');
+      const proceed = await confirmDialog(
+        `${causeNames} 설치가 확인되었습니다. 이어서 다음 ${plan.candidates.length}개 도구를 설치합니다: ${names}. 각 도구는 미리보기로 영향 범위를 확인한 뒤 설치하며, 확인할 수 없는 도구는 실행하지 않고 개별 확인으로 남깁니다. 계속할까요?`,
+        { title: '이어서 설치', confirmLabel: '이어서 설치' }
+      );
+      for (const t of plan.candidates) done.add(t.id);
+      if (!proceed) {
+        showToast(`${names}은(는) 설치하지 않았습니다 — 각 항목의 "설치"로 개별 진행할 수 있습니다`);
+        return;
+      }
+
+      prev = state.devTools.items;
+      const confirmedInstalled = new Set(state.devTools.items.filter((t) => t.installed).map((t) => t.id));
+      state.devTools.updatingAll = true;
+      notifyChange();
+      try {
+        for (const tool of plan.candidates) {
+          const unmet = unmetInstallDependencies(tool, confirmedInstalled);
+          if (unmet.length > 0) {
+            batchSkipReason[tool.id] = describeUnmetDependencies(unmet, state.devTools.items);
+            notifyChange();
+            continue;
+          }
+          const result = await previewAndRun(tool);
+          if (result && isInstallConfirmedOutcome(result.outcome)) confirmedInstalled.add(tool.id);
+        }
+      } finally {
+        state.devTools.updatingAll = false;
+        notifyChange();
+      }
+    }
+  } finally {
+    chainRunning = false;
+  }
 }
 
 // ---------------- 렌더 ----------------
@@ -442,11 +565,11 @@ export function renderDevToolsView(): HTMLElement {
             el(
               'button',
               { className: 'btn btn-primary', onClick: () => void handleUpdateAll(), disabled: state.devTools.updatingAll },
-              [state.devTools.updatingAll ? '전체 업데이트 중…' : '전체 업데이트']
+              [state.devTools.updatingAll ? (chainRunning ? '이어서 설치 중…' : '전체 업데이트 중…') : '전체 업데이트']
             ),
           ]
         : []),
-      el('button', { className: 'btn', onClick: () => void loadDevTools(), disabled: state.devTools.loading }, [
+      el('button', { className: 'btn', onClick: () => void handleRecheck(), disabled: state.devTools.loading }, [
         state.devTools.loading ? '확인 중…' : '↻ 다시 확인',
       ]),
     ]),
@@ -521,8 +644,7 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
     const installedNow = new Set(state.devTools.items.filter((t) => t.installed).map((t) => t.id));
     const stillUnmet = unmetInstallDependencies(tool, installedNow);
     if (stillUnmet.length > 0) {
-      const nameById = new Map(state.devTools.items.map((t) => [t.id, t.name]));
-      panels.push(renderSkipPanel(tool, skipReasonForUnmet(stillUnmet.map((id) => nameById.get(id) ?? id))));
+      panels.push(renderSkipPanel(tool, describeUnmetDependencies(stillUnmet, state.devTools.items)));
     }
   }
   if (tool.actionKind === 'manual' && state.devTools.manualOpen[tool.id]) panels.push(renderManualPanel(tool));
@@ -623,6 +745,9 @@ function renderPreviewPanel(tool: DevToolStatus, preview: DevToolPreview): HTMLE
     children.push(el('div', { className: 'devtool-panel-notes' }, [preview.notes]));
   }
 
+  const chainHint = renderChainHint(tool, 'preview');
+  if (chainHint) children.push(chainHint);
+
   if (!preview.willRun) {
     children.push(el('div', { className: 'devtool-panel devtool-panel-warn' }, ['이 계획은 실행 대상이 없습니다(willRun: false). 실행해도 변화가 없을 수 있습니다.']));
   }
@@ -665,6 +790,10 @@ function renderManualPanel(tool: DevToolStatus): HTMLElement {
   const children: HTMLElement[] = [
     el('div', { className: 'devtool-panel-title' }, ['안내']),
     el('div', {}, [tool.manualHint ?? '이 도구는 앱이 대신 실행할 수 없습니다. 터미널에서 직접 실행해주세요.']),
+    ...(() => {
+      const hint = renderChainHint(tool, 'manual');
+      return hint ? [hint] : [];
+    })(),
     el('div', { className: 'devtool-panel-actions' }, [
       el(
         'button',
@@ -679,13 +808,29 @@ function renderManualPanel(tool: DevToolStatus): HTMLElement {
   return el('div', { className: 'devtool-panel' }, children);
 }
 
+// 이 도구가 아직 설치되지 않은 선행 도구일 때, 설치가 확인된 뒤 무엇이 어떻게 이어지는지
+// 사실대로 말한다. 한 번에 설치된다고 주장하지 않는다 — 이 도구 자체는 별도로 설치해야
+// 하고(manual이면 앱이 대신 설치하지 않는다), 이어서 설치는 확인 대화상자에서 동의한 경우에만 한다.
+function renderChainHint(tool: DevToolStatus, mode: 'preview' | 'manual'): HTMLElement | null {
+  if (tool.installed) return null;
+  const dependents = pendingDependentsOf(tool.id, state.devTools.items);
+  if (dependents.length === 0) return null;
+  const names = dependents.map((t) => t.name).join(', ');
+  const text =
+    mode === 'preview'
+      ? `설치가 확인되면 이어서 설치할 수 있는 도구(${names})를 이름을 적어 한 번 더 묻습니다. 동의하기 전에는 설치하지 않습니다.`
+      : `${tool.name}을(를) 직접 설치한 뒤 "↻ 다시 확인"을 누르면 이어서 설치할 수 있는 도구(${names})를 확인해 이름을 적어 묻습니다. 이 앱이 ${tool.name} 설치를 대신하지는 않습니다.`;
+  const node = el('div', { className: 'devtool-panel-notes devtool-chain-hint' }, [text]);
+  return node;
+}
+
 // 배치가 선행 도구 미확인으로 실행하지 않은 도구 — 결과 패널과 같은 어휘(제목에
 // 도구명 + warn 톤)로 사유를 보여준다. 실행 결과가 아니므로 verified 줄은 없다.
 function renderSkipPanel(tool: DevToolStatus, reason: string): HTMLElement {
   return el('div', { className: 'devtool-panel devtool-panel-warn devtool-panel-skipped' }, [
     el('div', { className: 'devtool-panel-title' }, [`${tool.name} — 건너뜀`]),
     el('div', {}, [reason]),
-    el('div', { className: 'devtool-panel-notes' }, ['선행 도구를 먼저 설치한 뒤 이 항목의 "설치"를 눌러 개별로 진행하거나 "전체 업데이트"를 다시 실행하세요.']),
+    el('div', { className: 'devtool-panel-notes' }, ['선행 도구를 설치(또는 응답 확인)한 뒤 "↻ 다시 확인"을 누르면 이어서 설치할지 이름을 적어 한 번 더 묻습니다. 이 항목의 "설치"로 개별 진행할 수도 있습니다.']),
   ]);
 }
 
