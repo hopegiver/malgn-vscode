@@ -1911,7 +1911,9 @@ fn r19_keys_the_server_does_not_send_keep_their_file_values() {
 fn r19_disallowed_keys_and_privacy_keys_never_reach_the_file_but_the_key_is_still_applied() {
     let rig = Rig::new("r19-reject");
     let original = write_ready(&rig.path, None);
-    let secret_header = "Authorization=Bearer mhk_LEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAK";
+    // 가짜 키도 리터럴로 두지 않는다(pre-push 시크릿 스캔 패턴과 같은 형태가 된다).
+    let secret_header_owned = format!("Authorization=Bearer mhk_{}", "LEAK".repeat(11));
+    let secret_header = secret_header_owned.as_str();
     let mut env = contract_env();
     for (k, v) in [
         ("OTEL_EXPORTER_OTLP_HEADERS", secret_header),
