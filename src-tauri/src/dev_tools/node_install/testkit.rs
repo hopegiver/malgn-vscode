@@ -398,6 +398,16 @@ impl InstallEnv for FakeEnv {
                     ToolRun { exit_code: Some(1), stderr: "a sealed resource is missing or invalid".to_string(), ..Default::default() }
                 }
             }
+            // 앱이 서명 확인을 마친 node로 npm 본체를 불러 보는 호출(`node …/npm-cli.js --version`):
+            // 실제 파일 내용으로 판정한다(픽스처의 정상 npm-cli.js는 "// npm"으로 시작).
+            p if p.ends_with("/bin/node") && args.first().is_some_and(|a| a.ends_with("npm-cli.js")) => {
+                let ok = std::fs::read_to_string(&args[0]).map(|c| c.starts_with("// npm")).unwrap_or(false);
+                if ok {
+                    ToolRun { exit_code: Some(0), stdout: "10.9.0\n".to_string(), ..Default::default() }
+                } else {
+                    ToolRun { exit_code: Some(1), stderr: "Error: Cannot find module 'npm'".to_string(), ..Default::default() }
+                }
+            }
             p if p.ends_with("/bin/node") => {
                 let out = self.node_version_output.lock().unwrap().clone();
                 ToolRun { exit_code: Some(0), stdout: out, ..Default::default() }

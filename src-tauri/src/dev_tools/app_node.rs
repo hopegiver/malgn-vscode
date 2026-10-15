@@ -315,7 +315,7 @@ pub(crate) fn run_pinned_with(
                 let mut lines = vec![format!(
                     "Node.js {}{}",
                     report.version.to_tag(),
-                    if report.already_installed { " — 이미 온전히 설치되어 있어 변경하지 않았습니다" } else { "" }
+                    if report.already_installed { ALREADY_INSTALLED_NOTE } else { "" }
                 )];
                 if let Some(prev) = report.previous.filter(|p| *p != report.version) {
                     lines.push(previous_kept_line(prev));
@@ -336,6 +336,11 @@ pub(crate) fn run_pinned_with(
         }
     }
 }
+
+/// 멱등 경로의 결과 문구. 검사한 것만 말한다(서명·버전·npm 실행) — 파일 전체가 온전하다고
+/// 단정하지 않는다(`check_npm_loads`는 npm이 로드되는 수준까지만 본다). 깨진 설치는 이 경로에
+/// 오지 않고 다시 설치된다.
+const ALREADY_INSTALLED_NOTE: &str = " — 이미 설치되어 있고 서명·버전·npm 실행이 확인되어 변경하지 않았습니다";
 
 /// 업데이트 뒤 이전 버전을 남겨 두었다는 안내. 되돌리는(롤백) 액션은 없으므로 "롤백용"이라고
 /// 약속하지 않고, 보관 사실과 정리 시점만 말한다(정리는 다음 설치의 `prune_versions`).
@@ -460,6 +465,14 @@ mod tests {
         let preview = update_preview_for_tag(node_def(), "/r", &args, "24.21.0", "v24.22.0").unwrap();
         assert!(preview.notes.contains("보관"), "{}", preview.notes);
         assert!(!preview.notes.contains("롤백"), "{}", preview.notes);
+    }
+
+    #[test]
+    fn already_installed_note_states_only_what_was_checked() {
+        assert!(!ALREADY_INSTALLED_NOTE.contains("온전"), "{ALREADY_INSTALLED_NOTE}");
+        for checked in ["서명", "버전", "npm"] {
+            assert!(ALREADY_INSTALLED_NOTE.contains(checked), "{checked}");
+        }
     }
 
     // ── RV-001: 취소는 호출 시점에 진행 중이던 작업만 멈춘다 ──

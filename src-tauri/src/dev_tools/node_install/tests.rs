@@ -121,6 +121,25 @@ fn damaged_same_version_dir_is_replaced_atomically() {
 }
 
 #[test]
+fn same_version_dir_with_broken_npm_js_is_not_reported_as_healthy_and_is_reinstalled() {
+    // RV-005: 서명·버전·필수 파일은 멀쩡해도 npm 본체 JS가 깨졌으면 "이미 설치됨"으로 끝나
+    // 복구 경로가 없었다. 이제 npm을 실제로 불러 보는 검사가 걸려 다시 설치(교체)된다.
+    let fx = Fixture::new("repair-npm");
+    fx.install_ok();
+    let npm_cli = fx.layout.version_dir(fx.version).join("lib/node_modules/npm/bin/npm-cli.js");
+    std::fs::write(&npm_cli, "garbage").unwrap();
+    let gets_before = fx.env.count_prefix("GET ");
+    let again = fx.install_ok();
+    assert!(!again.already_installed, "npm이 깨진 설치를 이미 설치됨으로 끝내면 안 됩니다");
+    assert!(fx.env.count_prefix("GET ") > gets_before, "다시 내려받아 교체해야 합니다");
+    assert!(std::fs::read_to_string(&npm_cli).unwrap().starts_with("// npm"), "교체 뒤 npm 본체가 복구돼야 합니다");
+    assert_eq!(read_current_tag(&fx.layout), Some(fx.version));
+    assert_eq!(fx.staging_leftovers(), Vec::<String>::new());
+    // 복구 뒤에는 다시 멱등이다.
+    assert!(fx.install_ok().already_installed);
+}
+
+#[test]
 fn resolve_latest_uses_index_json_not_a_hardcoded_version() {
     let fx = Fixture::new("resolve");
     let v = resolve_latest(&fx.env, NodeArch::Arm64, &|| false).unwrap();

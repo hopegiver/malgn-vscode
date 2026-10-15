@@ -238,6 +238,33 @@ fn check_node_version(
     Ok(())
 }
 
+/// 서명·버전을 확인한 `node`로 npm 본체를 실제로 불러 본다(`node npm-cli.js --version`). 파일이
+/// 있는지만 보는 `check_required_files`가 못 잡는 "npm JS가 깨졌다(디스크 오류·사용자 실수)"를
+/// 잡아, 멱등 경로가 깨진 설치를 "정상"으로 넘기지 않고 다시 설치(교체)하게 한다. 읽기만 하는
+/// 호출이다(설정·캐시 쓰기 없음). 한계: npm이 로드되는 수준까지만 본다 — 로드되지 않는 하위 파일의
+/// 부분 손상은 이 검사로 알 수 없다.
+fn check_npm_loads(
+    env: &dyn InstallEnv,
+    version_dir: &Path,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(), InstallError> {
+    let node_bin = version_dir.join("bin").join("node");
+    let npm_cli = version_dir.join("lib").join("node_modules").join("npm").join("bin").join("npm-cli.js");
+    let run = env.run_tool(
+        &path_arg(&node_bin)?,
+        &[path_arg(&npm_cli)?, "--version".into()],
+        TOOL_TIMEOUT_QUICK,
+        cancel,
+    );
+    if run.cancelled {
+        return Err(InstallError::Cancelled);
+    }
+    if !run.succeeded() || run.stdout.trim().is_empty() {
+        return Err(InstallError::Extract(format!("npm이 실행되지 않습니다: {}", run.describe_failure())));
+    }
+    Ok(())
+}
+
 /// `<root>/bin/{node,npm,npx}`와 npm 본체가 실제로 쓸 수 있는 상태인지(링크가 풀리는지) 본다.
 fn check_required_files(root: &Path) -> Result<(), InstallError> {
     let missing = |what: &str| InstallError::Extract(format!("필수 파일이 없습니다: {what}"));
@@ -261,8 +288,8 @@ fn check_required_files(root: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// 이미 배치된 같은 버전이 온전한가(서명 + 실행 버전 + 필수 파일). 온전하지 않으면 `Ok(false)`로
-/// 교체 경로를 탄다. 취소만 오류로 전파한다.
+/// 이미 배치된 같은 버전이 쓸 수 있는 상태인가(필수 파일 + 서명 + 실행 버전 + npm 로드). 아니면 `Ok(false)`로
+/// 교체 경로를 타 다시 설치한다(= 깨진 설치의 복구 경로). 취소만 오류로 전파한다.
 fn existing_install_is_healthy(
     env: &dyn InstallEnv,
     layout: &Layout,
@@ -283,6 +310,11 @@ fn existing_install_is_healthy(
         Err(_) => return Ok(false),
     }
     match check_node_version(env, &node_bin, version, cancel) {
+        Ok(()) => {}
+        Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
+        Err(_) => return Ok(false),
+    }
+    match check_npm_loads(env, &dir, cancel) {
         Ok(()) => Ok(true),
         Err(InstallError::Cancelled) => Err(InstallError::Cancelled),
         Err(_) => Ok(false),
@@ -308,9 +340,9 @@ pub(crate) fn install_version(
     let previous = read_current_tag(layout);
     let tag = version.to_tag();
 
-    // ── 멱등 경로: 같은 버전이 이미 온전하면 다운로드 없이 current만 맞춘다.
+    // ── 멱등 경로: 같은 버전이 이미 쓸 수 있는 상태이면 다운로드 없이 current만 맞춘다.
     if existing_install_is_healthy(env, layout, version, cancel)? {
-        log.push(format!("{tag}이(가) 이미 설치되어 있어 다운로드를 건너뜁니다(서명·버전 재확인 통과)."));
+        log.push(format!("{tag}이(가) 이미 설치되어 있어 다운로드를 건너뜁니다(서명·버전·npm 실행 재확인 통과)."));
         let mut switched = false;
         if previous != Some(version) {
             check_cancel(cancel)?;
