@@ -171,3 +171,6 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: 🔵 RT-3 — phase 한 칸이 '마지막 점검 결과'와 '키에 대한 허브 판정'을 함께 싣는 구조를 두 축(key_verdict / last_outcome)으로 분리 제안. RT-1 이월 확정.
+- 2026-10-15 / target_id `r17-otel-autolink`(회차 r18-rv09) / 3차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r18-rv09-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 같은 target_id의 RV-09 후속이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: 🔵 RT-4 — 재발급 결과를 프론트가 상태에서 역산하지 않고 accept_confirm이 결과값을 직접 반환. RT-3 부분 진행 확인.

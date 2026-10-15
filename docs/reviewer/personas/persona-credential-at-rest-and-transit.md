@@ -64,3 +64,6 @@
 - 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: 해제 시 세대 증가·메모리·키 삭제 한 임계구역, 해제 응답 `ingest_key` 열거형의 비밀 미탑재, traces 목적지 선검사(RV-04), 수동 키 거절 문구의 입력값 비인용.
+- 2026-10-15 / target_id `r17-otel-autolink`(회차 r18-rv09) / 3차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r18-rv09-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 같은 target_id의 RV-09 후속이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: revoked_prefix(앞 8자, 비직렬화)·revokedByHub(bool)의 비밀 미탑재, settings.json 쓰기 경로·capabilities diff 0줄.
