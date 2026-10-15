@@ -38,11 +38,12 @@ const OFF = { ...EXTRA, telemetryEnabled: false, endpoint: NO_EP, collectionRead
 
 // 백엔드(src-tauri/src/otel_link.rs LinkFailureCause::message)가 원인별로 고정한 문구를 그대로 옮겼다.
 const MSG = {
-  reconnectRequired: '허브가 이 기기의 연결을 끊었습니다. 설정에서 허브에 다시 연결하세요.',
-  blocked: '이 연결로는 수집키를 발급하거나 바꿀 수 없습니다. 앱의 허브 연결을 해제한 뒤 다시 연결하세요.',
+  reconnectRequired: '이 PC의 맑은에이전트 연결이 해제되었습니다. 웹에서 유출 의심으로 폐기했다면 이 연결과 이 기기의 다른 수집키도 함께 폐기됩니다. 앱에서 다시 로그인해 연결하세요.',
+  blocked: '이 연결로는 수집키를 발급하거나 바꿀 수 없습니다. 앱의 허브 연결을 해제한 뒤 다시 로그인해 연결하세요.',
   credentialLimit: "수집키 상한(5개)에 도달했습니다. 허브 웹 /keys에서 쓰지 않는 키를 폐기하세요. 이전 연결에서 만든 '맑은에이전트' 키가 남아 있을 수 있습니다.",
   rotateBudgetExceeded:
     '이 기기의 수집키가 24시간 안에 너무 자주 바뀌었습니다. 네트워크가 불안정해 응답이 반복해서 끊기거나, 설정 파일(~/.claude/settings.json)이 다른 PC와 동기화되는 경우에도 생깁니다. 둘 다 아니라면 이 연결(기기 토큰)이 다른 곳에서 쓰이고 있을 수 있으니 연결 해제 후 다시 연결하세요.',
+  featureUnavailable: '허브에 수집키 자동 발급 기능이 아직 없습니다. 허브 연결은 정상이며 1시간 뒤 다시 확인합니다.',
   unreachable: '허브에 연결하지 못했습니다. 네트워크 상태를 확인하세요. 잠시 후 다시 시도합니다.',
   rotationLost: '허브 응답이 반복해서 끊겨 수집키 자동 교체를 멈췄습니다(네트워크 오류). 네트워크를 확인한 뒤 [다시 시도]하거나 앱을 다시 시작하면 재개합니다.',
   applyFailed:
@@ -90,6 +91,10 @@ const KEY_SET = { state: 'set', masked: 'mhk_AbCd…' };
 const KEY_UNSET = { state: 'unset', masked: null };
 
 const status = (state, over = {}) => ({ state, masked: null, failure: null, ...READY, ...over });
+// R20: 확인창 답(otel_link_answer_confirm)은 { status, outcome }이다. outcome은 엔진이 직접 알려 주는 재발급 결과이고 토스트가 그 값과 1:1로 대응한다.
+const answer = (s, outcome) => ({ status: s, outcome });
+const DECLINED = { kind: 'declined' };
+const MINTED = { kind: 'minted', masked: 'mhk_AbCd…' };
 const failed = (cause, over = {}) => status('failed', { failure: { cause, message: MSG[cause] }, ...over });
 
 // 확인하지 않은 것을 주장하는 표현(수신 확인은 confirmed일 때만) + 시도하지 않은 자동 동작을 암시하는 표현
@@ -305,12 +310,14 @@ export function scenarios(base) {
     // ---- 실패/차단/한도 ----
     homeCase('blocked-quota', '01-blocked', failed('blocked', { ...OFF, blockedReason: 'quota' }), {
       state: 'failed',
-      include: ['이 연결로는 수집키를 발급하거나 바꿀 수 없습니다', '사유: 사용량 한도 초과', '허브 연결을 해제한 뒤 다시 연결하세요'],
+      include: ['이 연결로는 수집키를 발급하거나 바꿀 수 없습니다', '사유: 사용량 한도 초과', '허브 연결을 해제한 뒤 다시 로그인해 연결하세요'],
+      exclude: ['유출'],
       buttons: ['허브 연결 열기'],
     }),
     homeCase('blocked-suspected-leak', '01-blocked-leak', failed('blocked', { ...OFF, blockedReason: 'suspectedLeak' }), {
       state: 'failed',
-      include: ['사유: 유출 의심'],
+      include: ['사유: 유출 의심', '이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기', '다시 로그인해 연결하세요'],
+      exclude: ['다시 발급'],
       buttons: ['허브 연결 열기'],
     }),
     homeCase('rotate-budget-exceeded', '01-rotate-budget', failed('rotateBudgetExceeded', { masked: 'mhk_AbCd…', retryAt: '2099-10-16T01:02:03.456Z' }), {
@@ -325,7 +332,8 @@ export function scenarios(base) {
     }),
     homeCase('reconnect-required', '01-reconnect', failed('reconnectRequired', { ...OFF }), {
       state: 'failed',
-      include: ['허브가 이 기기의 연결을 끊었습니다'],
+      include: ['이 PC의 맑은에이전트 연결이 해제되었습니다', '유출 의심으로 폐기했다면 이 연결과 이 기기의 다른 수집키도 함께 폐기', '앱에서 다시 로그인해 연결하세요'],
+      exclude: ['다시 발급', '[다시 시도]'],
       buttons: ['허브 연결 열기'],
     }),
     homeCase('not-desktop-token', '01-not-desktop', failed('notDesktopToken', { ...OFF }), {
@@ -380,7 +388,7 @@ export function scenarios(base) {
     {
       id: 'confirm-required-dialog-decline',
       fixtures: withLink(status('unlinked', { ...OFF, confirmRequired: true }), {
-        otel_link_answer_confirm: status('unlinked', { ...OFF, confirmDeclined: true }),
+        otel_link_answer_confirm: answer(status('unlinked', { ...OFF, confirmDeclined: true }), DECLINED),
       }),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(500);
@@ -394,7 +402,7 @@ export function scenarios(base) {
         const focused = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? null);
         if (focused !== '발급하지 않음') bugs.push({ severity: 'Critical', symptom: `확인창 기본 초점이 '발급하지 않음'이 아님(실제: ${focused}) — Enter로 우발 동의될 수 있다`, file: 'src/views/settings.ts:askReissueConfirm' });
         const text = (await dialog.textContent()) ?? '';
-        for (const t of ['수집키 재발급', '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요?', '다시 발급', '발급하지 않음']) {
+        for (const t of ['수집키 재발급', '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요?', '다시 로그인할 필요는 없습니다', '다시 발급', '발급하지 않음']) {
           if (!text.includes(t)) bugs.push({ severity: 'Major', symptom: `확인창에 "${t}"가 없음(실제: ${text})`, file: 'src/views/settings.ts:askReissueConfirm' });
         }
         await dialog.getByRole('button', { name: '발급하지 않음' }).click();
@@ -412,7 +420,7 @@ export function scenarios(base) {
     {
       id: 'confirm-required-dialog-accept',
       fixtures: withLink(status('unlinked', { ...OFF, confirmRequired: true }), {
-        otel_link_answer_confirm: status('applied', { masked: 'mhk_AbCd…', waitingFirstData: true }),
+        otel_link_answer_confirm: answer(status('applied', { masked: 'mhk_AbCd…', waitingFirstData: true }), MINTED),
       }),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(500);
@@ -429,7 +437,7 @@ export function scenarios(base) {
     {
       id: 'confirm-required-escape-declines',
       fixtures: withLink(status('unlinked', { ...OFF, confirmRequired: true }), {
-        otel_link_answer_confirm: status('unlinked', { ...OFF, confirmDeclined: true }),
+        otel_link_answer_confirm: answer(status('unlinked', { ...OFF, confirmDeclined: true }), DECLINED),
       }),
       async run(page, { bugs }) {
         await page.waitForTimeout(500);
@@ -522,7 +530,7 @@ export function scenarios(base) {
     {
       id: 'revoked-key-on-file-enter-declines-and-retry-remains',
       fixtures: withLink(status('applied', { masked: 'mhk_AbCd…', confirmRequired: true }), {
-        otel_link_answer_confirm: status('applied', { masked: 'mhk_AbCd…', confirmDeclined: true }),
+        otel_link_answer_confirm: answer(status('applied', { masked: 'mhk_AbCd…', confirmDeclined: true }), DECLINED),
       }),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(500);
@@ -559,7 +567,7 @@ export function scenarios(base) {
       startHash: '#/settings/otel',
       fixtures: withLink(status('confirmed', { masked: 'mhk_AbCd…', confirmRequired: true }), {
         otel_settings_get: settingsFixture({ ingestKey: KEY_SET }),
-        otel_link_answer_confirm: status('confirmed', { masked: 'mhk_AbCd…', confirmDeclined: true }),
+        otel_link_answer_confirm: answer(status('confirmed', { masked: 'mhk_AbCd…', confirmDeclined: true }), DECLINED),
       }),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(500);
@@ -601,7 +609,7 @@ export function scenarios(base) {
     {
       id: 'reissue-accepted-but-not-applied-toast',
       fixtures: withLink(status('unlinked', { ...OFF, confirmRequired: true }), {
-        otel_link_answer_confirm: failed('notReady', { ...OFF }),
+        otel_link_answer_confirm: answer(failed('notReady', { ...OFF }), { kind: 'failed', failure: { cause: 'notReady', message: MSG.notReady }, transient: false }),
       }),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(500);
@@ -616,7 +624,7 @@ export function scenarios(base) {
     {
       id: 'reissue-accepted-and-applied-toast',
       fixtures: withLink(status('unlinked', { ...OFF, confirmRequired: true }), {
-        otel_link_answer_confirm: status('applied', { masked: 'mhk_AbCd…', waitingFirstData: true }),
+        otel_link_answer_confirm: answer(status('applied', { masked: 'mhk_AbCd…', waitingFirstData: true }), MINTED),
       }),
       async run(page, { bugs }) {
         await page.waitForTimeout(500);
@@ -678,6 +686,151 @@ export function scenarios(base) {
         for (const t of exclude) if (toast.includes(t)) bugs.push({ severity: 'Critical', symptom: `해제 토스트(${removal})가 사실과 다르게 "${t}"를 말함: ${toast}`, file: 'src/otelLinkText.ts:disconnectToast' });
       },
     })),
+
+    // ---- R20: 웹 폐기(일반/유출 의심)와 앱 화면 — 허브 웹 /keys의 "맑은에이전트 관리" 키 동작과 같은 사실을 말한다 ----
+    // R18 N-13: 폐기 판정을 받은 키가 파일에 남은 채 다음 점검이 일시 오류로 끝난 모양(applied + revokedByHub + notice)의 렌더.
+    homeCase('r20-applied-revoked-by-hub-with-notice', 'r20-01-applied-revoked-notice', status('applied', {
+      masked: 'mhk_AbCd…', revokedByHub: true, notice: { cause: 'unreachable', message: MSG.unreachable },
+    }), {
+      state: 'todo',
+      include: ['웹에서 이 기기의 수집키가 폐기되어', 'mhk_AbCd…', '재발급 여부를 아직 다시 확인하지 못했습니다', '[다시 시도]', '다시 로그인할 필요는 없습니다', '마지막 점검: 허브에 연결하지 못했습니다'],
+      exclude: ['수집키가 적용되었습니다', '거절', '다시 로그인해 연결'],
+      buttons: ['다시 시도'],
+    }),
+    // 같은 상태의 설정 > OTel 패널: 배지는 "적용됨"이 아니라 "폐기됨 · 재확인 필요"다.
+    {
+      id: 'r20-settings-panel-applied-revoked-by-hub-with-notice',
+      startHash: '#/settings/otel',
+      fixtures: withLink(status('applied', { masked: 'mhk_AbCd…', revokedByHub: true, notice: { cause: 'unreachable', message: MSG.unreachable } }), {
+        otel_settings_get: settingsFixture({ ingestKey: KEY_SET }),
+      }),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(500);
+        await shot('r20-01b-settings-panel-applied-revoked-notice');
+        const p = await panel(page);
+        if (!p) return bugs.push({ severity: 'Critical', symptom: '설정 > OTel에 자동 연동 패널이 없음', file: PANEL });
+        if (p.state !== 'todo') bugs.push({ severity: 'Critical', symptom: `패널 data-state가 todo가 아님(실제: ${p.state})`, file: PANEL });
+        for (const t of ['폐기됨 · 재확인 필요', '재발급 여부를 아직 다시 확인하지 못했습니다', '마지막 점검: 허브에 연결하지 못했습니다', '다시 로그인할 필요는 없습니다']) {
+          if (!p.text.includes(t)) bugs.push({ severity: 'Major', symptom: `패널에 "${t}"가 없음(실제: ${p.text})`, file: PANEL });
+        }
+        for (const t of ['적용됨', '수신 확인됨', '수집키가 적용되었습니다', '거절']) if (p.text.replace('폐기됨 · 재확인 필요', '').includes(t)) bugs.push({ severity: 'Critical', symptom: `폐기 판정이 이어지는데 패널이 "${t}"를 말함(${p.text})`, file: PANEL });
+        if (JSON.stringify(p.buttons) !== JSON.stringify(['다시 시도'])) bugs.push({ severity: 'Major', symptom: `패널 버튼이 [다시 시도]가 아님(${JSON.stringify(p.buttons)})`, file: PANEL });
+        await noSecrets(page, bugs, PANEL);
+      },
+    },
+    // 일반 폐기(manual): 확인창이 "다시 발급(다시 로그인 불필요)"을 말하고, 동의하면 새 키가 적용된다 — 토스트는 엔진이 알려 준 결과(minted)와 1:1.
+    {
+      id: 'r20-manual-revoke-dialog-accept-minted',
+      fixtures: withLink(status('applied', { masked: 'mhk_AbCd…', confirmRequired: true }), {
+        otel_link_answer_confirm: answer(status('applied', { masked: 'mhk_NnNn…', waitingFirstData: true }), { kind: 'minted', masked: 'mhk_NnNn…' }),
+      }),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(500);
+        const dialog = page.locator('.modal-box');
+        if ((await dialog.count()) !== 1) return bugs.push({ severity: 'Critical', symptom: '일반 폐기(confirm_required)인데 확인창이 뜨지 않음', file: 'src/views/settings.ts:askReissueConfirm' });
+        const text = (await dialog.textContent()) ?? '';
+        for (const t of ['웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요?', '앱에서 바로 발급하며 다시 로그인할 필요는 없습니다']) {
+          if (!text.includes(t)) bugs.push({ severity: 'Major', symptom: `확인창에 "${t}"가 없음(실제: ${text})`, file: 'src/onboarding.ts:REISSUE_CONFIRM_MESSAGE' });
+        }
+        if (/다시 로그인해 연결|허브 연결/.test(text)) bugs.push({ severity: 'Major', symptom: `일반 폐기 확인창이 재로그인·재연결을 요구함: ${text}`, file: 'src/onboarding.ts:REISSUE_CONFIRM_MESSAGE' });
+        await shot('r20-02-manual-revoke-dialog');
+        const behind = await homeRow(page);
+        for (const t of ['웹에서 이 기기의 수집키가 폐기되어', 'mhk_AbCd…', '다시 로그인할 필요는 없습니다']) {
+          if (!behind?.text.includes(t)) bugs.push({ severity: 'Major', symptom: `확인창 뒤 행에 "${t}"가 없음(실제: ${behind?.text})`, file: CHECKLIST });
+        }
+        await dialog.getByRole('button', { name: '다시 발급' }).click();
+        await page.waitForTimeout(400);
+        const toast = (await page.locator('.toast').allTextContents()).join(' | ');
+        if (!toast.includes('수집키를 다시 발급해 적용했습니다')) bugs.push({ severity: 'Major', symptom: `minted 결과인데 성공 토스트가 없음: ${toast}`, file: 'src/otelLinkText.ts:reissueToast' });
+        await shot('r20-03-manual-revoke-reissued-toast');
+        const row = await homeRow(page);
+        if (!row || row.state !== 'partial') bugs.push({ severity: 'Major', symptom: `재발급 뒤 행이 적용됨(partial)이 아님(실제: ${row?.state})`, file: CHECKLIST });
+      },
+    },
+    // 토스트는 화면 상태가 아니라 결과(outcome)만 본다: 상태가 "적용됨"을 말해도 결과가 notStarted/failed면 성공을 말하지 않는다.
+    ...[
+      ['not-started-busy', { kind: 'notStarted', reason: 'busy' }, ['다른 점검이 진행 중이라 재발급을 시작하지 못했습니다'], ['적용했습니다']],
+      ['not-applied', { kind: 'notApplied' }, ['새 수집키는 적용하지 않았습니다'], ['적용했습니다']],
+      ['transient-failure', { kind: 'failed', failure: { cause: 'unreachable', message: MSG.unreachable }, transient: true }, ['수집키를 다시 발급하지 못했습니다', '허브에 연결하지 못했습니다', '[다시 시도]로 다시 발급할 수 있습니다'], ['적용했습니다']],
+    ].map(([name, outcome, include, exclude]) => ({
+      id: `r20-toast-follows-outcome-${name}`,
+      fixtures: withLink(status('applied', { masked: 'mhk_AbCd…', confirmRequired: true }), {
+        // 일부러 "적용됨 + 새 마스킹"을 돌려준다 — 예전 추론이었다면 성공 토스트가 떴을 모양.
+        otel_link_answer_confirm: answer(status('applied', { masked: 'mhk_NnNn…', waitingFirstData: true }), outcome),
+      }),
+      async run(page, { bugs }) {
+        await page.waitForTimeout(500);
+        await page.locator('.modal-box').getByRole('button', { name: '다시 발급' }).click();
+        await page.waitForTimeout(400);
+        const toast = (await page.locator('.toast').allTextContents()).join(' | ');
+        for (const t of include) if (!toast.includes(t)) bugs.push({ severity: 'Major', symptom: `결과(${name}) 토스트에 "${t}"가 없음: ${toast}`, file: 'src/otelLinkText.ts:reissueToast' });
+        for (const t of exclude) if (toast.includes(t)) bugs.push({ severity: 'Critical', symptom: `결과(${name})와 다르게 "${t}"를 말함: ${toast}`, file: 'src/otelLinkText.ts:reissueToast' });
+      },
+    })),
+    // 동의했는데 그 사이 연결이 폐기된 경우(유출 의심 폐기): 토스트·화면 모두 "다시 로그인해 연결"이고 "다시 발급"을 권하지 않는다.
+    {
+      id: 'r20-accept-meets-dead-connection',
+      fixtures: withLink(status('applied', { masked: 'mhk_AbCd…', confirmRequired: true }), {
+        otel_link_answer_confirm: answer(
+          failed('reconnectRequired', { masked: 'mhk_AbCd…' }),
+          { kind: 'failed', failure: { cause: 'reconnectRequired', message: MSG.reconnectRequired }, transient: false }
+        ),
+      }),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(500);
+        await page.locator('.modal-box').getByRole('button', { name: '다시 발급' }).click();
+        await page.waitForTimeout(400);
+        const toast = (await page.locator('.toast').allTextContents()).join(' | ');
+        if (!toast.includes('앱에서 다시 로그인해 연결하세요')) bugs.push({ severity: 'Major', symptom: `연결 폐기 결과인데 토스트가 재로그인을 말하지 않음: ${toast}`, file: 'src/otelLinkText.ts:reissueToast' });
+        for (const t of ['다시 발급해 적용했습니다', '[다시 시도]']) if (toast.includes(t)) bugs.push({ severity: 'Critical', symptom: `연결이 끊겼는데 토스트가 "${t}"를 말함: ${toast}`, file: 'src/otelLinkText.ts:reissueToast' });
+        await shot('r20-06-accept-meets-dead-connection');
+        const row = await homeRow(page);
+        if (!row || row.state !== 'failed' || !row.text.includes('다시 로그인해 연결하세요') || row.buttons.join() !== '허브 연결 열기') {
+          bugs.push({ severity: 'Major', symptom: `연결 폐기 뒤 행이 재연결 안내가 아님(state=${row?.state}, buttons=${row?.buttons}, ${row?.text})`, file: CHECKLIST });
+        }
+      },
+    },
+    // 유출 의심 폐기: 맑은에이전트 연결과 이 기기의 다른 수집키까지 폐기 — 파일에 키가 남아 있어도 "다시 발급"이 아니라 "다시 로그인해 연결".
+    homeCase('r20-leak-reconnect-required-key-on-file', 'r20-04-leak-reconnect-required', failed('reconnectRequired', { masked: 'mhk_AbCd…', collectionReady: true }), {
+      state: 'failed',
+      include: ['이 PC의 맑은에이전트 연결이 해제되었습니다', '유출 의심으로 폐기했다면 이 연결과 이 기기의 다른 수집키도 함께 폐기', '앱에서 다시 로그인해 연결하세요', 'mhk_AbCd…'],
+      exclude: ['다시 발급', '[다시 시도]', '폐기됨 · 재발급'],
+      buttons: ['허브 연결 열기'],
+    }, async (page, { bugs }) => {
+      await page.locator('.onboard-row[data-step="otel-link"]').getByRole('button', { name: '허브 연결 열기' }).click();
+      await page.waitForTimeout(200);
+      if (!(await page.evaluate(() => location.hash)).startsWith('#/settings/mcp')) bugs.push({ severity: 'Major', symptom: '"허브 연결 열기"가 다시 로그인할 #/settings/mcp로 이동하지 않음', file: CHECKLIST });
+    }),
+    homeCase('r20-leak-blocked-suspected-leak-key-on-file', 'r20-05-leak-blocked-suspected-leak', failed('blocked', { masked: 'mhk_AbCd…', blockedReason: 'suspectedLeak' }), {
+      state: 'failed',
+      include: ['사유: 유출 의심', '이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기', '다시 로그인해 연결하세요'],
+      exclude: ['다시 발급', '[다시 시도]'],
+      buttons: ['허브 연결 열기'],
+    }),
+    // 설정 > OTel 패널에서도 같다.
+    {
+      id: 'r20-settings-panel-leak-reconnect',
+      startHash: '#/settings/otel',
+      fixtures: withLink(failed('reconnectRequired', { masked: 'mhk_AbCd…' }), { otel_settings_get: settingsFixture({ ingestKey: KEY_SET }) }),
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(500);
+        await shot('r20-07-settings-panel-leak-reconnect');
+        const p = await panel(page);
+        if (!p) return bugs.push({ severity: 'Critical', symptom: '설정 > OTel에 자동 연동 패널이 없음', file: PANEL });
+        if (p.state !== 'failed') bugs.push({ severity: 'Critical', symptom: `패널 data-state가 failed가 아님(실제: ${p.state})`, file: PANEL });
+        for (const t of ['이 PC의 맑은에이전트 연결이 해제되었습니다', '앱에서 다시 로그인해 연결하세요']) if (!p.text.includes(t)) bugs.push({ severity: 'Major', symptom: `패널에 "${t}"가 없음(실제: ${p.text})`, file: PANEL });
+        if (p.text.includes('다시 발급')) bugs.push({ severity: 'Critical', symptom: `연결이 끊겼는데 패널이 "다시 발급"을 말함(${p.text})`, file: PANEL });
+        if (JSON.stringify(p.buttons) !== JSON.stringify(['허브 연결 열기'])) bugs.push({ severity: 'Major', symptom: `패널 버튼이 [허브 연결 열기]가 아님(${JSON.stringify(p.buttons)})`, file: PANEL });
+        await noSecrets(page, bugs, PANEL);
+      },
+    },
+    // self 200(서버에 기능 없음): 재로그인도 재발급도 아니다 — 키가 없는 PC의 문구와 버튼 없음.
+    homeCase('r20-self-200-feature-unavailable', 'r20-08-self-200-feature-unavailable', failed('featureUnavailable', { ...OFF }), {
+      state: 'todo',
+      include: ['허브에 수집키 자동 발급 기능이 아직 없습니다', '허브 연결은 정상'],
+      exclude: ['다시 로그인', '다시 발급', '다시 연결'],
+      buttons: [],
+    }),
 
     // ---- R19: 서버 권장값이 파일에 쓰인 뒤의 설정 > OTel 폼(이벤트 후 갱신·고치던 칸 보존·고친 칸만 저장·탭 재진입) ----
     {
