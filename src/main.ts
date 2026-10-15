@@ -49,6 +49,7 @@ import {
   renderSettingsView,
   loadOtelEnv,
   loadIngestLink,
+  maybeAskReissueConfirm,
   loadGithubStatus,
   loadCloudflareStatus,
   loadMcp,
@@ -301,6 +302,8 @@ function handleNavigation(): void {
     if (!state.dailyUsage.loading) void loadDailyUsage();
     if (!state.usageSummary.loading) void loadUsageSummary();
   }
+  // 재발급 확인창은 홈·설정 > OTel에서만 자동으로 뜬다 — 다른 화면에서 대기 중이던 확인 요청은 그 화면에 들어올 때 묻는다.
+  maybeAskReissueConfirm();
 }
 
 // 세션목록·사용량 통계 실시간 감시 — 앱이 켜져 있는 동안 딱 한 번만 구독한다.

@@ -21,6 +21,7 @@ const EXTRA = {
   firstDataTimedOut: false,
   blockedReason: null,
   retryAt: null,
+  notice: null,
   issueSupported: true,
   receiptCheckSupported: true,
 };
@@ -105,7 +106,8 @@ test('applied: 수신 대기 / 15분 경과 / 기본 문구가 구분된다', ()
   const timedOut = step(st('applied', { masked: 'mhk_AbCd…', firstDataTimedOut: true })).detail;
   assert.match(timedOut, /15분 안에 수신이 확인되지 않았습니다/);
   assert.match(timedOut, /새 Claude Code 세션을 열면 수집이 시작됩니다/);
-  assert.match(timedOut, /다음 앱 시작 때 다시 확인합니다/);
+  assert.match(timedOut, /다음 점검\(앱 시작 때·1시간 간격\)에서 다시 확인합니다/);
+  assert.ok(!timedOut.includes('매시간'), '매시간 15분 재폴링처럼 읽히는 문구는 쓰지 않는다');
   const plain = step(st('applied', { masked: 'mhk_AbCd…' })).detail;
   assert.match(plain, /수신은 아직 확인하지 않았습니다/);
 });
@@ -187,7 +189,8 @@ test('버튼 동작: 상태가 정한다(다시 시도 / 허브 연결 열기 / 
   assert.equal(action(st('confirmed', { masked: 'mhk_AbCd…' })), undefined);
   for (const cause of ['unreachable', 'rateLimited', 'hubRejected', 'invalidKeyReturned', 'applyFailed', 'credentialLimit', 'rotationLost']) assert.equal(action(failed(cause)), 'retry', cause);
   for (const cause of ['reconnectRequired', 'notDesktopToken', 'blocked']) assert.equal(action(failed(cause)), 'connect-hub', cause);
-  for (const cause of ['settingsUnreadable', 'headerUnrecognized', 'endpointNotHub', 'notReady', 'featureUnavailable']) assert.equal(action(failed(cause)), 'open-settings', cause);
+  for (const cause of ['settingsUnreadable', 'headerUnrecognized', 'endpointNotHub', 'notReady']) assert.equal(action(failed(cause)), 'open-settings', cause);
+  assert.equal(action(failed('featureUnavailable')), undefined, 'N-4: 설정에서 할 일이 없는 상태에 설정 열기 버튼을 두지 않는다');
   assert.equal(action(failed('rotateBudgetExceeded', { retryAt: '2026-10-16T01:02:03.456Z' })), undefined, '서버가 정한 시각까지 다시 시도는 소용없다');
 });
 
@@ -216,7 +219,9 @@ test('unlinked 안내: 허브 연결 여부·확인 대기·거절 상태별로 
   assert.match(connected, /\[다시 시도\]/);
   const offline = step(st('unlinked', { hubConnected: false })).detail;
   assert.match(offline, /허브에 연결하면 사용량 수집키가 자동으로 발급·적용됩니다/);
-  assert.match(offline, /설정 > OTel에서 붙여넣을 수도 있습니다/);
+  // RV-02: 허브에 연결하면 붙여넣은 키는 앱이 발급한 키로 교체된다 — 수동 입력은 '연결하지 않을 때'의 경로로만 안내한다.
+  assert.match(offline, /직접 받은 수집키를 쓰려면 허브에는 연결하지 말고 설정 > OTel에서 붙여넣으세요/);
+  assert.match(offline, /허브에 연결하면 앱이 발급한 키로 교체됩니다/);
   const confirm = step(st('unlinked', { confirmRequired: true })).detail;
   assert.match(confirm, /웹에서 이 기기 수집키가 폐기되었습니다\. 다시 발급할까요\?/);
   const declined = step(st('unlinked', { confirmDeclined: true })).detail;
@@ -251,4 +256,79 @@ test('참고 항목은 진행률·완료·todo/unknown 판정에 영향을 주�
   const open = computeOnboarding({ ...base, ...link(st('unlinked')) });
   assert.equal(open.currentKind, 'claude-login', 'currentKind는 필수 단계에서만 정해진다');
   assert.equal(open.doneCount, 2);
+});
+
+// ======================= R17 리뷰 RV-01: 웹에서 폐기된 키가 파일에 남은 경우 =======================
+
+const KEY = 'mhk_AbCd…';
+const MATRIX = [
+  ['applied + confirmRequired', st('applied', { masked: KEY, confirmRequired: true })],
+  ['confirmed + confirmRequired', st('confirmed', { masked: KEY, confirmRequired: true })],
+  ['applied(수집 준비 안 됨) + confirmRequired', st('applied', { masked: KEY, ...OFF, confirmRequired: true })],
+  ['applied + confirmDeclined', st('applied', { masked: KEY, confirmDeclined: true })],
+  ['confirmed + confirmDeclined', st('confirmed', { masked: KEY, confirmDeclined: true })],
+];
+
+test('RV-01: 폐기된 키가 파일에 남아 있어도 "적용됨"/"수신 확인됨"으로 보이지 않는다', () => {
+  for (const [label, status] of MATRIX) {
+    const s = step(status);
+    assert.equal(s.state, 'todo', `${label}: 완료(done)·부분 완료(partial)·경고(warn)가 아니라 할 일이다`);
+    assert.match(s.detail, /폐기/, label);
+    assert.ok(s.detail.includes(KEY), `${label}: 파일에 남은 키는 마스킹으로 밝힌다: ${s.detail}`);
+    for (const claim of [...CLAIM_CONFIRMED, '수집키가 적용되었습니다', '수집키는 적용되었지만', '적용됨']) {
+      assert.ok(!s.detail.includes(claim), `${label}: "${claim}" in ${s.detail}`);
+    }
+    for (const b of BANNED_IMPLIED) assert.ok(!s.detail.includes(b), `${label}: "${b}"`);
+    assert.match(s.tag, /^폐기됨/, `${label}: 설정 패널 배지가 '적용됨/수신 확인됨'이 아니다`);
+    assert.ok(s.slim && /폐기/.test(s.slim), `${label}: 필수 완료 후 홈에도 한 줄로 알린다`);
+  }
+});
+
+test('RV-01: confirmRequired는 확인창 버튼, 거절 뒤에는 재발급을 시작할 [다시 시도]가 남는다', () => {
+  assert.equal(step(MATRIX[0][1]).action, 'confirm-reissue');
+  assert.equal(step(MATRIX[1][1]).action, 'confirm-reissue');
+  for (const [label, status] of MATRIX.slice(3)) {
+    const s = step(status);
+    assert.equal(s.action, 'retry', `${label}: 거절 뒤에도 사용자가 다시 시작할 경로`);
+    assert.match(s.detail, /거절했습니다/);
+    assert.match(s.detail, /\[다시 시도\]/);
+  }
+});
+
+test('RV-01: 파일에 키가 없는 경우의 기존 문구·배지는 그대로다', () => {
+  const required = step(st('unlinked', { confirmRequired: true }));
+  assert.match(required.detail, /웹에서 이 기기 수집키가 폐기되었습니다\. 다시 발급할까요\?/);
+  assert.equal(required.tag, undefined);
+  assert.equal(step(st('unlinked', { confirmDeclined: true })).action, 'retry');
+});
+
+test('RV-01: 허브 연결이 없으면(만료 등) 폐기 판정을 근거로 삼지 않는다', () => {
+  const s = step(st('applied', { masked: KEY, confirmRequired: true, hubConnected: false }));
+  assert.equal(s.state, 'partial', '플래그가 남아 있어도 연결이 없으면 파일 사실(적용됨)로 돌아간다');
+});
+
+// ======================= R17 리뷰 RV-07: 일시 원인은 적용·수신 확인을 지우지 않는다 =======================
+
+test('RV-07: 일시 원인(notice)이 있어도 적용됨/수신 확인됨 상태와 문구가 유지되고 보조 안내가 붙는다', () => {
+  const notice = { cause: 'unreachable', message: '허브에 연결하지 못했습니다. 네트워크 상태를 확인하세요. 잠시 후 다시 시도합니다.' };
+  const applied = step(st('applied', { masked: KEY, notice }));
+  assert.equal(applied.state, 'partial', '"실패"로 덮지 않는다');
+  assert.match(applied.detail, /수집키가 적용되었습니다/);
+  assert.ok(applied.detail.includes(`마지막 점검: ${notice.message}`), applied.detail);
+  const confirmed = step(st('confirmed', { masked: KEY, notice }));
+  assert.equal(confirmed.state, 'done', '확인된 수신을 지우지 않는다');
+  assert.match(confirmed.detail, /데이터 수신이 확인되었습니다/);
+  assert.ok(confirmed.detail.includes('마지막 점검:'));
+  // 체크리스트 마커·홈 한 줄: 정상 수집 중인 PC를 '!'/방해 문구로 바꾸지 않는다.
+  assert.equal(slim(st('confirmed', { masked: KEY, notice })), undefined);
+  assert.equal(slim(st('applied', { masked: KEY, notice })), undefined);
+  // notice가 없으면 보조 안내도 없다.
+  assert.ok(!step(st('confirmed', { masked: KEY })).detail.includes('마지막 점검'));
+});
+
+test('RV-07: 키가 없을 때의 featureUnavailable은 "적용되어 있지 않습니다"가 맞는 상태이고 버튼이 없다', () => {
+  const s = step(failed('featureUnavailable'));
+  assert.equal(s.state, 'todo');
+  assert.equal(s.action, undefined);
+  assert.match(s.slim, /적용되어 있지 않습니다/);
 });

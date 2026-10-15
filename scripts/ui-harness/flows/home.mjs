@@ -710,7 +710,7 @@ const BANNED_CLAIMS = [
   '연동 완료', '연동되었습니다', '수신 확인됨', '수신이 확인되었습니다', '수신을 확인했습니다',
   '자동으로 바꾸', '자동으로 교체', '자동으로 변경', '자동으로 삭제', '자동으로 갱신', '자동 교체', '바꾸지 않았습니다',
 ];
-const HEADER_MSG = '설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있습니다. 허브로 보내려면 설정 > OTel에서 수집키로 교체하세요.';
+const HEADER_MSG = '설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있습니다. 허브로 보내려면 설정 > OTel에서 이 항목을 삭제하세요(허브에 연결되어 있으면 삭제 뒤 앱이 수집키를 발급해 적용합니다. 연결하지 않았다면 직접 받은 수집키로 교체할 수도 있습니다).';
 const ENDPOINT_MSG = '수집 엔드포인트가 허브가 아니거나 암호화되지 않은(http) 주소입니다. 수집키가 그 주소로 전송되지 않도록 발급받지 않았습니다. 설정 > OTel에서 엔드포인트를 확인하세요.';
 
 async function otelRow(page) {
@@ -891,7 +891,7 @@ function otelLinkScenarios(base) {
         await page.waitForTimeout(400);
         await shot('01-otel-failed');
         const row = await otelRow(page);
-        await checkOtelCommon(page, bugs, row, { expectState: 'failed', mustInclude: ['허브 수집키 형식이 아닌 Authorization 헤더가 있습니다', '수집키로 교체하세요'] });
+        await checkOtelCommon(page, bugs, row, { expectState: 'failed', mustInclude: ['허브 수집키 형식이 아닌 Authorization 헤더가 있습니다', '이 항목을 삭제하세요', '직접 받은 수집키로 교체할 수도 있습니다'] });
         if (row && !row.buttons.includes('OTel 설정 열기')) bugs.push({ severity: 'Major', symptom: `failed인데 "OTel 설정 열기" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
       },
     },

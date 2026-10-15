@@ -73,11 +73,23 @@ async function saveCalls(page) {
 }
 
 export function scenarios(base) {
+  // 이 흐름의 기본은 '수동 입력' 경로다 — 허브에 연결되어 있으면(base 기본값) 앱이 수집키를 관리하므로 입력칸이 잠긴다(RV-02).
+  // 그래서 허브 미연결 상태를 기본으로 두고, 연결된 경우는 아래 managed-* 시나리오가 따로 본다.
+  // 연동 상태를 돌려주는 커맨드(조회·재시도·재확인·확인 답) 전부가 같은 연결 상태를 말해야 저장 뒤 재조회에서도 상태가 유지된다.
+  const withHub = (hubConnected) => {
+    const out = { ...base };
+    for (const cmd of ['otel_ingest_link_status', 'otel_link_retry', 'otel_link_recheck', 'otel_link_answer_confirm']) {
+      out[cmd] = { ...base[cmd], hubConnected, issueSupported: true };
+    }
+    return out;
+  };
+  const manualBase = withHub(false);
+  const managedBase = withHub(true);
   return [
     // 텔레메트리 켜짐 + 키 없음 → "허브에 수집되지 않음" 경고, 삭제 버튼 없음.
     {
       id: 'unset-telemetry-on',
-      fixtures: { ...base, otel_settings_get: otelSettings({ ingestKey: UNSET }) },
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: UNSET }) },
       async run(page, { shot, bugs }) {
         await page.waitForSelector('#otel-ingest-key');
         await shot('01-unset-warning');
@@ -112,7 +124,7 @@ export function scenarios(base) {
         // 폐기는 관리자 요청이 사실이다.
         if (
           !/허브에 연결되어 있으면 앱이 수집키\(mhk_…\)를 자동으로 발급해 적용/.test(bodyText) ||
-          !/직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다/.test(bodyText) ||
+          !/직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다\. 단, 그 뒤 허브에 연결하면 앱이 발급한 키로 교체됩니다/.test(bodyText) ||
           /관리자에게 수집키 발급을 요청/.test(bodyText) ||
           /발급 방법은 허브 관리자에게 문의/.test(bodyText) ||
           !/관리자에게 해당 수집키의 즉시 폐기를 요청/.test(bodyText)
@@ -132,7 +144,7 @@ export function scenarios(base) {
     // RV-002: 사내 collector(허브 아님) → 키 미설정이어도 "허브가 거부" 오경고가 없어야 한다.
     {
       id: 'unset-internal-collector-no-hub-warning',
-      fixtures: { ...base, otel_settings_get: otelSettings({ ingestKey: UNSET, ingestEndpoint: INTERNAL_EP }) },
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: UNSET, ingestEndpoint: INTERNAL_EP }) },
       async run(page, { shot, bugs }) {
         await page.waitForSelector('#otel-ingest-key');
         if ((await page.locator('#otel-ingest-key-warning').count()) !== 0) {
@@ -147,7 +159,7 @@ export function scenarios(base) {
     // RV-002: 키 설정됨 + 엔드포인트가 http:// → 평문 전송 경고(+ 허브 밖 경고). 저장은 막지 않는다.
     {
       id: 'set-insecure-http-endpoint',
-      fixtures: { ...base, otel_settings_get: otelSettings({ ingestKey: SET_A, ingestEndpoint: HTTP_EP }) },
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: SET_A, ingestEndpoint: HTTP_EP }) },
       async run(page, { shot, bugs }) {
         await page.waitForSelector('#otel-ingest-key');
         const insecure = page.locator('#otel-ingest-key-insecure-warning');
@@ -166,7 +178,7 @@ export function scenarios(base) {
     // RV-002 대조군: 허브(https) + 키 설정됨 → 전송 경고 없음.
     {
       id: 'set-hub-https-no-transit-warning',
-      fixtures: { ...base, otel_settings_get: otelSettings({ ingestKey: SET_A }) },
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: SET_A }) },
       async run(page, { bugs }) {
         await page.waitForSelector('#otel-ingest-key');
         for (const id of ['otel-ingest-key-insecure-warning', 'otel-ingest-key-foreign-warning', 'otel-ingest-key-warning']) {
@@ -179,7 +191,7 @@ export function scenarios(base) {
     // 텔레메트리 꺼짐 + 키 없음 → 경고 없음.
     {
       id: 'unset-telemetry-off',
-      fixtures: { ...base, otel_settings_get: otelSettings({ ingestKey: UNSET, telemetry: '0' }) },
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: UNSET, telemetry: '0' }) },
       async run(page, { bugs }) {
         await page.waitForSelector('#otel-ingest-key');
         if ((await page.locator('#otel-ingest-key-warning').count()) !== 0) {
@@ -191,7 +203,7 @@ export function scenarios(base) {
     {
       id: 'set-masked',
       fixtures: {
-        ...base,
+        ...manualBase,
         otel_settings_get: otelSettings({ ingestKey: SET_A }),
         otel_settings_save: otelSettings({ ingestKey: SET_B }),
       },
@@ -258,7 +270,7 @@ export function scenarios(base) {
     {
       id: 'clear-flow',
       fixtures: {
-        ...base,
+        ...manualBase,
         otel_settings_get: otelSettings({ ingestKey: SET_A }),
         otel_settings_save: otelSettings({ ingestKey: UNSET }),
       },
@@ -302,7 +314,7 @@ export function scenarios(base) {
     // 형식이 다른 Authorization → 원문 없이 "형식 불명" + 경고.
     {
       id: 'unrecognized',
-      fixtures: { ...base, otel_settings_get: otelSettings({ ingestKey: UNRECOGNIZED }) },
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: UNRECOGNIZED }) },
       async run(page, { shot, bugs }) {
         await page.waitForSelector('#otel-ingest-key');
         await shot('01-unrecognized');
@@ -319,7 +331,7 @@ export function scenarios(base) {
     {
       id: 'save-error-no-echo',
       fixtures: {
-        ...base,
+        ...manualBase,
         otel_settings_get: otelSettings({ ingestKey: UNSET }),
         otel_settings_save: { __throw: '수집키 형식이 올바르지 않습니다. 허브에서 발급받은 mhk_로 시작하는 키 전체(47자)를 붙여넣으세요.' },
       },
@@ -330,6 +342,83 @@ export function scenarios(base) {
         await page.waitForTimeout(400);
         await shot('01-save-error');
         await assertNoRawKey(page, bugs, '저장 실패 후', [FAKE_KEY_B]);
+      },
+    },
+    // ---- R17 RV-02: 허브에 연결되어 앱이 수집키를 관리하는 동안에는 수동 입력을 받지 않는다 ----
+    {
+      id: 'managed-by-hub-input-locked',
+      fixtures: { ...managedBase, otel_settings_get: otelSettings({ ingestKey: UNSET }), otel_settings_save: otelSettings({ ingestKey: UNSET }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForSelector('#otel-ingest-key');
+        await page.waitForTimeout(300);
+        await shot('01-managed-unset');
+        const input = page.locator('#otel-ingest-key');
+        if (!(await input.isDisabled())) {
+          bugs.push({ severity: 'Major', symptom: '허브에 연결되어 앱이 수집키를 관리하는데 수동 입력칸이 열려 있음(붙여넣으면 다음 점검에서 조용히 교체된다)', file: 'src/views/settings.ts:renderIngestKeyBlock' });
+        }
+        const placeholder = (await input.getAttribute('placeholder')) ?? '';
+        if (!placeholder.includes('앱이 수집키를 자동 관리')) {
+          bugs.push({ severity: 'Minor', symptom: `잠긴 입력칸 안내가 없음: ${JSON.stringify(placeholder)}`, file: 'src/views/settings.ts:renderIngestKeyBlock' });
+        }
+        const hint = await page.locator('#otel-ingest-key-issue-hint').innerText();
+        for (const t of ['허브에 연결되어 있는 동안은 앱이 수집키(mhk_…)를 자동으로 발급·교체', '입력을 막았습니다', '허브 연결을 해제하세요']) {
+          if (!hint.includes(t)) bugs.push({ severity: 'Major', symptom: `잠금 안내에 "${t}"가 없음(실제: ${hint})`, file: 'src/views/settings.ts:INGEST_KEY_COPY.issueManaged' });
+        }
+        if (hint.includes('아래에 붙여넣고 저장할 수도 있습니다')) {
+          bugs.push({ severity: 'Major', symptom: '입력이 잠겼는데 "붙여넣고 저장할 수도 있습니다"라고 안내함', file: 'src/views/settings.ts:INGEST_KEY_COPY.issueManaged' });
+        }
+        const warn = await page.locator('#otel-ingest-key-warning').innerText();
+        if (warn.includes('아래에 등록할 수도 있습니다')) {
+          bugs.push({ severity: 'Major', symptom: '입력이 잠겼는데 경고가 "아래에 등록할 수도 있습니다"라고 안내함', file: 'src/views/settings.ts:INGEST_KEY_COPY.warnUnsetHubManaged' });
+        }
+        // 저장은 수집키 없이(keep) 나간다 — 다른 설정 저장은 막지 않는다.
+        await page.getByRole('button', { name: '저장', exact: true }).click();
+        await page.waitForTimeout(300);
+        const calls = await saveCalls(page);
+        if (calls.length !== 1 || calls[0]?.payload?.ingestKey?.action !== 'keep') {
+          bugs.push({ severity: 'Critical', symptom: `잠긴 상태의 저장이 ingestKey keep이 아님(${JSON.stringify(calls.map((c) => c?.payload?.ingestKey))})`, file: 'src/views/settings.ts:renderOtelPanel' });
+        }
+        await assertNoRawKey(page, bugs, '허브 관리 중 미설정', [FAKE_KEY_A, FAKE_KEY_B]);
+      },
+    },
+    {
+      id: 'managed-by-hub-set-locked-delete-allowed',
+      fixtures: { ...managedBase, otel_settings_get: otelSettings({ ingestKey: SET_A }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForSelector('#otel-ingest-key');
+        await page.waitForTimeout(300);
+        await shot('01-managed-set');
+        if (!(await page.locator('#otel-ingest-key').isDisabled())) {
+          bugs.push({ severity: 'Major', symptom: '허브 관리 중 키가 설정된 상태에서 입력칸이 열려 있음', file: 'src/views/settings.ts:renderIngestKeyBlock' });
+        }
+        // 삭제는 막지 않는다(앱이 만든 키 정리) — 확인 문구가 다시 발급·교체 횟수 사용 가능성을 밝힌다.
+        if ((await page.locator('#otel-ingest-key-clear').count()) !== 1) {
+          bugs.push({ severity: 'Major', symptom: '허브 관리 중에도 수집키 삭제 버튼은 있어야 함', file: 'src/views/settings.ts:renderIngestKeyBlock' });
+        }
+        await page.locator('#otel-ingest-key-clear').click();
+        await page.waitForTimeout(200);
+        const confirmText = (await page.locator('.modal-box').textContent()) ?? '';
+        if (!confirmText.includes('키 교체 횟수(24시간 6회)')) {
+          bugs.push({ severity: 'Major', symptom: `삭제 확인 문구에 키 교체 횟수 사용 가능성 안내가 없음: ${JSON.stringify(confirmText)}`, file: 'src/views/settings.ts:INGEST_KEY_COPY.clearConfirm' });
+        }
+        await page.getByRole('button', { name: '취소' }).click();
+        if ((await saveCalls(page)).length !== 0) bugs.push({ severity: 'Critical', symptom: '취소했는데 저장이 호출됨', file: 'src/views/settings.ts:handleClearIngestKey' });
+      },
+    },
+    {
+      id: 'managed-by-hub-unrecognized-points-to-delete',
+      fixtures: { ...managedBase, otel_settings_get: otelSettings({ ingestKey: UNRECOGNIZED }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForSelector('#otel-ingest-key');
+        await page.waitForTimeout(300);
+        await shot('01-managed-unrecognized');
+        const warn = await page.locator('#otel-ingest-key-warning').innerText();
+        for (const t of ['앱은 이 값을 바꾸지 않습니다', '[수집키 삭제]', '[다시 시도]']) {
+          if (!warn.includes(t)) bugs.push({ severity: 'Major', symptom: `관리 중 형식 불명 경고에 "${t}"가 없음(실제: ${warn})`, file: 'src/views/settings.ts:INGEST_KEY_COPY.warnUnrecognizedHubManaged' });
+        }
+        if (warn.includes('새 수집키를 입력하고 저장하면 교체됩니다')) {
+          bugs.push({ severity: 'Major', symptom: '입력이 잠겼는데 "입력하고 저장하면 교체됩니다"라고 안내함', file: 'src/views/settings.ts:INGEST_KEY_COPY.warnUnrecognizedHubManaged' });
+        }
       },
     },
   ];

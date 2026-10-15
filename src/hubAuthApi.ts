@@ -36,8 +36,16 @@ export function connectHub(): Promise<HubAuthStatus> {
   return invoke<HubAuthStatus>('hub_auth_connect');
 }
 
-export function disconnectHub(): Promise<HubAuthStatus> {
-  return invoke<HubAuthStatus>('hub_auth_disconnect');
+// 연결 해제 때 이 PC settings.json의 수집키(Authorization 항목)를 어떻게 했는가 — 해제 토스트가 실제 결과를 말한다.
+// removed: 앱이 적용한 키를 지웠다 / notPresent: 지울 키가 없어 파일을 바꾸지 않았다 / failed: 지우려 했지만 쓰지 못했다.
+export type IngestKeyRemoval = 'removed' | 'notPresent' | 'failed';
+
+export interface HubDisconnectResult extends HubAuthStatus {
+  readonly ingest_key?: IngestKeyRemoval;
+}
+
+export function disconnectHub(): Promise<HubDisconnectResult> {
+  return invoke<HubDisconnectResult>('hub_auth_disconnect');
 }
 
 // 갱신 창과 무관하게 서버에 물어본다(서버가 시기를 교정한다). 키체인 재시도에도 쓴다.

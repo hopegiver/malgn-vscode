@@ -26,9 +26,10 @@ import {
   renewHubNow,
   describeHubAuth,
 } from '../hubAuthApi';
-import type { HubAuthStatus } from '../hubAuthApi';
-import { navigate } from '../route';
+import type { HubAuthStatus, HubDisconnectResult } from '../hubAuthApi';
+import { navigate, parseRoute } from '../route';
 import { computeOnboarding } from '../onboarding';
+import { disconnectToast, keyManagedByHub, reissueOutcome } from '../otelLinkText';
 import type { OnboardingStep } from '../onboarding';
 import { renderDevToolsView } from './devTools';
 
@@ -110,19 +111,27 @@ const INGEST_KEY_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
 // Rust `IngestKeyStatus`에 다시 실어(otel_ingest_key.rs) 버튼을 되살린다.
 const INGEST_KEY_COPY = {
   issue:
-    '허브에 연결되어 있으면 앱이 수집키(mhk_…)를 자동으로 발급해 적용합니다(위 "허브 수집키 자동 연동"). 직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
+    '허브에 연결되어 있으면 앱이 수집키(mhk_…)를 자동으로 발급해 적용합니다(위 "허브 수집키 자동 연동"). 직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다. 단, 그 뒤 허브에 연결하면 앱이 발급한 키로 교체됩니다. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
+  // 허브에 연결되어 앱이 수집키를 관리하는 동안(RV-02): 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 교체되고 키 교체 횟수만 쓴다.
+  issueManaged:
+    '허브에 연결되어 있는 동안은 앱이 수집키(mhk_…)를 자동으로 발급·교체합니다(위 "허브 수집키 자동 연동"). 직접 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 바뀌고 이 기기의 키 교체 횟수(24시간 6회)만 쓰기 때문에 입력을 막았습니다. 직접 받은 수집키를 쓰려면 허브 연결을 해제하세요(malgnai-hub 연결도 함께 해제됩니다). 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
+  placeholderManaged: '허브 연결 중에는 앱이 수집키를 자동 관리합니다',
   storage:
     '저장하면 settings.json에 Authorization=Bearer … 형태로 기록되며 값은 이 화면에 다시 표시되지 않습니다. 비워 두고 저장하면 기존 키를 그대로 둡니다.',
   scope: '저장·삭제한 수집키는 새로 시작하는 Claude Code 세션부터 적용됩니다. 이미 실행 중인 세션은 이전 설정을 계속 쓸 수 있습니다.',
   revoke:
     '이 값은 Claude Code가 실행하는 명령에서 보일 수 있습니다. 대화·이슈·채팅에 붙여 넣지 마세요. 유출이 의심되면 허브 관리자에게 해당 수집키의 즉시 폐기를 요청하세요.',
   clearConfirm:
-    '이 PC에 저장된 허브 수집키를 삭제할까요? 삭제하면 이 PC의 사용량이 허브에 수집되지 않습니다(다른 OTel 설정은 그대로입니다). 새로 시작하는 Claude Code 세션부터 적용됩니다. 이 삭제는 이 PC의 설정 파일(백업 포함)에서만 키를 지웁니다. 허브에 등록된 키는 폐기되지 않으므로, 유출이 의심되면 허브 관리자에게 폐기를 요청하세요. 허브에 연결되어 있으면 앱이 다음 점검 때 새 수집키를 다시 발급해 적용할 수 있습니다(완전히 끊으려면 허브 연결을 해제하세요).',
+    '이 PC에 저장된 허브 수집키를 삭제할까요? 삭제하면 이 PC의 사용량이 허브에 수집되지 않습니다(다른 OTel 설정은 그대로입니다). 새로 시작하는 Claude Code 세션부터 적용됩니다. 이 삭제는 이 PC의 설정 파일(백업 포함)에서만 키를 지웁니다. 허브에 등록된 키는 폐기되지 않으므로, 유출이 의심되면 허브 관리자에게 폐기를 요청하세요. 허브에 연결되어 있으면 앱이 다음 점검 때 새 수집키를 다시 발급해 적용할 수 있고, 이때 이 기기의 키 교체 횟수(24시간 6회)를 쓸 수 있습니다(완전히 끊으려면 허브 연결을 해제하세요).',
   savedToast: 'OTel 설정을 저장했습니다. 새로 시작하는 Claude Code 세션부터 적용됩니다.',
   clearedToast: '허브 수집키를 이 PC에서 삭제했습니다. 새로 시작하는 Claude Code 세션부터 적용되며, 허브의 키는 폐기되지 않았습니다.',
   warnUnsetHub:
     '텔레메트리가 켜져 있지만 수집키가 없어 사용량이 허브에 수집되지 않습니다(허브가 인증 실패로 거부합니다). 허브에 연결되어 있으면 앱이 수집키를 자동으로 발급해 적용합니다. 직접 받은 키가 있으면 아래에 등록할 수도 있습니다.',
+  warnUnsetHubManaged:
+    '텔레메트리가 켜져 있지만 수집키가 없어 사용량이 허브에 수집되지 않습니다(허브가 인증 실패로 거부합니다). 허브에 연결되어 있어 앱이 수집키를 자동으로 발급해 적용합니다. 바로 하려면 위 "허브 수집키 자동 연동"의 [다시 시도]를 누르세요.',
   warnUnrecognizedHub: '설정된 Authorization 값이 허브 수집키 형식이 아니라 허브가 거부할 수 있습니다. 새 수집키를 입력하고 저장하면 교체됩니다.',
+  warnUnrecognizedHubManaged:
+    '설정된 Authorization 값이 허브 수집키 형식이 아니라 허브가 거부할 수 있습니다. 앱은 이 값을 바꾸지 않습니다. [수집키 삭제]로 지운 뒤 위 "허브 수집키 자동 연동"의 [다시 시도]를 누르면 앱이 허브 수집키를 발급해 적용합니다.',
   warnInsecure:
     '수집키가 설정돼 있는데 OTLP 엔드포인트가 http://(암호화 없음)입니다. 키가 평문으로 전송될 수 있으니 https:// 주소인지 확인하세요.',
   warnForeignHost:
@@ -204,16 +213,24 @@ async function recheckIngestLinkAfterSave(): Promise<void> {
 
 // 재발급 확인창(계약 D-1) — 웹에서 이 기기 수집키가 폐기된 경우에만 사람에게 묻는다. 거절하면 백엔드가
 // 이번 앱 실행 동안 다시 묻지 않는다(confirmDeclined). 한 번에 한 창만 연다.
+// 초점은 '발급하지 않음'에 둔다 — 앱이 백그라운드 이벤트로 스스로 띄우는 창이라, 다른 일을 하다 누른 Enter 한 번이
+// 사람의 확인(D-1)을 대신하면 안 된다. 성공 토스트는 응답이 실제로 적용됨일 때만 말한다(reissueOutcome).
 export const REISSUE_CONFIRM_MESSAGE = '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요?';
 let reissueConfirmOpen = false;
 export async function askReissueConfirm(): Promise<void> {
   if (reissueConfirmOpen) return;
   reissueConfirmOpen = true;
   try {
-    const accepted = await confirmDialog(REISSUE_CONFIRM_MESSAGE, { title: '수집키 재발급', confirmLabel: '다시 발급', cancelLabel: '발급하지 않음' });
+    const accepted = await confirmDialog(REISSUE_CONFIRM_MESSAGE, {
+      title: '수집키 재발급',
+      confirmLabel: '다시 발급',
+      cancelLabel: '발급하지 않음',
+      defaultFocus: 'cancel',
+    });
     state.ingestLink.status = await answerIngestReissueConfirm(accepted);
     state.ingestLink.loaded = true;
-    if (accepted) showToast('수집키를 다시 발급해 적용했습니다. 새로 시작하는 Claude Code 세션부터 적용됩니다.');
+    const outcome = reissueOutcome(state.ingestLink.status, accepted);
+    if (outcome.text) showToast(outcome.text);
   } catch (err) {
     showToast(`수집키 재발급을 진행하지 못했습니다: ${errorMessage(err)}`);
   } finally {
@@ -222,8 +239,15 @@ export async function askReissueConfirm(): Promise<void> {
   }
 }
 
-function maybeAskReissueConfirm(): void {
-  if (state.ingestLink.status?.confirmRequired && !reissueConfirmOpen) void askReissueConfirm();
+// 자동 팝업은 사용자가 이 상태를 볼 화면(홈, 설정 > OTel)에 있을 때만 띄운다. 세션 입력 같은 다른 작업 중에는 끼어들지 않고,
+// 홈·설정에 들어오면(loadIngestLink가 다시 불린다) 그때 묻는다. 체크리스트·설정 패널의 [확인하기]는 어디서든 직접 연다.
+function onScreenThatShowsLinkState(): boolean {
+  const route = parseRoute();
+  return route.kind === 'home' || (route.kind === 'settings' && route.tab === 'otel');
+}
+
+export function maybeAskReissueConfirm(): void {
+  if (state.ingestLink.status?.confirmRequired && !reissueConfirmOpen && onScreenThatShowsLinkState()) void askReissueConfirm();
 }
 
 async function handleSaveOtelSettings(values: Record<string, string>, ingestKey: IngestKeyChange): Promise<void> {
@@ -453,7 +477,7 @@ function renderOtelPanel(): HTMLElement {
 
   const form = el('form', { className: 'settings-form' }, [
     el('div', { className: 'settings-form-hint' }, [
-      '~/.claude/settings.json의 관리대상 OTel 키를 실제로 읽고 저장합니다. 저장 시 파일 형식이 정규화됩니다(키가 알파벳순으로 재정렬되고, 저장 직전 원본이 settings.json.malgn-bak으로 백업됩니다).',
+      '~/.claude/settings.json의 관리대상 OTel 키를 실제로 읽고 저장합니다. 저장 시 파일 형식이 정규화됩니다(키가 알파벳순으로 재정렬되고, 저장 직전 원본이 settings.json.malgn-bak으로 백업됩니다). 허브에 연결되어 있으면 앱이 수집키를 자동으로 쓸 때도 같은 방식으로 저장됩니다.',
     ]),
     renderIngestKeyBlock(settings),
     ...fields,
@@ -468,7 +492,7 @@ function renderOtelPanel(): HTMLElement {
     }
     // 새 키를 입력했을 때만 set — 비워 두면 keep(기존 키 유지). 마스킹 표시값은 어디에도
     // 입력 필드 값으로 쓰이지 않으므로 되돌려 보낼 일이 없다.
-    const typed = otelDraft.ingestKey;
+    const typed = keyManagedByHub(state.ingestLink.status) ? '' : otelDraft.ingestKey;
     const ingestKey: IngestKeyChange = typed.trim() === '' ? { action: 'keep' } : { action: 'set', key: typed };
     void handleSaveOtelSettings(values, ingestKey);
   });
@@ -528,10 +552,11 @@ function renderIngestLinkPanel(): HTMLElement {
   const step = computeOnboarding(state).steps.find((s) => s.kind === 'otel-link');
   if (!step) return el('div', {});
   const badge = INGEST_LINK_BADGE[step.state] ?? INGEST_LINK_BADGE.todo;
+  const badgeLabel = step.tag ?? badge.label;
   const action = otelLinkActionButton(step, { inSettings: true });
   const panel = el('div', { className: 'settings-field' }, [
     el('span', { className: 'settings-field-label' }, ['허브 수집키 자동 연동']),
-    el('div', {}, [el('span', { className: `badge badge-${badge.tone}` }, [badge.label])]),
+    el('div', {}, [el('span', { className: `badge badge-${badge.tone}` }, [badgeLabel])]),
     withId(el('div', { className: 'settings-form-hint' }, [step.detail]), 'otel-link-detail'),
     ...(action ? [el('div', { className: 'settings-form-actions' }, [action])] : []),
   ]);
@@ -563,13 +588,17 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
   const statusRow = withId(el('div', {}, [statusBadge, ...(statusText ? [' ', statusText] : [])]), 'otel-ingest-key-status');
 
   const ep = settings.ingestEndpoint;
+  // 허브에 연결되어 앱이 수집키를 관리하는 중이면 직접 입력을 받지 않는다(RV-02) — 붙여넣은 키는 다음 점검에서
+  // 앱이 발급한 키로 교체되고 키 교체 횟수를 쓴다. 백엔드(otel_settings_save)도 같은 조건으로 거절한다.
+  const managed = keyManagedByHub(state.ingestLink.status);
+  if (managed) otelDraft.ingestKey = '';
   const alertBlock = (id: string, message: string): HTMLElement => withId(el('div', { className: 'alert' }, [el('span', {}, [message])]), id);
   const blocks: HTMLElement[] = [];
   // "허브가 거부한다/수집되지 않는다"는 엔드포인트가 허브일 때만 맞다(사내 collector 등은 오경고).
   if (telemetryOn && ep.targetsHub && ing.state === 'unset') {
-    blocks.push(alertBlock('otel-ingest-key-warning', INGEST_KEY_COPY.warnUnsetHub));
+    blocks.push(alertBlock('otel-ingest-key-warning', managed ? INGEST_KEY_COPY.warnUnsetHubManaged : INGEST_KEY_COPY.warnUnsetHub));
   } else if (telemetryOn && ep.targetsHub && ing.state === 'unrecognized') {
-    blocks.push(alertBlock('otel-ingest-key-warning', INGEST_KEY_COPY.warnUnrecognizedHub));
+    blocks.push(alertBlock('otel-ingest-key-warning', managed ? INGEST_KEY_COPY.warnUnrecognizedHubManaged : INGEST_KEY_COPY.warnUnrecognizedHub));
   }
   // 키가 실제로 설정돼 전송될 때: 평문 전송 / 허브 밖 전송 경고. 저장은 막지 않는다.
   if (telemetryOn && ing.state === 'set' && ep.insecure) {
@@ -594,7 +623,12 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
   input.className = 'settings-input';
   input.autocomplete = 'new-password';
   input.spellcheck = false;
-  input.placeholder = ing.state === 'set' ? '새 수집키 붙여넣기 (비워 두면 기존 키 유지)' : 'mhk_로 시작하는 수집키 붙여넣기';
+  input.placeholder = managed
+    ? INGEST_KEY_COPY.placeholderManaged
+    : ing.state === 'set'
+      ? '새 수집키 붙여넣기 (비워 두면 기존 키 유지)'
+      : 'mhk_로 시작하는 수집키 붙여넣기';
+  input.disabled = managed;
 
   const actions: HTMLElement[] = [];
   if (ing.state !== 'unset') {
@@ -611,7 +645,7 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
     statusRow,
     ...blocks,
     input,
-    withId(el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.issue]), 'otel-ingest-key-issue-hint'),
+    withId(el('div', { className: 'settings-form-hint' }, [managed ? INGEST_KEY_COPY.issueManaged : INGEST_KEY_COPY.issue]), 'otel-ingest-key-issue-hint'),
     el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.storage]),
     withId(el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.scope]), 'otel-ingest-key-scope-hint'),
     el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.revoke]),
@@ -1179,7 +1213,8 @@ async function runHubAuthAction(
     state.hubAuth.error = null;
     if (kind === 'connect') showToast('허브에 연결했습니다.');
     if (kind === 'disconnect') {
-      showToast(state.hubAuth.status.reason === 'SERVER_REVOKE_FAILED' ? '연결을 해제했지만 서버 폐기에 실패했습니다. 웹 /keys에서 폐기하세요.' : '허브 연결을 해제했습니다. 이 PC의 수집키도 지웠습니다.');
+      // 서버 폐기 결과와 이 PC 설정 파일의 수집키 처리 결과를 각각 사실대로 말한다(해제 커맨드가 ingest_key로 알려 준다).
+      showToast(disconnectToast(state.hubAuth.status.reason, (state.hubAuth.status as HubDisconnectResult).ingest_key));
     }
     // 연결·해제는 수집키 연동 상태(허브 연결 여부, 설정의 Authorization 항목)를 바꾼다.
     if (kind === 'connect' || kind === 'disconnect') {

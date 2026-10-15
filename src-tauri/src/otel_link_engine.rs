@@ -32,6 +32,7 @@ use crate::otel_hub_client::{
 };
 use crate::otel_ingest_key::{normalize_ingest_key, SecretString};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// 점검 간격(D 머리말: "1시간 이상 간격").
@@ -202,6 +203,11 @@ struct RunState {
     reeval_used: bool,
     /// 이번 점검에서 서버에 보낸 rotate 요청 수. 응답 유실 재시도를 포함해 최대 `MAX_ROTATES_PER_CHECK`회(D 머리말).
     rotate_calls: u8,
+    /// 점검을 시작할 때의 연결 세대(`LinkEngine::epoch`). 연결 해제·재연결로 세대가 바뀌면 이 점검의 결과는
+    /// 설정 파일에도 엔진 상태에도 반영하지 않는다(RV-05).
+    epoch: u64,
+    /// 사용자의 [다시 시도]로 시작한 점검이다 — 15분 타임아웃 뒤에도 첫 데이터 확인을 다시 시작한다(RV-03).
+    restart_watch: bool,
 }
 
 /// 한 번의 점검에서 rotate는 응답 유실 재시도를 포함해 최대 2회다(계약 D 머리말).
@@ -217,6 +223,13 @@ pub(crate) struct LinkEngine {
     mem: Mutex<Memory>,
     run: Mutex<()>,
     notifier: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// 허브 연결 세대. 연결 해제·재연결(`on_disconnected`/`on_connected`)마다 올라간다. 서버 응답을 기다리는 동안
+    /// (최대 35초) 연결이 바뀌면 그 점검은 낡은 점검이다 — 낡은 점검이 해제로 지운 수집키를 설정 파일에 다시 쓰거나
+    /// 새 연결의 상태를 덮어쓰지 않게 한다(RV-05).
+    epoch: AtomicU64,
+    /// 설정 파일 쓰기(`apply_guarded`)와 연결 해제의 키 삭제(`disconnect_with`)를 서로 직렬화한다. `run`과 달리
+    /// 서버 응답을 기다리는 동안 잡지 않으므로(파일 입출력 동안만) 해제가 막히지 않는다.
+    gate: Mutex<()>,
 }
 
 /// 키 앞 8자(`mhk_` + 4자) — 허브 `token_prefix`와 비교하는 값.
@@ -230,7 +243,21 @@ impl LinkEngine {
             mem: Mutex::new(Memory::default()),
             run: Mutex::new(()),
             notifier: OnceLock::new(),
+            epoch: AtomicU64::new(0),
+            gate: Mutex::new(()),
         }
+    }
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    fn is_stale(&self, st: &RunState) -> bool {
+        self.epoch() != st.epoch
+    }
+
+    fn lock_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.gate.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// 상태가 바뀔 때 부르는 훅(프론트에 변경 이벤트를 보낸다). 한 번만 설정된다.
@@ -278,24 +305,56 @@ impl LinkEngine {
     }
 
     /// 허브를 (재)연결했다 — 새 연결로 취급한다(D-7: 재연결하면 GET은 `auto`가 된다). 메모리 상태를
-    /// 모두 비우고 곧바로 점검하도록 예약한다.
+    /// 모두 비우고 곧바로 점검하도록 예약한다. 이전 연결에서 진행 중이던 점검은 낡은 점검이 된다(세대 증가).
     pub(crate) fn on_connected(&self) {
-        self.with(|m| {
-            *m = Memory::default();
-            m.forced = Some(Trigger::Connected);
-        });
+        {
+            let _gate = self.lock_gate();
+            self.epoch.fetch_add(1, Ordering::SeqCst);
+            self.with(|m| {
+                *m = Memory::default();
+                m.forced = Some(Trigger::Connected);
+            });
+        }
         self.notify();
     }
 
     /// 허브 연결 해제 — 메모리 상태(보관 중인 미기록 원문 포함)를 비운다. 점검은 예약하지 않는다.
+    /// (실제 경로는 `disconnect_with`로 키 삭제까지 한 임계구역에서 한다 — 이 형태는 테스트용이다.)
+    #[cfg(test)]
     pub(crate) fn on_disconnected(&self, now: u64) {
-        self.with(|m| {
-            *m = Memory::default();
-            // 연결이 없으니 기동 점검을 다시 하지 않는다. 다음 연결 때 `on_connected`가 예약한다.
-            m.last_check = Some(now);
-            m.phase = Phase::NoDeviceToken;
-        });
+        self.disconnect_with(now, || ());
+    }
+
+    /// 연결 해제 + 그 직후의 후속 작업 `after`(수집키 삭제)를 **같은 임계구역**에서 한다(D-13, RV-05). 먼저 세대를
+    /// 올리고 메모리를 비운 뒤 `after`를 실행하므로, 서버 응답을 기다리던 점검이 뒤늦게 201을 받아도
+    /// `apply_guarded`가 세대 불일치를 보고 키를 쓰지 않는다 — "해제 후 지운 키가 다시 써지는" 순서가 없다.
+    pub(crate) fn disconnect_with<R>(&self, now: u64, after: impl FnOnce() -> R) -> R {
+        let out = {
+            let _gate = self.lock_gate();
+            self.epoch.fetch_add(1, Ordering::SeqCst);
+            self.with(|m| {
+                *m = Memory::default();
+                // 연결이 없으니 기동 점검을 다시 하지 않는다. 다음 연결 때 `on_connected`가 예약한다.
+                m.last_check = Some(now);
+                m.phase = Phase::NoDeviceToken;
+            });
+            after()
+        };
         self.notify();
+        out
+    }
+
+    /// 낡지 않은 점검만 설정 파일에 키를 쓴다. 세대 확인과 쓰기를 `gate` 안에서 함께 해서 연결 해제의 키 삭제와
+    /// 엇갈리지 않는다.
+    fn apply_guarded(&self, env: &Env, key: SecretString, st: &RunState) -> Applied {
+        let _gate = self.lock_gate();
+        if self.is_stale(st) {
+            return Applied::Stale;
+        }
+        match crate::otel_settings::apply_ingest_key(env.path, key) {
+            Ok(()) => Applied::Written,
+            Err(_) => Applied::Failed,
+        }
     }
 
     /// 스케줄러의 한 박자: 점검이 필요하면 점검하고, 아니면 첫 데이터 폴링을 한다.
@@ -328,12 +387,20 @@ impl LinkEngine {
             }
         });
         self.notify();
-        let mut st = RunState::default();
+        let mut st = RunState {
+            epoch: self.epoch(),
+            restart_watch: trigger == Trigger::User,
+            ..RunState::default()
+        };
         let phase = self.evaluate(env, now, &mut st);
-        self.finish(phase);
+        self.finish(phase, &st);
     }
 
-    fn finish(&self, phase: Phase) {
+    fn finish(&self, phase: Phase, st: &RunState) {
+        if self.is_stale(st) {
+            // 점검 도중 연결이 해제·재연결됐다 — 이 결과는 이전 연결의 것이라 현재 상태를 덮지 않는다.
+            return;
+        }
         self.with(|m| {
             // 백오프(D-15)는 연속된 일시 오류에서만 자란다. 점검이 일시 오류가 아닌 결과(정상 완료나 서버의
             // 명확한 답)로 끝나면 간격을 처음(1분)으로 되돌린다.
@@ -387,6 +454,13 @@ impl LinkEngine {
 
     /// D-1: 사람에게 묻는다. 이번 실행에서 이미 거절했다면 묻지 않는다.
     fn need_confirm(&self) -> Phase {
+        // 웹에서 폐기된 키다 — 파일에 남은 그 키를 같은 실행에서 이전에 확인한 수신(`confirmed_prefix`)·진행 중이던
+        // 첫 데이터 확인(`watch`)·타임아웃 안내가 "정상 수집 중"처럼 가리지 않게 비운다(RV-01).
+        self.with(|m| {
+            m.confirmed_prefix = None;
+            m.watch = None;
+            m.first_data_timed_out = false;
+        });
         if self.with(|m| m.declined) {
             Phase::ConfirmDeclined
         } else {
@@ -410,8 +484,8 @@ impl LinkEngine {
                 if let Err(stop) = crate::otel_link::mint_gate(env.path) {
                     return stop;
                 }
-                return match crate::otel_settings::apply_ingest_key(env.path, p.clone()) {
-                    Ok(()) => {
+                return match self.apply_guarded(env, p.clone(), st) {
+                    Applied::Written => {
                         self.with(|m| {
                             m.pending_write = None;
                             m.lost_checks = 0;
@@ -419,7 +493,8 @@ impl LinkEngine {
                         self.after_applied(&cur.token_prefix, now);
                         Phase::Idle
                     }
-                    Err(_) => Phase::WriteFailed,
+                    Applied::Failed => Phase::WriteFailed,
+                    Applied::Stale => Phase::NoDeviceToken,
                 };
             }
             // 그 사이 웹 폐기·회전·cron 폐기 — 원문을 버리고 1번부터 다시 판정한다(아래 일반 경로).
@@ -429,17 +504,26 @@ impl LinkEngine {
         let file_prefix = crate::otel_link::file_key_prefix(env.path);
         if file_prefix.as_deref() == Some(cur.token_prefix.as_str()) {
             // 이미 적용된 상태다 — 끝낸다. 누가 회전했는지는 판단하지 않는다.
-            self.with(|m| {
-                m.lost_checks = 0;
-                m.first_data_timed_out = false;
-            });
+            self.with(|m| m.lost_checks = 0);
             if cur.has_signal() {
                 self.with(|m| {
                     m.confirmed_prefix = Some(cur.token_prefix.clone());
                     m.watch = None;
+                    m.first_data_timed_out = false;
                 });
             } else {
-                self.start_watch_if_absent(&cur.token_prefix, now);
+                // D-12: 15분 안에 신호가 없어 확인을 멈춘 키(`first_data_timed_out`)는 정기 점검의 이 GET 1회로만
+                // 다시 본다 — 매시간 15분 폴링을 되풀이하지 않는다(키당 하루 약 1,460회 GET). 폴링을 다시 여는 것은
+                // 메모리가 비어 있는 앱 기동·연결 직후(타임아웃 표시가 없다)와 사용자의 [다시 시도]뿐이다.
+                let keep_stopped = self.with(|m| {
+                    if st.restart_watch {
+                        m.first_data_timed_out = false;
+                    }
+                    m.first_data_timed_out
+                });
+                if !keep_stopped {
+                    self.start_watch_if_absent(&cur.token_prefix, now);
+                }
             }
             return Phase::Idle;
         }
@@ -508,6 +592,10 @@ impl LinkEngine {
 
         let mut lost_in_this_check: u8 = 0;
         loop {
+            if self.is_stale(st) {
+                // 요청을 기다리는 동안 연결이 해제·재연결됐다 — 이전 연결의 기기 토큰으로 더 보내지 않는다.
+                return Phase::NoDeviceToken;
+            }
             if kind == Mint::Rotate {
                 // 이 점검에서 rotate를 이미 상한만큼 보냈다 — 점검을 끝낸다(다음 점검의 4번에 맡긴다).
                 if st.rotate_calls >= MAX_ROTATES_PER_CHECK {
@@ -520,7 +608,7 @@ impl LinkEngine {
                 Mint::Rotate => env.api.rotate(token.expose()),
             };
             let err = match result {
-                Ok(created) => return self.accept_key(env, created.token, now),
+                Ok(created) => return self.accept_key(env, created.token, now, st),
                 Err(e) => e,
             };
             match err {
@@ -654,23 +742,28 @@ impl LinkEngine {
     }
 
     /// 201을 받았다 — 형식을 검증하고 설정에 적용한다(D-2·D-5).
-    fn accept_key(&self, env: &Env, key: SecretString, now: u64) -> Phase {
+    fn accept_key(&self, env: &Env, key: SecretString, now: u64, st: &RunState) -> Phase {
         // 응답을 받았으니 "유실로 끝난 점검"이 아니다(rotate 201이든 발급 201이든 수는 0이 된다).
-        self.with(|m| {
-            m.lost_checks = 0;
-            m.budget_hold = None;
-        });
+        if !self.is_stale(st) {
+            self.with(|m| {
+                m.lost_checks = 0;
+                m.budget_hold = None;
+            });
+        }
         if normalize_ingest_key(key.expose()).is_err() {
             return Phase::InvalidKey;
         }
         let prefix = prefix8(key.expose());
-        match crate::otel_settings::apply_ingest_key(env.path, key.clone()) {
-            Ok(()) => {
+        match self.apply_guarded(env, key.clone(), st) {
+            // 응답을 기다리는 동안 연결이 해제·재연결됐다 — 받은 키는 쓰지 않고 버린다(RV-05). 서버는 해제 때
+            // 이 기기의 수집키를 이미 폐기했으므로 살아 있는 키가 남지 않는다.
+            Applied::Stale => Phase::NoDeviceToken,
+            Applied::Written => {
                 self.with(|m| m.pending_write = None);
                 self.after_applied(&prefix, now);
                 Phase::Idle
             }
-            Err(_) => {
+            Applied::Failed => {
                 // 쓰기 실패를 회전으로 되풀이하면 회전 예산만 소진된다. 원문을 메모리에 보관하고 플래그를
                 // 켠다(Phase::WriteFailed). 이후 점검은 GET만 한다.
                 self.with(|m| m.pending_write = Some(key));
@@ -784,12 +877,15 @@ impl LinkEngine {
             m.last_check = Some(now);
         });
         self.notify();
-        let mut st = RunState::default();
+        let mut st = RunState {
+            epoch: self.epoch(),
+            ..RunState::default()
+        };
         let phase = match env.tokens.latest() {
             Some(mut token) => self.mint(env, &mut token, Mint::Create { confirm: true }, now, &mut st),
             None => Phase::NoDeviceToken,
         };
-        self.finish(phase);
+        self.finish(phase, &st);
     }
 
     // ---------------- 첫 데이터 확인(D-12) ----------------
@@ -812,8 +908,8 @@ impl LinkEngine {
             return;
         };
         if expired {
-            // 15분 — 폴링을 멈추고 "새 Claude Code 세션을 열면 수집이 시작됩니다"를 안내한다. 다음 앱
-            // 기동 때 점검의 GET 1회로 다시 확인한다.
+            // 15분 — 폴링을 멈추고 "새 Claude Code 세션을 열면 수집이 시작됩니다"를 안내한다. 이후에는 다음
+            // 점검(1시간 간격·앱 기동)의 GET 1회로만 다시 확인한다(has_current의 D-12 주석 참고).
             self.with(|m| {
                 m.watch = None;
                 m.first_data_timed_out = true;
@@ -834,7 +930,13 @@ impl LinkEngine {
                 w.last_poll = Some(now);
             }
         });
-        match env.api.get(token.expose()) {
+        let epoch = self.epoch();
+        let reply = env.api.get(token.expose());
+        if self.epoch() != epoch {
+            // 응답을 기다리는 동안 연결이 해제·재연결됐다 — 이전 연결의 확인 결과는 반영하지 않는다.
+            return;
+        }
+        match reply {
             Ok(state) => {
                 let cur_has_signal = state
                     .current
@@ -866,6 +968,14 @@ impl LinkEngine {
             }
         }
     }
+}
+
+/// `apply_guarded`의 결과.
+enum Applied {
+    Written,
+    Failed,
+    /// 점검 도중 연결이 바뀌어 쓰지 않았다.
+    Stale,
 }
 
 enum MintNext {

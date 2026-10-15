@@ -395,7 +395,7 @@ fn link_status_json_shape_is_the_frontend_contract() {
     let applied = IngestLinkStatus::new(IngestLinkState::Applied, Some("mhk_KKKK…".into()));
     assert_eq!(
         serde_json::to_string(&applied).unwrap(),
-        r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false,"telemetryEnabled":false,"endpoint":{"targetsHub":false,"insecure":false,"foreignHost":false},"collectionReady":false,"blockers":[],"hubConnected":false,"confirmRequired":false,"confirmDeclined":false,"waitingFirstData":false,"firstDataTimedOut":false,"blockedReason":null,"retryAt":null}"#
+        r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false,"telemetryEnabled":false,"endpoint":{"targetsHub":false,"insecure":false,"foreignHost":false},"collectionReady":false,"blockers":[],"hubConnected":false,"confirmRequired":false,"confirmDeclined":false,"waitingFirstData":false,"firstDataTimedOut":false,"blockedReason":null,"retryAt":null,"notice":null}"#
     );
     let failed = IngestLinkStatus::failed(LinkFailureCause::Blocked, None);
     let json = serde_json::to_value(&failed).unwrap();
@@ -484,12 +484,9 @@ fn compose_maps_each_engine_phase_to_the_documented_state_and_cause() {
         (Phase::CredentialLimit, LinkFailureCause::CredentialLimit),
         (Phase::RotationLost, LinkFailureCause::RotationLost),
         (Phase::Reconnect, LinkFailureCause::ReconnectRequired),
-        (Phase::FeatureUnavailable, LinkFailureCause::FeatureUnavailable),
         (Phase::WriteFailed, LinkFailureCause::ApplyFailed),
         (Phase::NotDesktopToken, LinkFailureCause::NotDesktopToken),
         (Phase::HubRejected, LinkFailureCause::HubRejected),
-        (Phase::Transient, LinkFailureCause::Unreachable),
-        (Phase::RateLimited, LinkFailureCause::RateLimited),
         (Phase::NotReady, LinkFailureCause::NotReady),
         (Phase::EndpointNotHub, LinkFailureCause::EndpointNotHub),
         (Phase::InvalidKey, LinkFailureCause::InvalidKeyReturned),
@@ -498,6 +495,17 @@ fn compose_maps_each_engine_phase_to_the_documented_state_and_cause() {
         let s = compose(&applied, with_phase(phase.clone()));
         assert_eq!((s.state, s.failure.as_ref().map(|f| f.cause)), (IngestLinkState::Failed, Some(cause)), "{phase:?}");
         assert_eq!(s.masked.as_deref(), Some("mhk_KKKK…"), "{phase:?}");
+    }
+
+    // 일시 원인(허브에 닿지 못함·요청 빈도 초과·서버에 기능 없음)은 키가 없을 때만 실패다 — 키가 적용돼 있으면 RV-07 테스트.
+    for (phase, cause) in [
+        (Phase::FeatureUnavailable, LinkFailureCause::FeatureUnavailable),
+        (Phase::Transient, LinkFailureCause::Unreachable),
+        (Phase::RateLimited, LinkFailureCause::RateLimited),
+    ] {
+        let s = compose(&unlinked, with_phase(phase.clone()));
+        assert_eq!((s.state, s.failure.as_ref().map(|f| f.cause)), (IngestLinkState::Failed, Some(cause)), "{phase:?}");
+        assert!(s.notice.is_none(), "{phase:?}");
     }
 
     // 차단·예산은 부가 필드를 싣는다.
@@ -616,6 +624,14 @@ fn readiness_is_judged_from_the_file_only_never_from_app_defaults() {
         ("평문 http", full(serde_json::json!({"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":"http://collector.corp.example/v1/metrics"})), vec![EndpointNotHub, EndpointInsecure]),
         ("해석 불가 URL", full(serde_json::json!({"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":"not a url"})), vec![EndpointNotHub]),
         ("아무 설정 없음", serde_json::json!({}), vec![TelemetryOff, ExporterNotOtlp, ProtocolMismatch, EndpointMissing]),
+        // RV-04: traces 엔드포인트 — 수집 대상은 아니지만 헤더(수집키)가 그 주소로도 나간다.
+        ("traces 엔드포인트가 허브 밖", full(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":"https://collector.corp.example/v1/traces"})), vec![EndpointForeign]),
+        ("traces 엔드포인트가 평문 http", full(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":"http://collector.corp.example/v1/traces"})), vec![EndpointForeign, EndpointInsecure]),
+        ("traces 엔드포인트가 허브", full(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":hub_endpoint("/v1/traces")})), vec![]),
+        // RV-04: 신호별 프로토콜.
+        ("범용 프로토콜 없음 + 신호별 둘 다 http/protobuf", full(serde_json::json!({"OTEL_EXPORTER_OTLP_PROTOCOL":null,"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL":"http/protobuf","OTEL_EXPORTER_OTLP_LOGS_PROTOCOL":"http/protobuf"})), vec![]),
+        ("범용은 http/protobuf인데 logs가 grpc", full(serde_json::json!({"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL":"grpc"})), vec![ProtocolMismatch]),
+        ("범용 프로토콜 없음 + metrics만 지정", full(serde_json::json!({"OTEL_EXPORTER_OTLP_PROTOCOL":null,"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL":"http/protobuf"})), vec![ProtocolMismatch]),
     ];
     for (label, env, expected) in cases {
         let (path, s) = readiness_file(env);
@@ -972,4 +988,168 @@ fn live_get_structure_probe() {
         }
         Err(e) => println!("[live GET] 실행하지 못했습니다: {e}"),
     }
+}
+
+// ======================= R17 리뷰 RV-01: 웹에서 폐기된 키가 파일에 남은 경우 =======================
+
+fn compose_with(inputs: &IngestInputs, view: RuntimeView) -> IngestLinkStatus {
+    compose_status(inputs, &view, true, true)
+}
+
+#[test]
+fn rv01_revoked_key_still_on_file_is_never_reported_as_confirmed_or_waiting() {
+    let rig = Rig::new("rv01-compose");
+    write_ready(&rig.path, Some(&fake_key('K')));
+    let inputs = read_ingest_inputs(&rig.path);
+    let view = |phase: Phase| RuntimeView {
+        phase,
+        // 같은 실행에서 이전에 확인한 수신·대기·타임아웃이 남아 있어도 폐기 판정을 가리지 않는다.
+        confirmed_prefix: Some(prefix_of('K')),
+        waiting_first_data: true,
+        first_data_timed_out: true,
+    };
+    for phase in [Phase::ConfirmRequired, Phase::ConfirmDeclined] {
+        // applied + confirm 플래그 / (이전에 확인된 수신이 있던) confirmed + confirm 플래그 둘 다 같은 결과다.
+        let s = compose_with(&inputs, view(phase.clone()));
+        assert_eq!(s.state, IngestLinkState::Applied, "{phase:?}: 확인됨(confirmed)으로 보이면 안 된다");
+        assert_eq!(s.masked.as_deref(), Some("mhk_KKKK…"), "{phase:?}: 파일의 키는 그대로 보인다");
+        assert!(!s.waiting_first_data && !s.first_data_timed_out, "{phase:?}");
+        assert!(s.failure.is_none() && s.notice.is_none(), "{phase:?}");
+        assert_eq!((s.confirm_required, s.confirm_declined), (phase == Phase::ConfirmRequired, phase == Phase::ConfirmDeclined));
+        assert_status_clean("rv01", &s, &[&fake_key('K'), "KKKKK"]);
+    }
+    // 폐기 판정이 없으면 같은 입력이 정상 확인(confirmed)이다 — 위 결과가 입력 때문이 아니라 판정 때문임을 고정한다.
+    assert_eq!(compose_with(&inputs, view(Phase::Idle)).state, IngestLinkState::Confirmed);
+}
+
+// 엔진 → 상태 전체 경로: 확인된 키가 웹에서 폐기되면 정기 점검 뒤 화면 상태가 바뀌고, 거절해도 재시작 경로가 남는다.
+#[test]
+fn rv01_confirmed_key_revoked_on_the_web_then_declined_still_offers_a_way_to_reissue() {
+    let rig = Rig::new("rv01-flow");
+    write_ready(&rig.path, Some(&fake_key('S')));
+    let engine = LinkEngine::new();
+    rig.api.push_get(state_has_current(&prefix_of('S'), true));
+    run(&engine, &rig, Trigger::Startup, T0);
+    assert_eq!(status_after(&engine, &rig).state, IngestLinkState::Confirmed);
+
+    // 웹에서 폐기 → 1시간 뒤 점검이 confirm_required.
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    run(&engine, &rig, Trigger::Periodic, T0 + 3_600_000);
+    let s = status_after(&engine, &rig);
+    assert_eq!(s.state, IngestLinkState::Applied, "더 이상 '수신 확인됨'이 아니다");
+    assert!(s.confirm_required && !s.confirm_declined);
+    assert!(rig.api.count("create") == 0 && std::fs::read_to_string(&rig.path).unwrap().contains(&fake_key('S')), "묻기 전에 파일을 바꾸지 않는다");
+
+    // 거절 → 이번 실행 동안 다시 묻지 않지만 상태는 '폐기됨'을 계속 말한다(applied/confirmed로 돌아가지 않는다).
+    engine.decline_confirm();
+    let s = status_after(&engine, &rig);
+    assert!(s.confirm_declined && !s.confirm_required && s.state == IngestLinkState::Applied);
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    run(&engine, &rig, Trigger::Periodic, T0 + 2 * 3_600_000);
+    assert!(status_after(&engine, &rig).confirm_declined, "다음 점검도 여전히 폐기 상태다");
+
+    // 사용자의 [다시 시도]가 거절 기록을 비우고 다시 묻는다 — 화면이 이 경로를 버튼으로 연다.
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    run(&engine, &rig, Trigger::User, T0 + 2 * 3_600_000 + 1);
+    assert!(status_after(&engine, &rig).confirm_required);
+}
+
+// ======================= R17 리뷰 RV-07: 일시 원인이 적용·수신 확인 상태를 지우지 않는다 =======================
+
+#[test]
+fn rv07_transient_causes_keep_applied_and_confirmed_and_only_attach_a_notice() {
+    let rig = Rig::new("rv07");
+    write_ready(&rig.path, Some(&fake_key('K')));
+    let inputs = read_ingest_inputs(&rig.path);
+    for (phase, cause) in [
+        (Phase::Transient, LinkFailureCause::Unreachable),
+        (Phase::RateLimited, LinkFailureCause::RateLimited),
+        (Phase::FeatureUnavailable, LinkFailureCause::FeatureUnavailable),
+    ] {
+        // 적용됨(수신 미확인)
+        let applied = compose_with(&inputs, RuntimeView { phase: phase.clone(), ..idle_view() });
+        assert_eq!(applied.state, IngestLinkState::Applied, "{phase:?}");
+        assert!(applied.failure.is_none(), "{phase:?}: 실패로 덮지 않는다");
+        assert_eq!(applied.notice.as_ref().map(|n| n.cause), Some(cause));
+        assert_eq!(applied.notice.as_ref().map(|n| n.message.as_str()), Some(cause.message()));
+        assert_eq!(applied.masked.as_deref(), Some("mhk_KKKK…"));
+        // 수신 확인됨
+        let confirmed = compose_with(&inputs, RuntimeView { phase: phase.clone(), confirmed_prefix: Some(prefix_of('K')), ..idle_view() });
+        assert_eq!(confirmed.state, IngestLinkState::Confirmed, "{phase:?}: 확인된 사실을 지우지 않는다");
+        assert!(confirmed.failure.is_none() && confirmed.notice.is_some());
+        assert_status_clean("rv07", &confirmed, &[&fake_key('K')]);
+    }
+    // 일시 원인이 아니면(연결 끊김 등) 키가 적용돼 있어도 실패다.
+    let reconnect = compose_with(&inputs, RuntimeView { phase: Phase::Reconnect, confirmed_prefix: Some(prefix_of('K')), ..idle_view() });
+    assert_eq!(reconnect.state, IngestLinkState::Failed);
+    assert!(reconnect.notice.is_none());
+    // 보조 안내가 없는 정상 상태는 notice가 null이다.
+    assert!(compose_with(&inputs, idle_view()).notice.is_none());
+}
+
+#[test]
+fn rv07_transient_cause_classification_is_exactly_the_self_healing_ones() {
+    let transient: Vec<LinkFailureCause> = ALL_CAUSES.iter().copied().filter(|c| c.is_transient()).collect();
+    assert_eq!(transient, [LinkFailureCause::FeatureUnavailable, LinkFailureCause::Unreachable, LinkFailureCause::RateLimited]);
+}
+
+// ======================= R17 리뷰 RV-05/06: 연결 해제 =======================
+
+#[test]
+fn rv06_disconnect_reports_what_actually_happened_to_the_key_on_this_pc() {
+    use crate::hub_auth::IngestKeyRemoval;
+    let path = temp_settings_path("rv06-removal");
+    // 앱이 적용한 키가 있었다 → Removed
+    write_ready_only_key(&path);
+    assert_eq!(IngestKeyRemoval::from_result(after_hub_disconnect(&path)), IngestKeyRemoval::Removed);
+    // 이미 없다 / 다른 서비스의 Authorization / 해석 불가 → 지운 것이 없다(NotPresent), 파일 불변
+    for content in [
+        ORIGINAL.to_string(),
+        r#"{"env":{"OTEL_EXPORTER_OTLP_HEADERS":"Authorization=Bearer FOREIGNSECRETTOKEN"}}"#.to_string(),
+        "{ not json".to_string(),
+    ] {
+        std::fs::write(&path, &content).unwrap();
+        assert_eq!(IngestKeyRemoval::from_result(after_hub_disconnect(&path)), IngestKeyRemoval::NotPresent, "{content}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+    // 지우려 했지만 쓰지 못했다 → Failed (읽기 전용 디렉터리에서는 임시 파일을 만들 수 없다)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        write_ready_only_key(&path);
+        let dir = path.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = std::fs::File::create(dir.join("probe")).is_ok(); // root 등 권한이 무시되는 환경 방어
+        let result = IngestKeyRemoval::from_result(after_hub_disconnect(&path));
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !writable {
+            assert_eq!(result, IngestKeyRemoval::Failed);
+            assert!(std::fs::read_to_string(&path).unwrap().contains("mhk_"), "쓰기 실패 시 파일은 그대로다");
+        }
+    }
+    cleanup(&path);
+}
+
+#[test]
+fn rv06_disconnect_response_flattens_the_hub_status_and_adds_the_key_outcome() {
+    use crate::hub_auth::state::{HubAuthStatus, HubState};
+    use crate::hub_auth::{HubDisconnectResult, IngestKeyRemoval};
+    let result = HubDisconnectResult {
+        status: HubAuthStatus {
+            connected: false,
+            state: HubState::NotConnected,
+            device_name: None,
+            expires_at: None,
+            renew_after: None,
+            reason: Some("SERVER_REVOKE_FAILED".into()),
+        },
+        ingest_key: IngestKeyRemoval::Removed,
+    };
+    let json = serde_json::to_value(&result).unwrap();
+    // 기존 HubAuthStatus 필드는 그대로 최상위에 있다(프론트의 status.reason 등이 계속 동작한다).
+    assert_eq!(json["connected"], false);
+    assert_eq!(json["reason"], "SERVER_REVOKE_FAILED");
+    assert_eq!(json["ingest_key"], "removed");
+    assert_eq!(serde_json::to_value(IngestKeyRemoval::NotPresent).unwrap(), "notPresent");
+    assert_eq!(serde_json::to_value(IngestKeyRemoval::Failed).unwrap(), "failed");
 }

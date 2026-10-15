@@ -117,6 +117,12 @@ pub enum LinkFailureCause {
 }
 
 impl LinkFailureCause {
+    /// 사용자의 조치 없이 스스로 풀리는 일시 원인(허브에 닿지 못함·요청 빈도 초과·서버에 기능 없음).
+    /// 키가 이미 적용돼 있으면 이 원인이 적용·수신 확인 상태를 `failed`로 바꾸지 않는다(`IngestLinkStatus::notice`).
+    pub(crate) fn is_transient(self) -> bool {
+        matches!(self, Self::Unreachable | Self::RateLimited | Self::FeatureUnavailable)
+    }
+
     /// 사용자 문구. 토큰 접두어 리터럴(`mhd_`/`mhk_`)도 넣지 않는다.
     pub(crate) fn message(self) -> &'static str {
         match self {
@@ -124,7 +130,7 @@ impl LinkFailureCause {
                 "Claude 설정 파일(settings.json)을 해석하지 못했습니다. 파일의 JSON 형식을 확인하세요."
             }
             Self::HeaderUnrecognized => {
-                "설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있습니다. 허브로 보내려면 설정 > OTel에서 수집키로 교체하세요."
+                "설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있습니다. 허브로 보내려면 설정 > OTel에서 이 항목을 삭제하세요(허브에 연결되어 있으면 삭제 뒤 앱이 수집키를 발급해 적용합니다. 연결하지 않았다면 직접 받은 수집키로 교체할 수도 있습니다)."
             }
             Self::EndpointNotHub => {
                 "수집 엔드포인트가 허브가 아니거나 암호화되지 않은(http) 주소입니다. 수집키가 그 주소로 전송되지 않도록 발급받지 않았습니다. 설정 > OTel에서 엔드포인트를 확인하세요."
@@ -270,6 +276,10 @@ pub struct IngestLinkStatus {
     pub blocked_reason: Option<BlockedReason>,
     /// `failure.cause == rotateBudgetExceeded`일 때 다시 회전할 수 있는 시각(RFC 3339, 서버가 준 값).
     pub retry_at: Option<String>,
+    /// 키가 적용돼 있는 상태(applied/confirmed)에서 마지막 점검이 **일시적인 원인**(허브에 닿지 못함·요청 빈도 초과·
+    /// 서버에 기능 없음)으로 끝났다 — 적용·수신 확인 사실은 그대로이고 상태를 `failed`로 덮지 않는다(RV-07).
+    /// 화면은 상태 문구 뒤에 보조 안내로만 붙인다. 그 밖에는 `null`.
+    pub notice: Option<IngestLinkFailure>,
 }
 
 impl IngestLinkStatus {
@@ -291,6 +301,7 @@ impl IngestLinkStatus {
             first_data_timed_out: false,
             blocked_reason: None,
             retry_at: None,
+            notice: None,
         }
     }
 
@@ -388,7 +399,11 @@ pub(crate) fn compose_status(
     if s.state == IngestLinkState::Failed {
         return s;
     }
-    if s.state == IngestLinkState::Applied {
+    // 웹에서 폐기됐다는 허브의 판정(confirm_required)이 파일 사실보다 우선한다 — 파일에 키가 남아 있어도 그 키는
+    // 수집되지 않는다. 같은 실행에서 이전에 확인한 수신(`confirmed_prefix`)·첫 데이터 대기 표시도 이 상태를
+    // 가리지 않는다(RV-01). 상태값(`applied`/`unlinked`)은 파일 사실 그대로 두고 플래그로 알린다.
+    let revoked_by_hub = matches!(view.phase, Phase::ConfirmRequired | Phase::ConfirmDeclined);
+    if s.state == IngestLinkState::Applied && !revoked_by_hub {
         let file_prefix = masked_prefix(&s.masked);
         if file_prefix.is_some() && file_prefix == view.confirmed_prefix {
             s.state = IngestLinkState::Confirmed;
@@ -405,11 +420,17 @@ pub(crate) fn compose_status(
         Phase::ConfirmDeclined => s.confirm_declined = true,
         other => {
             if let Some(cause) = cause_of(other) {
-                s = s.failed_from(cause);
-                match other {
-                    Phase::Blocked(reason) => s.blocked_reason = *reason,
-                    Phase::RotateBudget { retry_at } => s.retry_at = retry_at.clone(),
-                    _ => {}
+                let key_applied = matches!(s.state, IngestLinkState::Applied | IngestLinkState::Confirmed);
+                if key_applied && cause.is_transient() {
+                    // 일시 원인은 키가 적용된 사실·수신 확인을 지우지 않는다(RV-07).
+                    s.notice = Some(IngestLinkFailure::of(cause));
+                } else {
+                    s = s.failed_from(cause);
+                    match other {
+                        Phase::Blocked(reason) => s.blocked_reason = *reason,
+                        Phase::RotateBudget { retry_at } => s.retry_at = retry_at.clone(),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -635,10 +656,18 @@ pub(crate) fn on_hub_connected() {
 /// 허브 연결을 해제했다 — 이 기기의 수집키는 서버가 함께 폐기했으므로(D-13) 설정 파일의 `Authorization`
 /// 항목만 지운다(다른 헤더 항목·다른 설정은 그대로). 형식이 다른 Authorization은 이 앱이 만든 것이
 /// 아니므로 남긴다. 메모리 상태(보관 중인 미기록 원문 포함)도 비운다.
+///
+/// 세대 증가·메모리 비우기·키 삭제를 한 임계구역에서 한다(`LinkEngine::disconnect_with`). 서버 응답을 기다리던 점검이
+/// 해제 뒤에 201을 받아도 키를 다시 쓰지 못한다(RV-05).
 pub(crate) fn after_hub_disconnect(path: &Path) -> Result<bool, String> {
-    let removed = crate::otel_settings::remove_ingest_key(path);
-    engine().on_disconnected(now_ms());
-    removed
+    engine().disconnect_with(now_ms(), || crate::otel_settings::remove_ingest_key(path))
+}
+
+/// 허브에 연결되어 앱이 수집키를 자동 관리하는 중인가. 이 동안 직접 붙여넣은 수집키는 다음 점검에서 앱이 발급한
+/// 키로 교체되고(D-4) 회전 예산을 쓴다 — 그래서 수동 입력을 받지 않는다(RV-02). 키체인을 읽으므로 blocking 컨텍스트에서
+/// 부른다. 허브 연결 기능이 초기화되지 않았으면(지원 안 하는 OS 등) false.
+pub(crate) fn hub_manages_ingest_key() -> bool {
+    live().map(|d| d.tokens.latest().is_some()).unwrap_or(false)
 }
 
 // ---------------- Tauri 커맨드 ----------------

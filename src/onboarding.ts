@@ -47,6 +47,8 @@ export interface OnboardingStep {
   readonly slim?: string;
   /** otel-link 행의 버튼 동작. 없으면 버튼이 없다. */
   readonly action?: StepAction;
+  /** 설정 패널 배지 문구를 state 기본값 대신 이 문구로 바꾼다(예: 폐기된 키가 파일에 남은 경우의 '폐기됨 · 재발급 필요'). */
+  readonly tag?: string;
 }
 
 export interface OnboardingModel {
@@ -208,7 +210,7 @@ function notConnectedStep(base: StepBase): OnboardingStep {
     state: 'todo',
     action: 'connect-hub',
     detail:
-      '허브에 연결하면 사용량 수집키가 자동으로 발급·적용됩니다. 지금은 허브에 연결되어 있지 않습니다. 직접 받은 수집키가 있으면 설정 > OTel에서 붙여넣을 수도 있습니다.',
+      '허브에 연결하면 사용량 수집키가 자동으로 발급·적용됩니다. 지금은 허브에 연결되어 있지 않습니다. 직접 받은 수집키를 쓰려면 허브에는 연결하지 말고 설정 > OTel에서 붙여넣으세요(허브에 연결하면 앱이 발급한 키로 교체됩니다).',
     slim: '선택 · 허브에 연결하면 사용량 수집키가 자동으로 적용됩니다.',
   };
 }
@@ -217,24 +219,6 @@ type StepBase = { readonly kind: 'otel-link'; readonly title: string; readonly a
 
 function unlinkedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
   if (!status.hubConnected) return notConnectedStep(base);
-  if (status.confirmRequired) {
-    return {
-      ...base,
-      state: 'todo',
-      action: 'confirm-reissue',
-      detail: '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요? 확인하면 새 수집키를 발급해 적용합니다.',
-      slim: '선택 · 웹에서 폐기된 이 기기 수집키를 다시 발급할지 확인이 필요합니다.',
-    };
-  }
-  if (status.confirmDeclined) {
-    return {
-      ...base,
-      state: 'todo',
-      action: 'retry',
-      detail: '수집키 재발급을 거절했습니다. 이번 앱 실행 동안은 다시 묻지 않습니다. 다시 발급하려면 [다시 시도]를 누르세요.',
-      slim: '선택 · 사용량 수집키가 적용되어 있지 않습니다(재발급 거절).',
-    };
-  }
   return {
     ...base,
     state: 'todo',
@@ -243,6 +227,47 @@ function unlinkedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep 
       '허브에 연결되어 있습니다. 앱이 사용량 수집키를 자동으로 발급·적용합니다(앱 시작 때와 1시간 간격으로 점검). 바로 하려면 [다시 시도]를 누르세요.',
     slim: '선택 · 사용량 수집키가 아직 적용되어 있지 않습니다.',
   };
+}
+
+/**
+ * 웹에서 이 기기의 수집키가 폐기되어(계약 D-1 confirm_required) 사람의 확인을 기다리거나, 확인을 거절한 상태.
+ * 파일에 폐기된 키가 남아 있어도(applied/confirmed) 그 키는 수집되지 않으므로 "적용됨"·"수신 확인됨"으로 보여
+ * 주지 않는다 — 파일 사실(키가 있음)은 마스킹 표시로만 밝힌다(RV-01). 거절한 뒤에도 [다시 시도]로 재발급을 시작할 수 있다.
+ */
+function revokedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
+  const masked = safeMasked(status.masked);
+  const onFile = masked !== null;
+  if (status.confirmRequired) {
+    return {
+      ...base,
+      state: 'todo',
+      action: 'confirm-reissue',
+      ...(onFile ? { tag: '폐기됨 · 재발급 필요' } : {}),
+      detail: onFile
+        ? `웹에서 이 기기의 수집키가 폐기되어 설정 파일에 남아 있는 키(${masked})로는 수집되지 않습니다. 다시 발급할까요? 확인하면 새 수집키를 발급해 적용합니다.`
+        : '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요? 확인하면 새 수집키를 발급해 적용합니다.',
+      slim: onFile
+        ? '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다. 다시 발급할지 확인이 필요합니다.'
+        : '선택 · 웹에서 폐기된 이 기기 수집키를 다시 발급할지 확인이 필요합니다.',
+    };
+  }
+  return {
+    ...base,
+    state: 'todo',
+    action: 'retry',
+    ...(onFile ? { tag: '폐기됨 · 재발급 거절' } : {}),
+    detail: onFile
+      ? `웹에서 이 기기의 수집키가 폐기되어 설정 파일에 남아 있는 키(${masked})로는 수집되지 않습니다. 재발급을 거절했습니다. 이번 앱 실행 동안은 다시 묻지 않습니다. 다시 발급하려면 [다시 시도]를 누르세요.`
+      : '수집키 재발급을 거절했습니다. 이번 앱 실행 동안은 다시 묻지 않습니다. 다시 발급하려면 [다시 시도]를 누르세요.',
+    slim: onFile
+      ? '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다(재발급 거절).'
+      : '선택 · 사용량 수집키가 적용되어 있지 않습니다(재발급 거절).',
+  };
+}
+
+/** 마지막 점검이 일시 원인(허브에 닿지 못함 등)으로 끝났을 때 적용·확인 문구 뒤에 붙이는 보조 안내(RV-07). */
+function noticeTail(status: IngestLinkStatus): string {
+  return status.notice ? ` 마지막 점검: ${status.notice.message}` : '';
 }
 
 function appliedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
@@ -256,24 +281,24 @@ function appliedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
       ...base,
       state: 'warn',
       action: 'open-settings',
-      detail: `수집키는 적용되었지만${keyTag} 사용량이 수집되지 않을 수 있습니다: ${why}.${status.state === 'confirmed' ? '' : ' 수신은 확인하지 않았습니다.'}`,
+      detail: `수집키는 적용되었지만${keyTag} 사용량이 수집되지 않을 수 있습니다: ${why}.${status.state === 'confirmed' ? '' : ' 수신은 확인하지 않았습니다.'}${noticeTail(status)}`,
       slim: `선택 · 수집키는 적용됐지만 사용량이 수집되지 않을 수 있습니다 — ${why}.`,
     };
   }
   if (status.state === 'confirmed') {
-    return { ...base, state: 'done', detail: `수집키가 적용되었고 허브에서 데이터 수신이 확인되었습니다${keyTag}.` };
+    return { ...base, state: 'done', detail: `수집키가 적용되었고 허브에서 데이터 수신이 확인되었습니다${keyTag}.${noticeTail(status)}` };
   }
   if (status.waitingFirstData) {
-    return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 첫 데이터 수신을 확인하는 중입니다(최대 15분). ${SESSION_NOTE}` };
+    return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 첫 데이터 수신을 확인하는 중입니다(최대 15분). ${SESSION_NOTE}${noticeTail(status)}` };
   }
   if (status.firstDataTimedOut) {
     return {
       ...base,
       state: 'partial',
-      detail: `수집키가 적용되었습니다${keyTag}. 15분 안에 수신이 확인되지 않았습니다. 새 Claude Code 세션을 열면 수집이 시작됩니다. 다음 앱 시작 때 다시 확인합니다.`,
+      detail: `수집키가 적용되었습니다${keyTag}. 15분 안에 수신이 확인되지 않았습니다. 새 Claude Code 세션을 열면 수집이 시작됩니다. 다음 점검(앱 시작 때·1시간 간격)에서 다시 확인합니다.${noticeTail(status)}`,
     };
   }
-  return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 수신은 아직 확인하지 않았습니다. ${SESSION_NOTE}` };
+  return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 수신은 아직 확인하지 않았습니다. ${SESSION_NOTE}${noticeTail(status)}` };
 }
 
 // 원인별 버튼. rotateBudgetExceeded는 서버가 정한 시각까지 소용이 없어 버튼을 두지 않는다.
@@ -282,7 +307,7 @@ const FAILURE_ACTION: Readonly<Record<IngestLinkFailureCause, StepAction | null>
   headerUnrecognized: 'open-settings',
   endpointNotHub: 'open-settings',
   notReady: 'open-settings',
-  featureUnavailable: 'open-settings',
+  featureUnavailable: null, // 설정에서 할 일이 없다 — 서버에 기능이 생기면 다음 점검이 이어 간다.
   reconnectRequired: 'connect-hub',
   notDesktopToken: 'connect-hub',
   blocked: 'connect-hub',
@@ -357,6 +382,11 @@ function otelLinkStep(link: OtelLink): OnboardingStep {
   }
   const status = link.status;
   if (!link.loaded || !status) return { ...base, state: 'loading', detail: '수집키 적용 상태 확인 중…' };
+  // 웹에서 폐기됐다는 허브의 판정이 있으면 파일에 키가 남아 있어도(applied/confirmed) 그 판정이 먼저다(RV-01).
+  const revokedByHub = status.hubConnected && (status.confirmRequired || status.confirmDeclined);
+  if (revokedByHub && (status.state === 'unlinked' || status.state === 'applied' || status.state === 'confirmed')) {
+    return revokedStep(base, status);
+  }
   switch (status.state) {
     case 'unlinked':
       return unlinkedStep(base, status);

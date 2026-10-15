@@ -152,6 +152,9 @@ export interface IngestLinkStatus {
   readonly blockedReason: IngestBlockedReason | null;
   // failure.cause === 'rotateBudgetExceeded'일 때 다시 회전할 수 있는 시각(RFC 3339).
   readonly retryAt: string | null;
+  // 키가 적용돼 있는(applied/confirmed) 상태에서 마지막 점검이 일시적인 원인(허브에 닿지 못함·요청 빈도 초과·
+  // 서버에 기능 없음)으로 끝났다 — 적용·수신 확인 사실은 그대로이고 state를 failed로 덮지 않는다. 상태 문구 뒤에 보조 안내로만 붙인다.
+  readonly notice: IngestLinkFailure | null;
 }
 
 // settings.json과 엔진의 메모리 상태만 읽는다(허브를 부르지 않는다).

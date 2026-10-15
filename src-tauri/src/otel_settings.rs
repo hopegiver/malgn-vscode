@@ -545,7 +545,8 @@ pub(crate) struct CollectionFacts {
     /// `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` 값(쉼표 목록 포함)에 `otlp`가 들어 있다.
     pub metrics_exporter_otlp: bool,
     pub logs_exporter_otlp: bool,
-    /// `OTEL_EXPORTER_OTLP_PROTOCOL`이 `http/protobuf`다(허브 `/v1/*`가 받는 형식).
+    /// metrics·logs **각각의** 유효 프로토콜(신호별 `OTEL_EXPORTER_OTLP_{METRICS,LOGS}_PROTOCOL` → 범용
+    /// `OTEL_EXPORTER_OTLP_PROTOCOL`)이 `http/protobuf`다(허브 `/v1/*`가 받는 형식). 둘 다여야 true.
     pub protocol_http_protobuf: bool,
     /// 신호별 유효 엔드포인트(신호별 값 → 범용 `OTEL_EXPORTER_OTLP_ENDPOINT`)가 파일에 있다.
     pub metrics_endpoint_present: bool,
@@ -553,16 +554,37 @@ pub(crate) struct CollectionFacts {
     /// 신호별 유효 엔드포인트가 허브 origin이다.
     pub metrics_endpoint_hub: bool,
     pub logs_endpoint_hub: bool,
-    /// 파일에 있는 **모든** 엔드포인트 값(신호별 2개 + 범용 1개) 중 허브 밖/평문이 하나라도 있다.
-    /// 범용 값은 이 신호들이 쓰지 않더라도 헤더(수집키)가 실리는 다른 exporter가 쓸 수 있어 함께 본다.
+    /// 파일에 있는 **모든** 엔드포인트 값(metrics·logs·traces 신호별 3개 + 범용 1개) 중 허브 밖/평문이 하나라도 있다.
+    /// 범용 값과 traces 값은 metrics·logs가 쓰지 않더라도, 헤더(수집키)가 범용 `OTEL_EXPORTER_OTLP_HEADERS`에 실려
+    /// 있어 traces(beta) 등 다른 exporter가 그 주소로 수집키를 보낼 수 있으므로 함께 본다.
     pub any_foreign_host: bool,
     pub any_insecure: bool,
 }
 
 const GENERIC_ENDPOINT_KEY: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+const TRACES_ENDPOINT_KEY: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
+const METRICS_PROTOCOL_KEY: &str = "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL";
+const LOGS_PROTOCOL_KEY: &str = "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL";
+
+/// 이 앱의 관리 대상(allowlist)이 아니어서 쓰지 않지만, Claude Code가 읽는 값이라 수집 준비도·목적지 검사에는
+/// 반영해야 하는 OTEL 키들 — 파일 실물에서 읽기 전용으로만 가져온다.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct UnmanagedEnv {
+    /// 범용 `OTEL_EXPORTER_OTLP_ENDPOINT`(신호별 값이 없을 때의 폴백).
+    pub generic_endpoint: Option<String>,
+    /// `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`(traces beta — 헤더가 이 주소로도 나간다).
+    pub traces_endpoint: Option<String>,
+    /// 신호별 프로토콜(있으면 범용 `OTEL_EXPORTER_OTLP_PROTOCOL`보다 우선한다).
+    pub metrics_protocol: Option<String>,
+    pub logs_protocol: Option<String>,
+}
 
 fn non_empty_trimmed(v: Option<&String>) -> Option<&str> {
     v.map(|s| s.trim()).filter(|s| !s.is_empty())
+}
+
+fn trimmed_opt(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
 fn exporter_includes_otlp(v: Option<&String>) -> bool {
@@ -574,16 +596,19 @@ fn exporter_includes_otlp(v: Option<&String>) -> bool {
 /// 파일 값(`values`)과 범용 엔드포인트(`generic`)에서 수집 사실을 뽑는다(순수 함수).
 pub(crate) fn collection_facts(
     values: &std::collections::BTreeMap<String, String>,
-    generic: Option<&str>,
+    extra: &UnmanagedEnv,
     hub_origin: &str,
 ) -> CollectionFacts {
-    let generic = generic.map(str::trim).filter(|s| !s.is_empty());
+    let generic = trimmed_opt(&extra.generic_endpoint);
+    let traces = trimmed_opt(&extra.traces_endpoint);
     let metrics_specific = non_empty_trimmed(values.get("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"));
     let logs_specific = non_empty_trimmed(values.get("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"));
     let metrics_effective = metrics_specific.or(generic);
     let logs_effective = logs_specific.or(generic);
+    let generic_protocol = non_empty_trimmed(values.get("OTEL_EXPORTER_OTLP_PROTOCOL"));
 
-    let all_present: Vec<&str> = [metrics_specific, logs_specific, generic]
+    // 목적지 검사는 파일에 있는 모든 엔드포인트 값을 본다 — traces는 수집 대상이 아니라도 헤더가 나간다.
+    let all_present: Vec<&str> = [metrics_specific, logs_specific, traces, generic]
         .into_iter()
         .flatten()
         .collect();
@@ -600,8 +625,10 @@ pub(crate) fn collection_facts(
             == Some("1"),
         metrics_exporter_otlp: exporter_includes_otlp(values.get("OTEL_METRICS_EXPORTER")),
         logs_exporter_otlp: exporter_includes_otlp(values.get("OTEL_LOGS_EXPORTER")),
-        protocol_http_protobuf: non_empty_trimmed(values.get("OTEL_EXPORTER_OTLP_PROTOCOL"))
-            == Some("http/protobuf"),
+        // 신호별 프로토콜 → 범용 프로토콜 순으로 metrics·logs 각각의 유효값을 정한다(Claude Code 문서의 우선순위).
+        protocol_http_protobuf: trimmed_opt(&extra.metrics_protocol).or(generic_protocol)
+            == Some("http/protobuf")
+            && trimmed_opt(&extra.logs_protocol).or(generic_protocol) == Some("http/protobuf"),
         metrics_endpoint_present: metrics_effective.is_some(),
         logs_endpoint_present: logs_effective.is_some(),
         metrics_endpoint_hub: hub_of(metrics_effective),
@@ -611,14 +638,24 @@ pub(crate) fn collection_facts(
     }
 }
 
-/// 파일에서 범용 `OTEL_EXPORTER_OTLP_ENDPOINT`만 읽는다(읽기 전용 — 이 앱은 이 키를 쓰지 않는다).
-fn read_generic_endpoint(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let root: Value = serde_json::from_str(&content).ok()?;
-    root.get("env")?
-        .get(GENERIC_ENDPOINT_KEY)?
-        .as_str()
-        .map(str::to_string)
+/// 파일에서 관리 대상이 아닌 OTEL 키(범용·traces 엔드포인트, 신호별 프로토콜)를 읽는다(읽기 전용 — 이 앱은 쓰지 않는다).
+fn read_unmanaged_env(path: &Path) -> UnmanagedEnv {
+    let env = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+        .and_then(|root| root.get("env").cloned());
+    let get = |key: &str| {
+        env.as_ref()
+            .and_then(|e| e.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    UnmanagedEnv {
+        generic_endpoint: get(GENERIC_ENDPOINT_KEY),
+        traces_endpoint: get(TRACES_ENDPOINT_KEY),
+        metrics_protocol: get(METRICS_PROTOCOL_KEY),
+        logs_protocol: get(LOGS_PROTOCOL_KEY),
+    }
 }
 
 /// 연동 상태 도출용 입력 — `settings.json`에서 읽은 사실만 담는다(값 문자열·URL은 없다).
@@ -637,8 +674,8 @@ pub(crate) fn read_ingest_inputs(path: &Path) -> IngestInputs {
     let facts = if unreadable {
         CollectionFacts::default()
     } else {
-        let generic = read_generic_endpoint(path);
-        collection_facts(&values, generic.as_deref(), &crate::hub_auth::consts::hub_origin())
+        let extra = read_unmanaged_env(path);
+        collection_facts(&values, &extra, &crate::hub_auth::consts::hub_origin())
     };
     IngestInputs {
         unreadable,
@@ -666,11 +703,42 @@ pub(crate) fn remove_ingest_key(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// 허브에 연결되어 있는 동안 직접 입력한 수집키를 거절하는 고정 문구(입력값을 인용하지 않는다).
+pub(crate) const MANUAL_KEY_WHILE_HUB_CONNECTED: &str = "허브에 연결되어 있는 동안은 앱이 수집키를 자동으로 관리하므로 직접 입력한 수집키는 저장하지 않았습니다(저장해도 다음 점검에서 앱이 발급한 키로 교체됩니다). 직접 받은 수집키를 쓰려면 허브 연결을 해제한 뒤 다시 입력하세요.";
+
+/// 수동 수집키 입력(`Set`)이 허브 자동 관리와 충돌하는지 본다(RV-02). `Keep`/`Clear`는 막지 않는다 — 삭제는
+/// 앱이 만든 키를 정리하는 정상 경로이고(다음 점검이 다시 발급한다), 유지는 아무 일도 하지 않는다.
+/// `hub_connected`는 `Set`일 때만 평가한다(키체인 읽기를 필요한 때만 한다).
+pub(crate) fn check_manual_key_allowed(
+    change: &IngestKeyChange,
+    hub_connected: impl FnOnce() -> bool,
+) -> Result<(), String> {
+    if matches!(change, IngestKeyChange::Set { .. }) && hub_connected() {
+        return Err(MANUAL_KEY_WHILE_HUB_CONNECTED.to_string());
+    }
+    Ok(())
+}
+
+/// 저장 커맨드의 본체(경로·허브 연결 여부를 주입받아 테스트한다).
+pub(crate) fn save_checked(
+    path: &Path,
+    payload: OtelSavePayload,
+    hub_connected: impl FnOnce() -> bool,
+) -> Result<(), String> {
+    check_manual_key_allowed(&payload.ingest_key, hub_connected)?;
+    save_to_settings_file(path, payload)
+}
+
 #[tauri::command]
-pub fn otel_settings_save(payload: OtelSavePayload) -> Result<OtelSettings, String> {
+pub async fn otel_settings_save(payload: OtelSavePayload) -> Result<OtelSettings, String> {
     let path = settings_path().ok_or_else(|| "홈 디렉터리를 확인할 수 없습니다.".to_string())?;
-    save_to_settings_file(&path, payload)?;
-    Ok(otel_settings_get())
+    // 허브 연결 여부는 키체인을 읽어 알아내므로(수집키를 직접 입력한 때만) blocking 스레드에서 처리한다.
+    crate::hub_auth::run_blocking(move || {
+        save_checked(&path, payload, crate::otel_link::hub_manages_ingest_key)?;
+        Ok::<OtelSettings, String>(otel_settings_get())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -1331,5 +1399,139 @@ mod tests {
             format!("Authorization=Bearer {}", fake_ingest_key())
         );
         cleanup(&path);
+    }
+    // ---------------- R17 리뷰 RV-02: 허브 연결 중 수동 수집키 입력 ----------------
+
+    // 허브에 연결되어 있으면(앱이 수집키를 자동 관리) 직접 입력한 수집키(Set)는 저장하지 않는다 — 저장해도 다음 점검에서
+    // 앱이 발급한 키로 교체되고 회전 예산만 쓴다. 파일·백업은 한 바이트도 바뀌지 않는다.
+    #[test]
+    fn rv02_manual_key_is_rejected_while_the_hub_manages_the_key_and_nothing_is_written() {
+        let path = temp_settings_path("rv02-reject");
+        let original = r#"{"env":{"SOME_OTHER_VAR":"keep-me"}}"#;
+        std::fs::write(&path, original).unwrap();
+        let typed = fake_ingest_key();
+
+        let err = save_checked(&path, set_key_payload(&typed), || true).unwrap_err();
+
+        assert_eq!(err, MANUAL_KEY_WHILE_HUB_CONNECTED);
+        assert!(!err.contains(&typed) && !err.contains("mhk_"), "거절 문구에 입력값이 섞이면 안 된다: {err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "파일 불변");
+        assert!(!crate::fs_atomic::backup_path_for(&path).exists(), "백업도 만들지 않는다");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rv02_manual_key_is_saved_when_the_hub_is_not_connected() {
+        let path = temp_settings_path("rv02-allow");
+        save_checked(&path, set_key_payload(&fake_ingest_key()), || false).unwrap();
+        assert_eq!(
+            read_saved(&path)["env"]["OTEL_EXPORTER_OTLP_HEADERS"],
+            format!("Authorization=Bearer {}", fake_ingest_key())
+        );
+        cleanup(&path);
+    }
+
+    // 키를 건드리지 않는 저장(Keep)과 삭제(Clear)는 허브 연결 여부와 무관하다 — 연결 여부를 묻지도 않는다.
+    #[test]
+    fn rv02_keep_and_clear_do_not_depend_on_hub_connection_and_never_ask_for_it() {
+        let path = temp_settings_path("rv02-keep-clear");
+        save_to_settings_file(&path, set_key_payload(&fake_ingest_key())).unwrap();
+        let asked = std::cell::Cell::new(0);
+        let ask = || {
+            asked.set(asked.get() + 1);
+            true
+        };
+        save_checked(&path, sample_payload(&[("OTEL_LOGS_EXPORT_INTERVAL", "7000")]), ask).unwrap();
+        let clear = OtelSavePayload {
+            values: Default::default(),
+            identity: None,
+            ingest_key: IngestKeyChange::Clear,
+        };
+        save_checked(&path, clear, ask).unwrap();
+        assert_eq!(asked.get(), 0, "Set이 아니면 키체인을 읽지 않는다");
+        assert!(read_saved(&path)["env"].get("OTEL_EXPORTER_OTLP_HEADERS").is_none());
+        cleanup(&path);
+    }
+
+    // ---------------- R17 리뷰 RV-04: traces 엔드포인트·신호별 프로토콜 ----------------
+
+    fn facts_of(env: serde_json::Value) -> CollectionFacts {
+        // 테스트가 병렬로 돌아도 서로의 임시 디렉터리를 지우지 않게 호출마다 이름을 다르게 한다.
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = temp_settings_path(&format!("rv04-facts-{n}"));
+        std::fs::write(&path, serde_json::json!({ "env": env }).to_string()).unwrap();
+        let facts = read_ingest_inputs(&path).facts;
+        cleanup(&path);
+        facts
+    }
+
+    fn ready_env(extra: serde_json::Value) -> serde_json::Value {
+        let hub = crate::hub_auth::consts::hub_origin();
+        let mut env = serde_json::json!({
+            "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+            "OTEL_METRICS_EXPORTER": "otlp",
+            "OTEL_LOGS_EXPORTER": "otlp",
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": format!("{hub}/v1/metrics"),
+            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": format!("{hub}/v1/logs"),
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            if v.is_null() {
+                env.as_object_mut().unwrap().remove(k);
+            } else {
+                env[k] = v.clone();
+            }
+        }
+        env
+    }
+
+    #[test]
+    fn rv04_traces_endpoint_outside_the_hub_or_plaintext_counts_as_a_destination_the_key_can_reach() {
+        let hub = crate::hub_auth::consts::hub_origin();
+        let base = facts_of(ready_env(serde_json::json!({})));
+        assert!(!base.any_foreign_host && !base.any_insecure);
+
+        let foreign = facts_of(ready_env(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "https://collector.corp.example/v1/traces"})));
+        assert!(foreign.any_foreign_host && !foreign.any_insecure);
+        assert!(foreign.metrics_endpoint_hub && foreign.logs_endpoint_hub, "metrics·logs 판정은 그대로다");
+
+        let plain = facts_of(ready_env(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://collector.corp.example/v1/traces"})));
+        assert!(plain.any_foreign_host && plain.any_insecure);
+
+        let hub_traces = facts_of(ready_env(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": format!("{hub}/v1/traces")})));
+        assert!(!hub_traces.any_foreign_host && !hub_traces.any_insecure, "허브의 traces 주소는 문제 없다");
+
+        let junk = facts_of(ready_env(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "not a url"})));
+        assert!(junk.any_foreign_host, "해석 불가 URL은 허브 밖으로 본다");
+        // 빈 값은 없는 것과 같다.
+        let empty = facts_of(ready_env(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "  "})));
+        assert!(!empty.any_foreign_host);
+    }
+
+    // 프로토콜은 metrics·logs 각각 신호별 값 → 범용 값 순으로 평가한다(Claude Code 문서의 우선순위).
+    #[test]
+    fn rv04_protocol_is_evaluated_per_signal_with_the_signal_value_overriding_the_generic_one() {
+        let ok = |extra: serde_json::Value| facts_of(ready_env(extra)).protocol_http_protobuf;
+        assert!(ok(serde_json::json!({})), "범용만 http/protobuf");
+        // 범용 없음 + 신호별 둘 다 http/protobuf → 준비됨(이전에는 잘못 NotReady로 판정했다).
+        assert!(ok(serde_json::json!({
+            "OTEL_EXPORTER_OTLP_PROTOCOL": null,
+            "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
+            "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/protobuf",
+        })));
+        // 범용 없음 + 한 신호만 지정 → 다른 신호의 프로토콜이 정해지지 않았다.
+        assert!(!ok(serde_json::json!({"OTEL_EXPORTER_OTLP_PROTOCOL": null, "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf"})));
+        // 범용은 http/protobuf인데 한 신호가 grpc → 그 신호는 허브가 받는 형식이 아니다(이전에는 준비됨으로 봤다).
+        assert!(!ok(serde_json::json!({"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "grpc"})));
+        assert!(!ok(serde_json::json!({"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/json"})));
+        // 범용이 grpc여도 두 신호가 각각 http/protobuf면 준비됨.
+        assert!(ok(serde_json::json!({
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
+            "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/protobuf",
+        })));
+        // 빈 신호별 값은 없는 것으로 보고 범용으로 넘어간다.
+        assert!(ok(serde_json::json!({"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": ""})));
     }
 }

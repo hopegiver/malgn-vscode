@@ -237,7 +237,15 @@ export function restoreModalFocus(onClose: () => void): void {
 // 취소로 resolve(false)한다.
 export function confirmDialog(
   message: string,
-  opts?: { readonly title?: string; readonly confirmLabel?: string; readonly cancelLabel?: string; readonly danger?: boolean }
+  opts?: {
+    readonly title?: string;
+    readonly confirmLabel?: string;
+    readonly cancelLabel?: string;
+    readonly danger?: boolean;
+    // 처음 초점을 둘 버튼. 기본은 확인 버튼. 앱이 스스로 띄우는 창(사용자가 요청하지 않은)은 'cancel'로 두어 Enter 한 번에
+    // 우발적으로 동의되지 않게 한다.
+    readonly defaultFocus?: 'confirm' | 'cancel';
+  }
 ): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
@@ -273,7 +281,7 @@ export function confirmDialog(
     const overlay = createModalOverlay(modalBox, () => finish(false));
     window.addEventListener('keydown', onKeydown);
     document.body.appendChild(overlay);
-    confirmBtn.focus();
+    (opts?.defaultFocus === 'cancel' ? cancelBtn : confirmBtn).focus();
   });
 }
 

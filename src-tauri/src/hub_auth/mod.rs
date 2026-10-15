@@ -155,8 +155,38 @@ pub async fn hub_auth_connect(app: tauri::AppHandle) -> Result<HubAuthStatus, St
     Ok(status)
 }
 
+/// 연결 해제 때 이 PC `settings.json`의 수집키(Authorization 항목)를 어떻게 했는가. 해제 토스트가 실제 결과를 말하게 한다.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum IngestKeyRemoval {
+    /// 앱이 적용한 수집키를 지웠다.
+    Removed,
+    /// 지울 수집키가 없었다(없거나, 앱이 만든 것이 아닌 Authorization·해석 불가 파일이라 건드리지 않았다).
+    NotPresent,
+    /// 지우려 했지만 설정 파일에 쓰지 못했다.
+    Failed,
+}
+
+impl IngestKeyRemoval {
+    pub(crate) fn from_result(r: Result<bool, String>) -> Self {
+        match r {
+            Ok(true) => Self::Removed,
+            Ok(false) => Self::NotPresent,
+            Err(_) => Self::Failed,
+        }
+    }
+}
+
+/// `hub_auth_disconnect`의 응답: 연결 상태(필드는 `HubAuthStatus` 그대로) + 수집키 처리 결과.
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HubDisconnectResult {
+    #[serde(flatten)]
+    pub(crate) status: HubAuthStatus,
+    pub(crate) ingest_key: IngestKeyRemoval,
+}
+
 #[tauri::command]
-pub async fn hub_auth_disconnect() -> Result<HubAuthStatus, String> {
+pub async fn hub_auth_disconnect() -> Result<HubDisconnectResult, String> {
     let ctx = ctx()?;
     let status = run_blocking(move || connect::disconnect(&ctx, Utc::now()))
         .await
@@ -164,14 +194,14 @@ pub async fn hub_auth_disconnect() -> Result<HubAuthStatus, String> {
         .map_err(|e| e.to_string())?;
     // 연결 해제: 서버가 이 기기의 수집키를 함께 폐기하므로(수집키 계약 D-13) settings.json의
     // Authorization 항목도 지운다. 해제 자체가 성공한 뒤에만 한다(잠금 경합 등으로 아무 일도 안 한
-    // 해제 실패에서는 키를 지우지 않는다).
-    let _ = run_blocking(|| {
-        if let Some(path) = crate::otel_settings::settings_path() {
-            let _ = crate::otel_link::after_hub_disconnect(&path);
-        }
+    // 해제 실패에서는 키를 지우지 않는다). 결과는 토스트가 실제 사실을 말하도록 응답에 싣는다.
+    let ingest_key = run_blocking(|| match crate::otel_settings::settings_path() {
+        Some(path) => IngestKeyRemoval::from_result(crate::otel_link::after_hub_disconnect(&path)),
+        None => IngestKeyRemoval::NotPresent,
     })
-    .await;
-    Ok(status)
+    .await
+    .unwrap_or(IngestKeyRemoval::Failed);
+    Ok(HubDisconnectResult { status, ingest_key })
 }
 
 /// [지금 갱신]: 갱신 창과 무관하게 서버에 물어본다(서버가 RENEW_TOO_EARLY로 교정한다).

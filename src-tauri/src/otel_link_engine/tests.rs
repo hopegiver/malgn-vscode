@@ -1177,6 +1177,13 @@ fn mint_gate_stops_issuing_and_rotation_for_unready_or_foreign_settings() {
         ("logs exporter가 console", base(serde_json::json!({"OTEL_LOGS_EXPORTER":"console"})), Phase::NotReady),
         ("프로토콜 없음", base(serde_json::json!({"OTEL_EXPORTER_OTLP_PROTOCOL":null})), Phase::NotReady),
         ("프로토콜 grpc", base(serde_json::json!({"OTEL_EXPORTER_OTLP_PROTOCOL":"grpc"})), Phase::NotReady),
+        // RV-04: traces 엔드포인트는 수집 대상이 아니어도 헤더(수집키)가 그 주소로 나간다 — 선검사가 멈춘다.
+        ("traces 엔드포인트가 허브 밖", base(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":"https://collector.corp.example/v1/traces"})), Phase::EndpointNotHub),
+        ("traces 엔드포인트가 평문 http", base(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":"http://collector.corp.example/v1/traces"})), Phase::EndpointNotHub),
+        ("traces 엔드포인트가 해석 불가 URL", base(serde_json::json!({"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":"not a url"})), Phase::EndpointNotHub),
+        // RV-04: 범용은 http/protobuf여도 한 신호의 프로토콜이 grpc면 그 신호는 허브가 받지 못한다.
+        ("logs 신호별 프로토콜이 grpc", base(serde_json::json!({"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL":"grpc"})), Phase::NotReady),
+        ("범용 프로토콜 없음 + metrics만 신호별 지정", base(serde_json::json!({"OTEL_EXPORTER_OTLP_PROTOCOL":null,"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL":"http/protobuf"})), Phase::NotReady),
         ("빈 파일", "{}".to_string(), Phase::NotReady),
     ];
     for (label, content, expected) in cases {
@@ -1492,4 +1499,256 @@ mod http_scenarios {
         assert_eq!(api.rotate(&device_token('D')).unwrap_err(), ApiError::Lost);
         assert_eq!(*received.lock().unwrap(), 1);
     }
+}
+
+#[test]
+fn rv04_per_signal_protocols_and_a_hub_traces_endpoint_pass_the_gate() {
+    // 범용 프로토콜이 없어도 metrics·logs 각각이 http/protobuf면 준비된 파일이다(이전에는 NotReady로 잘못 막았다).
+    let rig = Rig::new("rv04-pass");
+    let hub = crate::hub_auth::consts::hub_origin();
+    let content = serde_json::json!({"env": {
+        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": format!("{hub}/v1/metrics"),
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": format!("{hub}/v1/logs"),
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": format!("{hub}/v1/traces"),
+    }})
+    .to_string();
+    std::fs::write(&rig.path, &content).unwrap();
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created('K'));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+    assert_eq!(rig.api.kinds(), ["get", "create:false"]);
+    assert!(file(&rig).contains(&fake_key('K')));
+}
+
+// ======================= R17 리뷰 RV-01: 폐기 판정은 이전 수신 확인을 지운다 =======================
+
+#[test]
+fn rv01_confirm_required_forgets_the_earlier_confirmation_watch_and_timeout() {
+    let rig = Rig::new("rv01-engine");
+    write_ready(&rig.path, Some(&fake_key('S')));
+    let engine = LinkEngine::new();
+    rig.api.push_get(state_has_current(&prefix_of('S'), true));
+    run(&engine, &rig, Trigger::Startup, T0);
+    assert_eq!(engine.view().confirmed_prefix.as_deref(), Some(prefix_of('S').as_str()));
+    engine.with(|m| {
+        m.watch = Some(Watch { prefix: prefix_of('S'), started: T0, last_poll: None });
+        m.first_data_timed_out = true;
+    });
+
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    assert_eq!(run(&engine, &rig, Trigger::Periodic, T0 + HOUR), Phase::ConfirmRequired);
+
+    let view = engine.view();
+    assert_eq!(view.confirmed_prefix, None);
+    assert!(!view.waiting_first_data && !view.first_data_timed_out);
+    // 거절 뒤에도 마찬가지다(점검이 다시 거절 상태로 끝나도 비워진다).
+    engine.with(|m| m.confirmed_prefix = Some(prefix_of('S')));
+    engine.decline_confirm();
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    assert_eq!(run(&engine, &rig, Trigger::Periodic, T0 + 2 * HOUR), Phase::ConfirmDeclined);
+    assert_eq!(engine.view().confirmed_prefix, None);
+}
+
+// ======================= R17 리뷰 RV-03: D-12 15분 타임아웃 뒤에는 GET 1회씩만 =======================
+
+#[test]
+fn rv03_periodic_checks_after_the_fifteen_minute_timeout_do_not_restart_polling() {
+    let rig = Rig::new("rv03-periodic");
+    let engine = applied_engine_with_watch(&rig); // 키 K 적용 + 첫 데이터 확인 시작(T0)
+    engine.poll_first_data(&rig.env(), T0 + WATCH_LIMIT_MS + 1); // 15분 경과 — 호출 없이 중단
+    assert!(engine.view().first_data_timed_out && !engine.view().waiting_first_data);
+    let gets_before = rig.api.count("get");
+
+    // 이후 6번의 정기 점검(6시간): 점검마다 GET 1회뿐이고 15분 폴링은 다시 열리지 않는다.
+    for hour in 1..=6u64 {
+        let at = T0 + hour * HOUR;
+        rig.api.push_get(state_has_current(&prefix_of('K'), false));
+        assert_eq!(engine.due(at), Some(Trigger::Periodic));
+        assert_eq!(run(&engine, &rig, Trigger::Periodic, at), Phase::Idle);
+        let view = engine.view();
+        assert!(!view.waiting_first_data, "{hour}시간 뒤: 폴링을 다시 열면 안 된다");
+        assert!(view.first_data_timed_out, "{hour}시간 뒤: 타임아웃 안내는 유지된다");
+        for t in [1_000, 16_000, 31_000, 5 * MIN] {
+            engine.poll_first_data(&rig.env(), at + t);
+        }
+    }
+    assert_eq!(rig.api.count("get") - gets_before, 6, "정기 점검 GET 6회가 전부다(키당 하루 약 1,460회가 아니라 24회)");
+
+    // 신호가 도착하면 정기 점검의 GET 1회로 확인된다.
+    rig.api.push_get(state_has_current(&prefix_of('K'), true));
+    run(&engine, &rig, Trigger::Periodic, T0 + 7 * HOUR);
+    let view = engine.view();
+    assert_eq!(view.confirmed_prefix.as_deref(), Some(prefix_of('K').as_str()));
+    assert!(!view.first_data_timed_out && !view.waiting_first_data);
+}
+
+#[test]
+fn rv03_user_retry_and_a_fresh_start_reopen_the_first_data_check() {
+    // 사용자의 [다시 시도] — 명시적 요청이므로 타임아웃 뒤에도 다시 확인을 시작한다.
+    let rig = Rig::new("rv03-user");
+    let engine = applied_engine_with_watch(&rig);
+    engine.poll_first_data(&rig.env(), T0 + WATCH_LIMIT_MS + 1);
+    rig.api.push_get(state_has_current(&prefix_of('K'), false));
+    run(&engine, &rig, Trigger::User, T0 + HOUR);
+    let view = engine.view();
+    assert!(view.waiting_first_data && !view.first_data_timed_out);
+
+    // 앱 재기동(메모리 없음)의 첫 점검도 다시 시작한다 — 기존 d12_startup_* 와 같은 동작.
+    let fresh = LinkEngine::new();
+    rig.api.push_get(state_has_current(&prefix_of('K'), false));
+    run(&fresh, &rig, Trigger::Startup, T0 + 2 * HOUR);
+    assert!(fresh.view().waiting_first_data);
+}
+
+// ======================= R17 리뷰 RV-05: 응답을 기다리는 동안 연결이 바뀌어도 해제된 키가 되살아나지 않는다 =======================
+
+/// 서버 호출이 오가는 도중(요청을 보낸 뒤 응답을 돌려주기 전) 연결 해제·재연결이 일어나는 상황을 만드는 가짜 API.
+struct ConnectionChangesMidCall<'a> {
+    engine: &'a LinkEngine,
+    path: std::path::PathBuf,
+    inner: &'a FakeApi,
+    /// 어느 호출에서 연결을 바꿀지("get"|"create"|"rotate").
+    on: &'static str,
+    /// true면 재연결, false면 연결 해제(키 삭제 포함).
+    reconnect: bool,
+}
+
+impl ConnectionChangesMidCall<'_> {
+    fn change(&self, kind: &str) {
+        if kind != self.on {
+            return;
+        }
+        if self.reconnect {
+            self.engine.on_connected();
+        } else {
+            // 실제 해제 경로와 같다: 세대 증가 + 메모리 비우기 + Authorization 항목 삭제를 한 임계구역에서.
+            let path = self.path.clone();
+            let _ = self.engine.disconnect_with(T0 + 1, || crate::otel_settings::remove_ingest_key(&path));
+        }
+    }
+}
+
+impl IngestApi for ConnectionChangesMidCall<'_> {
+    fn get(&self, device_token: &str) -> GetReply {
+        let r = self.inner.get(device_token);
+        self.change("get");
+        r
+    }
+    fn create(&self, device_token: &str, label: &str, confirm: bool) -> CreateReply {
+        let r = self.inner.create(device_token, label, confirm);
+        self.change("create");
+        r
+    }
+    fn rotate(&self, device_token: &str) -> CreateReply {
+        let r = self.inner.rotate(device_token);
+        self.change("rotate");
+        r
+    }
+}
+
+fn run_with_api(engine: &LinkEngine, rig: &Rig, api: &dyn IngestApi, trigger: Trigger, now: u64) {
+    let env = Env { path: &rig.path, tokens: &rig.tokens, api, probe: &rig.probe, label: &rig.label };
+    engine.run_check(&env, trigger, now);
+}
+
+#[test]
+fn rv05_a_created_key_that_arrives_after_disconnect_is_not_written_back() {
+    let rig = Rig::new("rv05-create");
+    write_ready(&rig.path, None);
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created('K'));
+    let engine = LinkEngine::new();
+    let api = ConnectionChangesMidCall { engine: &engine, path: rig.path.clone(), inner: &rig.api, on: "create", reconnect: false };
+
+    run_with_api(&engine, &rig, &api, Trigger::Startup, T0);
+
+    assert!(!file(&rig).contains("mhk_"), "해제 뒤에 도착한 201이 키를 다시 쓰면 안 된다: {}", file(&rig));
+    let view = engine.view();
+    assert_eq!(view.phase, Phase::NoDeviceToken, "낡은 점검이 해제 상태를 Idle 등으로 덮으면 안 된다");
+    assert!(!view.waiting_first_data && view.confirmed_prefix.is_none());
+    assert!(engine.with(|m| m.pending_write.is_none()), "버린 키 원문을 메모리에 보관하지 않는다");
+    assert_eq!(engine.due(T0 + 2), None, "연결이 없으니 점검을 다시 예약하지 않는다");
+}
+
+#[test]
+fn rv05_a_rotated_key_that_arrives_after_disconnect_is_not_written_and_the_old_key_stays_removed() {
+    let rig = Rig::new("rv05-rotate");
+    write_ready(&rig.path, Some(&fake_key('S')));
+    rig.api.push_get(state_has_current(&prefix_of('Z'), true));
+    rig.api.push_rotate(created('N'));
+    let engine = LinkEngine::new();
+    let api = ConnectionChangesMidCall { engine: &engine, path: rig.path.clone(), inner: &rig.api, on: "rotate", reconnect: false };
+
+    run_with_api(&engine, &rig, &api, Trigger::Startup, T0);
+
+    let saved = file(&rig);
+    assert!(!saved.contains("mhk_"), "해제로 지운 키도, 뒤늦게 온 새 키도 없어야 한다: {saved}");
+    assert_eq!(engine.view().phase, Phase::NoDeviceToken);
+    assert_eq!(rig.api.count("rotate"), 1, "해제 뒤 응답 유실 재시도 같은 추가 요청을 보내지 않는다");
+}
+
+#[test]
+fn rv05_a_lost_rotate_response_does_not_trigger_a_retry_after_disconnect() {
+    let rig = Rig::new("rv05-lost");
+    write_ready(&rig.path, Some(&fake_key('S')));
+    rig.api.push_get(state_has_current(&prefix_of('Z'), true));
+    rig.api.push_rotate(Err(ApiError::Lost));
+    let engine = LinkEngine::new();
+    let api = ConnectionChangesMidCall { engine: &engine, path: rig.path.clone(), inner: &rig.api, on: "rotate", reconnect: false };
+
+    run_with_api(&engine, &rig, &api, Trigger::Startup, T0);
+
+    assert_eq!(rig.api.count("rotate"), 1, "해제된 연결의 토큰으로 D-5 재시도 회전을 보내면 예산만 쓴다");
+    assert_eq!(engine.view().phase, Phase::NoDeviceToken);
+    assert_eq!(engine.with(|m| m.lost_checks), 0);
+}
+
+#[test]
+fn rv05_a_check_from_the_previous_connection_cannot_overwrite_the_new_connection() {
+    let rig = Rig::new("rv05-reconnect");
+    let original = write_ready(&rig.path, Some(&fake_key('S')));
+    rig.api.push_get(state_has_current(&prefix_of('Z'), true));
+    rig.api.push_rotate(created('N'));
+    let engine = LinkEngine::new();
+    let api = ConnectionChangesMidCall { engine: &engine, path: rig.path.clone(), inner: &rig.api, on: "rotate", reconnect: true };
+
+    run_with_api(&engine, &rig, &api, Trigger::Startup, T0);
+
+    assert_eq!(file(&rig), original, "이전 연결의 201은 새 연결의 파일을 바꾸지 않는다");
+    assert_eq!(engine.view().phase, Phase::Idle, "재연결이 비운 상태를 낡은 결과가 덮지 않는다");
+    assert_eq!(engine.due(T0 + 1), Some(Trigger::Connected), "재연결의 첫 점검은 그대로 예약돼 있다");
+}
+
+#[test]
+fn rv05_a_poll_answered_after_disconnect_does_not_confirm_anything() {
+    let rig = Rig::new("rv05-poll");
+    let engine = applied_engine_with_watch(&rig);
+    rig.api.push_get(state_has_current(&prefix_of('K'), true));
+    let api = ConnectionChangesMidCall { engine: &engine, path: rig.path.clone(), inner: &rig.api, on: "get", reconnect: false };
+    let env = Env { path: &rig.path, tokens: &rig.tokens, api: &api, probe: &rig.probe, label: &rig.label };
+
+    engine.poll_first_data(&env, T0 + 1_000);
+
+    let view = engine.view();
+    assert_eq!(view.confirmed_prefix, None);
+    assert!(!view.waiting_first_data);
+    assert!(!file(&rig).contains("mhk_"));
+}
+
+#[test]
+fn rv05_disconnect_without_a_check_in_flight_still_clears_key_and_memory_in_one_step() {
+    let rig = Rig::new("rv05-plain");
+    let engine = applied_engine_with_watch(&rig);
+    assert!(file(&rig).contains(&fake_key('K')));
+    let removed = engine.disconnect_with(T0 + 5, || crate::otel_settings::remove_ingest_key(&rig.path));
+    assert_eq!(removed, Ok(true));
+    assert!(!file(&rig).contains("mhk_"));
+    let view = engine.view();
+    assert_eq!((view.phase, view.waiting_first_data), (Phase::NoDeviceToken, false));
 }
