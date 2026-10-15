@@ -174,3 +174,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-15 / target_id `r17-otel-autolink`(회차 r18-rv09) / 3차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r18-rv09-2026-10-15.md`
   — 재사용 사유: INDEX 대조 결과 같은 target_id의 RV-09 후속이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: 🔵 RT-4 — 재발급 결과를 프론트가 상태에서 역산하지 않고 accept_confirm이 결과값을 직접 반환. RT-3 부분 진행 확인.
+- 2026-10-15 / target_id `r19-otel-server-env` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 🔵 서버 권장값 전파를 키 발급 사건에 묶은 구조 — 기존 키 보유 기기(5000)에는 전파되지 않음. env 전용 갱신 경로·원클릭 권장값 적용 대안.
+- 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 🔵 클라이언트 dirty-diff 대신 저장 엔진의 기준값 비교(CAS) — 재조회 창·폴백 경로를 구조로 닫는 대안. RT-1 이월.

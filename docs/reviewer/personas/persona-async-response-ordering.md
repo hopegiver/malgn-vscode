@@ -58,3 +58,6 @@
 - 2026-10-14 / target_id `r13b-daily-series` / 2차(재검토, 축소) / `docs/reviewer/review-r13b-daily-series-2026-10-14-r2.md`
   — 재사용 사유: 기준 A4 — 상단 카드가 주간 표·차트·목록과 같은 ≥ 규칙(fmtCost 단일 함수)을 쓰는지. 6대 요소 무수정.
   — 이번 라운드 집중: costStat의 fmtCost 교체, 화면 내 비용 표기 단일화 확인.
+- 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: refreshOtelFormFromFile의 seq·saving·loading 가드, 저장 직전 재조회와 refresh의 도착 순서(동기 커맨드 FIFO) 추적.

@@ -165,3 +165,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-15 / target_id `r17-otel-autolink`(회차 r18-rv09) / 3차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r18-rv09-2026-10-15.md`
   — 재사용 사유: INDEX 대조 결과 같은 target_id의 RV-09 후속이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: 재발급 토스트가 masked 변화 관측으로 성공 판정(RV-09 해소), 개발자 수치 941·46 직접 재현, 수정 전 TS 2 fail 실측·Rust 변이 3종(M3 생존, N-14).
+- 2026-10-15 / target_id `r19-otel-server-env` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: R19 테스트가 반환값이 아니라 파일 결과를 단언하는지, '서버가 값을 바꿔도 따라간다' 주석과 실제 전파 시점(발급·회전 때만)의 차이.
+- 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 개발자 보고(4경로 재조회·고친 칸만 저장·6키 1회)를 스크래치 하네스로 재현, cargo/tsc/test:ts 직접 실행, 기존 하네스 otelIngestKey 회귀(b59dd7e 대비) 실측.

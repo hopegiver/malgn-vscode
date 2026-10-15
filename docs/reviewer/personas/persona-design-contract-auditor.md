@@ -102,3 +102,9 @@
 - 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: D-1(폐기 판정 우선)·D-4(수동 키 교체 경로 차단)·D-12(재감시 주기 — 계약 문구와의 차이 N-9)·D-13(해제 경합) 반영 대조.
+- 2026-10-15 / target_id `r19-otel-server-env` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 계약 201 env 예시·§14 Q3(env 적용은 앱 결정)과 요구사항 1~5 대조, 머리말 결정 기록 N-5→R19 뒤집기, 앱 설계 문서의 5000 잔존.
+- 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 설계 문서 233·236행 갱신과 계약 §14 Q3·G(회전 유예) 대조, 머리말 반영 범위 문구.

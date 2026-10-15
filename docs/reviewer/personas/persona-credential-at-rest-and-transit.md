@@ -67,3 +67,9 @@
 - 2026-10-15 / target_id `r17-otel-autolink`(회차 r18-rv09) / 3차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r18-rv09-2026-10-15.md`
   — 재사용 사유: INDEX 대조 결과 같은 target_id의 RV-09 후속이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: revoked_prefix(앞 8자, 비직렬화)·revokedByHub(bool)의 비밀 미탑재, settings.json 쓰기 경로·capabilities diff 0줄.
+- 2026-10-15 / target_id `r19-otel-server-env` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 201 env가 수집키와 같은 원자적 쓰기 1회에 실리는지, 0600·백업(키 제외)·pending_write 보관 시 env 동행, 해제 세대 가드가 env 쓰기도 막는지.
+- 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-05(b) 반론 판정 — 회전 백업의 옛 키(계약 G: 48시간 유예)와 Clear 경로 백업 키 제거(remove_ingest_key) 대조, 해제 뒤 env 동반 폐기 테스트.

@@ -93,3 +93,6 @@ Skill `reviewer-persona-panel-standard` §5 표준 형식을 따른다. 이 페�
   `docs/reviewer/review-v0.2.5-whole-app-2026-09-21.md` —
   이번 라운드 집중: 세션 파일워처(`claude-sessions-changed`)와 devtools 1초 타이머가
   전역 재렌더를 일으킬 때 5개 폼의 입력값이 유실되는지 실측.
+- 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: otel-link-changed 발화 중 입력 보존(값 보존 확인, 포커스 상실은 기존 동작) — 스크래치 하네스 S1·S6.
