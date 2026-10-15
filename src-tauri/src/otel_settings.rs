@@ -515,10 +515,38 @@ pub(crate) fn apply_ingest_key(path: &Path, key: SecretString) -> Result<(), Str
     )
 }
 
-/// 연동 상태 도출용 읽기 — (`settings.json` 해석 실패 여부, 수집키 상태). 값 문자열은 내보내지 않는다.
-pub(crate) fn read_ingest_inputs(path: &Path) -> (bool, IngestKeyStatus) {
-    let (_values, parse_error, ingest_key) = read_managed_values(path);
-    (parse_error.is_some(), ingest_key)
+/// 연동 상태 도출용 입력 — `settings.json`에서 읽은 사실만 담는다(값 문자열·URL은 없다).
+pub(crate) struct IngestInputs {
+    /// 파일을 JSON으로 해석하지 못했다.
+    pub unreadable: bool,
+    pub key: IngestKeyStatus,
+    /// 파일의 `CLAUDE_CODE_ENABLE_TELEMETRY`가 `"1"`이다(저장 검증과 같은 판정). 파일에 없으면
+    /// false — 설정 화면의 기본값 "1"은 저장 전까지 파일에 없는 미리 채움일 뿐이라, 키만 주입된
+    /// 파일(`apply_ingest_key`)은 텔레메트리가 꺼진 것으로 본다.
+    pub telemetry_enabled: bool,
+    /// 유효 엔드포인트의 성격 — 설정 화면(`ingestEndpoint`)과 같은 판정(`assess_effective_endpoints`:
+    /// 파일 값 → 기본값). 파일을 읽지 못하면 기본값(전부 false).
+    pub endpoint: EndpointAssessment,
+}
+
+/// 연동 상태 도출용 읽기. 값 문자열은 내보내지 않는다.
+pub(crate) fn read_ingest_inputs(path: &Path) -> IngestInputs {
+    let (values, parse_error, key) = read_managed_values(path);
+    let unreadable = parse_error.is_some();
+    let telemetry_enabled =
+        values.get("CLAUDE_CODE_ENABLE_TELEMETRY").map(String::as_str) == Some("1");
+    let endpoint = if unreadable {
+        EndpointAssessment::default()
+    } else {
+        let (defaults, _) = build_defaults();
+        assess_effective_endpoints(&values, &defaults)
+    };
+    IngestInputs {
+        unreadable,
+        key,
+        telemetry_enabled,
+        endpoint,
+    }
 }
 
 #[tauri::command]

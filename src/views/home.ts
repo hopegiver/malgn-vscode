@@ -111,6 +111,7 @@ const ONBOARDING_MARKERS: Record<StepState, string> = {
   blocked: '○',
   partial: '◐', // 수집키 적용됨·수신 미확인 — 완료(✓)로 보이지 않게 한다.
   failed: '!',
+  warn: '!', // 수집키 적용됨·수집 안 될 수 있음(텔레메트리 꺼짐·엔드포인트) — 완료로 보이지 않게 한다.
 };
 
 function retryOnboardingChecks(): void {
@@ -126,7 +127,7 @@ function onboardingStepAction(step: OnboardingStep, isCurrent: boolean): HTMLEle
   if (step.kind === 'otel-link') {
     // 발급은 이 앱에서 못 한다 — 현재 경로는 설정 > OTel에서 수집키를 직접 붙여넣는 것뿐이다.
     if (step.state === 'todo') return el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['수집키 입력하기']);
-    if (step.state === 'failed') return el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['OTel 설정 열기']);
+    if (step.state === 'failed' || step.state === 'warn') return el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['OTel 설정 열기']);
     return null;
   }
   if (step.state !== 'todo') return null;
@@ -162,7 +163,21 @@ function onboardingRow(step: OnboardingStep, isCurrent: boolean): HTMLElement {
 
 function renderOnboarding(): HTMLElement | Text {
   const model = computeOnboarding(state);
-  if (model.allDone) return document.createTextNode('');
+  if (model.allDone) {
+    // 필수 3단계가 끝났으면 박스는 다시 열지 않는다(기존 사용자 회귀 방지). 다만 OTEL 수집키가 미적용·실패·
+    // 수집 불가 경고일 때만 한 줄로 알린다 — 적용·수집 준비 완료, 로딩, 조회 실패는 아무것도 그리지 않는다.
+    const otel = model.steps.find((s) => s.kind === 'otel-link');
+    if (!otel || !otel.slim) return document.createTextNode('');
+    const slim = el('div', { className: 'onboard-slim' }, [
+      onboardingMarker(ONBOARDING_MARKERS[otel.state]),
+      el('span', { className: 'onboard-slim-text' }, [otel.slim]),
+    ]);
+    slim.setAttribute('data-step', otel.kind);
+    slim.setAttribute('data-state', otel.state);
+    const action = onboardingStepAction(otel, false);
+    if (action) slim.appendChild(action);
+    return slim;
+  }
 
   if (!model.hasTodo) {
     // 확정된 미완료는 없고 판정 불가(로딩/에러)만 남은 상태 — 완료로도 미완료로도 단정하지 않는다.

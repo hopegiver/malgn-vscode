@@ -76,12 +76,18 @@ export interface OtelSavePayload {
 // failure.message는 Rust가 원인(cause)별로 고정한 문구다.
 //
 // 현재 실제로 도달하는 상태는 unlinked / applied / failed 이며 모두 settings.json 실물에서
-// 도출된다. issuing / confirmed 는 허브 발급·수신확인 계약이 붙어야 생긴다(그 전에는 오지 않는다).
+// 도출된다. confirmed 는 허브 수신확인 계약이 붙어야 생긴다(그 전에는 오지 않는다). issuing 은
+// 백엔드 응답으로는 오지 않는다 — 발급 호출 중 프론트가 보여 주는 진행 표시용 값이다.
+//
+// 'applied'는 "키가 파일에 있다"는 뜻일 뿐 수집을 보장하지 않는다. 수집 준비도는 상태값이 아니라
+// 별도 플래그(telemetryEnabled / endpoint / collectionReady)로 온다 — applied(또는 confirmed)인데
+// collectionReady === false 이면 "적용됐지만 수집되지 않을 수 있음"으로 구분해 보여 준다.
 export type IngestLinkState = 'unlinked' | 'issuing' | 'applied' | 'confirmed' | 'failed';
 
 export type IngestLinkFailureCause =
   | 'settingsUnreadable' // settings.json을 JSON으로 해석하지 못함(파일 도출)
   | 'headerUnrecognized' // 허브 형식이 아닌 Authorization 헤더가 있음(파일 도출)
+  | 'endpointNotHub' // 수집 엔드포인트가 허브 밖이거나 평문 http라 발급 전에 멈춤
   | 'notSupported' // 허브 자동 발급·수신 확인이 아직 지원되지 않음
   | 'deviceTokenUnavailable' // 허브 연결(기기 토큰)이 없거나 만료됨
   | 'hubRejected' // 허브가 요청을 거부함
@@ -105,6 +111,15 @@ export interface IngestLinkStatus {
   // 허브 자동 발급 / 수신 확인이 가능한가 — 지금은 둘 다 false(허브 계약 전).
   readonly issueSupported: boolean;
   readonly receiptCheckSupported: boolean;
+  // settings.json의 CLAUDE_CODE_ENABLE_TELEMETRY가 "1"인가(파일에 없으면 false).
+  readonly telemetryEnabled: boolean;
+  // 유효 엔드포인트의 성격 — OtelSettings.ingestEndpoint와 같은 판정(URL은 오지 않는다).
+  // 파일을 해석하지 못했으면 전부 false.
+  readonly endpoint: IngestEndpointAssessment;
+  // telemetryEnabled && endpoint.targetsHub && !endpoint.foreignHost && !endpoint.insecure.
+  // 앱 밖(셸 환경변수 등)에서 켜진 텔레메트리는 보지 못한다. state와 무관하게 계산되므로
+  // applied/confirmed 행에서만 경고 근거로 쓴다.
+  readonly collectionReady: boolean;
 }
 
 // settings.json만 읽는다(허브를 부르지 않는다). 저장 직후에도 이 값은 파일 실물에서 다시 도출된다.

@@ -1462,13 +1462,16 @@ textarea.settings-input { resize: vertical; }
   font-size: var(--font-size-caption); font-weight: 400; color: var(--text-muted-aa);
 }
 .onboard-row.is-partial .onboard-marker { color: var(--accent); }
-.onboard-row.is-failed .onboard-marker { color: var(--status-warn); }
+.onboard-row.is-failed .onboard-marker,
+.onboard-row.is-warn .onboard-marker { color: var(--status-warn); }
 .onboard-slim {
   display: flex; align-items: center; gap: var(--space-2-5);
   padding: var(--space-1-5) var(--space-3); border: var(--border-width) solid var(--border-soft);
   font-size: var(--font-size-caption); color: var(--text-muted-aa);
 }
-.onboard-slim[data-state="error"] .onboard-marker { color: var(--status-warn); }
+.onboard-slim[data-state="error"] .onboard-marker,
+.onboard-slim[data-state="failed"] .onboard-marker,
+.onboard-slim[data-state="warn"] .onboard-marker { color: var(--status-warn); }
 .onboard-slim .btn { margin-left: auto; }
 
 /* P2-7 efficiency guide */

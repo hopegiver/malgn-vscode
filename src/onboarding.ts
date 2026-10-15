@@ -16,10 +16,11 @@ export type StepKind = 'required-tools' | 'claude-install' | 'claude-login' | 'o
 
 /**
  * done/todo는 확정, loading/error는 판정 불가, blocked는 선행 단계 미완료로 아직 진행 불가.
- * partial/failed는 otel-link 전용 — partial은 "수집키는 적용됐지만 수신은 확인 못 함"(완료가 아니다),
+ * partial/failed/warn은 otel-link 전용 — partial은 "수집키는 적용됐고 수집 준비도 돼 있으나 수신은 확인 못 함"(완료가 아니다),
+ * warn은 "수집키는 적용됐지만 텔레메트리 꺼짐·엔드포인트 문제로 수집되지 않을 수 있음",
  * failed는 "연동 경로가 실패 원인과 함께 막힘"(판정 불가가 아니라 확정된 실패).
  */
-export type StepState = 'done' | 'todo' | 'loading' | 'error' | 'blocked' | 'partial' | 'failed';
+export type StepState = 'done' | 'todo' | 'loading' | 'error' | 'blocked' | 'partial' | 'failed' | 'warn';
 
 export interface OnboardingStep {
   readonly kind: StepKind;
@@ -32,6 +33,11 @@ export interface OnboardingStep {
    * 들어가지 않는다. 이 단계가 todo여도 이미 설치·로그인을 끝낸 사용자의 홈에 체크리스트가 다시 뜨지 않는다.
    */
   readonly advisory?: boolean;
+  /**
+   * 필수 3단계가 모두 끝난 홈에서 체크리스트 박스 대신 한 줄(.onboard-slim)로 보여 줄 문구. 있는 항목만 그렇게
+   * 노출한다(미적용·실패·수집 불가 경고). 적용·수집 준비 완료, 로딩, 조회 실패는 없다 — 방해하지 않는다.
+   */
+  readonly slim?: string;
 }
 
 export interface OnboardingModel {
@@ -157,9 +163,23 @@ function safeMasked(masked: string | null): string | null {
 }
 
 /**
+ * 적용된 수집키가 있어도 사용량이 수집되지 않을 수 있는 원인 — 백엔드가 준 불리언만으로 가린다.
+ * applied/confirmed일 때만 호출한다(collectionReady는 state와 무관하게 계산되는 값이라 unlinked 등에서는 의미가 없다).
+ */
+function collectionBlockers(status: IngestLinkStatus): string[] {
+  const out: string[] = [];
+  if (!status.telemetryEnabled) out.push('텔레메트리가 꺼져 있음');
+  if (!status.endpoint.targetsHub) out.push('수집 엔드포인트가 허브가 아님');
+  if (status.endpoint.foreignHost) out.push('수집키가 허브 밖 주소로도 전송됨');
+  if (status.endpoint.insecure) out.push('수집 엔드포인트가 암호화되지 않은 http임');
+  return out;
+}
+
+/**
  * OTEL 연동 참고 항목. 자동 발급·수신 확인은 아직 구현되지 않았으므로(issueSupported /
  * receiptCheckSupported = false) "자동 연동"·"연동 완료"를 말하지 않는다. 지금 실제로 도달하는 상태는
  * unlinked / applied / failed 뿐이며 issuing / confirmed는 타입상으로만 처리한다.
+ * 시도하지 않은 자동 동작("자동으로 바꾸지 않았습니다" 등)을 암시하는 문구도 쓰지 않는다.
  */
 function otelLinkStep(link: NonNullable<OnboardingInput['ingestLink']>): OnboardingStep {
   const base = { kind: 'otel-link' as const, title: 'OTEL 연동(사용량 수집키)', advisory: true };
@@ -176,22 +196,43 @@ function otelLinkStep(link: NonNullable<OnboardingInput['ingestLink']>): Onboard
         ...base,
         state: 'todo',
         detail:
-          '수집키가 적용되어 있지 않습니다. 설정 > OTel에서 허브 관리자에게 받은 수집키를 직접 붙여넣어 저장하세요. 허브 웹에 수집키 발급 화면이 아직 없어 발급 방법은 허브 관리자에게 문의해야 하며, 허브 연결의 기기 토큰은 수집키가 아닙니다.' +
-          (status.issueSupported ? '' : ' 자동 발급은 아직 지원되지 않습니다.'),
+          '수집키가 적용되어 있지 않습니다. 설정 > OTel에서 허브 관리자에게 받은 수집키를 붙여넣으세요. 허브에는 발급 화면이 아직 없고' +
+          (status.issueSupported ? '' : ' 자동 발급도 지원되지 않으며,') +
+          ' 기기 토큰은 수집키가 아닙니다.',
+        slim: '선택 · 사용량 수집키가 적용되어 있지 않습니다.',
       };
     case 'issuing':
       return { ...base, state: 'loading', detail: '수집키를 발급받아 적용하는 중…' };
     case 'applied':
+    case 'confirmed': {
+      // 수집 준비가 안 됐으면 "적용됨"만으로 수집될 거라고 믿게 하지 않는다. 수신 확인 여부는 state 그대로 따른다.
+      if (!status.collectionReady) {
+        const blockers = collectionBlockers(status);
+        const why = blockers.length > 0 ? blockers.join(', ') : '수집 설정을 확인해야 함';
+        return {
+          ...base,
+          state: 'warn',
+          detail: `수집키는 적용되었지만${keyTag} 사용량이 수집되지 않을 수 있습니다: ${why}.${status.state === 'confirmed' ? '' : ' 수신은 확인하지 않았습니다.'}`,
+          slim: `선택 · 수집키는 적용됐지만 사용량이 수집되지 않을 수 있습니다 — ${why}.`,
+        };
+      }
+      if (status.state === 'confirmed') {
+        return { ...base, state: 'done', detail: `수집키가 적용되었고 허브에서 수신이 확인되었습니다${keyTag}.` };
+      }
       return {
         ...base,
         state: 'partial',
         detail: `수집키가 적용되었습니다${keyTag}. 수신은 아직 확인하지 않았습니다. 새로 시작하는 Claude Code 세션부터 적용됩니다.`,
       };
-    case 'confirmed':
-      return { ...base, state: 'done', detail: `수집키가 적용되었고 허브에서 수신이 확인되었습니다${keyTag}.` };
+    }
     case 'failed': {
       const msg = status.failure?.message ?? '수집키 적용 상태에 문제가 있습니다.';
-      return { ...base, state: 'failed', detail: masked ? `${msg} 적용된 수집키${keyTag}.` : msg };
+      return {
+        ...base,
+        state: 'failed',
+        detail: masked ? `${msg} 적용된 수집키${keyTag}.` : msg,
+        slim: '선택 · 사용량 수집키 연동에 문제가 있습니다. 설정 > OTel에서 확인하세요.',
+      };
     }
   }
 }

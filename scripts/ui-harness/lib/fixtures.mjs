@@ -232,8 +232,12 @@ export async function buildBaseFixtures() {
     list_claude_sessions: sessions,
     check_dev_tools: devToolsSample(),
     // 홈 시작 체크리스트 OTEL 연동 항목(otel_ingest_link_status) — 베이스는 "수집키 미적용". 모양은
-    // Rust IngestLinkStatus 직렬화와 같다(issueSupported/receiptCheckSupported는 현재 둘 다 false).
-    otel_ingest_link_status: { state: 'unlinked', masked: null, failure: null, issueSupported: false, receiptCheckSupported: false },
+    // Rust IngestLinkStatus 직렬화와 같다(issueSupported/receiptCheckSupported는 현재 둘 다 false,
+    // telemetryEnabled/endpoint/collectionReady는 수집 준비도 — 미연동 베이스는 전부 false).
+    otel_ingest_link_status: {
+      state: 'unlinked', masked: null, failure: null, issueSupported: false, receiptCheckSupported: false,
+      telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
+    },
     // 허브 기기 토큰 상태(홈 malgnai-hub 위젯이 loadHubAuth로 호출) — 베이스에 없어 모든 흐름에서
     // UNSTUBBED_COMMAND 오탐이 났다. 정상 연결 기본값을 둔다(추가만).
     hub_auth_status: { connected: true, state: 'CONNECTED', device_name: '하네스 기기', expires_at: null, renew_after: null, reason: null },

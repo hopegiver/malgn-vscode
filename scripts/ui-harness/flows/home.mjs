@@ -606,7 +606,8 @@ export function scenarios(base) {
     // (c) 전부 완료 — 체크리스트가 DOM에서 사라진다.
     {
       id: 'onboarding-all-done-hides-checklist',
-      fixtures: { ...base, check_dev_tools: devToolsFixture(), check_claude_auth_status: AUTH_IN },
+      // OTEL 수집키도 적용·수집 준비 완료 — "모든 것이 끝났을 때 아무것도 안 남는다"를 본다(미적용이면 OTEL 한 줄이 남는 것은 otel-link-core-done-* 시나리오 몫).
+      fixtures: { ...base, check_dev_tools: devToolsFixture(), check_claude_auth_status: AUTH_IN, otel_ingest_link_status: { state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_READY } },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
         await shot('01-all-done');
@@ -620,7 +621,7 @@ export function scenarios(base) {
     // (d) 로딩 — 응답 전에는 완료/미완료로 단정하지 않는다(얇은 "확인 중" 줄만).
     {
       id: 'onboarding-loading-does-not-assert',
-      fixtures: { ...base, check_dev_tools: { __delay: 2500, value: devToolsFixture() }, check_claude_auth_status: { __delay: 2500, value: AUTH_IN } },
+      fixtures: { ...base, check_dev_tools: { __delay: 2500, value: devToolsFixture() }, check_claude_auth_status: { __delay: 2500, value: AUTH_IN }, otel_ingest_link_status: { state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_READY } },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
         await shot('01-loading');
@@ -695,10 +696,21 @@ export function scenarios(base) {
   ];
 }
 
-const LINK_OFF = { issueSupported: false, receiptCheckSupported: false };
+// 연동 상태 픽스처 — Rust IngestLinkStatus 직렬화와 같은 모양(수집 준비도 필드 포함).
+const HUB_EP = { targetsHub: true, insecure: false, foreignHost: false };
+const NO_EP = { targetsHub: false, insecure: false, foreignHost: false };
+// 미연동/기본: 수집 준비 안 됨. READY: 텔레메트리 켜짐 + 허브 엔드포인트.
+const LINK_OFF = { issueSupported: false, receiptCheckSupported: false, telemetryEnabled: false, endpoint: NO_EP, collectionReady: false };
+const LINK_READY = { issueSupported: false, receiptCheckSupported: false, telemetryEnabled: true, endpoint: HUB_EP, collectionReady: true };
 const FAKE_DEVICE_TOKEN = `mhd_${'x'.repeat(43)}`;
 const FAKE_INGEST_KEY = `mhk_${'Z'.repeat(43)}`;
-const BANNED_CLAIMS = ['자동 연동', '연동 완료', '연동되었습니다', '수신 확인됨', '수신이 확인되었습니다', '수신을 확인했습니다'];
+// 미구현 기능 주장 + 시도하지 않은 자동 동작을 암시하는 표현(RV-002)
+const BANNED_CLAIMS = [
+  '자동 연동', '연동 완료', '연동되었습니다', '수신 확인됨', '수신이 확인되었습니다', '수신을 확인했습니다',
+  '자동으로 바꾸', '자동으로 교체', '자동으로 변경', '자동으로 삭제', '자동으로 갱신', '자동 교체', '바꾸지 않았습니다',
+];
+const HEADER_MSG = '설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있습니다. 허브로 보내려면 설정 > OTel에서 수집키로 교체하세요.';
+const ENDPOINT_MSG = '수집 엔드포인트가 허브가 아니거나 암호화되지 않은(http) 주소입니다. 수집키가 그 주소로 전송되지 않도록 발급받지 않았습니다. 설정 > OTel에서 엔드포인트를 확인하세요.';
 
 async function otelRow(page) {
   const row = page.locator('.onboard-row[data-step="otel-link"]');
@@ -711,7 +723,34 @@ async function otelRow(page) {
   };
 }
 
-async function checkOtelCommon(page, bugs, row, { expectState, mustInclude, forbidSecrets = [] }) {
+// 필수 3단계 완료 후 홈에 한 줄로 나오는 OTEL 알림(.onboard-slim[data-step=otel-link]).
+async function otelSlim(page) {
+  const slim = page.locator('.onboard-slim[data-step="otel-link"]');
+  if ((await slim.count()) === 0) return null;
+  return {
+    state: await slim.getAttribute('data-state'),
+    text: (await slim.textContent()) ?? '',
+    buttons: await slim.locator('button').allTextContents(),
+    marker: (await slim.locator('.onboard-marker').textContent()) ?? '',
+  };
+}
+
+async function checkNoSecrets(page, bugs, forbidSecrets = []) {
+  const dump = await page.evaluate(() => document.documentElement.outerHTML + '\n' + document.body.innerText);
+  for (const secret of [FAKE_DEVICE_TOKEN, FAKE_INGEST_KEY, ...forbidSecrets]) {
+    if (dump.includes(secret) || dump.includes(secret.slice(0, 16))) {
+      bugs.push({ severity: 'Critical', symptom: `DOM에 토큰/키 원문(앞 16자 포함)이 남아 있음: ${secret.slice(0, 8)}…`, file: CHECKLIST });
+    }
+  }
+}
+
+function checkBanned(bugs, text) {
+  for (const phrase of BANNED_CLAIMS) {
+    if (text.includes(phrase)) bugs.push({ severity: 'Critical', symptom: `미구현/시도하지 않은 동작을 주장하는 문구 "${phrase}" 노출`, file: CHECKLIST });
+  }
+}
+
+async function checkOtelCommon(page, bugs, row, { expectState, mustInclude, mustExclude = [], forbidSecrets = [] }) {
   if (!row) {
     bugs.push({ severity: 'Critical', symptom: 'OTEL 연동 행이 렌더되지 않음', file: CHECKLIST });
     return;
@@ -720,71 +759,150 @@ async function checkOtelCommon(page, bugs, row, { expectState, mustInclude, forb
   for (const phrase of mustInclude) {
     if (!row.text.includes(phrase)) bugs.push({ severity: 'Major', symptom: `OTEL 행에 "${phrase}" 문구가 없음(실제: ${row.text})`, file: CHECKLIST });
   }
-  for (const phrase of BANNED_CLAIMS) {
-    if (row.text.includes(phrase)) bugs.push({ severity: 'Critical', symptom: `미구현 기능을 주장하는 문구 "${phrase}" 노출`, file: CHECKLIST });
+  for (const phrase of mustExclude) {
+    if (row.text.includes(phrase)) bugs.push({ severity: 'Major', symptom: `OTEL 행에 있으면 안 되는 "${phrase}" 문구가 있음(실제: ${row.text})`, file: CHECKLIST });
   }
-  const dump = await page.evaluate(() => document.documentElement.outerHTML + '\n' + document.body.innerText);
-  for (const secret of [FAKE_DEVICE_TOKEN, FAKE_INGEST_KEY, ...forbidSecrets]) {
-    if (dump.includes(secret) || dump.includes(secret.slice(0, 16))) {
-      bugs.push({ severity: 'Critical', symptom: `DOM에 토큰/키 원문(앞 16자 포함)이 남아 있음: ${secret.slice(0, 8)}…`, file: CHECKLIST });
-    }
-  }
+  checkBanned(bugs, row.text);
+  await checkNoSecrets(page, bugs, forbidSecrets);
   const count = await page.locator('.onboard-box .box-head .count').textContent().catch(() => null);
   if (!count || !count.includes('2/3')) bugs.push({ severity: 'Major', symptom: `OTEL 항목이 진행 카운트에 영향을 줌(기대 2/3, 실제: ${count})`, file: CHECKLIST });
+}
+
+// 필수 3단계 완료 홈 — 박스는 열리지 않고, 노출 대상 상태일 때만 OTEL 한 줄이 있다.
+async function checkCoreDoneSlim(page, bugs, { expectState, mustInclude, mustExclude = [], button }) {
+  if ((await page.locator('.onboard-box').count()) > 0) {
+    bugs.push({ severity: 'Critical', symptom: '필수 단계 완료 후 OTEL만으로 체크리스트 박스가 다시 열림(기존 사용자 회귀)', file: CHECKLIST });
+  }
+  if ((await page.locator('.onboard-slim').count()) !== 1) {
+    bugs.push({ severity: 'Critical', symptom: `필수 완료 홈의 .onboard-slim이 정확히 1개가 아님(실제: ${await page.locator('.onboard-slim').count()})`, file: CHECKLIST });
+  }
+  const slim = await otelSlim(page);
+  if (!slim) {
+    bugs.push({ severity: 'Critical', symptom: '필수 완료 + OTEL 알림 대상 상태인데 OTEL 한 줄이 없음(RV-001: 실제 사용자가 볼 수 없음)', file: CHECKLIST });
+    return null;
+  }
+  if (slim.state !== expectState) bugs.push({ severity: 'Critical', symptom: `OTEL 한 줄 data-state가 ${expectState}가 아님(실제: ${slim.state})`, file: CHECKLIST });
+  for (const phrase of mustInclude) {
+    if (!slim.text.includes(phrase)) bugs.push({ severity: 'Major', symptom: `OTEL 한 줄에 "${phrase}" 문구가 없음(실제: ${slim.text})`, file: CHECKLIST });
+  }
+  for (const phrase of mustExclude) {
+    if (slim.text.includes(phrase)) bugs.push({ severity: 'Major', symptom: `OTEL 한 줄에 있으면 안 되는 "${phrase}"가 있음(실제: ${slim.text})`, file: CHECKLIST });
+  }
+  if (!slim.buttons.includes(button)) bugs.push({ severity: 'Major', symptom: `OTEL 한 줄에 "${button}" 버튼이 없음(실제: ${JSON.stringify(slim.buttons)})`, file: CHECKLIST });
+  if (slim.marker.trim() === '✓') bugs.push({ severity: 'Critical', symptom: 'OTEL 한 줄이 완료 체크(✓)로 표시됨', file: CHECKLIST });
+  checkBanned(bugs, slim.text);
+  await checkNoSecrets(page, bugs);
+  return slim;
+}
+
+async function checkNothingShown(page, bugs, why) {
+  const n = await page.locator('.onboard-box, .onboard-slim').count();
+  if (n > 0) bugs.push({ severity: 'Critical', symptom: `${why}인데 체크리스트/한 줄이 노출됨(${n}개)`, file: CHECKLIST });
+  await checkNoSecrets(page, bugs);
+}
+
+async function clickToOtelSettings(page, bugs, locator, name) {
+  await locator.getByRole('button', { name }).click();
+  await page.waitForTimeout(200);
+  if (!(await page.evaluate(() => location.hash)).startsWith('#/settings/otel')) bugs.push({ severity: 'Major', symptom: `"${name}" 버튼이 #/settings/otel로 이동하지 않음`, file: CHECKLIST });
 }
 
 function otelLinkScenarios(base) {
   // 필수 3단계 중 2개 완료(설치 완료·미로그인) — 체크리스트 박스가 열려 있는 상태에서 OTEL 행을 본다.
   const open = { ...base, check_claude_auth_status: AUTH_OUT };
+  // 필수 3단계 모두 완료 — 박스는 숨고, OTEL이 알림 대상일 때만 한 줄이 남는다.
+  const done = { ...base, check_claude_auth_status: AUTH_IN };
+  const link = (extra) => ({ otel_ingest_link_status: extra });
   return [
     {
       id: 'otel-link-unlinked',
-      fixtures: { ...open, otel_ingest_link_status: { state: 'unlinked', masked: null, failure: null, ...LINK_OFF } },
+      fixtures: { ...open, ...link({ state: 'unlinked', masked: null, failure: null, ...LINK_OFF }) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-otel-unlinked');
         const row = await otelRow(page);
-        await checkOtelCommon(page, bugs, row, { expectState: 'todo', mustInclude: ['설정 > OTel', '직접 붙여넣어', '발급 화면이 아직 없어', '자동 발급은 아직 지원되지 않습니다'] });
+        await checkOtelCommon(page, bugs, row, {
+          expectState: 'todo',
+          mustInclude: ['설정 > OTel', '붙여넣으세요', '발급 화면이 아직 없고', '자동 발급도 지원되지 않으며', '기기 토큰은 수집키가 아닙니다'],
+        });
         if (row && !row.buttons.includes('수집키 입력하기')) bugs.push({ severity: 'Major', symptom: `unlinked인데 "수집키 입력하기" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
-        if (row) {
-          await page.locator('.onboard-row[data-step="otel-link"]').getByRole('button', { name: '수집키 입력하기' }).click();
-          await page.waitForTimeout(200);
-          if (!(await page.evaluate(() => location.hash)).startsWith('#/settings/otel')) bugs.push({ severity: 'Major', symptom: '버튼이 #/settings/otel로 이동하지 않음', file: CHECKLIST });
-        }
+        if (row) await clickToOtelSettings(page, bugs, page.locator('.onboard-row[data-step="otel-link"]'), '수집키 입력하기');
       },
     },
     {
       id: 'otel-link-applied',
       // masked에 원문이 섞여 와도(방어 확인) 형식이 다르면 표시하지 않는다는 점은 별도 시나리오가 본다.
-      fixtures: { ...open, otel_ingest_link_status: { state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF } },
+      fixtures: { ...open, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_READY }) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-otel-applied');
         const row = await otelRow(page);
-        await checkOtelCommon(page, bugs, row, { expectState: 'partial', mustInclude: ['mhk_AbCd…', '수신은 아직 확인하지 않았습니다'] });
+        await checkOtelCommon(page, bugs, row, {
+          expectState: 'partial',
+          mustInclude: ['mhk_AbCd…', '수신은 아직 확인하지 않았습니다', '새로 시작하는 Claude Code 세션부터 적용됩니다'],
+          mustExclude: ['수집되지 않을 수 있습니다'],
+        });
         if (row && row.marker.trim() === '✓') bugs.push({ severity: 'Critical', symptom: 'applied(수신 미확인)가 완료 체크(✓)로 표시됨', file: CHECKLIST });
+      },
+    },
+    {
+      // RV-003: 적용됐지만 텔레메트리가 꺼져 있어 수집되지 않을 수 있음 — "새로 시작하는 세션부터 적용"을 말하지 않는다.
+      id: 'otel-link-applied-not-ready-telemetry-off',
+      fixtures: { ...open, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, endpoint: HUB_EP }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-applied-not-ready');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, {
+          expectState: 'warn',
+          mustInclude: ['mhk_AbCd…', '수집되지 않을 수 있습니다', '텔레메트리가 꺼져 있음', '수신은 확인하지 않았습니다'],
+          mustExclude: ['새로 시작하는', '허브가 아님'],
+        });
+        if (row && row.marker.trim() === '✓') bugs.push({ severity: 'Critical', symptom: '수집 불가 경고가 완료 체크(✓)로 표시됨', file: CHECKLIST });
+        if (row && !row.buttons.includes('OTel 설정 열기')) bugs.push({ severity: 'Major', symptom: `수집 불가 경고에 "OTel 설정 열기" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
+        if (row) await clickToOtelSettings(page, bugs, page.locator('.onboard-row[data-step="otel-link"]'), 'OTel 설정 열기');
+      },
+    },
+    {
+      // RV-003: 텔레메트리는 켜져 있지만 엔드포인트가 허브가 아님 — 원인이 위 시나리오와 구분돼야 한다.
+      id: 'otel-link-applied-not-ready-endpoint-not-hub',
+      fixtures: { ...open, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, telemetryEnabled: true, endpoint: { targetsHub: false, insecure: false, foreignHost: true } }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-applied-not-ready-endpoint');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, {
+          expectState: 'warn',
+          mustInclude: ['수집되지 않을 수 있습니다', '수집 엔드포인트가 허브가 아님', '허브 밖 주소로도 전송됨'],
+          mustExclude: ['텔레메트리가 꺼져', '새로 시작하는'],
+        });
       },
     },
     {
       id: 'otel-link-failed-header-unrecognized',
       fixtures: {
         ...open,
-        otel_ingest_link_status: {
-          state: 'failed',
-          masked: null,
-          failure: {
-            cause: 'headerUnrecognized',
-            message: '설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있어 자동으로 바꾸지 않았습니다. 확인 후 직접 교체하거나 삭제하세요.',
-          },
-          ...LINK_OFF,
-        },
+        ...link({ state: 'failed', masked: null, failure: { cause: 'headerUnrecognized', message: HEADER_MSG }, ...LINK_OFF }),
       },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-otel-failed');
         const row = await otelRow(page);
-        await checkOtelCommon(page, bugs, row, { expectState: 'failed', mustInclude: ['허브 수집키 형식이 아닌 Authorization 헤더', '직접 교체하거나 삭제하세요'] });
+        await checkOtelCommon(page, bugs, row, { expectState: 'failed', mustInclude: ['허브 수집키 형식이 아닌 Authorization 헤더가 있습니다', '수집키로 교체하세요'] });
         if (row && !row.buttons.includes('OTel 설정 열기')) bugs.push({ severity: 'Major', symptom: `failed인데 "OTel 설정 열기" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
+      },
+    },
+    {
+      id: 'otel-link-failed-endpoint-not-hub',
+      fixtures: {
+        ...open,
+        ...link({ state: 'failed', masked: null, failure: { cause: 'endpointNotHub', message: ENDPOINT_MSG }, ...LINK_OFF }),
+      },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-failed-endpoint');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, { expectState: 'failed', mustInclude: ['수집 엔드포인트가 허브가 아니거나', '엔드포인트를 확인하세요'] });
       },
     },
     {
@@ -802,7 +920,7 @@ function otelLinkScenarios(base) {
     {
       // 방어: 백엔드가 masked 자리에 원문 모양 값을 실수로 주더라도 화면에 내지 않는다.
       id: 'otel-link-applied-unsafe-masked-not-shown',
-      fixtures: { ...open, otel_ingest_link_status: { state: 'applied', masked: FAKE_INGEST_KEY, failure: null, ...LINK_OFF } },
+      fixtures: { ...open, ...link({ state: 'applied', masked: FAKE_INGEST_KEY, failure: null, ...LINK_READY }) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-otel-applied-unsafe-masked');
@@ -811,15 +929,57 @@ function otelLinkScenarios(base) {
       },
     },
     {
-      // 참고 항목은 박스를 다시 띄우지 않는다 — 필수 3단계가 모두 끝났으면 수집키가 없어도 체크리스트는 숨겨진 채다.
-      id: 'otel-link-unlinked-does-not-reopen-checklist',
-      fixtures: { ...base, check_claude_auth_status: AUTH_IN, otel_ingest_link_status: { state: 'unlinked', masked: null, failure: null, ...LINK_OFF } },
+      // RV-001: 필수 3단계가 끝나도 박스는 다시 열리지 않지만, 미적용이면 홈에 한 줄이 남는다.
+      id: 'otel-link-core-done-slim-unlinked',
+      fixtures: { ...done, ...link({ state: 'unlinked', masked: null, failure: null, ...LINK_OFF }) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
-        await shot('01-all-core-done');
-        if ((await page.locator('.onboard-box, .onboard-slim').count()) > 0) {
-          bugs.push({ severity: 'Critical', symptom: '필수 단계 완료 후 OTEL 미적용만으로 체크리스트가 다시 열림(기존 사용자 회귀)', file: CHECKLIST });
-        }
+        await shot('01-core-done-slim-unlinked');
+        const slim = await checkCoreDoneSlim(page, bugs, { expectState: 'todo', mustInclude: ['사용량 수집키가 적용되어 있지 않습니다'], button: '수집키 입력하기' });
+        if (slim) await clickToOtelSettings(page, bugs, page.locator('.onboard-slim[data-step="otel-link"]'), '수집키 입력하기');
+      },
+    },
+    {
+      id: 'otel-link-core-done-slim-failed',
+      fixtures: { ...done, ...link({ state: 'failed', masked: null, failure: { cause: 'headerUnrecognized', message: HEADER_MSG }, ...LINK_OFF }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-core-done-slim-failed');
+        await checkCoreDoneSlim(page, bugs, { expectState: 'failed', mustInclude: ['연동에 문제가 있습니다'], button: 'OTel 설정 열기' });
+      },
+    },
+    {
+      id: 'otel-link-core-done-slim-applied-not-ready',
+      fixtures: { ...done, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, endpoint: HUB_EP }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-core-done-slim-warn');
+        await checkCoreDoneSlim(page, bugs, {
+          expectState: 'warn',
+          mustInclude: ['수집키는 적용됐지만', '수집되지 않을 수 있습니다', '텔레메트리가 꺼져 있음'],
+          mustExclude: ['새로 시작하는'],
+          button: 'OTel 설정 열기',
+        });
+      },
+    },
+    {
+      // 적용 + 수집 준비 완료 → 알릴 것이 없다. 박스도 한 줄도 없다.
+      id: 'otel-link-core-done-ready-hidden',
+      fixtures: { ...done, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_READY }) },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-core-done-ready-hidden');
+        await checkNothingShown(page, bugs, '필수 완료 + 수집키 적용·수집 준비 완료');
+      },
+    },
+    {
+      // 조회 실패는 방해하지 않는다 — 필수 완료 홈에서 OTEL 조회 실패만으로 한 줄이 뜨지 않는다.
+      id: 'otel-link-core-done-fetch-error-hidden',
+      fixtures: { ...done, otel_ingest_link_status: { __throw: '상태 조회 실패' } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-core-done-fetch-error-hidden');
+        await checkNothingShown(page, bugs, '필수 완료 + OTEL 조회 실패');
       },
     },
   ];

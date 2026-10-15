@@ -8,8 +8,13 @@
 // 상태 모델
 //   미연동(unlinked) → 발급중(issuing) → 적용됨(applied) → 수신확인됨(confirmed), 실패(failed, 원인)
 //   현재 실제로 도달하는 것은 **미연동 / 적용됨 / 실패**이며 전부 `settings.json` 실물에서 도출한다
-//   (`derive_link_status`). 발급중·수신확인됨은 허브 호출이 있어야만 생기는 상태라, trait 구현이
-//   붙기 전에는 `issue_and_apply`/`confirm_receipt`가 어떤 경우에도 만들어 내지 않는다.
+//   (`derive_link_status`). 수신확인됨은 허브 호출이 있어야만 생기는 상태라 trait 구현이 붙기
+//   전에는 `confirm_receipt`가 만들어 내지 않는다. 발급중은 동기 함수인 `issue_and_apply`가 끝난
+//   뒤의 상태만 돌려주므로 백엔드 응답으로는 오지 않는다(프론트의 진행 중 표시용 값).
+//
+//   "적용됨"은 키가 파일에 있다는 뜻일 뿐 수집을 보장하지 않는다. 텔레메트리 활성·엔드포인트
+//   성격(허브/평문/허브 밖)을 `telemetry_enabled`·`endpoint`·`collection_ready`로 함께 싣는다
+//   — 상태값을 늘리지 않고 플래그로 둔 이유는 `IngestLinkStatus` 주석 참고.
 //
 // mhd_/mhk_ 분리 불변식(리뷰 대상, 단위 테스트가 `*_never_contains_device_token`으로 고정):
 //   - 기기 토큰(`mhd_`, MCP 전권)은 trait 구현체 내부에서만 쓰인다. 이 모듈의 어떤 인자·반환·상태·
@@ -23,12 +28,10 @@
 // 허브 계약이 정해지면 이 파일에서 바뀌는 곳은 `default_issuer`/`default_receipt_checker`가 돌려주는
 // 구현체뿐이다(상태 모델·적용 경로·프론트 계약은 그대로).
 
-// 허브 계약 전에는 trait·오케스트레이션이 테스트에서만 호출된다. 구현체를 붙이면 이 줄을 지운다.
-#![allow(dead_code)]
-
 use crate::otel_ingest_key::{
-    normalize_ingest_key, IngestKeyState, IngestKeyStatus, SecretString,
+    normalize_ingest_key, EndpointAssessment, IngestKeyState, SecretString,
 };
+use crate::otel_settings::IngestInputs;
 use serde::Serialize;
 use std::path::Path;
 
@@ -38,7 +41,9 @@ use std::path::Path;
 pub enum IngestLinkState {
     /// `Authorization` 헤더 없음.
     Unlinked,
-    /// 허브에 키를 요청해 응답을 기다리는 중(허브 호출이 붙기 전에는 만들어지지 않는다).
+    /// 프론트가 발급 호출 중에 보여 주는 진행 표시용 값. `issue_and_apply`는 동기 함수라 호출이
+    /// 끝난 뒤의 상태만 돌려주므로 백엔드 응답으로는 오지 않는다.
+    #[allow(dead_code)] // 직렬화 값(프론트 유니온)을 고정하는 용도 — 백엔드가 만들지 않는다.
     Issuing,
     /// `settings.json`에 허브 형식(`mhk_…`) 키가 적용돼 있다(수신은 아직 확인 전).
     Applied,
@@ -57,17 +62,27 @@ pub enum LinkFailureCause {
     SettingsUnreadable,
     /// 허브 형식이 아닌 `Authorization` 헤더가 이미 있다(파일 도출).
     HeaderUnrecognized,
+    /// 수집 엔드포인트가 허브가 아니거나 평문 http라서 발급 전에 멈췄다 — 키가 허브 밖·평문으로
+    /// 나가지 않게 한다.
+    #[allow(dead_code)] // `issue_and_apply`가 만든다 — 아직 커맨드가 부르지 않는다(허브 계약 후).
+    EndpointNotHub,
     /// 허브 발급·수신확인이 아직 지원되지 않는다.
+    #[allow(dead_code)] // 기본 구현(`Unsupported*`)이 돌려준다 — 아직 커맨드가 부르지 않는다.
     NotSupported,
     /// 허브 연결(기기 토큰)이 없거나 만료돼 요청할 수 없다.
+    #[allow(dead_code)] // 발급기 구현체가 돌려줄 원인 — 구현체는 허브 계약 후에 붙는다.
     DeviceTokenUnavailable,
     /// 허브가 요청을 거부했다.
+    #[allow(dead_code)] // 발급기·수신확인 구현체가 돌려줄 원인(허브 계약 후).
     HubRejected,
     /// 허브에 닿지 못했다(네트워크·타임아웃).
+    #[allow(dead_code)] // 발급기·수신확인 구현체가 돌려줄 원인(허브 계약 후).
     Unreachable,
     /// 허브가 돌려준 값이 수집키 형식이 아니다.
+    #[allow(dead_code)] // `issue_and_apply`가 만든다 — 아직 커맨드가 부르지 않는다(허브 계약 후).
     InvalidKeyReturned,
     /// 검증된 키를 설정 파일에 적용하지 못했다.
+    #[allow(dead_code)] // `issue_and_apply`가 만든다 — 아직 커맨드가 부르지 않는다(허브 계약 후).
     ApplyFailed,
 }
 
@@ -79,7 +94,10 @@ impl LinkFailureCause {
                 "Claude 설정 파일(settings.json)을 해석하지 못했습니다. 파일의 JSON 형식을 확인하세요."
             }
             Self::HeaderUnrecognized => {
-                "설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있어 자동으로 바꾸지 않았습니다. 확인 후 직접 교체하거나 삭제하세요."
+                "설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있습니다. 허브로 보내려면 설정 > OTel에서 수집키로 교체하세요."
+            }
+            Self::EndpointNotHub => {
+                "수집 엔드포인트가 허브가 아니거나 암호화되지 않은(http) 주소입니다. 수집키가 그 주소로 전송되지 않도록 발급받지 않았습니다. 설정 > OTel에서 엔드포인트를 확인하세요."
             }
             Self::NotSupported => "허브 자동 발급과 수신 확인은 아직 지원되지 않습니다.",
             Self::DeviceTokenUnavailable => {
@@ -112,6 +130,12 @@ impl IngestLinkFailure {
 }
 
 /// 프론트로 나가는 연동 상태. 토큰·키 원문 필드가 없다(`masked`는 `mhk_`+4자뿐).
+///
+/// 수집 준비도(`telemetry_enabled`·`endpoint`·`collection_ready`)는 `state`와 직교하는 사실이라
+/// 새 상태값(예: "적용됐지만 수집 안 됨")이 아니라 플래그로 둔다. 상태값으로 만들면 ① 미연동·
+/// 실패·수신확인됨 각각에 변형이 생겨 유니온이 곱으로 늘고 ② "키 적용"이라는 `applied`의 의미
+/// (파일 실물)가 흐려지며 ③ 프론트가 상태 분기를 전부 고쳐야 한다. 플래그는 기존 분기를 그대로 두고
+/// `applied`/`confirmed` 행에서만 경고를 덧붙이게 한다. 값은 불리언/열거형뿐이다(URL·키 없음).
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestLinkStatus {
@@ -125,6 +149,16 @@ pub struct IngestLinkStatus {
     pub issue_supported: bool,
     /// 허브 수신 확인이 가능한가. Tauri 커맨드가 채운다.
     pub receipt_check_supported: bool,
+    /// `settings.json`의 `CLAUDE_CODE_ENABLE_TELEMETRY`가 `"1"`인가(파일에 없으면 false).
+    pub telemetry_enabled: bool,
+    /// 유효 엔드포인트의 성격(설정 화면의 `ingestEndpoint`와 같은 판정 — URL은 싣지 않는다).
+    /// 파일을 해석하지 못했으면 전부 false.
+    pub endpoint: EndpointAssessment,
+    /// 텔레메트리가 켜져 있고 엔드포인트가 허브를 향하며 허브 밖·평문 엔드포인트가 없는가 —
+    /// `telemetry_enabled && endpoint.targetsHub && !endpoint.foreignHost && !endpoint.insecure`.
+    /// 키가 적용된 상태(applied/confirmed)에서 false이면 "적용됐지만 수집되지 않을 수 있음"이다.
+    /// 앱 밖(셸 환경변수 등)에서 켜진 텔레메트리는 보지 못한다.
+    pub collection_ready: bool,
 }
 
 impl IngestLinkStatus {
@@ -135,6 +169,9 @@ impl IngestLinkStatus {
             failure: None,
             issue_supported: false,
             receipt_check_supported: false,
+            telemetry_enabled: false,
+            endpoint: EndpointAssessment::default(),
+            collection_ready: false,
         }
     }
 
@@ -142,6 +179,26 @@ impl IngestLinkStatus {
         Self {
             failure: Some(IngestLinkFailure::of(cause)),
             ..Self::new(IngestLinkState::Failed, masked)
+        }
+    }
+
+    /// 파일에서 읽은 수집 준비도를 싣는다(`collection_ready`는 여기서만 계산한다).
+    fn with_readiness(mut self, telemetry_enabled: bool, endpoint: EndpointAssessment) -> Self {
+        self.telemetry_enabled = telemetry_enabled;
+        self.endpoint = endpoint;
+        self.collection_ready = telemetry_enabled
+            && endpoint.targets_hub
+            && !endpoint.foreign_host
+            && !endpoint.insecure;
+        self
+    }
+
+    /// 이 상태(키·수집 준비도는 그대로)를 실패로 바꾼다 — 단계 실패 시 파일 사실을 잃지 않는다.
+    fn failed_from(self, cause: LinkFailureCause) -> Self {
+        Self {
+            state: IngestLinkState::Failed,
+            failure: Some(IngestLinkFailure::of(cause)),
+            ..self
         }
     }
 
@@ -153,25 +210,25 @@ impl IngestLinkStatus {
 }
 
 /// `settings.json` 실물에서 연동 상태를 도출한다(순수 함수 — 도달 가능한 3상태).
-pub(crate) fn derive_link_status(
-    settings_unreadable: bool,
-    key: &IngestKeyStatus,
-) -> IngestLinkStatus {
-    if settings_unreadable {
-        return IngestLinkStatus::failed(LinkFailureCause::SettingsUnreadable, None);
-    }
-    match key.state {
-        IngestKeyState::Unset => IngestLinkStatus::new(IngestLinkState::Unlinked, None),
-        IngestKeyState::Set => IngestLinkStatus::new(IngestLinkState::Applied, key.masked.clone()),
-        IngestKeyState::Unrecognized => {
-            IngestLinkStatus::failed(LinkFailureCause::HeaderUnrecognized, None)
+pub(crate) fn derive_link_status(inputs: &IngestInputs) -> IngestLinkStatus {
+    let status = if inputs.unreadable {
+        IngestLinkStatus::failed(LinkFailureCause::SettingsUnreadable, None)
+    } else {
+        match inputs.key.state {
+            IngestKeyState::Unset => IngestLinkStatus::new(IngestLinkState::Unlinked, None),
+            IngestKeyState::Set => {
+                IngestLinkStatus::new(IngestLinkState::Applied, inputs.key.masked.clone())
+            }
+            IngestKeyState::Unrecognized => {
+                IngestLinkStatus::failed(LinkFailureCause::HeaderUnrecognized, None)
+            }
         }
-    }
+    };
+    status.with_readiness(inputs.telemetry_enabled, inputs.endpoint)
 }
 
 fn read_file_status(path: &Path) -> IngestLinkStatus {
-    let (unreadable, key) = crate::otel_settings::read_ingest_inputs(path);
-    derive_link_status(unreadable, &key)
+    derive_link_status(&crate::otel_settings::read_ingest_inputs(path))
 }
 
 // ---------------- 허브 의존 전이: trait만 (실제 구현 없음) ----------------
@@ -196,6 +253,7 @@ pub(crate) trait ReceiptChecker: Send + Sync {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // 수신확인 구현체가 돌려줄 값(허브 계약 후) — 지금은 테스트만 만든다.
 pub(crate) enum ReceiptOutcome {
     /// 허브가 이 기기에서 온 데이터를 수신했다.
     Received,
@@ -244,9 +302,13 @@ pub(crate) fn default_receipt_checker() -> Box<dyn ReceiptChecker> {
 /// 1. 설정 파일이 해석 불가이거나 허브 형식이 아닌 `Authorization`이 있으면 **발급 전에** 멈춘다 —
 ///    적용할 수 없는 키를 허브에서 발급받지 않고, 사용자가 둔 다른 서비스 인증 헤더를 자동으로
 ///    덮어쓰지 않는다(수동 입력은 사용자의 명시적 행동이라 교체를 허용한다 — 그 경로는 그대로).
+///    수집 엔드포인트가 허브 밖이거나 평문 http여도 **발급 전에** 멈춘다(`EndpointNotHub`) —
+///    `OTEL_EXPORTER_OTLP_HEADERS`는 설정된 모든 엔드포인트로 나가므로, 이 자동 경로(경고 화면 없음)가
+///    허브가 발급한 키를 허브 밖·평문으로 흘리지 않게 한다. 수동 입력은 화면 경고로 알리고 허용한다.
 /// 2. `issuer.issue()` — 실패 원인은 그대로 상태로.
 /// 3. 반환값을 `mhk_` 규칙으로 검증한다. `mhd_` 형태·잘못된 길이·마스킹 문자열·빈 값은 거부.
 /// 4. `apply_ingest_key`(수동 입력과 같은 엔진: 백업·원자적 쓰기·`0600`).
+#[allow(dead_code)] // 허브 발급 계약 후 커맨드가 부른다(현재는 테스트만).
 pub(crate) fn issue_and_apply(path: &Path, issuer: &dyn IngestKeyIssuer) -> IngestLinkStatus {
     let base = read_file_status(path);
     if matches!(
@@ -255,33 +317,38 @@ pub(crate) fn issue_and_apply(path: &Path, issuer: &dyn IngestKeyIssuer) -> Inge
     ) {
         return base;
     }
+    if base.endpoint.foreign_host || base.endpoint.insecure {
+        return base.failed_from(LinkFailureCause::EndpointNotHub);
+    }
     let key = match issuer.issue() {
         Ok(key) => key,
-        Err(cause) => return IngestLinkStatus::failed(cause, base.masked),
+        Err(cause) => return base.failed_from(cause),
     };
     if normalize_ingest_key(key.expose()).is_err() {
-        return IngestLinkStatus::failed(LinkFailureCause::InvalidKeyReturned, base.masked);
+        return base.failed_from(LinkFailureCause::InvalidKeyReturned);
     }
     match crate::otel_settings::apply_ingest_key(path, key) {
         Ok(()) => read_file_status(path),
         // 저장 단계의 Err 문자열은 쓰지 않는다 — 상태 문구는 고정 문구만.
-        Err(_) => IngestLinkStatus::failed(LinkFailureCause::ApplyFailed, base.masked),
+        Err(_) => base.failed_from(LinkFailureCause::ApplyFailed),
     }
 }
 
 /// 적용된 키가 허브에 실제로 수신됐는지 확인한다. 키가 적용돼 있지 않으면(미연동·실패) 확인할
 /// 대상이 없으므로 checker를 부르지 않고 파일 상태를 그대로 돌려준다.
+#[allow(dead_code)] // 허브 수신 확인 계약 후 커맨드가 부른다(현재는 테스트만).
 pub(crate) fn confirm_receipt(path: &Path, checker: &dyn ReceiptChecker) -> IngestLinkStatus {
     let base = read_file_status(path);
     if base.state != IngestLinkState::Applied {
         return base;
     }
     match checker.check() {
-        Ok(ReceiptOutcome::Received) => {
-            IngestLinkStatus::new(IngestLinkState::Confirmed, base.masked)
-        }
+        Ok(ReceiptOutcome::Received) => IngestLinkStatus {
+            state: IngestLinkState::Confirmed,
+            ..base
+        },
         Ok(ReceiptOutcome::NotYet) => base,
-        Err(cause) => IngestLinkStatus::failed(cause, base.masked),
+        Err(cause) => base.failed_from(cause),
     }
 }
 
@@ -307,9 +374,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const ALL_CAUSES: [LinkFailureCause; 8] = [
+    const ALL_CAUSES: [LinkFailureCause; 9] = [
         LinkFailureCause::SettingsUnreadable,
         LinkFailureCause::HeaderUnrecognized,
+        LinkFailureCause::EndpointNotHub,
         LinkFailureCause::NotSupported,
         LinkFailureCause::DeviceTokenUnavailable,
         LinkFailureCause::HubRejected,
@@ -432,6 +500,9 @@ mod tests {
         assert_eq!(status.state, IngestLinkState::Applied);
         assert_eq!(status.masked.as_deref(), Some("mhk_KKKK…"));
         assert!(status.failure.is_none());
+        // 키만 주입됐고 텔레메트리 설정은 파일에 없으므로 "적용됨"이지만 수집 준비는 아니다.
+        assert!(!status.telemetry_enabled);
+        assert!(!status.collection_ready);
         assert_status_clean("status", &status, &[&key, "KKKKK"]);
         // 발급기 Debug(기기 토큰을 품은 객체)도 값을 가린다.
         assert_no_device_token("issuer Debug", &format!("{issuer:?}"));
@@ -781,8 +852,21 @@ mod tests {
             .with_support(false, false);
         assert_eq!(
             serde_json::to_string(&applied).unwrap(),
-            r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false}"#
+            r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false,"telemetryEnabled":false,"endpoint":{"targetsHub":false,"insecure":false,"foreignHost":false},"collectionReady":false}"#
         );
+        let ready = IngestLinkStatus::new(IngestLinkState::Applied, Some("mhk_KKKK…".into()))
+            .with_readiness(
+                true,
+                EndpointAssessment {
+                    targets_hub: true,
+                    insecure: false,
+                    foreign_host: false,
+                },
+            );
+        let json = serde_json::to_value(&ready).unwrap();
+        assert_eq!(json["telemetryEnabled"], true);
+        assert_eq!(json["endpoint"]["targetsHub"], true);
+        assert_eq!(json["collectionReady"], true);
         let failed = IngestLinkStatus::failed(LinkFailureCause::NotSupported, None);
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(json["state"], "failed");
@@ -809,6 +893,7 @@ mod tests {
             [
                 "settingsUnreadable",
                 "headerUnrecognized",
+                "endpointNotHub",
                 "notSupported",
                 "deviceTokenUnavailable",
                 "hubRejected",
@@ -818,6 +903,191 @@ mod tests {
             ]
         );
         assert!(!serde_json::to_string(&applied).unwrap().contains(&key));
+    }
+
+    // ---- 수집 준비도(RV-003): 키가 있어도 텔레메트리/엔드포인트가 맞아야 수집된다 ----
+
+    fn hub_endpoint(path: &str) -> String {
+        format!("{}{path}", crate::hub_auth::consts::hub_origin())
+    }
+
+    /// 수집키 + 텔레메트리/엔드포인트 env를 가진 settings.json 내용.
+    fn settings_with(telemetry: Option<&str>, metrics: Option<&str>, logs: Option<&str>) -> String {
+        let mut env = serde_json::Map::new();
+        env.insert(
+            "OTEL_EXPORTER_OTLP_HEADERS".into(),
+            format!("Authorization=Bearer {}", fake_key('K')).into(),
+        );
+        if let Some(v) = telemetry {
+            env.insert("CLAUDE_CODE_ENABLE_TELEMETRY".into(), v.into());
+        }
+        if let Some(v) = metrics {
+            env.insert("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT".into(), v.into());
+        }
+        if let Some(v) = logs {
+            env.insert("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT".into(), v.into());
+        }
+        serde_json::json!({ "env": env }).to_string()
+    }
+
+    #[test]
+    fn applied_status_reports_whether_collection_can_actually_happen() {
+        let path = temp_settings_path("readiness");
+        let hub_m = hub_endpoint("/v1/metrics");
+        let hub_l = hub_endpoint("/v1/logs");
+        // (설명, 파일 내용, 텔레메트리 켜짐, 허브 향함, 허브 밖, 평문, 수집 준비)
+        let cases: Vec<(&str, String, bool, bool, bool, bool, bool)> = vec![
+            ("텔레메트리 1 + 허브 엔드포인트 명시", settings_with(Some("1"), Some(&hub_m), Some(&hub_l)), true, true, false, false, true),
+            ("텔레메트리 1 + 엔드포인트 생략(기본값=허브)", settings_with(Some("1"), None, None), true, true, false, false, true),
+            ("텔레메트리 항목 없음", settings_with(None, Some(&hub_m), Some(&hub_l)), false, true, false, false, false),
+            ("텔레메트리 0", settings_with(Some("0"), Some(&hub_m), Some(&hub_l)), false, true, false, false, false),
+            ("텔레메트리 true(1만 켜짐으로 본다)", settings_with(Some("true"), Some(&hub_m), Some(&hub_l)), false, true, false, false, false),
+            ("엔드포인트가 사내 collector(https)", settings_with(Some("1"), Some("https://collector.corp.example/v1/metrics"), Some("https://collector.corp.example/v1/logs")), true, false, true, false, false),
+            ("한쪽만 허브 밖", settings_with(Some("1"), Some(&hub_m), Some("https://collector.corp.example/v1/logs")), true, true, true, false, false),
+            ("평문 http(루프백 아님)", settings_with(Some("1"), Some("http://collector.corp.example/v1/metrics"), Some(&hub_l)), true, true, true, true, false),
+            ("해석 불가 URL", settings_with(Some("1"), Some("not a url"), Some(&hub_l)), true, true, true, false, false),
+        ];
+        for (label, content, telemetry, hub, foreign, insecure, ready) in cases {
+            std::fs::write(&path, &content).unwrap();
+            let s = read_file_status(&path);
+            assert_eq!(s.state, IngestLinkState::Applied, "{label}");
+            assert_eq!(s.telemetry_enabled, telemetry, "{label}: telemetry");
+            assert_eq!(s.endpoint.targets_hub, hub, "{label}: hub");
+            assert_eq!(s.endpoint.foreign_host, foreign, "{label}: foreign");
+            assert_eq!(s.endpoint.insecure, insecure, "{label}: insecure");
+            assert_eq!(s.collection_ready, ready, "{label}: ready");
+            // URL·키 원문은 상태(직렬화/Debug)에 없다 — 불리언뿐.
+            assert_status_clean(label, &s, &["collector.corp.example", "KKKKK", "not a url"]);
+        }
+        cleanup(&path);
+    }
+
+    #[test]
+    fn readiness_is_all_false_when_settings_is_unreadable() {
+        let path = temp_settings_path("readiness-unreadable");
+        std::fs::write(&path, "{ not json").unwrap();
+        let s = read_file_status(&path);
+        assert_eq!(s.failure.as_ref().unwrap().cause, LinkFailureCause::SettingsUnreadable);
+        assert!(!s.telemetry_enabled && !s.collection_ready);
+        assert_eq!(s.endpoint, EndpointAssessment::default());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn failed_status_keeps_the_readiness_read_from_the_file() {
+        // 단계가 실패해도 파일 사실(키·수집 준비도)을 잃지 않는다.
+        let path = temp_settings_path("readiness-kept");
+        std::fs::write(
+            &path,
+            settings_with(Some("1"), Some(&hub_endpoint("/v1/metrics")), Some(&hub_endpoint("/v1/logs"))),
+        )
+        .unwrap();
+        let s = issue_and_apply(&path, &FakeIssuer::failing(LinkFailureCause::Unreachable));
+        assert_eq!(s.state, IngestLinkState::Failed);
+        assert_eq!(s.masked.as_deref(), Some("mhk_KKKK…"));
+        assert!(s.telemetry_enabled && s.endpoint.targets_hub && s.collection_ready);
+        cleanup(&path);
+    }
+
+    // ---- 발급 전 엔드포인트 선검사(RV-004) ----
+
+    #[test]
+    fn foreign_or_plaintext_endpoint_stops_before_issuing() {
+        let hub_l = hub_endpoint("/v1/logs");
+        let cases = [
+            ("허브 밖 https", "https://collector.corp.example/v1/metrics", hub_l.as_str()),
+            ("허브 밖 평문 http", "http://collector.corp.example/v1/metrics", hub_l.as_str()),
+            ("루프백 http(허브 아님)", "http://localhost:4318/v1/metrics", hub_l.as_str()),
+            ("logs 쪽만 허브 밖", hub_l.as_str(), "https://collector.corp.example/v1/logs"),
+            ("해석 불가 URL", "not a url", hub_l.as_str()),
+        ];
+        for (label, metrics, logs) in cases {
+            let path = temp_settings_path("issue-foreign-endpoint");
+            let original = format!(
+                r#"{{"env":{{"CLAUDE_CODE_ENABLE_TELEMETRY":"1","OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":"{metrics}","OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":"{logs}","SOME_OTHER_VAR":"keep-me"}}}}"#
+            );
+            std::fs::write(&path, &original).unwrap();
+            let issuer = FakeIssuer::returning(&fake_key('K'));
+
+            let status = issue_and_apply(&path, &issuer);
+
+            assert_eq!(issuer.calls(), 0, "{label}: 허브 밖/평문 엔드포인트면 키를 발급받지 않는다");
+            assert_eq!(status.state, IngestLinkState::Failed, "{label}");
+            let failure = status.failure.as_ref().unwrap();
+            assert_eq!(failure.cause, LinkFailureCause::EndpointNotHub, "{label}");
+            assert_eq!(failure.message, LinkFailureCause::EndpointNotHub.message(), "{label}");
+            assert_status_clean(label, &status, &["collector.corp.example", "localhost", "KKKK"]);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original, "{label}: 파일 불변");
+            assert!(!backup_path_for(&path).exists(), "{label}: 백업도 만들지 않는다");
+            cleanup(&path);
+        }
+    }
+
+    #[test]
+    fn foreign_endpoint_also_stops_rotation_and_keeps_the_existing_key_masked() {
+        let path = temp_settings_path("issue-foreign-endpoint-rotate");
+        let original = settings_with(
+            Some("1"),
+            Some("https://collector.corp.example/v1/metrics"),
+            Some("https://collector.corp.example/v1/logs"),
+        );
+        std::fs::write(&path, &original).unwrap();
+        let issuer = FakeIssuer::returning(&fake_key('R'));
+
+        let status = issue_and_apply(&path, &issuer);
+
+        assert_eq!(issuer.calls(), 0);
+        assert_eq!(status.failure.as_ref().unwrap().cause, LinkFailureCause::EndpointNotHub);
+        assert_eq!(status.masked.as_deref(), Some("mhk_KKKK…"), "기존 키 마스킹은 유지");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn hub_https_endpoint_is_not_blocked_by_the_endpoint_precheck() {
+        let path = temp_settings_path("issue-hub-endpoint");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"env":{{"CLAUDE_CODE_ENABLE_TELEMETRY":"1","OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":"{}","OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":"{}"}}}}"#,
+                hub_endpoint("/v1/metrics"),
+                hub_endpoint("/v1/logs")
+            ),
+        )
+        .unwrap();
+        let issuer = FakeIssuer::returning(&fake_key('K'));
+
+        let status = issue_and_apply(&path, &issuer);
+
+        assert_eq!(issuer.calls(), 1);
+        assert_eq!(status.state, IngestLinkState::Applied);
+        assert!(status.collection_ready, "텔레메트리 1 + 허브 엔드포인트면 수집 준비 완료");
+        cleanup(&path);
+    }
+
+    // ---- 문구(RV-002): 시도하지 않은 자동 동작을 암시하지 않는다 ----
+
+    #[test]
+    fn file_derived_header_message_states_the_current_fact_without_implying_automation() {
+        let m = LinkFailureCause::HeaderUnrecognized.message();
+        assert!(!m.contains("자동"), "{m}");
+        assert!(!m.contains("않았습니다"), "하지 않은 동작을 말하지 않는다: {m}");
+        // 파일에서 도출한 상태도 같은 문구다.
+        let path = temp_settings_path("header-message");
+        std::fs::write(
+            &path,
+            r#"{"env":{"OTEL_EXPORTER_OTLP_HEADERS":"Authorization=Bearer FOREIGNSECRETTOKEN"}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_file_status(&path).failure.unwrap().message, m);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn endpoint_stop_message_says_only_that_nothing_was_issued() {
+        // 발급 전에 멈춘 원인은 "발급받지 않았다"는 사실만 말한다(자동 교체를 시도했다고 하지 않는다).
+        let m = LinkFailureCause::EndpointNotHub.message();
+        assert!(m.contains("발급받지 않았습니다") && !m.contains("바꾸") && !m.contains("교체"), "{m}");
     }
 
     // ---- 허브 의존 전이는 인터페이스만 — 기본 구현은 "아직 지원 안 됨" ----
