@@ -158,6 +158,11 @@ export interface IngestLinkStatus {
   // 키가 적용돼 있는(applied/confirmed) 상태에서 마지막 점검이 일시적인 원인(허브에 닿지 못함·요청 빈도 초과·
   // 서버에 기능 없음)으로 끝났다 — 적용·수신 확인 사실은 그대로이고 state를 failed로 덮지 않는다. 상태 문구 뒤에 보조 안내로만 붙인다.
   readonly notice: IngestLinkFailure | null;
+  // 마지막 발급·회전 201을 적용하며 허브 권장값으로 바뀐 설정 키 이름(이전 파일 값과 달랐던 것만, 값은 오지 않는다).
+  // 앱을 다시 시작하면 비워진다.
+  readonly serverEnvChanged: readonly string[];
+  // 마지막 201에서 허브가 보냈지만 허용 목록·값 형식 검사를 통과하지 못해 쓰지 않은 키 이름(값은 오지 않는다).
+  readonly serverEnvRejected: readonly string[];
 }
 
 // settings.json과 엔진의 메모리 상태만 읽는다(허브를 부르지 않는다).

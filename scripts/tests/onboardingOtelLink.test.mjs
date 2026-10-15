@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeOnboarding } from '../../src/onboarding.ts';
+import { AUTO_LINK_CHANGES_NOTE, AUTO_LINK_SERVER_KEYS, computeOnboarding } from '../../src/onboarding.ts';
 
 const tool = (id, installed, required = true) => ({ id, name: id, installed, version: installed ? '1.0.0' : null, path: installed ? `/bin/${id}` : null, required });
 const base = {
@@ -23,6 +23,8 @@ const EXTRA = {
   blockedReason: null,
   retryAt: null,
   notice: null,
+  serverEnvChanged: [],
+  serverEnvRejected: [],
   issueSupported: true,
   receiptCheckSupported: true,
 };
@@ -354,4 +356,47 @@ test('RV-07: 키가 없을 때의 featureUnavailable은 "적용되어 있지 않
   assert.equal(s.state, 'todo');
   assert.equal(s.action, undefined);
   assert.match(s.slim, /적용되어 있지 않습니다/);
+});
+
+// ---- R19: 201 env 적용 안내 ----
+
+test('R19: 자동 연동 안내는 바뀌는 항목(Authorization + 허브 설정 6개)을 모두 이름으로 말하고 건드리지 않는 항목도 밝힌다', () => {
+  assert.equal(AUTO_LINK_SERVER_KEYS.length, 6);
+  for (const k of AUTO_LINK_SERVER_KEYS) assert.ok(AUTO_LINK_CHANGES_NOTE.includes(k), k);
+  assert.match(AUTO_LINK_CHANGES_NOTE, /Authorization 항목/);
+  assert.match(AUTO_LINK_CHANGES_NOTE, /허브 값이 기존 값\(앱 기본값·직접 정한 값\)보다 우선/);
+  assert.match(AUTO_LINK_CHANGES_NOTE, /엔드포인트·직원 식별\(OTEL_RESOURCE_ATTRIBUTES\)·프라이버시 설정/);
+  // 목록 밖 키(엔드포인트·헤더·프라이버시)는 "바뀌는 항목"으로 나열되지 않는다.
+  for (const k of ['OTEL_EXPORTER_OTLP_LOGS_ENDPOINT', 'OTEL_LOG_USER_PROMPTS', 'OTEL_LOG_TOOL_CONTENT']) assert.ok(!AUTO_LINK_CHANGES_NOTE.includes(k), k);
+  // 미연동(연결됨/안 됨) 두 안내 모두 같은 문장을 싣는다.
+  assert.ok(step(st('unlinked')).detail.includes(AUTO_LINK_CHANGES_NOTE));
+  assert.ok(step(st('unlinked', { hubConnected: false })).detail.includes(AUTO_LINK_CHANGES_NOTE));
+});
+
+test('R19: 적용됨 문구는 허브 값으로 바뀐 키와 거부한 키의 이름만 알린다', () => {
+  const none = step(st('applied', { masked: 'mhk_AbCd…' })).detail;
+  assert.doesNotMatch(none, /허브가 보낸/);
+  const d = step(st('applied', { masked: 'mhk_AbCd…', serverEnvChanged: ['OTEL_LOGS_EXPORT_INTERVAL'], serverEnvRejected: ['OTEL_EXPORTER_OTLP_HEADERS', 'OTEL_LOG_USER_PROMPTS'] })).detail;
+  assert.match(d, /허브가 보낸 값으로 바뀐 설정: OTEL_LOGS_EXPORT_INTERVAL\./);
+  assert.match(d, /허용되지 않는 항목은 적용하지 않았습니다: OTEL_EXPORTER_OTLP_HEADERS, OTEL_LOG_USER_PROMPTS\./);
+  // 수신 확인됨에서도 같은 안내가 붙는다.
+  assert.match(step(st('confirmed', { masked: 'mhk_AbCd…', serverEnvChanged: ['OTEL_METRIC_EXPORT_INTERVAL'] })).detail, /바뀐 설정: OTEL_METRIC_EXPORT_INTERVAL/);
+});
+
+test('R19: 이름 형식이 아닌 문자열은 화면에 쓰지 않고, 백엔드 자리표시자만 허용한다', () => {
+  const d = step(
+    st('applied', {
+      masked: 'mhk_AbCd…',
+      serverEnvRejected: ['Authorization=Bearer mhk_LEAK', '<b>x</b>', 'A B', '(이름 형식 불명)', '(그 밖 3개)', 'OTEL_OK'],
+    })
+  ).detail;
+  assert.doesNotMatch(d, /LEAK|Bearer|<b>|A B/);
+  assert.match(d, /\(이름 형식 불명\), \(그 밖 3개\), OTEL_OK\./);
+});
+
+test('R19: 서버 env 필드가 없는 옛 상태 객체에서도 문구가 깨지지 않는다', () => {
+  const old = { ...st('applied', { masked: 'mhk_AbCd…' }) };
+  delete old.serverEnvChanged;
+  delete old.serverEnvRejected;
+  assert.match(step(old).detail, /수집키가 적용되었습니다/);
 });

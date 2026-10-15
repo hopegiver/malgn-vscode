@@ -2,13 +2,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { disconnectToast, keyManagedByHub, reissueOutcome } from '../../src/otelLinkText.ts';
+import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueOutcome } from '../../src/otelLinkText.ts';
 
 const HUB_EP = { targetsHub: true, insecure: false, foreignHost: false };
 const base = {
   state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true, telemetryEnabled: true, endpoint: HUB_EP,
   collectionReady: true, blockers: [], hubConnected: true, confirmRequired: false, confirmDeclined: false, revokedByHub: false, waitingFirstData: false,
-  firstDataTimedOut: false, blockedReason: null, retryAt: null, notice: null,
+  firstDataTimedOut: false, blockedReason: null, retryAt: null, notice: null, serverEnvChanged: [], serverEnvRejected: [],
 };
 const st = (over = {}) => ({ ...base, ...over });
 const fail = (cause, message) => ({ cause, message });
@@ -94,4 +94,24 @@ test('RV-06: 해제 토스트는 이 PC의 수집키를 실제로 지웠을 때�
   assert.match(both, /서버 폐기에 실패했습니다/);
   assert.match(both, /수집키도 지웠습니다/);
   assert.equal(disconnectToast(null, undefined), '허브 연결을 해제했습니다.');
+});
+
+test('R19: 옛 기본값 5000만 권장값 안내를 받고, 안내는 파일을 바꾼다고 말하지 않는다', () => {
+  const hint = legacyIntervalHint('OTEL_LOGS_EXPORT_INTERVAL', '5000', '60000');
+  assert.ok(hint, '5000이면 안내가 있다');
+  assert.match(hint, /이전 앱 버전의 기본값/);
+  assert.match(hint, /권장값은 60000/);
+  assert.match(hint, /직접 정한 값이면 그대로 두어도 됩니다/);
+  // 201 적용 때 서버 값이 덮는다는 사실을 숨기지 않는다.
+  assert.match(hint, /허브가 보낸 값이 이 값을 덮어씁니다/);
+  assert.match(hint, /값을 고쳐 저장하세요/);
+});
+
+test('R19: 사용자가 정한 다른 값·다른 키·파일에 값이 없는 경우·권장값과 같은 경우에는 안내가 없다', () => {
+  assert.equal(legacyIntervalHint('OTEL_LOGS_EXPORT_INTERVAL', '30000', '60000'), null);
+  assert.equal(legacyIntervalHint('OTEL_LOGS_EXPORT_INTERVAL', '60000', '60000'), null);
+  assert.equal(legacyIntervalHint('OTEL_LOGS_EXPORT_INTERVAL', undefined, '60000'), null);
+  assert.equal(legacyIntervalHint('OTEL_METRIC_EXPORT_INTERVAL', '5000', '60000'), null);
+  assert.equal(legacyIntervalHint('OTEL_LOGS_EXPORT_INTERVAL', '5000', undefined), null);
+  assert.equal(legacyIntervalHint('OTEL_LOGS_EXPORT_INTERVAL', '5000', '5000'), null);
 });

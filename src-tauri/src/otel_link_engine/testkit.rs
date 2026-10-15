@@ -243,6 +243,35 @@ pub(crate) fn state_policy(policy: IssuePolicy, blocked: Option<BlockedReason>) 
 pub(crate) fn created(fill: char) -> CreateReply {
     Ok(Created {
         token: SecretString::new(&fake_key(fill)),
+        env: Default::default(),
+    })
+}
+
+/// 실제 응답 해석(`parse_created`)을 거친 201 — `env`는 서버가 보낸 JSON 그대로 걸러진다. 계약의 201 본문 모양을 쓴다.
+#[allow(clippy::result_large_err)] // `ApiError`는 기존 시험 도우미(`created`)와 같은 큰 오류 타입을 쓴다.
+pub(crate) fn created_with_env(fill: char, env: serde_json::Value) -> CreateReply {
+    let body = serde_json::json!({
+        "id": "01k7abc",
+        "token_prefix": prefix_of(fill),
+        "label": "x",
+        "created_at": "2026-10-15T01:02:03.456Z",
+        "token": fake_key(fill),
+        "env": env,
+        "notice": "n",
+        "scope": {},
+    });
+    crate::otel_hub_client::parse_created(&body.to_string())
+}
+
+/// 계약 201 예시의 `env` 6개 키(허브가 지금 보내는 값).
+pub(crate) fn contract_env() -> serde_json::Value {
+    serde_json::json!({
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORT_INTERVAL": "60000",
+        "OTEL_METRIC_EXPORT_INTERVAL": "60000",
+        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative"
     })
 }
 

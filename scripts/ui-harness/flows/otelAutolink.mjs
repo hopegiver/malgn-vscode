@@ -28,6 +28,8 @@ const EXTRA = {
   blockedReason: null,
   retryAt: null,
   notice: null,
+  serverEnvChanged: [],
+  serverEnvRejected: [],
 };
 const READY = { ...EXTRA, telemetryEnabled: true, endpoint: HUB_EP, collectionReady: true, blockers: [] };
 const OFF = { ...EXTRA, telemetryEnabled: false, endpoint: NO_EP, collectionReady: false, blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'] };

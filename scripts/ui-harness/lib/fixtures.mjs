@@ -239,28 +239,28 @@ export async function buildBaseFixtures() {
       telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
       blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
       hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false,
-      blockedReason: null, retryAt: null,
+      blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [],
     },
     otel_link_retry: {
       state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
       telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
       blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
       hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false,
-      blockedReason: null, retryAt: null,
+      blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [],
     },
     otel_link_recheck: {
       state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
       telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
       blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
       hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false,
-      blockedReason: null, retryAt: null,
+      blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [],
     },
     otel_link_answer_confirm: {
       state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
       telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
       blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
       hubConnected: true, confirmRequired: false, confirmDeclined: true, waitingFirstData: false, firstDataTimedOut: false,
-      blockedReason: null, retryAt: null,
+      blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [],
     },
     // 허브 기기 토큰 상태(홈 malgnai-hub 위젯이 loadHubAuth로 호출) — 베이스에 없어 모든 흐름에서
     // UNSTUBBED_COMMAND 오탐이 났다. 정상 연결 기본값을 둔다(추가만).

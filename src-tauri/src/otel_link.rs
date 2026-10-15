@@ -24,15 +24,19 @@
 //   파일에 있는 모든 엔드포인트(범용 포함)가 허브 밖·평문이면 발급·회전 자체를 하지 않는다.
 //
 // 결정 기록
-//   N-5 (발급 직후 "수집 불가" 경고가 기본 흐름이 되는 문제): 201 응답의 `env`는 적용하지 않는다.
-//     그 값은 서버 권장값이고(계약 D-2: 서버가 요구하는 것은 Authorization 항목뿐) 앱 기본값과 다르다
-//     (예: 로그 내보내기 주기 60000 대 앱 5000). 앱의 설정 엔진이 이 키들의 검증·프라이버시 불변식(readOnly 4키)을
-//     소유하고, 서버 값을 그대로 쓰면 사용자가 정한 값을 조용히 덮는다. 대신 **수집 준비가 안 된 파일에서는
-//     발급하지 않는다**(`mint_gate` → `NotReady`) — 키만 있고 수집은 안 되는 상태를 만들지 않는다. 준비는
-//     앱의 기존 첫 실행 자동 세팅(`ensureOtelAutoConfigured`, 로그인 계정 정보로 employee.* 귀속까지 함께
-//     쓴다)이 맡고, 그 저장 직후 프론트가 `otel_link_recheck`로 점검을 다시 요청한다. Rust가 기본값을
-//     따로 쓰면 로그인 계정 정보가 없어 귀속 속성이 빠진 채 자동 세팅 조건("텔레메트리 키가 파일에 없음")을
-//     막아 버린다.
+//   N-5 (발급 직후 "수집 불가" 경고가 기본 흐름이 되는 문제): **수집 준비가 안 된 파일에서는 발급하지
+//     않는다**(`mint_gate` → `NotReady`) — 키만 있고 수집은 안 되는 상태를 만들지 않는다. 준비는 앱의 기존 첫 실행
+//     자동 세팅(`ensureOtelAutoConfigured`, 로그인 계정 정보로 employee.* 귀속까지 함께 쓴다)이 맡고, 그 저장 직후
+//     프론트가 `otel_link_recheck`로 점검을 다시 요청한다. Rust가 준비 값을 따로 쓰면 로그인 계정 정보가 없어 귀속
+//     속성이 빠진 채 자동 세팅 조건("텔레메트리 키가 파일에 없음")을 막아 버린다.
+//   R19 (201 `env` 적용 — 직전 결정 "적용하지 않는다"를 뒤집음): 5초 로그 주기는 같은 PC가 12배 더 자주 POST해 허브
+//     레이트 리밋·일일 쿼터(기기 단위 KST 어제+오늘 새 행 5,000 초과 시 키 폐기)를 빨리 쓰고, 서버가 값을 바꿔도 앱
+//     수정 없이 따라가야 안전하다. 그래서 발급·회전 201의 `env` 중 **허용 목록 6개 키**(`otel_server_env::SERVER_ENV_KEYS`)가
+//     값 형식까지 맞을 때만 수집키 교체와 **같은 한 번의 원자적 쓰기**로 settings.json에 쓴다. 서버 값이 앱 기본값·
+//     파일의 기존 값을 이긴다. 목록 밖 키(엔드포인트·헤더·`OTEL_RESOURCE_ATTRIBUTES`·프라이버시 4키·비OTEL)와 형식 위반은
+//     쓰지 않고 이름만 `serverEnvRejected`로 남긴다(부분 적용, 수집키 적용은 실패시키지 않는다). 바뀐 키 이름은
+//     `serverEnvChanged`로 화면에 알린다. 이미 파일에 있는 옛 기본값 5000은 앱이 조용히 바꾸지 않는다 —
+//     설정 화면이 권장값을 안내하고, 201이 적용될 때는 서버 값이 이긴다(위 `serverEnvChanged`로 드러난다).
 //   R-4 (수집키 원문의 OS 키체인 사본): 채택하지 않았다. 계약은 1~15번만으로 충족된다. 채택하면 같은 비밀이
 //     평문 settings.json 외에 한 곳 더 저장되고(키체인 항목·접근 프롬프트·해제 시 삭제 경로가 늘어난다),
 //     그 이득(설정 파일 유실·재설치·쓰기 실패 뒤의 불필요한 회전 방지)은 이 앱의 사용자 규모(사내 50명 미만)와
@@ -284,6 +288,11 @@ pub struct IngestLinkStatus {
     /// 서버에 기능 없음)으로 끝났다 — 적용·수신 확인 사실은 그대로이고 상태를 `failed`로 덮지 않는다(RV-07).
     /// 화면은 상태 문구 뒤에 보조 안내로만 붙인다. 그 밖에는 `null`.
     pub notice: Option<IngestLinkFailure>,
+    /// 마지막 발급·회전 201을 적용하며 서버 권장값으로 **바뀐** env 키 이름(이전 파일 값과 달랐던 것만). 이름만 있고 값은 없다.
+    /// 앱을 다시 시작하면 비워진다(영속하지 않는다).
+    pub server_env_changed: Vec<String>,
+    /// 마지막 201의 `env` 중 허용 목록·값 형식 검사에서 거부되어 **쓰지 않은** 키 이름. 이름만 있고 값은 없다.
+    pub server_env_rejected: Vec<String>,
 }
 
 impl IngestLinkStatus {
@@ -307,6 +316,8 @@ impl IngestLinkStatus {
             blocked_reason: None,
             retry_at: None,
             notice: None,
+            server_env_changed: Vec::new(),
+            server_env_rejected: Vec::new(),
         }
     }
 
@@ -401,6 +412,8 @@ pub(crate) fn compose_status(
     s.hub_connected = hub_connected;
     s.issue_supported = supported;
     s.receipt_check_supported = supported;
+    s.server_env_changed = view.env_changed.clone();
+    s.server_env_rejected = view.env_rejected.clone();
     if s.state == IngestLinkState::Failed {
         return s;
     }

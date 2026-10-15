@@ -14,6 +14,7 @@ use crate::otel_ingest_key::{
     apply_change, assess_endpoints, EndpointAssessment, HeadersEdit, IngestKeyChange,
     IngestKeyStatus, SecretString, HEADERS_ENV_KEY,
 };
+use crate::otel_server_env::ServerEnv;
 
 pub(crate) const MANAGED_OTEL_KEYS: [&str; 15] = [
     "CLAUDE_CODE_ENABLE_TELEMETRY",
@@ -72,7 +73,10 @@ fn hardcoded_defaults() -> Vec<(&'static str, &'static str)> {
             "cumulative",
         ),
         ("OTEL_METRIC_EXPORT_INTERVAL", "60000"),
-        ("OTEL_LOGS_EXPORT_INTERVAL", "5000"),
+        // 예전 앱 기본값은 5000이었다. 허브 계약의 서버 권장값(201 `env`)이 60000이고, 5초 주기는 같은 PC가 12배 더
+        // 자주 POST해 허브 레이트 리밋·일일 쿼터를 빨리 쓴다. 이미 5000이 기록된 파일은 건드리지 않는다
+        // (`LEGACY_DEFAULT_LOGS_INTERVAL` — 설정 화면이 권장값 안내만 한다).
+        ("OTEL_LOGS_EXPORT_INTERVAL", "60000"),
         ("OTEL_LOG_USER_PROMPTS", "0"),
         ("OTEL_LOG_TOOL_CONTENT", "0"),
         ("OTEL_LOG_TOOL_DETAILS", "0"),
@@ -391,6 +395,12 @@ fn backup_without_ingest_key(content: &str, edit: &HeadersEdit) -> Result<String
 /// 수집키는 `values`가 아니라 `payload.ingest_key`로만 바꾼다(원문 비노출 불변식,
 /// `otel_ingest_key.rs` 머리말). 기존 헤더의 `Authorization` 외 항목은 보존한다.
 pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), String> {
+    save_reporting_changes(path, payload).map(|_| ())
+}
+
+/// `save_to_settings_file`의 본체. 저장에 성공하면 `payload.values` 중 **파일의 이전 값과 달라진** 키(새로 생긴 키 포함,
+/// 삭제 신호 제외)의 이름을 돌려준다 — 자동 연동이 서버 권장값으로 무엇을 바꿨는지 화면이 말할 근거다. 값은 싣지 않는다.
+fn save_reporting_changes(path: &Path, payload: OtelSavePayload) -> Result<Vec<String>, String> {
     // 읽고-고치고-쓰는 전체를 한 번에 직렬화한다 — 설정 화면 저장, 자동 연동(수집키 적용), 연결 해제가
     // 서로 다른 스레드에서 같은 파일을 만져도 한쪽 변경이 다른 쪽 변경을 덮어쓰지 않게 한다.
     // (다른 프로세스·사용자의 직접 편집까지는 막지 못한다 — 그 경우의 보호는 원자적 쓰기와 백업이다.)
@@ -457,10 +467,14 @@ pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Re
         *env_value = Value::Object(Map::new());
     }
     let env_obj = env_value.as_object_mut().expect("방금 object로 만들었다");
+    let mut changed: Vec<String> = Vec::new();
     for (key, value) in values {
         if value.is_empty() {
             env_obj.remove(&key);
         } else {
+            if env_obj.get(&key).and_then(|v| v.as_str()) != Some(value.as_str()) {
+                changed.push(key.clone());
+            }
             env_obj.insert(key, Value::String(value));
         }
     }
@@ -508,7 +522,8 @@ pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Re
 
     let pretty = serde_json::to_string_pretty(&root)
         .map_err(|e| format!("설정을 직렬화하지 못했습니다: {e}"))?;
-    write_atomically_private(path, &pretty)
+    write_atomically_private(path, &pretty)?;
+    Ok(changed)
 }
 
 /// 외부에서 주입받은 수집키(`mhk_…`)를 `settings.json`에 적용하는 진입점.
@@ -521,11 +536,22 @@ pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Re
 /// 구분하지 않고, 기기 토큰(`mhd_`)은 형식 검증에서 거부된다(수집키 형식이 아니다).
 ///
 /// 실패 문자열은 입력을 인용하지 않는 고정 문구다(`otel_ingest_key.rs` 불변식).
-pub(crate) fn apply_ingest_key(path: &Path, key: SecretString) -> Result<(), String> {
-    save_to_settings_file(
+///
+/// `server_env`는 발급·회전 201 응답의 `env` 중 `otel_server_env`가 허용 목록·값 형식을 통과시킨 것이다. 수집키 교체와
+/// 같은 `OtelSavePayload`에 실어 **한 번의 읽기-수정-쓰기(원자적 쓰기 1회)**로 끝낸다 — 키만 쓰이고 env는 안
+/// 쓰인(또는 그 반대) 중간 상태가 파일에 남지 않는다. 서버 값은 앱 기본값·파일의 기존 값과 달라도 이긴다(서버가 값을
+/// 바꾸면 앱 수정 없이 따라간다). 통과 값은 `validate_value`가 한 번 더 본다 — 서버 규칙은 그보다 좁아서(주기 하한,
+/// exporter `otlp`뿐) 여기서 실패하지 않으며, 그래서 env가 수집키 적용을 실패시키는 경로는 없다(테스트가 고정).
+/// 반환: 파일의 이전 값과 달라진 env 키 이름(수집키 제외, 값 없음).
+pub(crate) fn apply_ingest_key(
+    path: &Path,
+    key: SecretString,
+    server_env: &ServerEnv,
+) -> Result<Vec<String>, String> {
+    save_reporting_changes(
         path,
         OtelSavePayload {
-            values: Default::default(),
+            values: server_env.accepted.clone(),
             identity: None,
             ingest_key: IngestKeyChange::Set { key },
         },
@@ -1533,5 +1559,100 @@ mod tests {
         })));
         // 빈 신호별 값은 없는 것으로 보고 범용으로 넘어간다.
         assert!(ok(serde_json::json!({"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": ""})));
+    }
+    // ---- R19: 앱 기본값 60000 / 마이그레이션 / 서버 env 불변식 ----
+
+    #[test]
+    fn app_default_logs_interval_is_60000_matching_the_hub_recommendation() {
+        let (defaults, _) = build_defaults();
+        assert_eq!(defaults["OTEL_LOGS_EXPORT_INTERVAL"], "60000");
+        assert_eq!(defaults["OTEL_METRIC_EXPORT_INTERVAL"], "60000");
+    }
+
+    #[test]
+    fn existing_5000_in_the_file_is_reported_as_is_and_never_rewritten_by_reading() {
+        // 기존 설치본: 파일에 옛 기본값 5000이 있다. 읽기(화면 진입·상태 조회)는 파일을 바꾸지 않고, 값은 그대로 보이며,
+        // 새 기본값(60000)은 `defaults`로만 나간다 — 권장값 안내는 화면이 둘을 비교해서 한다.
+        let path = temp_settings_path("legacy-5000");
+        let original = r#"{"env":{"CLAUDE_CODE_ENABLE_TELEMETRY":"1","OTEL_LOGS_EXPORT_INTERVAL":"5000"}}"#;
+        std::fs::write(&path, original).unwrap();
+        let got = otel_settings_get_for_test(&path);
+        assert_eq!(got.values["OTEL_LOGS_EXPORT_INTERVAL"], "5000");
+        assert_eq!(got.defaults["OTEL_LOGS_EXPORT_INTERVAL"], "60000");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(!backup_path_for(&path).exists());
+    }
+
+    #[test]
+    fn server_env_keys_are_a_managed_subset_that_excludes_secrets_endpoints_and_privacy_keys() {
+        use crate::otel_server_env::SERVER_ENV_KEYS;
+        assert_eq!(SERVER_ENV_KEYS.len(), 6);
+        for k in SERVER_ENV_KEYS {
+            assert!(MANAGED_OTEL_KEYS.contains(&k), "{k}");
+            assert!(!READ_ONLY_KEYS.contains(&k), "{k}");
+            assert_ne!(k, HEADERS_ENV_KEY);
+            assert_ne!(k, "OTEL_RESOURCE_ATTRIBUTES");
+            assert_ne!(k, "CLAUDE_CODE_ENABLE_TELEMETRY");
+            assert!(!k.ends_with("_ENDPOINT"), "{k}");
+        }
+    }
+
+    #[test]
+    fn every_value_the_server_filter_accepts_also_passes_the_settings_validation() {
+        // 서버 규칙은 설정 화면 검증보다 좁아야 한다 — 그래야 통과한 env가 수집키 적용(같은 저장 엔진)을 실패시키지 않는다.
+        use crate::otel_server_env::sanitize_server_env;
+        let candidates = [
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", vec!["http/protobuf", "grpc", "http/json"]),
+            ("OTEL_METRICS_EXPORTER", vec!["otlp", "none", "console"]),
+            ("OTEL_LOGS_EXPORTER", vec!["otlp", "none", "console"]),
+            ("OTEL_LOGS_EXPORT_INTERVAL", vec!["1", "4999", "5000", "60000", "3600000", "3600001"]),
+            ("OTEL_METRIC_EXPORT_INTERVAL", vec!["1", "4999", "5000", "60000", "3600000", "3600001"]),
+            ("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", vec!["cumulative", "delta", "lowmemory", "x"]),
+        ];
+        for (key, values) in candidates {
+            for v in values {
+                let env = serde_json::json!({ key: v });
+                let filtered = sanitize_server_env(Some(&env));
+                for (k, accepted) in &filtered.accepted {
+                    assert!(validate_value(k, accepted).is_ok(), "{k}={accepted}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apply_ingest_key_writes_key_and_server_env_in_one_atomic_write_and_reports_changed_keys() {
+        use crate::otel_server_env::sanitize_server_env;
+        let path = temp_settings_path("apply-with-env");
+        let original = r#"{"permissions":{"allow":["Bash(ls)"]},"env":{"CLAUDE_CODE_ENABLE_TELEMETRY":"1","OTEL_LOGS_EXPORT_INTERVAL":"5000","OTEL_METRICS_EXPORTER":"otlp","OTEL_RESOURCE_ATTRIBUTES":"employee.id=dev","OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":"https://malgnai-hub.apiserver.kr/v1/metrics","OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":"https://malgnai-hub.apiserver.kr/v1/logs"}}"#;
+        std::fs::write(&path, original).unwrap();
+        let env = serde_json::json!({
+            "OTEL_LOGS_EXPORT_INTERVAL": "60000",
+            "OTEL_METRICS_EXPORTER": "otlp",
+            "OTEL_RESOURCE_ATTRIBUTES": "employee.id=evil",
+            "OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer other",
+        });
+        let server_env = sanitize_server_env(Some(&env));
+        let changed = apply_ingest_key(&path, SecretString::new(&fake_ingest_key()), &server_env).unwrap();
+        assert_eq!(changed, ["OTEL_LOGS_EXPORT_INTERVAL"]);
+
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["env"]["OTEL_LOGS_EXPORT_INTERVAL"], "60000");
+        assert_eq!(saved["env"]["OTEL_EXPORTER_OTLP_HEADERS"], format!("Authorization=Bearer {}", fake_ingest_key()));
+        assert_eq!(saved["env"]["OTEL_RESOURCE_ATTRIBUTES"], "employee.id=dev");
+        assert_eq!(saved["permissions"]["allow"][0], "Bash(ls)");
+        assert_eq!(std::fs::read_to_string(backup_path_for(&path)).unwrap(), original);
+    }
+
+    #[test]
+    fn a_failing_key_leaves_env_unwritten_too() {
+        // 같은 쓰기라서 키 검증이 실패하면 env도 쓰이지 않는다(반쪽 적용 없음).
+        use crate::otel_server_env::sanitize_server_env;
+        let path = temp_settings_path("apply-bad-key");
+        let original = r#"{"env":{"OTEL_LOGS_EXPORT_INTERVAL":"5000"}}"#;
+        std::fs::write(&path, original).unwrap();
+        let server_env = sanitize_server_env(Some(&serde_json::json!({ "OTEL_LOGS_EXPORT_INTERVAL": "60000" })));
+        assert!(apply_ingest_key(&path, SecretString::new("mhk_short"), &server_env).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 }

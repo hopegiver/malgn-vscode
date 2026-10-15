@@ -21,6 +21,7 @@
 use crate::hub_auth::error::sanitize_server_code;
 use crate::hub_auth::store::is_valid_token;
 use crate::otel_ingest_key::SecretString;
+use crate::otel_server_env::{sanitize_server_env, ServerEnv};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -118,11 +119,17 @@ struct StateWire {
 #[derive(Clone, Debug)]
 pub(crate) struct Created {
     pub token: SecretString,
+    /// 응답 `env` 중 허용 목록·값 형식을 통과한 것(`otel_server_env`)과 거부된 키의 이름. `env`가 없으면 비어 있다.
+    /// 응답의 원본 `env`(검증 전 값)는 이 구조체 밖으로 나오지 않는다.
+    pub env: ServerEnv,
 }
 
 #[derive(Deserialize)]
 struct CreatedWire {
     token: String,
+    /// 형식을 가정하지 않는다 — 어떤 JSON이 와도 `token` 해석을 실패시키지 않고(키를 버리지 않는다) 거르기만 한다.
+    #[serde(default)]
+    env: Option<serde_json::Value>,
 }
 
 /// 비정상 상태 응답. 계약 C표의 `code`와 부가 필드만 담는다(서버 `message`는 버린다).
@@ -197,6 +204,7 @@ pub(crate) fn parse_created(body: &str) -> Result<Created, ApiError> {
     }
     Ok(Created {
         token: SecretString::new(&w.token),
+        env: sanitize_server_env(w.env.as_ref()),
     })
 }
 
@@ -595,6 +603,28 @@ mod tests {
         assert_eq!(parse_created(r#"{"token":""}"#).unwrap_err(), ApiError::Lost);
         let created = parse_created(&created_body('K')).unwrap();
         assert_eq!(created.token.expose().len(), 47);
+    }
+
+    #[test]
+    fn created_201_over_http_carries_only_the_filtered_env() {
+        let body = |fill: char| {
+            created_body(fill).replace(
+                r#""env":{"OTEL_METRICS_EXPORTER":"otlp"}"#,
+                r#""env":{"OTEL_METRICS_EXPORTER":"otlp","OTEL_LOGS_EXPORT_INTERVAL":"60000","OTEL_EXPORTER_OTLP_HEADERS":"Authorization=Bearer mhk_LEAK","OTEL_LOG_USER_PROMPTS":"1"}"#,
+            )
+        };
+        let (origin, _seen) = spawn(vec![json(201, &body('K')), json(201, &body('L'))]);
+        let api = ReqwestIngestApi::new(&origin).unwrap();
+        for created in [
+            api.create(&test_token('D'), "x", false).unwrap(),
+            api.rotate(&test_token('D')).unwrap(),
+        ] {
+            assert_eq!(created.env.accepted.len(), 2);
+            assert_eq!(created.env.accepted["OTEL_LOGS_EXPORT_INTERVAL"], "60000");
+            assert_eq!(created.env.rejected, ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_LOG_USER_PROMPTS"]);
+            let dump = format!("{created:?}");
+            assert!(!dump.contains("mhk_LEAK") && !dump.contains("Bearer"), "{dump}");
+        }
     }
 
     #[test]

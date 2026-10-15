@@ -28,8 +28,8 @@ import {
 } from '../hubAuthApi';
 import type { HubAuthStatus, HubDisconnectResult } from '../hubAuthApi';
 import { navigate, parseRoute } from '../route';
-import { computeOnboarding } from '../onboarding';
-import { disconnectToast, keyManagedByHub, reissueOutcome } from '../otelLinkText';
+import { AUTO_LINK_CHANGES_NOTE, computeOnboarding } from '../onboarding';
+import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueOutcome } from '../otelLinkText';
 import type { OnboardingStep } from '../onboarding';
 import { renderDevToolsView } from './devTools';
 
@@ -111,10 +111,10 @@ const INGEST_KEY_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
 // Rust `IngestKeyStatus`에 다시 실어(otel_ingest_key.rs) 버튼을 되살린다.
 const INGEST_KEY_COPY = {
   issue:
-    '허브에 연결되어 있으면 앱이 수집키(mhk_…)를 자동으로 발급해 적용합니다(위 "허브 수집키 자동 연동"). 직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다. 단, 그 뒤 허브에 연결하면 앱이 발급한 키로 교체됩니다. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
+    `허브에 연결되어 있으면 앱이 수집키(mhk_…)를 자동으로 발급해 적용합니다(위 "허브 수집키 자동 연동"). 직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다. 단, 그 뒤 허브에 연결하면 앱이 발급한 키로 교체됩니다. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다. ${AUTO_LINK_CHANGES_NOTE}`,
   // 허브에 연결되어 앱이 수집키를 관리하는 동안(RV-02): 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 교체되고 키 교체 횟수만 쓴다.
   issueManaged:
-    '허브에 연결되어 있는 동안은 앱이 수집키(mhk_…)를 자동으로 발급·교체합니다(위 "허브 수집키 자동 연동"). 직접 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 바뀌고 이 기기의 키 교체 횟수(24시간 6회)만 쓰기 때문에 입력을 막았습니다. 직접 받은 수집키를 쓰려면 허브 연결을 해제하세요(malgnai-hub 연결도 함께 해제됩니다). 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
+    `허브에 연결되어 있는 동안은 앱이 수집키(mhk_…)를 자동으로 발급·교체합니다(위 "허브 수집키 자동 연동"). 직접 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 바뀌고 이 기기의 키 교체 횟수(24시간 6회)만 쓰기 때문에 입력을 막았습니다. 직접 받은 수집키를 쓰려면 허브 연결을 해제하세요(malgnai-hub 연결도 함께 해제됩니다). 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다. ${AUTO_LINK_CHANGES_NOTE}`,
   placeholderManaged: '허브 연결 중에는 앱이 수집키를 자동 관리합니다',
   storage:
     '저장하면 settings.json에 Authorization=Bearer … 형태로 기록되며 값은 이 화면에 다시 표시되지 않습니다. 비워 두고 저장하면 기존 키를 그대로 둡니다.',
@@ -470,6 +470,9 @@ function renderOtelPanel(): HTMLElement {
         el('div', { className: 'settings-form-hint' }, ['기본값(저장 안 됨) — 지금 표시된 값은 아직 settings.json에 기록되지 않았습니다. 저장을 누르면 이 값 그대로 기록됩니다.'])
       );
     }
+    // 옛 기본값(5000)이 파일에 있으면 권장값을 안내만 한다 — 파일의 값을 앱이 조용히 바꾸지 않는다.
+    const legacyHint = legacyIntervalHint(key, hasValue ? settings.values[key] : undefined, settings.defaults[key]);
+    if (legacyHint) hints.push(withId(el('div', { className: 'settings-form-hint' }, [legacyHint]), `otel-legacy-hint-${key}`));
     if (isEndpoint && !settings.endpointDefaultsInjected) {
       hints.push(el('div', { className: 'settings-form-hint' }, ['사내 collector 주소는 배포 빌드에 주입됩니다. 비어 있으면 직접 입력하세요.']));
     }
@@ -481,6 +484,7 @@ function renderOtelPanel(): HTMLElement {
     el('div', { className: 'settings-form-hint' }, [
       '~/.claude/settings.json의 관리대상 OTel 키를 실제로 읽고 저장합니다. 저장 시 파일 형식이 정규화됩니다(키가 알파벳순으로 재정렬되고, 저장 직전 원본이 settings.json.malgn-bak으로 백업됩니다). 허브에 연결되어 있으면 앱이 수집키를 자동으로 쓸 때도 같은 방식으로 저장됩니다.',
     ]),
+    withId(el('div', { className: 'settings-form-hint' }, [AUTO_LINK_CHANGES_NOTE]), 'otel-autolink-changes-note'),
     renderIngestKeyBlock(settings),
     ...fields,
   ]);

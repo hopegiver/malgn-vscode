@@ -46,6 +46,8 @@ fn idle_view() -> RuntimeView {
         waiting_first_data: false,
         first_data_timed_out: false,
         revoked_prefix: None,
+        env_changed: Vec::new(),
+        env_rejected: Vec::new(),
     }
 }
 
@@ -242,7 +244,7 @@ fn invalid_key_status_never_echoes_what_the_server_sent() {
         let rig = Rig::new("link-invalid");
         let original = write_ready(&rig.path, None);
         rig.api.push_get(state_policy(IssuePolicy::Auto, None));
-        rig.api.push_create(Ok(crate::otel_hub_client::Created { token: SecretString::new(&bad) }));
+        rig.api.push_create(Ok(crate::otel_hub_client::Created { token: SecretString::new(&bad), env: Default::default() }));
         let engine = LinkEngine::new();
         run(&engine, &rig, Trigger::Startup, T0);
         let status = status_after(&engine, &rig);
@@ -267,7 +269,7 @@ fn injected_and_manual_set_paths_write_identical_files() {
     ))
     .unwrap();
     save_to_settings_file(&manual, payload).unwrap();
-    apply_ingest_key(&injected, SecretString::new(&key)).unwrap();
+    apply_ingest_key(&injected, SecretString::new(&key), &Default::default()).unwrap();
 
     assert_eq!(std::fs::read_to_string(&manual).unwrap(), std::fs::read_to_string(&injected).unwrap());
     assert_eq!(
@@ -284,7 +286,7 @@ fn injected_device_token_is_rejected_by_the_apply_entry_itself() {
     std::fs::write(&path, ORIGINAL).unwrap();
     let dev = device_token('D');
     for input in [dev.clone(), format!("Authorization=Bearer {dev}")] {
-        let err = apply_ingest_key(&path, SecretString::new(&input)).unwrap_err();
+        let err = apply_ingest_key(&path, SecretString::new(&input), &Default::default()).unwrap_err();
         assert_no_device_token("entry error", &err);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), ORIGINAL);
     }
@@ -304,7 +306,7 @@ fn settings_write_replaces_file_via_temp_rename_not_in_place() {
     let inode_before = std::fs::metadata(&path).unwrap().ino();
     let key = fake_key('K');
 
-    apply_ingest_key(&path, SecretString::new(&key)).unwrap();
+    apply_ingest_key(&path, SecretString::new(&key), &Default::default()).unwrap();
 
     assert_eq!(std::fs::read_to_string(&held).unwrap(), ORIGINAL, "제자리 덮어쓰기면 기존 inode의 내용이 바뀐다");
     assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode_before);
@@ -320,7 +322,7 @@ fn failed_rename_leaves_no_temp_file_with_key() {
     std::fs::write(path.join("child"), "x").unwrap();
     let key = fake_key('K');
 
-    let err = apply_ingest_key(&path, SecretString::new(&key)).unwrap_err();
+    let err = apply_ingest_key(&path, SecretString::new(&key), &Default::default()).unwrap_err();
 
     assert!(!err.contains("KKKK"), "에러에 키가 실리면 안 된다: {err}");
     assert!(path.is_dir(), "기존 대상은 그대로");
@@ -397,7 +399,7 @@ fn link_status_json_shape_is_the_frontend_contract() {
     let applied = IngestLinkStatus::new(IngestLinkState::Applied, Some("mhk_KKKK…".into()));
     assert_eq!(
         serde_json::to_string(&applied).unwrap(),
-        r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false,"telemetryEnabled":false,"endpoint":{"targetsHub":false,"insecure":false,"foreignHost":false},"collectionReady":false,"blockers":[],"hubConnected":false,"confirmRequired":false,"confirmDeclined":false,"revokedByHub":false,"waitingFirstData":false,"firstDataTimedOut":false,"blockedReason":null,"retryAt":null,"notice":null}"#
+        r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false,"telemetryEnabled":false,"endpoint":{"targetsHub":false,"insecure":false,"foreignHost":false},"collectionReady":false,"blockers":[],"hubConnected":false,"confirmRequired":false,"confirmDeclined":false,"revokedByHub":false,"waitingFirstData":false,"firstDataTimedOut":false,"blockedReason":null,"retryAt":null,"notice":null,"serverEnvChanged":[],"serverEnvRejected":[]}"#
     );
     let failed = IngestLinkStatus::failed(LinkFailureCause::Blocked, None);
     let json = serde_json::to_value(&failed).unwrap();
@@ -1010,6 +1012,8 @@ fn rv01_revoked_key_still_on_file_is_never_reported_as_confirmed_or_waiting() {
         waiting_first_data: true,
         first_data_timed_out: true,
         revoked_prefix: None,
+        env_changed: Vec::new(),
+        env_rejected: Vec::new(),
     };
     for phase in [Phase::ConfirmRequired, Phase::ConfirmDeclined] {
         // applied + confirm 플래그 / (이전에 확인된 수신이 있던) confirmed + confirm 플래그 둘 다 같은 결과다.
@@ -1261,7 +1265,7 @@ fn rv09_revoked_mark_ends_when_the_hub_answers_differently_or_the_key_or_connect
     let engine = engine_with_revoked_key_on_file(&rig);
     rig.api.push_get(Err(ApiError::NotSent));
     run(&engine, &rig, Trigger::Periodic, T0 + HOUR);
-    apply_ingest_key(&rig.path, crate::otel_ingest_key::SecretString::new(&fake_key('M'))).unwrap();
+    apply_ingest_key(&rig.path, crate::otel_ingest_key::SecretString::new(&fake_key('M')), &Default::default()).unwrap();
     let s = status_after(&engine, &rig);
     assert!(!s.revoked_by_hub, "{s:?}");
     assert_eq!(s.masked.as_deref(), Some("mhk_MMMM…"));

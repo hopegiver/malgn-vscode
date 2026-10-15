@@ -17,7 +17,8 @@
 //   - 회전 예산 retry_at(D-14)          budget_hold
 //   - 일시 오류 백오프 간격(D-15)       backoff_ms / next_retry_at
 //   - 연속 유실 점검 수(D-5)            lost_checks
-//   - 설정 쓰기 실패 플래그+원문(D-5)   pending_write
+//   - 설정 쓰기 실패 플래그+원문(D-5)   pending_write (원문 + 같은 201의 서버 env — 다시 쓸 때 함께 쓴다)
+//   - 마지막 201의 서버 env 결과        env_changed / env_rejected (이름만, 값 없음)
 //   - 웹 폐기 판정을 받은 파일 키(RV-09) revoked_prefix
 //
 // R-4(수집키 원문의 키체인 사본)는 채택하지 않았다. 근거는 `otel_link.rs` 머리말.
@@ -32,6 +33,7 @@ use crate::otel_hub_client::{
     ApiError, BlockedReason, CredentialMeta, CredentialState, HttpError, IngestApi, IssuePolicy,
 };
 use crate::otel_ingest_key::{normalize_ingest_key, SecretString};
+use crate::otel_server_env::ServerEnv;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -178,7 +180,11 @@ struct Memory {
     declined: bool,
     budget_hold: Option<(u64, Option<String>)>,
     lost_checks: u8,
-    pending_write: Option<SecretString>,
+    pending_write: Option<PendingWrite>,
+    /// 마지막 201(발급·회전)을 적용하며 서버 권장값으로 **바뀐** env 키 이름과, 허용 목록·형식 검사에서 **거부된** 키 이름.
+    /// 이름만 담는다(값 없음). 영속하지 않는다 — 앱을 다시 시작하면 사라지고 다음 발급·회전 때 다시 채워진다.
+    env_changed: Vec<String>,
+    env_rejected: Vec<String>,
     watch: Option<Watch>,
     confirmed_prefix: Option<String>,
     first_data_timed_out: bool,
@@ -187,6 +193,14 @@ struct Memory {
     /// 성공 응답으로 주거나(`dispatch`), 새 키가 적용되거나(`after_applied`), 연결이 바뀌면(메모리 초기화) 비운다.
     /// 앱 재시작 때는 사라지지만 서버가 같은 판정을 다시 준다(영속하지 않는다).
     revoked_prefix: Option<String>,
+}
+
+/// 설정 파일에 쓰지 못한 201의 내용. 원문 키(Debug 가림)와, 같은 201에서 걸러낸 서버 env를 함께 들고 있다가
+/// 같은 원문으로 다시 쓸 때 한 번에 쓴다(키만 쓰이고 env는 빠지는 중간 상태를 만들지 않는다).
+#[derive(Clone, Debug)]
+struct PendingWrite {
+    key: SecretString,
+    server_env: ServerEnv,
 }
 
 /// UI가 쓰는 엔진 상태 복사본(원문 없음).
@@ -201,6 +215,10 @@ pub(crate) struct RuntimeView {
     pub first_data_timed_out: bool,
     /// 허브가 폐기로 판정한 파일 키의 앞 8자(`Memory::revoked_prefix`) — 일시 오류 점검 뒤에도 폐기 표시를 유지한다.
     pub revoked_prefix: Option<String>,
+    /// 마지막 201을 적용하며 서버 권장값으로 바뀐 env 키 이름(값 없음).
+    pub env_changed: Vec<String>,
+    /// 마지막 201의 `env` 중 허용 목록·값 형식 검사에서 거부되어 쓰지 않은 키 이름(값 없음).
+    pub env_rejected: Vec<String>,
 }
 
 #[derive(Default)]
@@ -291,6 +309,8 @@ impl LinkEngine {
             waiting_first_data: m.watch.is_some(),
             first_data_timed_out: m.first_data_timed_out,
             revoked_prefix: m.revoked_prefix.clone(),
+            env_changed: m.env_changed.clone(),
+            env_rejected: m.env_rejected.clone(),
         })
     }
 
@@ -355,13 +375,18 @@ impl LinkEngine {
 
     /// 낡지 않은 점검만 설정 파일에 키를 쓴다. 세대 확인과 쓰기를 `gate` 안에서 함께 해서 연결 해제의 키 삭제와
     /// 엇갈리지 않는다.
-    fn apply_guarded(&self, env: &Env, key: SecretString, st: &RunState) -> Applied {
+    ///
+    /// 수집키와 서버 env는 `apply_ingest_key` 한 번의 원자적 쓰기로 함께 들어간다. 성공하면 바뀐 env 키 이름을 기록한다.
+    fn apply_guarded(&self, env: &Env, write: &PendingWrite, st: &RunState) -> Applied {
         let _gate = self.lock_gate();
         if self.is_stale(st) {
             return Applied::Stale;
         }
-        match crate::otel_settings::apply_ingest_key(env.path, key) {
-            Ok(()) => Applied::Written,
+        match crate::otel_settings::apply_ingest_key(env.path, write.key.clone(), &write.server_env) {
+            Ok(changed) => {
+                self.with(|m| m.env_changed = changed);
+                Applied::Written
+            }
             Err(_) => Applied::Failed,
         }
     }
@@ -500,11 +525,11 @@ impl LinkEngine {
         // 5번: 설정 쓰기 실패 플래그가 켜져 있으면 rotate하지 않고, 서버의 현행 키와 같은 원문으로만 다시 쓴다.
         let pending = self.with(|m| m.pending_write.clone());
         if let Some(p) = pending {
-            if prefix8(p.expose()) == cur.token_prefix {
+            if prefix8(p.key.expose()) == cur.token_prefix {
                 if let Err(stop) = crate::otel_link::mint_gate(env.path) {
                     return stop;
                 }
-                return match self.apply_guarded(env, p.clone(), st) {
+                return match self.apply_guarded(env, &p, st) {
                     Applied::Written => {
                         self.with(|m| {
                             m.pending_write = None;
@@ -629,7 +654,7 @@ impl LinkEngine {
                 Mint::Rotate => env.api.rotate(token.expose()),
             };
             let err = match result {
-                Ok(created) => return self.accept_key(env, created.token, now, st),
+                Ok(created) => return self.accept_key(env, created.token, created.env, now, st),
                 Err(e) => e,
             };
             match err {
@@ -763,7 +788,10 @@ impl LinkEngine {
     }
 
     /// 201을 받았다 — 형식을 검증하고 설정에 적용한다(D-2·D-5).
-    fn accept_key(&self, env: &Env, key: SecretString, now: u64, st: &RunState) -> Phase {
+    ///
+    /// `server_env`는 201 `env` 중 허용 목록·형식을 통과한 값(`otel_server_env`)이다. 거부된 키가 있어도 수집키 적용은
+    /// 그대로 진행한다 — 키를 버리면 회전 예산만 소진된다. 거부된 키 이름은 상태(`env_rejected`)로 남긴다.
+    fn accept_key(&self, env: &Env, key: SecretString, server_env: ServerEnv, now: u64, st: &RunState) -> Phase {
         // 응답을 받았으니 "유실로 끝난 점검"이 아니다(rotate 201이든 발급 201이든 수는 0이 된다).
         if !self.is_stale(st) {
             self.with(|m| {
@@ -775,7 +803,15 @@ impl LinkEngine {
             return Phase::InvalidKey;
         }
         let prefix = prefix8(key.expose());
-        match self.apply_guarded(env, key.clone(), st) {
+        if !self.is_stale(st) {
+            // 새 201의 결과로 바꾼다 — 이전 201의 흔적이 남아 이번 적용의 사실처럼 보이지 않게 한다.
+            self.with(|m| {
+                m.env_rejected = server_env.rejected.clone();
+                m.env_changed.clear();
+            });
+        }
+        let write = PendingWrite { key, server_env };
+        match self.apply_guarded(env, &write, st) {
             // 응답을 기다리는 동안 연결이 해제·재연결됐다 — 받은 키는 쓰지 않고 버린다(RV-05). 서버는 해제 때
             // 이 기기의 수집키를 이미 폐기했으므로 살아 있는 키가 남지 않는다.
             Applied::Stale => Phase::NoDeviceToken,
@@ -787,7 +823,7 @@ impl LinkEngine {
             Applied::Failed => {
                 // 쓰기 실패를 회전으로 되풀이하면 회전 예산만 소진된다. 원문을 메모리에 보관하고 플래그를
                 // 켠다(Phase::WriteFailed). 이후 점검은 GET만 한다.
-                self.with(|m| m.pending_write = Some(key));
+                self.with(|m| m.pending_write = Some(write));
                 Phase::WriteFailed
             }
         }

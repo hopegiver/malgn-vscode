@@ -73,3 +73,17 @@ export function disconnectToast(reason: string | null, removal: IngestKeyRemoval
       return head;
   }
 }
+
+/** 이전 앱 버전이 설정 파일에 기록하던 `OTEL_LOGS_EXPORT_INTERVAL` 기본값(ms). */
+export const LEGACY_DEFAULT_LOGS_INTERVAL = '5000';
+
+/**
+ * 설정 파일에 옛 기본값(5000)이 있을 때 보여 주는 권장값 안내. 앱은 파일의 값을 조용히 바꾸지 않는다 — 사용자가 직접 정한 5000과
+ * 이전 앱이 기록한 5000을 파일만으로는 가를 수 없기 때문이다. 그래서 안내만 하고, 바꾸는 것은 사용자가 저장할 때다.
+ * `recommended`는 백엔드가 준 현재 앱 기본값(`OtelSettings.defaults`)이다. 해당 없으면 null.
+ */
+export function legacyIntervalHint(key: string, fileValue: string | undefined, recommended: string | undefined): string | null {
+  if (key !== 'OTEL_LOGS_EXPORT_INTERVAL' || fileValue !== LEGACY_DEFAULT_LOGS_INTERVAL) return null;
+  if (!recommended || recommended === fileValue) return null;
+  return `${fileValue}은 이전 앱 버전의 기본값입니다. 5초마다 허브로 보내면 허브의 요청 제한과 일일 사용량 한도를 빨리 쓰므로 권장값은 ${recommended}(ms)입니다. 직접 정한 값이면 그대로 두어도 됩니다. 단, 허브에 연결된 상태에서 수집키가 새로 발급·교체될 때는 허브가 보낸 값이 이 값을 덮어씁니다. 권장값으로 바꾸려면 값을 고쳐 저장하세요.`;
+}

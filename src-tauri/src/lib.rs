@@ -19,6 +19,7 @@ mod otel_hub_client;
 mod otel_ingest_key;
 mod otel_link;
 mod otel_link_engine;
+mod otel_server_env;
 mod otel_settings;
 mod plugins;
 mod process_util;

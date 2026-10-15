@@ -166,6 +166,38 @@ function claudeLoginStep(input: OnboardingInput, installState: ClaudeInstallStat
   return { kind: 'claude-login', title, state: 'todo', detail: 'Anthropic 계정으로 로그인하세요.' };
 }
 
+/**
+ * 허브 연결로 수집키를 자동 발급·교체할 때 허브가 정해 보내는 수집 설정 키 6개. 백엔드 허용 목록
+ * (`src-tauri/src/otel_server_env.rs`의 `SERVER_ENV_KEYS`)과 같아야 한다 — 한쪽을 바꾸면 다른 쪽도 바꾼다.
+ */
+export const AUTO_LINK_SERVER_KEYS: readonly string[] = [
+  'OTEL_EXPORTER_OTLP_PROTOCOL',
+  'OTEL_METRICS_EXPORTER',
+  'OTEL_LOGS_EXPORTER',
+  'OTEL_LOGS_EXPORT_INTERVAL',
+  'OTEL_METRIC_EXPORT_INTERVAL',
+  'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE',
+];
+
+/** 자동 연동이 settings.json에서 바꾸는 것의 전부. 화면의 여러 안내문이 같은 문장을 쓴다. */
+export const AUTO_LINK_CHANGES_NOTE = `자동 연동이 settings.json에서 바꾸는 항목: 수집키(env.OTEL_EXPORTER_OTLP_HEADERS의 Authorization 항목)와, 수집키를 새로 발급·교체할 때 허브가 보내는 수집 설정 6개(${AUTO_LINK_SERVER_KEYS.join(', ')}). 이 6개는 허브 값이 기존 값(앱 기본값·직접 정한 값)보다 우선합니다. 엔드포인트·직원 식별(OTEL_RESOURCE_ATTRIBUTES)·프라이버시 설정 등 그 밖의 항목은 허브가 보내도 바꾸지 않습니다.`;
+
+// 백엔드가 걸러 준 키 이름만 화면에 쓴다(영숫자·_·.·- 64자 이하, 또는 백엔드의 고정 자리표시자). 그 밖의 문자열은 버린다.
+const ENV_NAME_SHAPE = /^(?:[A-Za-z0-9_.-]{1,64}|\((?:이름 형식 불명|그 밖 \d{1,3}개)\))$/;
+function envNames(names: readonly string[] | undefined): string[] {
+  return (names ?? []).filter((n) => typeof n === 'string' && ENV_NAME_SHAPE.test(n));
+}
+
+/** 마지막 발급·회전에서 허브가 보낸 수집 설정을 어떻게 다뤘는지 — 바뀐 키와 거부한 키 이름만(값 없음). */
+function serverEnvTail(status: IngestLinkStatus): string {
+  const changed = envNames(status.serverEnvChanged);
+  const rejected = envNames(status.serverEnvRejected);
+  let out = '';
+  if (changed.length > 0) out += ` 허브가 보낸 값으로 바뀐 설정: ${changed.join(', ')}.`;
+  if (rejected.length > 0) out += ` 허브가 보낸 설정 중 허용되지 않는 항목은 적용하지 않았습니다: ${rejected.join(', ')}.`;
+  return out;
+}
+
 // Rust가 내려주는 마스킹 표시값(`mhk_`+최대 4자+…)만 화면에 허용한다. 형식이 다르면(원문일 가능성 포함)
 // 아예 표시하지 않는다.
 const MASKED_KEY_SHAPE = /^mhk_[A-Za-z0-9_-]{1,4}…$/;
@@ -210,7 +242,7 @@ function notConnectedStep(base: StepBase): OnboardingStep {
     state: 'todo',
     action: 'connect-hub',
     detail:
-      '허브에 연결하면 사용량 수집키가 자동으로 발급·적용됩니다. 지금은 허브에 연결되어 있지 않습니다. 직접 받은 수집키를 쓰려면 허브에는 연결하지 말고 설정 > OTel에서 붙여넣으세요(허브에 연결하면 앱이 발급한 키로 교체됩니다).',
+      `허브에 연결하면 사용량 수집키가 자동으로 발급·적용됩니다. 지금은 허브에 연결되어 있지 않습니다. 직접 받은 수집키를 쓰려면 허브에는 연결하지 말고 설정 > OTel에서 붙여넣으세요(허브에 연결하면 앱이 발급한 키로 교체됩니다). ${AUTO_LINK_CHANGES_NOTE}`,
     slim: '선택 · 허브에 연결하면 사용량 수집키가 자동으로 적용됩니다.',
   };
 }
@@ -224,7 +256,7 @@ function unlinkedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep 
     state: 'todo',
     action: 'retry',
     detail:
-      '허브에 연결되어 있습니다. 앱이 사용량 수집키를 자동으로 발급·적용합니다(앱 시작 때와 1시간 간격으로 점검). 바로 하려면 [다시 시도]를 누르세요.',
+      `허브에 연결되어 있습니다. 앱이 사용량 수집키를 자동으로 발급·적용합니다(앱 시작 때와 1시간 간격으로 점검). 바로 하려면 [다시 시도]를 누르세요. ${AUTO_LINK_CHANGES_NOTE}`,
     slim: '선택 · 사용량 수집키가 아직 적용되어 있지 않습니다.',
   };
 }
@@ -281,6 +313,11 @@ function noticeTail(status: IngestLinkStatus): string {
   return status.notice ? ` 마지막 점검: ${status.notice.message}` : '';
 }
 
+/** 적용된 상태 문구 뒤에 붙는 보조 안내: 마지막 점검의 일시 오류 + 허브가 보낸 수집 설정의 처리 결과. */
+function appliedTail(status: IngestLinkStatus): string {
+  return `${noticeTail(status)}${serverEnvTail(status)}`;
+}
+
 function appliedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
   const masked = safeMasked(status.masked);
   const keyTag = masked ? ` (${masked})` : '';
@@ -292,24 +329,24 @@ function appliedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
       ...base,
       state: 'warn',
       action: 'open-settings',
-      detail: `수집키는 적용되었지만${keyTag} 사용량이 수집되지 않을 수 있습니다: ${why}.${status.state === 'confirmed' ? '' : ' 수신은 확인하지 않았습니다.'}${noticeTail(status)}`,
+      detail: `수집키는 적용되었지만${keyTag} 사용량이 수집되지 않을 수 있습니다: ${why}.${status.state === 'confirmed' ? '' : ' 수신은 확인하지 않았습니다.'}${appliedTail(status)}`,
       slim: `선택 · 수집키는 적용됐지만 사용량이 수집되지 않을 수 있습니다 — ${why}.`,
     };
   }
   if (status.state === 'confirmed') {
-    return { ...base, state: 'done', detail: `수집키가 적용되었고 허브에서 데이터 수신이 확인되었습니다${keyTag}.${noticeTail(status)}` };
+    return { ...base, state: 'done', detail: `수집키가 적용되었고 허브에서 데이터 수신이 확인되었습니다${keyTag}.${appliedTail(status)}` };
   }
   if (status.waitingFirstData) {
-    return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 첫 데이터 수신을 확인하는 중입니다(최대 15분). ${SESSION_NOTE}${noticeTail(status)}` };
+    return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 첫 데이터 수신을 확인하는 중입니다(최대 15분). ${SESSION_NOTE}${appliedTail(status)}` };
   }
   if (status.firstDataTimedOut) {
     return {
       ...base,
       state: 'partial',
-      detail: `수집키가 적용되었습니다${keyTag}. 15분 안에 수신이 확인되지 않았습니다. 새 Claude Code 세션을 열면 수집이 시작됩니다. 다음 점검(앱 시작 때·1시간 간격)에서 다시 확인합니다.${noticeTail(status)}`,
+      detail: `수집키가 적용되었습니다${keyTag}. 15분 안에 수신이 확인되지 않았습니다. 새 Claude Code 세션을 열면 수집이 시작됩니다. 다음 점검(앱 시작 때·1시간 간격)에서 다시 확인합니다.${appliedTail(status)}`,
     };
   }
-  return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 수신은 아직 확인하지 않았습니다. ${SESSION_NOTE}${noticeTail(status)}` };
+  return { ...base, state: 'partial', detail: `수집키가 적용되었습니다${keyTag}. 수신은 아직 확인하지 않았습니다. ${SESSION_NOTE}${appliedTail(status)}` };
 }
 
 // 원인별 버튼. rotateBudgetExceeded는 서버가 정한 시각까지 소용이 없어 버튼을 두지 않는다.

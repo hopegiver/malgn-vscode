@@ -169,8 +169,8 @@ fn d2_201_replaces_only_the_authorization_entry_and_keeps_everything_else() {
 }
 
 #[test]
-fn d2_201_adds_the_authorization_entry_when_none_exists_and_ignores_server_env() {
-    // N-5 결정: 201의 env(서버 권장값)는 적용하지 않는다 — 클라이언트는 token만 꺼내고, 파일의 다른 값은 그대로다.
+fn d2_201_without_env_adds_only_the_authorization_entry_and_leaves_every_other_value() {
+    // 응답에 `env`가 없으면 키만 적용한다(R19 이전과 같은 동작) — 파일의 다른 값은 그대로다.
     let rig = Rig::new("d2-add");
     let original = ready_settings(None);
     std::fs::write(&rig.path, &original).unwrap();
@@ -185,7 +185,9 @@ fn d2_201_adds_the_authorization_entry_when_none_exists_and_ignores_server_env()
     for k in ["OTEL_LOGS_EXPORT_INTERVAL", "OTEL_METRICS_EXPORTER", "CLAUDE_CODE_ENABLE_TELEMETRY", "OTEL_RESOURCE_ATTRIBUTES"] {
         assert_eq!(after["env"][k], before["env"][k], "{k}");
     }
-    assert!(after["env"].get("OTEL_METRIC_EXPORT_INTERVAL").is_none(), "서버 권장 env를 쓰지 않는다");
+    assert!(after["env"].get("OTEL_METRIC_EXPORT_INTERVAL").is_none(), "env가 없으면 아무 키도 새로 쓰지 않는다");
+    let view = engine.view();
+    assert!(view.env_changed.is_empty() && view.env_rejected.is_empty());
 }
 
 #[test]
@@ -196,7 +198,7 @@ fn d2_invalid_key_in_a_201_is_rejected_and_never_written() {
         let rig = Rig::new("d2-invalid");
         let original = write_ready(&rig.path, None);
         rig.api.push_get(state_policy(IssuePolicy::Auto, None));
-        rig.api.push_create(Ok(crate::otel_hub_client::Created { token: SecretString::new(&bad) }));
+        rig.api.push_create(Ok(crate::otel_hub_client::Created { token: SecretString::new(&bad), env: Default::default() }));
         let engine = LinkEngine::new();
         assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::InvalidKey);
         assert_eq!(file(&rig), original, "형식이 틀린 값은 파일에 쓰지 않는다");
@@ -652,7 +654,7 @@ fn d7_reconnecting_is_treated_as_a_new_connection_and_forces_an_immediate_check(
         m.declined = true;
         m.lost_checks = 2;
         m.budget_hold = Some((u64::MAX, None));
-        m.pending_write = Some(SecretString::new(&fake_key('P')));
+        m.pending_write = Some(PendingWrite { key: SecretString::new(&fake_key('P')), server_env: Default::default() });
         m.last_check = Some(T0);
         m.phase = Phase::Reconnect;
     });
@@ -957,7 +959,7 @@ fn d12_poll_errors_other_than_loss_stop_the_watch_and_leave_judging_to_the_next_
 fn d13_disconnect_clears_in_memory_state_including_the_unwritten_raw_key() {
     let engine = LinkEngine::new();
     engine.with(|m| {
-        m.pending_write = Some(SecretString::new(&fake_key('P')));
+        m.pending_write = Some(PendingWrite { key: SecretString::new(&fake_key('P')), server_env: Default::default() });
         m.declined = true;
         m.watch = Some(Watch { prefix: prefix_of('P'), started: 1, last_poll: None });
         m.confirmed_prefix = Some(prefix_of('P'));
@@ -1751,4 +1753,324 @@ fn rv05_disconnect_without_a_check_in_flight_still_clears_key_and_memory_in_one_
     assert!(!file(&rig).contains("mhk_"));
     let view = engine.view();
     assert_eq!((view.phase, view.waiting_first_data), (Phase::NoDeviceToken, false));
+}
+
+
+// ======================= R19: 201 `env` 적용 =======================
+
+fn env_str(rig: &Rig, key: &str) -> Option<String> {
+    file_json(rig)["env"].get(key).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+#[cfg(unix)]
+fn mode_of(p: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn r19_issue_201_writes_the_key_and_the_six_server_env_keys_in_one_write_and_keeps_the_rest() {
+    let rig = Rig::new("r19-issue");
+    let original = write_ready(&rig.path, None); // 파일에는 앱 옛 기본값 5000, METRIC 주기·temporality는 없음
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env('K', contract_env()));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+
+    let json = file_json(&rig);
+    assert_eq!(json["env"]["OTEL_EXPORTER_OTLP_HEADERS"], format!("Authorization=Bearer {}", fake_key('K')));
+    for (k, v) in contract_env().as_object().unwrap() {
+        assert_eq!(json["env"][k.as_str()], *v, "{k}");
+    }
+    // 서버 값이 앱 옛 기본값 5000을 이긴다.
+    assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("60000"));
+    // 목록 밖의 값·최상위 설정은 그대로.
+    assert_eq!(json["env"]["OTEL_RESOURCE_ATTRIBUTES"], "employee.id=dev,team=platform");
+    assert_eq!(json["env"]["SOME_OTHER_VAR"], "keep-me");
+    assert_eq!(json["env"]["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"], hub_endpoint("/v1/logs"));
+    assert_eq!(json["permissions"]["allow"][0], "Bash(ls)");
+    // 백업은 저장 직전 원본 1세대(키 없는 원본이므로 새 키가 백업에 있을 수 없다), 0600.
+    assert_eq!(std::fs::read_to_string(backup_path_for(&rig.path)).unwrap(), original);
+    #[cfg(unix)]
+    {
+        assert_eq!(mode_of(&rig.path), 0o600);
+        assert_eq!(mode_of(&backup_path_for(&rig.path)), 0o600);
+    }
+    // 바뀐 키 이름(이전 파일 값과 달랐던 것)만 상태로 나온다: 5000→60000, 새로 생긴 METRIC 주기·temporality.
+    let view = engine.view();
+    assert_eq!(
+        view.env_changed,
+        [
+            "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+            "OTEL_LOGS_EXPORT_INTERVAL",
+            "OTEL_METRIC_EXPORT_INTERVAL"
+        ]
+    );
+    assert!(view.env_rejected.is_empty());
+}
+
+#[test]
+fn r19_rotate_201_applies_server_env_too_and_the_server_value_wins_over_a_user_value() {
+    let rig = Rig::new("r19-rotate-conflict");
+    // 사용자가 정한 값(30000)과 옛 키가 있다. 서버는 60000을 보낸다 → 서버가 이긴다.
+    let mut v: serde_json::Value = serde_json::from_str(&ready_settings(Some(&fake_key('O')))).unwrap();
+    v["env"]["OTEL_LOGS_EXPORT_INTERVAL"] = "30000".into();
+    v["env"]["OTEL_METRIC_EXPORT_INTERVAL"] = "120000".into();
+    std::fs::write(&rig.path, v.to_string()).unwrap();
+    rig.api.push_get(state_has_current(&prefix_of('P'), false));
+    rig.api.push_rotate(created_with_env('N', contract_env()));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+
+    assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("60000"));
+    assert_eq!(env_str(&rig, "OTEL_METRIC_EXPORT_INTERVAL").as_deref(), Some("60000"));
+    assert_eq!(
+        env_str(&rig, "OTEL_EXPORTER_OTLP_HEADERS").unwrap(),
+        format!("x-team=a,Authorization=Bearer {}", fake_key('N')),
+        "Authorization 항목만 교체되고 다른 헤더 항목은 그대로"
+    );
+    assert_eq!(
+        engine.view().env_changed,
+        [
+            "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE",
+            "OTEL_LOGS_EXPORT_INTERVAL",
+            "OTEL_METRIC_EXPORT_INTERVAL"
+        ]
+    );
+}
+
+#[test]
+fn r19_keys_the_server_does_not_send_keep_their_file_values() {
+    // 서버가 일부 키만 보내면 그 키만 바뀐다 — 보내지 않은 키(여기서는 주기)는 사용자의 값이 남는다.
+    let rig = Rig::new("r19-partial-send");
+    let mut v: serde_json::Value = serde_json::from_str(&ready_settings(None)).unwrap();
+    v["env"]["OTEL_LOGS_EXPORT_INTERVAL"] = "30000".into();
+    std::fs::write(&rig.path, v.to_string()).unwrap();
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env('K', serde_json::json!({ "OTEL_METRIC_EXPORT_INTERVAL": "90000" })));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+    assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("30000"));
+    assert_eq!(env_str(&rig, "OTEL_METRIC_EXPORT_INTERVAL").as_deref(), Some("90000"));
+}
+
+#[test]
+fn r19_disallowed_keys_and_privacy_keys_never_reach_the_file_but_the_key_is_still_applied() {
+    let rig = Rig::new("r19-reject");
+    let original = write_ready(&rig.path, None);
+    let secret_header = "Authorization=Bearer mhk_LEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAK";
+    let mut env = contract_env();
+    for (k, v) in [
+        ("OTEL_EXPORTER_OTLP_HEADERS", secret_header),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://evil.example"),
+        ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://evil.example/v1/metrics"),
+        ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "https://evil.example/v1/logs"),
+        ("OTEL_RESOURCE_ATTRIBUTES", "employee.id=evil"),
+        ("OTEL_LOG_USER_PROMPTS", "1"),
+        ("OTEL_LOG_TOOL_CONTENT", "1"),
+        ("OTEL_LOG_TOOL_DETAILS", "1"),
+        ("OTEL_LOG_RAW_API_BODIES", "1"),
+        ("CLAUDE_CODE_ENABLE_TELEMETRY", "0"),
+        ("ANTHROPIC_BASE_URL", "https://evil.example"),
+    ] {
+        env[k] = v.into();
+    }
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env('K', env));
+    let engine = LinkEngine::new();
+    // (a) env 거부는 수집키 적용을 실패시키지 않는다.
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+
+    let after = file_json(&rig);
+    let before: serde_json::Value = serde_json::from_str(&original).unwrap();
+    // 헤더는 우리 Authorization 하나뿐(서버가 보낸 헤더 값이 섞이지 않음), 나머지 금지 키는 파일 값 그대로/미생성.
+    assert_eq!(after["env"]["OTEL_EXPORTER_OTLP_HEADERS"], format!("Authorization=Bearer {}", fake_key('K')));
+    for k in [
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "CLAUDE_CODE_ENABLE_TELEMETRY",
+    ] {
+        assert_eq!(after["env"][k], before["env"][k], "{k}");
+    }
+    for k in [
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_LOG_USER_PROMPTS",
+        "OTEL_LOG_TOOL_CONTENT",
+        "OTEL_LOG_TOOL_DETAILS",
+        "OTEL_LOG_RAW_API_BODIES",
+        "ANTHROPIC_BASE_URL",
+    ] {
+        assert!(after["env"].get(k).is_none(), "{k}가 쓰였다");
+    }
+    let raw = file(&rig);
+    assert!(!raw.contains("evil.example") && !raw.contains("LEAKLEAK"), "서버가 보낸 값이 파일에 섞였다");
+    // (c) 부분 적용: 허용 목록 안의 올바른 값은 같은 201에서 그대로 쓰였다.
+    assert_eq!(after["env"]["OTEL_LOGS_EXPORT_INTERVAL"], "60000");
+    // (b) 거부된 키 이름은 상태로 관측되고, 값은 상태·Debug 어디에도 없다.
+    let view = engine.view();
+    assert_eq!(view.env_rejected.len(), 11);
+    assert!(view.env_rejected.contains(&"OTEL_EXPORTER_OTLP_HEADERS".to_string()));
+    assert!(view.env_rejected.contains(&"OTEL_LOG_USER_PROMPTS".to_string()));
+    let dump = format!("{view:?} {:?}", engine.mem.lock().unwrap());
+    for leak in ["evil.example", "LEAKLEAK", "Bearer"] {
+        assert!(!dump.contains(leak), "{leak} 노출: {dump}");
+    }
+}
+
+#[test]
+fn r19_format_violations_are_not_written_and_do_not_fail_the_key() {
+    let rig = Rig::new("r19-format");
+    let original = write_ready(&rig.path, None);
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env(
+        'K',
+        serde_json::json!({
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            "OTEL_METRICS_EXPORTER": "none",
+            "OTEL_LOGS_EXPORTER": ["otlp"],
+            "OTEL_LOGS_EXPORT_INTERVAL": 60000,
+            "OTEL_METRIC_EXPORT_INTERVAL": "1",
+            "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE": "cumulative\nOTEL_X=1"
+        }),
+    ));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+    let after = file_json(&rig);
+    let before: serde_json::Value = serde_json::from_str(&original).unwrap();
+    assert_eq!(after["env"]["OTEL_EXPORTER_OTLP_HEADERS"], format!("Authorization=Bearer {}", fake_key('K')));
+    for k in [
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_METRICS_EXPORTER",
+        "OTEL_LOGS_EXPORTER",
+        "OTEL_LOGS_EXPORT_INTERVAL",
+    ] {
+        assert_eq!(after["env"][k], before["env"][k], "{k}는 파일 값 그대로");
+    }
+    assert!(after["env"].get("OTEL_METRIC_EXPORT_INTERVAL").is_none());
+    assert!(after["env"].get("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE").is_none());
+    assert_eq!(engine.view().env_rejected.len(), 6);
+    assert!(engine.view().env_changed.is_empty());
+}
+
+#[test]
+fn r19_missing_null_empty_and_non_object_env_apply_the_key_only() {
+    let cases: Vec<(&str, Option<serde_json::Value>)> = vec![
+        ("absent", None),
+        ("null", Some(serde_json::Value::Null)),
+        ("empty", Some(serde_json::json!({}))),
+        ("array", Some(serde_json::json!(["OTEL_LOGS_EXPORT_INTERVAL", "60000"]))),
+        ("string", Some(serde_json::json!("OTEL_LOGS_EXPORT_INTERVAL=60000"))),
+    ];
+    for (name, env) in cases {
+        let rig = Rig::new(&format!("r19-env-{name}"));
+        write_ready(&rig.path, None);
+        rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+        match env {
+            Some(e) => rig.api.push_create(created_with_env('K', e)),
+            None => rig.api.push_create(created('K')),
+        };
+        let engine = LinkEngine::new();
+        assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle, "{name}");
+        assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("5000"), "{name}: 파일의 기존 값은 그대로");
+        assert!(headers_of(&rig).contains(&fake_key('K')), "{name}");
+        assert!(engine.view().env_changed.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn r19_response_without_the_env_field_at_all_parses_and_applies_the_key() {
+    // 서버가 `env` 필드를 아예 보내지 않는 응답(구버전 서버)도 키는 적용된다.
+    let rig = Rig::new("r19-no-field");
+    write_ready(&rig.path, None);
+    let body = serde_json::json!({ "id": "x", "token": fake_key('K') }).to_string();
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(crate::otel_hub_client::parse_created(&body));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+    assert!(headers_of(&rig).contains(&fake_key('K')));
+}
+
+#[cfg(unix)]
+#[test]
+fn r19_a_failed_write_leaves_neither_the_key_nor_the_env_and_the_retry_writes_both_at_once() {
+    let rig = Rig::new("r19-atomic");
+    let original = write_ready(&rig.path, None);
+    let engine = LinkEngine::new();
+    make_dir_read_only(&rig);
+    rig.api.push_get(state_has_current(&prefix_of('Z'), false));
+    rig.api.push_rotate(created_with_env('N', contract_env()));
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::WriteFailed);
+    assert_eq!(file(&rig), original, "키도 env도 쓰이지 않았다(중간 상태 없음)");
+    assert!(engine.view().env_changed.is_empty());
+
+    // 다시 쓸 때는 같은 201의 env가 함께 쓰인다(회전은 더 일어나지 않는다).
+    make_dir_writable(&rig);
+    rig.api.push_get(state_has_current(&prefix_of('N'), false));
+    assert_eq!(run(&engine, &rig, Trigger::User, T0 + MIN), Phase::Idle);
+    assert_eq!(rig.api.count("rotate"), 1);
+    assert!(headers_of(&rig).contains(&fake_key('N')));
+    assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("60000"));
+    assert_eq!(env_str(&rig, "OTEL_METRIC_EXPORT_INTERVAL").as_deref(), Some("60000"));
+    assert!(!engine.view().env_changed.is_empty());
+}
+
+#[test]
+fn r19_without_a_device_token_nothing_is_requested_so_no_env_is_written() {
+    let mut rig = Rig::new("r19-no-mhd");
+    let original = write_ready(&rig.path, None);
+    rig.tokens = FakeTokens::none();
+    // 큐에 환경 포함 201이 있어도 호출되지 않는다.
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env('K', contract_env()));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::NoDeviceToken);
+    assert!(rig.api.calls().is_empty());
+    assert_eq!(file(&rig), original);
+    assert!(!backup_path_for(&rig.path).exists());
+    let view = engine.view();
+    assert!(view.env_changed.is_empty() && view.env_rejected.is_empty());
+}
+
+#[test]
+fn r19_a_check_that_finds_the_key_already_applied_does_not_rewrite_env() {
+    // 201이 없는 점검(이미 적용됨)은 env를 건드리지 않는다 — 옛 기본값 5000도 그대로(조용한 마이그레이션 없음).
+    let rig = Rig::new("r19-no-201");
+    let original = write_ready(&rig.path, Some(&fake_key('O')));
+    rig.api.push_get(state_has_current(&prefix_of('O'), false));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+    assert_eq!(file(&rig), original);
+    assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("5000"));
+}
+
+#[test]
+fn r19_a_new_201_replaces_the_previous_env_report() {
+    let rig = Rig::new("r19-report-reset");
+    write_ready(&rig.path, None);
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env('K', serde_json::json!({ "OTEL_RESOURCE_ATTRIBUTES": "x", "OTEL_LOGS_EXPORT_INTERVAL": "60000" })));
+    let engine = LinkEngine::new();
+    run(&engine, &rig, Trigger::Startup, T0);
+    assert_eq!(engine.view().env_rejected, ["OTEL_RESOURCE_ATTRIBUTES"]);
+    assert_eq!(engine.view().env_changed, ["OTEL_LOGS_EXPORT_INTERVAL"]);
+
+    rig.api.push_get(state_has_current(&prefix_of('Z'), false));
+    rig.api.push_rotate(created_with_env('N', serde_json::json!({ "OTEL_LOGS_EXPORT_INTERVAL": "60000" })));
+    run(&engine, &rig, Trigger::User, T0 + HOUR);
+    assert!(engine.view().env_rejected.is_empty(), "이전 201의 거부 기록이 남지 않는다");
+    assert!(engine.view().env_changed.is_empty(), "이미 60000이라 바뀐 키가 없다");
+}
+
+#[test]
+fn r19_disconnect_clears_the_env_report() {
+    let rig = Rig::new("r19-disconnect");
+    write_ready(&rig.path, None);
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env('K', serde_json::json!({ "OTEL_LOG_USER_PROMPTS": "1" })));
+    let engine = LinkEngine::new();
+    run(&engine, &rig, Trigger::Startup, T0);
+    assert!(!engine.view().env_rejected.is_empty());
+    engine.disconnect_with(T0 + MIN, || ());
+    assert!(engine.view().env_rejected.is_empty());
 }

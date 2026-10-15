@@ -700,7 +700,7 @@ export function scenarios(base) {
 const HUB_EP = { targetsHub: true, insecure: false, foreignHost: false };
 const NO_EP = { targetsHub: false, insecure: false, foreignHost: false };
 // 미연동/기본: 수집 준비 안 됨. READY: 텔레메트리 켜짐 + 허브 엔드포인트.
-const LINK_EXTRA = { issueSupported: true, receiptCheckSupported: true, hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false, blockedReason: null, retryAt: null };
+const LINK_EXTRA = { issueSupported: true, receiptCheckSupported: true, hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false, blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [] };
 const LINK_OFF = { ...LINK_EXTRA, telemetryEnabled: false, endpoint: NO_EP, collectionReady: false, blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'] };
 const LINK_READY = { ...LINK_EXTRA, telemetryEnabled: true, endpoint: HUB_EP, collectionReady: true, blockers: [] };
 const FAKE_DEVICE_TOKEN = `mhd_${'x'.repeat(43)}`;
