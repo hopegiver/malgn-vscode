@@ -59,12 +59,9 @@ pub(crate) fn resolve_runner_for_tool(
     canonical_tool_path: &Path,
 ) -> Option<String> {
     if runner == Runner::Npm {
-        if let Some(app_npm) = super::app_node::app_npm_for_global_package(
-            super::app_node::current_layout().as_ref().filter(|_| {
-                super::platform::platform_now() == super::platform::Platform::Mac
-            }),
-            canonical_tool_path,
-        ) {
+        if let Some(app_npm) =
+            super::app_node::app_npm_for_global_package(super::app_node::mac_layout().as_ref(), canonical_tool_path)
+        {
             return Some(app_npm);
         }
     }
@@ -163,7 +160,7 @@ impl ResolvedRunners {
 /// "prefix" 개념이 없어(winget이 스스로 설치 경로를 관리) 와일드카드가
 /// `true`(검사 생략)로 처리한다(설계 §D.5, 새 분기 불필요).
 pub(crate) fn install_prefix_writable(tool: ToolId, runner: Runner, runner_path: &str) -> bool {
-    let layout = super::app_node::current_layout();
+    let layout = super::app_node::mac_layout();
     install_prefix_writable_with(layout.as_ref(), tool, runner, runner_path)
 }
 
@@ -381,6 +378,7 @@ mod tests {
 
     // ── P2-3b ──
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn npm_candidates_include_the_app_managed_npm_and_its_dir_is_on_the_default_mac_path() {
         use super::super::platform::{default_path_dirs, expand_path_tokens, EnvRoots, Platform};

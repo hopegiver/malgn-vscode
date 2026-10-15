@@ -60,6 +60,17 @@ pub(crate) fn current_layout() -> Option<Layout> {
     dirs::home_dir().map(|home| Layout::for_home(&home))
 }
 
+/// 앱 관리 배치가 의미 있는 플랫폼(macOS)에서만 Some. 쓰기권한 검사·러너 선택처럼 "이 PC에 앱
+/// 관리 Node가 있을 수 있는가"를 묻는 곳은 이 함수를 쓴다 — Windows는 항상 None이라 기존
+/// 동작이 그대로다.
+pub(crate) fn mac_layout() -> Option<Layout> {
+    if platform_now() == Platform::Mac {
+        current_layout()
+    } else {
+        None
+    }
+}
+
 /// `ResolvedRunners.app_node`의 값. 사용 가능한 플랫폼(macOS)이고 홈이 있을 때만 Some —
 /// 값 자체는 "이 러너가 관리하는 node 폴더" 경로로, plan_id·표시용이다(실행 파일이 아니다).
 pub(crate) fn runner_path() -> Option<String> {
@@ -97,10 +108,7 @@ pub(crate) fn npm_prefix_env_for(
 }
 
 pub(crate) fn npm_prefix_env(runner: Runner, runner_path: &str) -> Vec<(String, String)> {
-    if platform_now() != Platform::Mac {
-        return Vec::new();
-    }
-    npm_prefix_env_for(current_layout().as_ref(), runner, runner_path)
+    npm_prefix_env_for(mac_layout().as_ref(), runner, runner_path)
 }
 
 /// 이 runner_path가 앱 관리 Node 아래인가(쓰기권한 검사를 npm 전역 prefix 기준으로 바꾸는 데 쓴다).
@@ -319,6 +327,7 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
+    #[cfg(unix)]
     #[test]
     fn runner_path_exists_only_on_mac_with_a_home() {
         let layout = Layout::for_home(Path::new("/Users/x"));
@@ -394,6 +403,7 @@ mod tests {
 
     // ── P2-3b ──
 
+    #[cfg(unix)]
     #[test]
     fn npm_prefix_is_injected_only_for_the_app_managed_npm() {
         let layout = Layout::for_home(Path::new("/Users/x"));
@@ -524,6 +534,7 @@ mod tests {
     }
 
     // 실제 홈 기준 앱 설치 경로를 가진 Node는 앱 러너(Run)로 해석된다 — 설치방식 분류와 계획 해석이 이어지는지.
+    #[cfg(target_os = "macos")]
     #[test]
     fn resolve_plan_routes_an_app_installed_node_to_the_app_runner() {
         use super::super::install_resolver::{resolve_plan, ResolvedAction};

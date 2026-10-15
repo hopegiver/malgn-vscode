@@ -253,7 +253,7 @@ pub(crate) fn resolve_install_plan(tool: ToolId, runners: &ResolvedRunners) -> I
         // 앱 npm 전역 prefix에 설치된 pnpm은 `pnpm add -g`가 전역 bin 설정(셸 rc 수정)을 요구해
         // 실패한다 — 러너에서 제외해 Wrangler 같은 도구가 npm 후보로 넘어가게 한다(app_node 주석).
         if candidate.runner == Runner::Pnpm
-            && super::app_node::is_in_app_npm_global(super::app_node::current_layout().as_ref(), &runner_path)
+            && super::app_node::is_in_app_npm_global(super::app_node::mac_layout().as_ref(), &runner_path)
         {
             continue;
         }
@@ -795,9 +795,10 @@ mod tests {
 
     // P2-3b: 앱 npm 전역 prefix의 pnpm은 `pnpm add -g`가 셸 rc 수정을 요구해 쓸 수 없다(실측:
     // ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH) — Wrangler 설치는 pnpm 대신 npm 후보로 넘어간다.
+    #[cfg(target_os = "macos")]
     #[test]
     fn wrangler_install_skips_an_app_npm_global_pnpm_and_uses_npm() {
-        let layout = super::super::app_node::current_layout().expect("home");
+        let layout = super::super::app_node::mac_layout().expect("macOS 홈");
         let app_pnpm = layout.npm_global_bin().join("pnpm").to_string_lossy().to_string();
         let app_npm = layout.node_bin_dir().join("npm").to_string_lossy().to_string();
         let runners = ResolvedRunners {

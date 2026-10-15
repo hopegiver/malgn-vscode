@@ -138,6 +138,20 @@
 
     // ── default_path_dirs ──
 
+    // OS 무관: 기존 여섯 리터럴은 항상 같은 순서로 맨 앞이고, 홈이 있으면 앱 관리 디렉터리 둘이 뒤따른다.
+    #[test]
+    fn default_path_dirs_mac_keeps_the_six_system_literals_first_then_two_app_dirs() {
+        let dirs = default_path_dirs(Platform::Mac, &mac_roots());
+        assert_eq!(
+            &dirs[..6],
+            ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        );
+        assert_eq!(dirs.len(), 8);
+        assert!(dirs[6].ends_with("node/current/bin") || dirs[6].ends_with(r"node\current\bin"), "{}", dirs[6]);
+        assert!(dirs[7].ends_with("npm-global/bin") || dirs[7].ends_with(r"npm-global\bin"), "{}", dirs[7]);
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn default_path_dirs_mac_matches_existing_six_literals_then_the_two_app_managed_dirs() {
         let roots = mac_roots();
@@ -166,12 +180,14 @@
         );
     }
 
+    // (mac 경로 문자열 비교 — PathBuf 구분자가 호스트에 의존하므로 macOS에서만)
     // 도구 위치 지식(DEV_TOOLS·NPM 러너 후보)과 PATH 조립 목록이 따로 관리되면 어긋난다는
     // 기존 교훈(Windows git/node 가드)을 mac의 앱 관리 디렉터리에도 적용한다 — 양방향이다:
     //  ① 앱 기준 폴더(`~/.local/share/malgn-agent/…`)를 가리키는 모든 mac 후보의 디렉터리는
     //     default_path_dirs(Mac)에 들어 있어야 한다(후보만 늘리고 PATH를 빼먹으면 실패).
     //  ② default_path_dirs(Mac)의 앱 기준 폴더 디렉터리는 적어도 하나의 후보가 가리켜야 한다
     //     (PATH만 늘리고 후보를 빼먹으면 실패).
+    #[cfg(target_os = "macos")]
     #[test]
     fn default_path_dirs_mac_and_app_managed_path_candidates_cover_each_other() {
         use crate::dev_tools::node_install::BASE_TILDE;
@@ -376,6 +392,17 @@
     // ── compose_path_env(골든 테스트 — 설계 §C.3.2) ──
 
     #[test]
+    fn compose_path_env_mac_keeps_the_existing_six_dirs_as_the_prefix() {
+        let roots = mac_roots();
+        let with_runner = compose_path_env(Platform::Mac, Some("/opt/homebrew/bin/brew"), &roots);
+        let none = compose_path_env(Platform::Mac, None, &roots);
+        const SIX: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+        assert!(with_runner.starts_with(SIX), "{with_runner}");
+        assert!(none.starts_with(SIX), "{none}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn compose_path_env_mac_matches_full_string_exactly() {
         let roots = mac_roots();
         let path = compose_path_env(Platform::Mac, Some("/opt/homebrew/bin/brew"), &roots);
@@ -392,6 +419,7 @@
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn compose_path_env_mac_none_runner_matches_defaults_exactly() {
         let roots = mac_roots();
@@ -406,6 +434,7 @@
 
     // 앱 관리 npm이 러너일 때: 러너 bin(node/current/bin)이 맨 앞으로 오고 기본 목록의 같은
     // 디렉터리는 중복 배제된다 — npm의 `#!/usr/bin/env node`가 같은 폴더의 node를 쓴다.
+    #[cfg(target_os = "macos")]
     #[test]
     fn compose_path_env_mac_with_app_managed_npm_runner_puts_its_bin_first_without_duplicates() {
         let roots = mac_roots();
