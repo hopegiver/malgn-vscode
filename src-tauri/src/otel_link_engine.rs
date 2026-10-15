@@ -1081,3 +1081,5 @@ enum MintNext {
 pub(crate) mod testkit;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_r20;

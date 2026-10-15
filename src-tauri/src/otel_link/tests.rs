@@ -1259,6 +1259,8 @@ fn rv09_revoked_mark_ends_when_the_hub_answers_differently_or_the_key_or_connect
     let s = status_after(&engine, &rig);
     assert!(!s.revoked_by_hub && !s.confirm_required, "{s:?}");
     assert_eq!(s.masked.as_deref(), Some("mhk_NNNN…"));
+    // R18 N-14: 표시(앞 8자 대조)뿐 아니라 엔진의 폐기 기록 자체가 새 키 적용 때 비워진다.
+    assert_eq!(engine.view().revoked_prefix, None);
 
     // (c) 파일의 키가 바뀌었다(앞 8자 불일치) — 이전 키의 판정을 새 키에 씌우지 않는다.
     let rig = Rig::new("rv09-end-c");
