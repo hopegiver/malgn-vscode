@@ -251,6 +251,17 @@ function revokedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
         : '선택 · 웹에서 폐기된 이 기기 수집키를 다시 발급할지 확인이 필요합니다.',
     };
   }
+  if (!status.confirmDeclined) {
+    // 폐기 판정은 이어지지만(RV-09) 그 뒤 점검이 일시 오류로 끝나 재발급을 물을 수 있는지 아직 모른다. 사람이 거절한 것도 아니다.
+    return {
+      ...base,
+      state: 'todo',
+      action: 'retry',
+      tag: '폐기됨 · 재확인 필요',
+      detail: `웹에서 이 기기의 수집키가 폐기되어 ${onFile ? `설정 파일에 남아 있는 키(${masked})` : '설정 파일에 남아 있는 키'}로는 수집되지 않습니다. 허브에서 재발급 여부를 아직 다시 확인하지 못했습니다. 바로 확인하려면 [다시 시도]를 누르세요.${noticeTail(status)}`,
+      slim: '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다. 허브를 다시 확인하지 못했습니다.',
+    };
+  }
   return {
     ...base,
     state: 'todo',
@@ -383,8 +394,9 @@ function otelLinkStep(link: OtelLink): OnboardingStep {
   const status = link.status;
   if (!link.loaded || !status) return { ...base, state: 'loading', detail: '수집키 적용 상태 확인 중…' };
   // 웹에서 폐기됐다는 허브의 판정이 있으면 파일에 키가 남아 있어도(applied/confirmed) 그 판정이 먼저다(RV-01).
-  const revokedByHub = status.hubConnected && (status.confirmRequired || status.confirmDeclined);
-  if (revokedByHub && (status.state === 'unlinked' || status.state === 'applied' || status.state === 'confirmed')) {
+  // (otelLinkText.ts의 revokedByHub와 같은 식 — 이 파일은 타입 import만 두어 번들러 없이 시험하므로 값 import를 쓰지 않는다.)
+  const revoked = status.confirmRequired || status.confirmDeclined || status.revokedByHub === true;
+  if (status.hubConnected && revoked && (status.state === 'unlinked' || status.state === 'applied' || status.state === 'confirmed')) {
     return revokedStep(base, status);
   }
   switch (status.state) {

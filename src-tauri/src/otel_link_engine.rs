@@ -18,6 +18,7 @@
 //   - 일시 오류 백오프 간격(D-15)       backoff_ms / next_retry_at
 //   - 연속 유실 점검 수(D-5)            lost_checks
 //   - 설정 쓰기 실패 플래그+원문(D-5)   pending_write
+//   - 웹 폐기 판정을 받은 파일 키(RV-09) revoked_prefix
 //
 // R-4(수집키 원문의 키체인 사본)는 채택하지 않았다. 근거는 `otel_link.rs` 머리말.
 //
@@ -181,6 +182,11 @@ struct Memory {
     watch: Option<Watch>,
     confirmed_prefix: Option<String>,
     first_data_timed_out: bool,
+    /// 허브가 `confirm_required`(웹에서 폐기)로 판정한 순간 settings.json에 있던 키의 앞 8자. 그 키가 파일에 남아 있는 동안
+    /// 다음 점검이 일시 오류(5xx·네트워크·429·기능 없음)로 끝나도 폐기 판정을 유지하는 근거다(RV-09). 허브가 다른 판정을
+    /// 성공 응답으로 주거나(`dispatch`), 새 키가 적용되거나(`after_applied`), 연결이 바뀌면(메모리 초기화) 비운다.
+    /// 앱 재시작 때는 사라지지만 서버가 같은 판정을 다시 준다(영속하지 않는다).
+    revoked_prefix: Option<String>,
 }
 
 /// UI가 쓰는 엔진 상태 복사본(원문 없음).
@@ -193,6 +199,8 @@ pub(crate) struct RuntimeView {
     pub waiting_first_data: bool,
     /// 15분 안에 첫 데이터가 오지 않아 폴링을 멈췄다.
     pub first_data_timed_out: bool,
+    /// 허브가 폐기로 판정한 파일 키의 앞 8자(`Memory::revoked_prefix`) — 일시 오류 점검 뒤에도 폐기 표시를 유지한다.
+    pub revoked_prefix: Option<String>,
 }
 
 #[derive(Default)]
@@ -282,6 +290,7 @@ impl LinkEngine {
             confirmed_prefix: m.confirmed_prefix.clone(),
             waiting_first_data: m.watch.is_some(),
             first_data_timed_out: m.first_data_timed_out,
+            revoked_prefix: m.revoked_prefix.clone(),
         })
     }
 
@@ -440,9 +449,14 @@ impl LinkEngine {
         if state.issue_policy != IssuePolicy::HasCurrent {
             self.with(|m| m.pending_write = None);
         }
+        // 허브가 성공 응답으로 폐기 확인을 요구하지 않는 판정을 줬다 — 이전 폐기 판정은 더 이어 가지 않는다(RV-09).
+        // (GET이 실패한 점검은 여기에 오지 않으므로 일시 오류로는 지워지지 않는다.)
+        if state.issue_policy != IssuePolicy::ConfirmRequired && !self.is_stale(st) {
+            self.with(|m| m.revoked_prefix = None);
+        }
         match state.issue_policy {
             IssuePolicy::Auto => self.mint(env, token, Mint::Create { confirm: false }, now, st),
-            IssuePolicy::ConfirmRequired => self.need_confirm(),
+            IssuePolicy::ConfirmRequired => self.need_confirm(env, st),
             IssuePolicy::Blocked => Phase::Blocked(state.blocked_reason),
             IssuePolicy::HasCurrent => match state.current {
                 Some(cur) => self.has_current(env, token, cur, now, st),
@@ -453,14 +467,20 @@ impl LinkEngine {
     }
 
     /// D-1: 사람에게 묻는다. 이번 실행에서 이미 거절했다면 묻지 않는다.
-    fn need_confirm(&self) -> Phase {
+    fn need_confirm(&self, env: &Env, st: &RunState) -> Phase {
         // 웹에서 폐기된 키다 — 파일에 남은 그 키를 같은 실행에서 이전에 확인한 수신(`confirmed_prefix`)·진행 중이던
         // 첫 데이터 확인(`watch`)·타임아웃 안내가 "정상 수집 중"처럼 가리지 않게 비운다(RV-01).
-        self.with(|m| {
-            m.confirmed_prefix = None;
-            m.watch = None;
-            m.first_data_timed_out = false;
-        });
+        // 그 키의 앞 8자를 `revoked_prefix`에 남겨, 다음 점검이 일시 오류로 끝나도 폐기 표시가 사라지지 않게 한다(RV-09).
+        // 낡은 점검(연결이 바뀜)은 새 연결의 메모리를 건드리지 않는다.
+        let file_prefix = crate::otel_link::file_key_prefix(env.path);
+        if !self.is_stale(st) {
+            self.with(|m| {
+                m.confirmed_prefix = None;
+                m.watch = None;
+                m.first_data_timed_out = false;
+                m.revoked_prefix = file_prefix;
+            });
+        }
         if self.with(|m| m.declined) {
             Phase::ConfirmDeclined
         } else {
@@ -547,6 +567,7 @@ impl LinkEngine {
     /// 새 키가 설정에 적용됐다 — 첫 데이터 폴링을 시작한다.
     fn after_applied(&self, prefix: &str, now: u64) {
         self.with(|m| {
+            m.revoked_prefix = None; // 키가 바뀌었다 — 이전 키의 폐기 판정은 끝났다(RV-09).
             m.confirmed_prefix = None;
             m.first_data_timed_out = false;
             m.watch = Some(Watch {
@@ -685,7 +706,7 @@ impl LinkEngine {
             },
             // D-10: 직전 키가 수동 폐기됨 → confirm_required와 같이 처리.
             (409, "REISSUE_CONFIRMATION_REQUIRED") => match kind {
-                Mint::Create { confirm: false } => MintNext::Done(self.need_confirm()),
+                Mint::Create { confirm: false } => MintNext::Done(self.need_confirm(env, st)),
                 // 이미 확인을 받아 보냈는데 또 요구하면 서버 계약과 어긋난다 — 자동 재시도하지 않는다.
                 _ => MintNext::Done(Phase::HubRejected),
             },

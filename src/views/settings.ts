@@ -220,6 +220,8 @@ let reissueConfirmOpen = false;
 export async function askReissueConfirm(): Promise<void> {
   if (reissueConfirmOpen) return;
   reissueConfirmOpen = true;
+  // 새 키가 적용됐는지는 확인창에 답하기 전의 파일 키와 비교해야 알 수 있다(RV-09). 키가 없던 상태는 null.
+  const beforeMasked: string | null | undefined = state.ingestLink.status ? state.ingestLink.status.masked : undefined;
   try {
     const accepted = await confirmDialog(REISSUE_CONFIRM_MESSAGE, {
       title: '수집키 재발급',
@@ -229,7 +231,7 @@ export async function askReissueConfirm(): Promise<void> {
     });
     state.ingestLink.status = await answerIngestReissueConfirm(accepted);
     state.ingestLink.loaded = true;
-    const outcome = reissueOutcome(state.ingestLink.status, accepted);
+    const outcome = reissueOutcome(state.ingestLink.status, accepted, beforeMasked);
     if (outcome.text) showToast(outcome.text);
   } catch (err) {
     showToast(`수집키 재발급을 진행하지 못했습니다: ${errorMessage(err)}`);

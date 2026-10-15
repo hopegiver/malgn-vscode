@@ -7,7 +7,7 @@ import { disconnectToast, keyManagedByHub, reissueOutcome } from '../../src/otel
 const HUB_EP = { targetsHub: true, insecure: false, foreignHost: false };
 const base = {
   state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true, telemetryEnabled: true, endpoint: HUB_EP,
-  collectionReady: true, blockers: [], hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false,
+  collectionReady: true, blockers: [], hubConnected: true, confirmRequired: false, confirmDeclined: false, revokedByHub: false, waitingFirstData: false,
   firstDataTimedOut: false, blockedReason: null, retryAt: null, notice: null,
 };
 const st = (over = {}) => ({ ...base, ...over });
@@ -20,37 +20,65 @@ test('RV-02: 허브에 연결되어 앱이 관리할 수 있을 때만 수동 �
   assert.equal(keyManagedByHub(null), false, '상태를 못 읽었으면 막지 않는다(백엔드가 최종 판단)');
 });
 
-test('RV-06: 재발급 성공 토스트는 응답이 실제로 적용됨일 때만 나온다', () => {
-  const ok = reissueOutcome(st({ state: 'applied', masked: 'mhk_AbCd…', waitingFirstData: true }), true);
+const OLD = 'mhk_OLDK…';
+const NEW = 'mhk_AbCd…';
+
+test('RV-06: 재발급 성공 토스트는 다른 키가 적용됐다는 관측이 있을 때만 나온다', () => {
+  const ok = reissueOutcome(st({ state: 'applied', masked: NEW, waitingFirstData: true }), true, OLD);
   assert.equal(ok.kind, 'applied');
   assert.match(ok.text, /다시 발급해 적용했습니다/);
-  assert.equal(reissueOutcome(st({ state: 'confirmed', masked: 'mhk_AbCd…' }), true).kind, 'applied');
-  // 일시 보조 안내(notice)가 붙어도 적용 사실은 성공이다.
-  assert.equal(reissueOutcome(st({ state: 'applied', masked: 'mhk_AbCd…', notice: fail('unreachable', 'x') }), true).kind, 'applied');
+  assert.equal(reissueOutcome(st({ state: 'confirmed', masked: NEW }), true, OLD).kind, 'applied');
+  // 키가 없던 상태(null)에서 시작해 키가 생겼다.
+  assert.equal(reissueOutcome(st({ state: 'applied', masked: NEW }), true, null).kind, 'applied');
+  // 일시 보조 안내(notice)가 붙어도 새 키가 적용된 사실은 성공이다.
+  assert.equal(reissueOutcome(st({ state: 'applied', masked: NEW, notice: fail('unreachable', 'x') }), true, OLD).kind, 'applied');
+});
+
+test('RV-09: 폐기된 키가 그대로 남은 채 발급 요청이 일시 오류로 끝나면 성공이라 말하지 않는다', () => {
+  const notice = fail('unreachable', '허브에 연결하지 못했습니다. 잠시 후 다시 시도합니다.');
+  // 백엔드가 이 경우 내는 모양: applied(이전 키) + revokedByHub(confirm 플래그 꺼짐) + notice.
+  for (const status of [
+    st({ state: 'applied', masked: OLD, revokedByHub: true, notice }),
+    st({ state: 'confirmed', masked: OLD, revokedByHub: true, notice }),
+    st({ state: 'applied', masked: OLD, revokedByHub: true, notice: fail('rateLimited', '요청이 많아 잠시 후 다시 시도합니다.') }),
+  ]) {
+    const o = reissueOutcome(status, true, OLD);
+    assert.equal(o.kind, 'failed', JSON.stringify(status));
+    assert.ok(!o.text.includes('적용했습니다'), o.text);
+    assert.ok(o.text.includes(status.notice.message), '일시 원인을 알린다');
+    assert.match(o.text, /폐기된 수집키가 아직 이 PC에 남아 있습니다/);
+  }
+  // 폐기 표시가 없더라도 키가 그대로면(같은 마스킹) 새 키가 적용됐다는 관측이 없다.
+  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: OLD }), true, OLD).kind, 'applied');
+  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: OLD, notice: fail('unreachable', 'x') }), true, OLD).kind, 'applied');
+  // 답하기 전 상태를 몰랐다면 관측할 수 없다.
+  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: NEW }), true, undefined).kind, 'applied');
+  // 새 키가 적용됐더라도 폐기 판정이 이어지는 상태라면(다른 점검이 새 판정을 준 경우 등) 성공이라 말하지 않는다.
+  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: NEW, revokedByHub: true }), true, OLD).kind, 'applied');
 });
 
 test('RV-06: 동의했지만 결과가 적용이 아니면 성공이라 말하지 않고 원인을 보여 준다', () => {
   for (const cause of ['notReady', 'endpointNotHub', 'credentialLimit', 'unreachable', 'blocked']) {
-    const o = reissueOutcome(st({ state: 'failed', failure: fail(cause, `고정 문구:${cause}`) }), true);
+    const o = reissueOutcome(st({ state: 'failed', failure: fail(cause, `고정 문구:${cause}`) }), true, OLD);
     assert.equal(o.kind, 'failed', cause);
     assert.ok(!o.text.includes('적용했습니다'), o.text);
     assert.ok(o.text.includes(`고정 문구:${cause}`), o.text);
   }
   // 다른 점검이 진행 중이라 백엔드가 아무것도 하지 않은 경우: 여전히 확인 대기(또는 파일에 폐기된 키가 남은 applied+confirmRequired).
   for (const status of [st({ confirmRequired: true }), st({ state: 'applied', masked: 'mhk_AbCd…', confirmRequired: true }), st({ confirmDeclined: true })]) {
-    const o = reissueOutcome(status, true);
+    const o = reissueOutcome(status, true, 'mhk_AbCd…');
     assert.equal(o.kind, 'pending');
     assert.ok(!o.text.includes('적용했습니다'), o.text);
   }
-  assert.equal(reissueOutcome(st({ state: 'issuing' }), true).kind, 'pending');
+  assert.equal(reissueOutcome(st({ state: 'issuing' }), true, null).kind, 'pending');
   // 키가 없고 실패 원인도 없다(예: 허브 연결 없음) — 성공이 아니다.
-  const none = reissueOutcome(st({ hubConnected: false }), true);
+  const none = reissueOutcome(st({ hubConnected: false }), true, null);
   assert.equal(none.kind, 'failed');
   assert.ok(!none.text.includes('적용했습니다'));
 });
 
 test('RV-06: 거절은 토스트가 없다', () => {
-  assert.deepEqual(reissueOutcome(st({ confirmDeclined: true }), false), { kind: 'declined', text: null });
+  assert.deepEqual(reissueOutcome(st({ confirmDeclined: true }), false, null), { kind: 'declined', text: null });
 });
 
 test('RV-06: 해제 토스트는 이 PC의 수집키를 실제로 지웠을 때만 "지웠습니다"라고 말한다', () => {

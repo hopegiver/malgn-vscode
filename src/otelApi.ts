@@ -145,6 +145,9 @@ export interface IngestLinkStatus {
   readonly confirmRequired: boolean;
   // 사용자가 확인을 거절했다(이번 앱 실행 동안 다시 묻지 않는다).
   readonly confirmDeclined: boolean;
+  // 허브가 파일에 남은 키를 웹에서 폐기된 것으로 판정했고 그 판정이 이어지고 있다. confirmRequired/confirmDeclined이면 항상 true이고,
+  // 그 밖에 폐기 판정을 받은 키가 파일에 남은 채 다음 점검이 일시 오류로 끝나 재확인을 못 한 경우에도 true다.
+  readonly revokedByHub: boolean;
   // 적용된 키의 첫 데이터를 기다리는 중(최대 15분) / 15분 안에 오지 않아 확인을 멈춤.
   readonly waitingFirstData: boolean;
   readonly firstDataTimedOut: boolean;

@@ -268,6 +268,10 @@ pub struct IngestLinkStatus {
     pub confirm_required: bool,
     /// 사용자가 확인을 거절했다(이번 앱 실행 동안 다시 묻지 않는다).
     pub confirm_declined: bool,
+    /// 허브가 이 기기의 파일 키를 웹에서 폐기된 것으로 판정했고 그 판정이 아직 이어지고 있다. `confirm_required`·
+    /// `confirm_declined`가 켜져 있으면 항상 true이고, 그 밖에 폐기 판정을 받은 키가 파일에 그대로 남은 채 다음 점검이
+    /// 일시 오류로 끝나 확인 여부를 아직 모를 때도 true다(RV-09). 허브가 다른 판정을 주거나 키·연결이 바뀌면 false.
+    pub revoked_by_hub: bool,
     /// 적용된 키의 첫 데이터를 기다리는 중(D-12, 최대 15분).
     pub waiting_first_data: bool,
     /// 15분 안에 첫 데이터가 오지 않아 확인을 멈췄다 — "새 Claude Code 세션을 열면 수집이 시작됩니다".
@@ -297,6 +301,7 @@ impl IngestLinkStatus {
             hub_connected: false,
             confirm_required: false,
             confirm_declined: false,
+            revoked_by_hub: false,
             waiting_first_data: false,
             first_data_timed_out: false,
             blocked_reason: None,
@@ -402,9 +407,13 @@ pub(crate) fn compose_status(
     // 웹에서 폐기됐다는 허브의 판정(confirm_required)이 파일 사실보다 우선한다 — 파일에 키가 남아 있어도 그 키는
     // 수집되지 않는다. 같은 실행에서 이전에 확인한 수신(`confirmed_prefix`)·첫 데이터 대기 표시도 이 상태를
     // 가리지 않는다(RV-01). 상태값(`applied`/`unlinked`)은 파일 사실 그대로 두고 플래그로 알린다.
-    let revoked_by_hub = matches!(view.phase, Phase::ConfirmRequired | Phase::ConfirmDeclined);
+    // 폐기 판정을 받은 키가 파일에 그대로 남아 있으면(`revoked_prefix`) 다음 점검이 일시 오류로 끝나 phase가 바뀌었어도
+    // 판정은 이어진다 — 키가 바뀌었거나(앞 8자 불일치) 허브가 다른 판정을 줄 때(엔진이 비운다)까지(RV-09).
+    let file_prefix = masked_prefix(&s.masked);
+    let revoked_kept = file_prefix.is_some() && file_prefix == view.revoked_prefix;
+    let revoked_by_hub = revoked_kept || matches!(view.phase, Phase::ConfirmRequired | Phase::ConfirmDeclined);
+    s.revoked_by_hub = revoked_by_hub;
     if s.state == IngestLinkState::Applied && !revoked_by_hub {
-        let file_prefix = masked_prefix(&s.masked);
         if file_prefix.is_some() && file_prefix == view.confirmed_prefix {
             s.state = IngestLinkState::Confirmed;
         } else {

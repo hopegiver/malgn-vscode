@@ -17,6 +17,7 @@ const EXTRA = {
   hubConnected: true,
   confirmRequired: false,
   confirmDeclined: false,
+  revokedByHub: false,
   waitingFirstData: false,
   firstDataTimedOut: false,
   blockedReason: null,
@@ -305,6 +306,28 @@ test('RV-01: 파일에 키가 없는 경우의 기존 문구·배지는 그대�
 test('RV-01: 허브 연결이 없으면(만료 등) 폐기 판정을 근거로 삼지 않는다', () => {
   const s = step(st('applied', { masked: KEY, confirmRequired: true, hubConnected: false }));
   assert.equal(s.state, 'partial', '플래그가 남아 있어도 연결이 없으면 파일 사실(적용됨)로 돌아간다');
+});
+
+// ======================= R17 리뷰 RV-09: 폐기 판정 뒤 일시 오류 점검이 폐기 표시를 지우지 않는다 =======================
+
+test('RV-09: 폐기 판정을 받은 키가 남은 채 점검이 일시 오류로 끝나도 "적용됨"으로 돌아가지 않고 재확인 경로를 준다', () => {
+  const notice = { cause: 'unreachable', message: '허브에 연결하지 못했습니다. 네트워크 상태를 확인하세요. 잠시 후 다시 시도합니다.' };
+  for (const [label, state] of [['applied', 'applied'], ['confirmed', 'confirmed']]) {
+    // 백엔드가 만드는 모양: 파일 상태 + revokedByHub(confirm 플래그는 꺼짐) + 일시 원인 notice.
+    const s = step(st(state, { masked: KEY, revokedByHub: true, notice }));
+    assert.equal(s.state, 'todo', label);
+    assert.match(s.tag, /^폐기됨/, label);
+    assert.equal(s.action, 'retry', `${label}: 확인창이 아니라 [다시 시도]로 다시 확인한다`);
+    assert.ok(s.detail.includes(KEY), s.detail);
+    assert.ok(s.detail.includes(`마지막 점검: ${notice.message}`), '일시 원인은 덧붙여 알린다');
+    assert.ok(!s.detail.includes('거절'), `${label}: 사람이 거절한 것이 아니다: ${s.detail}`);
+    for (const claim of [...CLAIM_CONFIRMED, '수집키가 적용되었습니다', '수집키는 적용되었지만']) {
+      assert.ok(!s.detail.includes(claim), `${label}: "${claim}" in ${s.detail}`);
+    }
+    assert.ok(slim(st(state, { masked: KEY, revokedByHub: true, notice }))?.includes('폐기'), `${label}: 홈 한 줄`);
+  }
+  // 허브 연결이 없으면 판정을 근거로 삼지 않는다(RV-01과 같은 규칙).
+  assert.equal(step(st('applied', { masked: KEY, revokedByHub: true, hubConnected: false })).state, 'partial');
 });
 
 // ======================= R17 리뷰 RV-07: 일시 원인은 적용·수신 확인을 지우지 않는다 =======================

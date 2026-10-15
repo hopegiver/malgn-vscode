@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::fs_atomic::backup_path_for;
-use crate::otel_hub_client::IssuePolicy;
+use crate::otel_hub_client::{ApiError, IssuePolicy};
 use crate::otel_ingest_key::EndpointAssessment;
+use crate::otel_link_engine::ProbeResult;
 use crate::otel_link_engine::testkit::*;
 use crate::otel_settings::{
     apply_ingest_key, read_ingest_inputs, remove_ingest_key, save_to_settings_file, OtelSavePayload,
@@ -44,6 +45,7 @@ fn idle_view() -> RuntimeView {
         confirmed_prefix: None,
         waiting_first_data: false,
         first_data_timed_out: false,
+        revoked_prefix: None,
     }
 }
 
@@ -395,7 +397,7 @@ fn link_status_json_shape_is_the_frontend_contract() {
     let applied = IngestLinkStatus::new(IngestLinkState::Applied, Some("mhk_KKKK…".into()));
     assert_eq!(
         serde_json::to_string(&applied).unwrap(),
-        r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false,"telemetryEnabled":false,"endpoint":{"targetsHub":false,"insecure":false,"foreignHost":false},"collectionReady":false,"blockers":[],"hubConnected":false,"confirmRequired":false,"confirmDeclined":false,"waitingFirstData":false,"firstDataTimedOut":false,"blockedReason":null,"retryAt":null,"notice":null}"#
+        r#"{"state":"applied","masked":"mhk_KKKK…","failure":null,"issueSupported":false,"receiptCheckSupported":false,"telemetryEnabled":false,"endpoint":{"targetsHub":false,"insecure":false,"foreignHost":false},"collectionReady":false,"blockers":[],"hubConnected":false,"confirmRequired":false,"confirmDeclined":false,"revokedByHub":false,"waitingFirstData":false,"firstDataTimedOut":false,"blockedReason":null,"retryAt":null,"notice":null}"#
     );
     let failed = IngestLinkStatus::failed(LinkFailureCause::Blocked, None);
     let json = serde_json::to_value(&failed).unwrap();
@@ -1007,6 +1009,7 @@ fn rv01_revoked_key_still_on_file_is_never_reported_as_confirmed_or_waiting() {
         confirmed_prefix: Some(prefix_of('K')),
         waiting_first_data: true,
         first_data_timed_out: true,
+        revoked_prefix: None,
     };
     for phase in [Phase::ConfirmRequired, Phase::ConfirmDeclined] {
         // applied + confirm 플래그 / (이전에 확인된 수신이 있던) confirmed + confirm 플래그 둘 다 같은 결과다.
@@ -1152,4 +1155,142 @@ fn rv06_disconnect_response_flattens_the_hub_status_and_adds_the_key_outcome() {
     assert_eq!(json["ingest_key"], "removed");
     assert_eq!(serde_json::to_value(IngestKeyRemoval::NotPresent).unwrap(), "notPresent");
     assert_eq!(serde_json::to_value(IngestKeyRemoval::Failed).unwrap(), "failed");
+}
+
+// ======================= R17 리뷰 RV-09: 폐기 판정은 일시 오류 점검으로 사라지지 않는다 =======================
+
+const HOUR: u64 = 3_600_000;
+
+/// 웹에서 폐기된 키 `S`가 파일에 남고, 허브가 `confirm_required`로 판정한 상태의 엔진.
+fn engine_with_revoked_key_on_file(rig: &Rig) -> LinkEngine {
+    write_ready(&rig.path, Some(&fake_key('S')));
+    let engine = LinkEngine::new();
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    run(&engine, rig, Trigger::Startup, T0);
+    let s = status_after(&engine, rig);
+    assert!(s.confirm_required && s.revoked_by_hub, "전제: 폐기 판정");
+    engine
+}
+
+/// 폐기 표시가 유지되는지: 파일 키는 그대로 보이되 확인됨/대기가 아니고, 일시 원인은 notice로 덧붙는다.
+fn assert_still_revoked(label: &str, s: &IngestLinkStatus, cause: LinkFailureCause) {
+    assert!(s.revoked_by_hub, "{label}: 폐기 표시가 사라졌다");
+    assert_eq!(s.state, IngestLinkState::Applied, "{label}");
+    assert_eq!(s.masked.as_deref(), Some("mhk_SSSS…"), "{label}");
+    assert!(!s.waiting_first_data && !s.first_data_timed_out, "{label}: 폐기된 키를 수신 대기로 보여선 안 된다");
+    assert!(s.failure.is_none(), "{label}: 일시 오류는 실패로 덮지 않는다");
+    assert_eq!(s.notice.as_ref().map(|n| n.cause), Some(cause), "{label}: 일시 원인은 덧붙여 알린다");
+}
+
+#[test]
+fn rv09_accepted_reissue_that_fails_transiently_leaves_the_revoked_key_marked_revoked() {
+    for (label, reply, cause) in [
+        ("5xx", Err(http(503, "UNAVAILABLE")), LinkFailureCause::Unreachable),
+        ("네트워크", Err(ApiError::NotSent), LinkFailureCause::Unreachable),
+        ("429", Err(http(429, "RATE_LIMITED")), LinkFailureCause::RateLimited),
+    ] {
+        let rig = Rig::new("rv09-post");
+        let engine = engine_with_revoked_key_on_file(&rig);
+        rig.api.push_create(reply);
+
+        engine.accept_confirm(&rig.env(), T0 + 5_000);
+
+        assert_eq!(rig.api.kinds(), ["get", "create:true"], "{label}");
+        let s = status_after(&engine, &rig);
+        assert_still_revoked(label, &s, cause);
+        assert!(std::fs::read_to_string(&rig.path).unwrap().contains(&fake_key('S')), "{label}: 파일은 바뀌지 않았다");
+        assert_status_clean("rv09", &s, &[&fake_key('S')]);
+    }
+}
+
+#[test]
+fn rv09_periodic_and_retry_checks_that_fail_transiently_keep_the_revoked_mark() {
+    let rig = Rig::new("rv09-get");
+    let engine = engine_with_revoked_key_on_file(&rig);
+
+    // 1시간 정기 점검의 GET이 끊긴다.
+    rig.api.push_get(Err(ApiError::NotSent));
+    run(&engine, &rig, Trigger::Periodic, T0 + HOUR);
+    assert_still_revoked("정기 점검 GET 실패", &status_after(&engine, &rig), LinkFailureCause::Unreachable);
+
+    // 거절 → [다시 시도]의 GET이 끊겨도 폐기 표시는 이어진다(확인창 대기가 아니라 '재확인 필요').
+    engine.decline_confirm();
+    rig.api.push_get(Err(http(500, "INTERNAL")));
+    run(&engine, &rig, Trigger::User, T0 + 2 * HOUR);
+    let s = status_after(&engine, &rig);
+    assert_still_revoked("다시 시도 GET 실패", &s, LinkFailureCause::Unreachable);
+    assert!(!s.confirm_required, "확인창을 다시 띄우지 않는다(accept할 대기 상태가 아니다)");
+
+    // 기능 없음(401 + 연결 정상)도 일시 원인이다.
+    let rig2 = Rig::new("rv09-feature").with_probe(&[ProbeResult::Alive]);
+    let engine2 = engine_with_revoked_key_on_file(&rig2);
+    rig2.api.push_get(Err(http(401, "UNAUTHORIZED")));
+    run(&engine2, &rig2, Trigger::Periodic, T0 + HOUR);
+    assert_still_revoked("기능 없음", &status_after(&engine2, &rig2), LinkFailureCause::FeatureUnavailable);
+}
+
+#[test]
+fn rv09_revoked_mark_ends_when_the_hub_answers_differently_or_the_key_or_connection_changes() {
+    // (a) 성공 점검이 다른 판정(현행 키가 파일 키와 같다)을 준다.
+    let rig = Rig::new("rv09-end-a");
+    let engine = engine_with_revoked_key_on_file(&rig);
+    rig.api.push_get(Err(ApiError::NotSent));
+    run(&engine, &rig, Trigger::Periodic, T0 + HOUR);
+    assert!(status_after(&engine, &rig).revoked_by_hub);
+    rig.api.push_get(state_has_current(&prefix_of('S'), true));
+    run(&engine, &rig, Trigger::Resume, T0 + 2 * HOUR);
+    let s = status_after(&engine, &rig);
+    assert!(!s.revoked_by_hub && s.state == IngestLinkState::Confirmed, "{s:?}");
+
+    // (b) 재발급이 성공해 새 키가 적용된다.
+    let rig = Rig::new("rv09-end-b");
+    let engine = engine_with_revoked_key_on_file(&rig);
+    rig.api.push_create(Err(ApiError::NotSent));
+    engine.accept_confirm(&rig.env(), T0 + 5_000);
+    assert!(status_after(&engine, &rig).revoked_by_hub);
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    run(&engine, &rig, Trigger::User, T0 + 10_000);
+    rig.api.push_create(created('N'));
+    engine.accept_confirm(&rig.env(), T0 + 15_000);
+    let s = status_after(&engine, &rig);
+    assert!(!s.revoked_by_hub && !s.confirm_required, "{s:?}");
+    assert_eq!(s.masked.as_deref(), Some("mhk_NNNN…"));
+
+    // (c) 파일의 키가 바뀌었다(앞 8자 불일치) — 이전 키의 판정을 새 키에 씌우지 않는다.
+    let rig = Rig::new("rv09-end-c");
+    let engine = engine_with_revoked_key_on_file(&rig);
+    rig.api.push_get(Err(ApiError::NotSent));
+    run(&engine, &rig, Trigger::Periodic, T0 + HOUR);
+    apply_ingest_key(&rig.path, crate::otel_ingest_key::SecretString::new(&fake_key('M'))).unwrap();
+    let s = status_after(&engine, &rig);
+    assert!(!s.revoked_by_hub, "{s:?}");
+    assert_eq!(s.masked.as_deref(), Some("mhk_MMMM…"));
+
+    // (d) 연결이 바뀐다(재연결·해제).
+    for disconnect in [false, true] {
+        let rig = Rig::new("rv09-end-d");
+        let engine = engine_with_revoked_key_on_file(&rig);
+        rig.api.push_get(Err(ApiError::NotSent));
+        run(&engine, &rig, Trigger::Periodic, T0 + HOUR);
+        assert!(status_after(&engine, &rig).revoked_by_hub);
+        if disconnect {
+            engine.on_disconnected(T0 + 2 * HOUR);
+        } else {
+            engine.on_connected();
+        }
+        assert!(!status_after(&engine, &rig).revoked_by_hub, "disconnect={disconnect}");
+    }
+}
+
+#[test]
+fn rv09_no_key_on_file_means_nothing_to_keep_marked() {
+    // 폐기 판정 당시 파일에 키가 없었다 — 이후 일시 오류가 나도 '폐기된 키가 남음' 표시를 만들지 않는다.
+    let rig = Rig::new("rv09-nokey");
+    write_ready(&rig.path, None);
+    let engine = LinkEngine::new();
+    rig.api.push_get(state_policy(IssuePolicy::ConfirmRequired, None));
+    run(&engine, &rig, Trigger::Startup, T0);
+    rig.api.push_get(Err(ApiError::NotSent));
+    run(&engine, &rig, Trigger::Periodic, T0 + HOUR);
+    assert!(!status_after(&engine, &rig).revoked_by_hub);
 }
