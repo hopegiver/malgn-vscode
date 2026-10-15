@@ -36,6 +36,8 @@ mod testkit;
 #[cfg(all(test, target_os = "macos"))]
 mod tests;
 #[cfg(all(test, target_os = "macos"))]
+mod tests_codesign;
+#[cfg(all(test, target_os = "macos"))]
 mod tests_sandbox;
 
 pub(crate) use env::{InstallEnv, RealEnv};
@@ -138,6 +140,13 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
     Ok(hex)
 }
 
+/// `codesign -R`에 주는 코드 요구식(앞의 `=`는 "리터럴 요구식" 표기). 실제 codesign에서 의도대로
+/// 평가되는지는 `tests_codesign`(macOS 한정, 네트워크 불필요)이 Apple 플랫폼 바이너리와 ad-hoc
+/// 서명 사본으로 확인한다 — 이 문자열을 고치면 그 테스트가 함께 갱신돼야 한다.
+fn developer_id_requirement() -> String {
+    format!("=anchor apple generic and certificate leaf[subject.OU] = \"{EXPECTED_TEAM_ID}\"")
+}
+
 /// 코드서명 3중 검증. 하나라도 어긋나면 `Err`:
 ///   ① `codesign --verify --strict` — 서명이 유효하고 파일이 변조되지 않았다.
 ///   ② `codesign -dvv` 출력의 `TeamIdentifier=`가 정확히 `HX7739G8FX`다.
@@ -190,12 +199,9 @@ fn verify_node_signature(
         return Err(InstallError::TeamIdMismatch { found: bad.clone() });
     }
 
-    let requirement = format!(
-        "=anchor apple generic and certificate leaf[subject.OU] = \"{EXPECTED_TEAM_ID}\""
-    );
     let chain = env.run_tool(
         CODESIGN,
-        &["--verify".into(), "-R".into(), requirement, node],
+        &["--verify".into(), "-R".into(), developer_id_requirement(), node],
         TOOL_TIMEOUT_QUICK,
         cancel,
     );
