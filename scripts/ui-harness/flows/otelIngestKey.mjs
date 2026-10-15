@@ -79,9 +79,11 @@ export function scenarios(base) {
   // 연동 상태를 돌려주는 커맨드(조회·재시도·재확인·확인 답) 전부가 같은 연결 상태를 말해야 저장 뒤 재조회에서도 상태가 유지된다.
   const withHub = (hubConnected) => {
     const out = { ...base };
-    for (const cmd of ['otel_ingest_link_status', 'otel_link_retry', 'otel_link_recheck', 'otel_link_answer_confirm']) {
+    for (const cmd of ['otel_ingest_link_status', 'otel_link_retry', 'otel_link_recheck']) {
       out[cmd] = { ...base[cmd], hubConnected, issueSupported: true };
     }
+    // 확인창 답은 { status, outcome } 모양이다(R20) — 상태는 안쪽 status에 있다.
+    out.otel_link_answer_confirm = { ...base.otel_link_answer_confirm, status: { ...base.otel_link_answer_confirm.status, hubConnected, issueSupported: true } };
     return out;
   };
   const manualBase = withHub(false);
@@ -109,6 +111,10 @@ export function scenarios(base) {
         if ((await page.locator('#otel-ingest-key').getAttribute('type')) !== 'password') {
           bugs.push({ severity: 'Critical', symptom: '수집키 입력칸이 password 타입이 아님', file: 'src/views/settings.ts:renderIngestKeyBlock' });
         }
+        // R20: 허브에 연결되지 않은 PC의 수집키는 앱이 관리하지 않는다 — "맑은에이전트가 관리합니다" 안내가 없어야 한다.
+        if ((await page.locator('#otel-ingest-key-managed-note').count()) !== 0) {
+          bugs.push({ severity: 'Major', symptom: '허브에 연결되지 않아 앱이 관리하지 않는 수집키에 "맑은에이전트가 관리" 안내가 보임', file: 'src/views/settings.ts:renderIngestKeyBlock' });
+        }
         const bodyText = await page.locator('#otel-ingest-key-block').innerText();
         if (!bodyText.includes('대화·이슈·채팅에 붙여 넣지 마세요')) {
           bugs.push({ severity: 'Major', symptom: '허브 NOTICE 취지의 주의 문구가 없음', file: 'src/views/settings.ts:renderIngestKeyBlock' });
@@ -128,11 +134,12 @@ export function scenarios(base) {
           !/직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다\. 단, 그 뒤 허브에 연결하면 앱이 발급한 키로 교체됩니다/.test(bodyText) ||
           /관리자에게 수집키 발급을 요청/.test(bodyText) ||
           /발급 방법은 허브 관리자에게 문의/.test(bodyText) ||
-          !/관리자에게 해당 수집키의 즉시 폐기를 요청/.test(bodyText)
+          !/허브 웹 \/keys에서 해당 수집키를 "유출 의심"으로 폐기하세요/.test(bodyText)
         ) {
-          bugs.push({ severity: 'Major', symptom: '발급은 "허브 연결 시 앱이 자동 발급·직접 받은 키는 수동 입력"으로, 폐기는 "관리자에게 요청"으로 안내하지 않음', file: 'src/views/settings.ts:INGEST_KEY_COPY' });
+          bugs.push({ severity: 'Major', symptom: '발급은 "허브 연결 시 앱이 자동 발급·직접 받은 키는 수동 입력"으로, 폐기는 "웹 /keys에서 유출 의심으로 폐기"로 안내하지 않음', file: 'src/views/settings.ts:INGEST_KEY_COPY' });
         }
-        if (!/mhd_/.test(bodyText) || /\/keys/.test(bodyText) || /웹에서 발급받아/.test(bodyText)) {
+        // R20: /keys 언급 자체는 폐기 안내("웹 /keys에서 유출 의심으로 폐기")에 쓰인다. 막는 것은 /keys로 *발급*을 유도하는 문구다.
+        if (!/mhd_/.test(bodyText) || /\/keys[^.\n]{0,20}발급/.test(bodyText) || /웹에서 발급받아/.test(bodyText)) {
           bugs.push({ severity: 'Major', symptom: '기기 토큰(mhd_)은 수집키가 아니라는 안내가 없거나 /keys 발급을 유도하는 문구가 있음', file: 'src/views/settings.ts:INGEST_KEY_COPY' });
         }
         // RV-003: 새 세션부터 적용 안내.
@@ -279,7 +286,7 @@ export function scenarios(base) {
         await shot('01-clear-confirm');
         // RV-004: 로컬 삭제는 허브 쪽 폐기가 아니다 + 백업까지 지운다 + 새 세션부터 적용.
         const confirmText = await page.locator('.modal-overlay .modal-body').innerText();
-        if (!confirmText.includes('허브에 등록된 키는 폐기되지 않') || !confirmText.includes('허브 관리자에게 폐기를 요청')) {
+        if (!confirmText.includes('허브에 등록된 키는 폐기되지 않') || !confirmText.includes('허브 웹 /keys에서 "유출 의심"으로 폐기하세요')) {
           bugs.push({ severity: 'Major', symptom: `삭제 확인 문구에 "로컬 삭제는 허브 폐기가 아니다" 안내가 없음: ${JSON.stringify(confirmText)}`, file: 'src/views/settings.ts:INGEST_KEY_COPY.clearConfirm' });
         }
         if (!confirmText.includes('백업 포함') || !confirmText.includes('새로 시작하는 Claude Code 세션부터')) {
@@ -366,6 +373,19 @@ export function scenarios(base) {
         const warn = await page.locator('#otel-ingest-key-warning').innerText();
         if (warn.includes('아래에 등록할 수도 있습니다')) {
           bugs.push({ severity: 'Major', symptom: '입력이 잠겼는데 경고가 "아래에 등록할 수도 있습니다"라고 안내함', file: 'src/views/settings.ts:INGEST_KEY_COPY.warnUnsetHubManaged' });
+        }
+        // R20: 앱이 관리하는 키는 허브 웹 /keys에서 회전할 수 없고 회전은 앱이 한다 — 폐기 뒤 길(재발급/재연결)도 함께 안내한다.
+        const managedNote = page.locator('#otel-ingest-key-managed-note');
+        if ((await managedNote.count()) !== 1) {
+          bugs.push({ severity: 'Major', symptom: '허브 관리 중인데 "맑은에이전트가 관리, 웹에서는 회전 불가" 안내가 없음', file: 'src/views/settings.ts:renderIngestKeyBlock' });
+        } else {
+          const note = await managedNote.innerText();
+          for (const t of ['이 PC의 수집키는 맑은에이전트가 관리합니다', '웹에서는 회전할 수 없고, 회전은 앱이 합니다', '앱에서 다시 발급할 수 있습니다', '앱에서 다시 로그인해 연결해야 합니다']) {
+            if (!note.includes(t)) bugs.push({ severity: 'Major', symptom: `관리 안내에 "${t}"가 없음(실제: ${note})`, file: 'src/onboarding.ts:DEVICE_KEY_MANAGED_NOTE' });
+          }
+        }
+        if (/웹[^.\n]{0,15}(에서|으로)[^.\n]{0,10}(회전|교체)(하세요|해 주세요|하십시오)/.test(await page.locator('#otel-ingest-key-block').innerText())) {
+          bugs.push({ severity: 'Critical', symptom: '앱 화면이 웹에서 회전하라고 안내함(허브는 웹 회전을 409로 막는다)', file: 'src/views/settings.ts:renderIngestKeyBlock' });
         }
         // 저장은 수집키 없이(keep) 나간다 — 다른 설정 저장은 막지 않는다.
         await page.getByRole('button', { name: '저장', exact: true }).click();

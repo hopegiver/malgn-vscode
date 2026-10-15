@@ -255,12 +255,16 @@ export async function buildBaseFixtures() {
       hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false,
       blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [],
     },
+    // R20: 확인창 답은 { status, outcome }을 돌려준다(outcome = 엔진이 직접 알려 주는 재발급 결과). 베이스는 "거절".
     otel_link_answer_confirm: {
-      state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
-      telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
-      blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
-      hubConnected: true, confirmRequired: false, confirmDeclined: true, waitingFirstData: false, firstDataTimedOut: false,
-      blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [],
+      status: {
+        state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
+        telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
+        blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
+        hubConnected: true, confirmRequired: false, confirmDeclined: true, waitingFirstData: false, firstDataTimedOut: false,
+        blockedReason: null, retryAt: null, serverEnvChanged: [], serverEnvRejected: [],
+      },
+      outcome: { kind: 'declined' },
     },
     // 허브 기기 토큰 상태(홈 malgnai-hub 위젯이 loadHubAuth로 호출) — 베이스에 없어 모든 흐름에서
     // UNSTUBBED_COMMAND 오탐이 났다. 정상 연결 기본값을 둔다(추가만).
