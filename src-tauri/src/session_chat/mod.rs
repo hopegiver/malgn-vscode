@@ -134,6 +134,7 @@ pub fn send_session_message(
     turn::register_turn(&turn_id, &session_id)?;
 
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let session_id_for_thread = session_id.clone();
     let turn_id_for_thread = turn_id.clone();
 
@@ -142,6 +143,7 @@ pub fn send_session_message(
             app,
             claude_path,
             path_env,
+            child_env,
             cwd,
             session_id_for_thread,
             turn_id_for_thread,
@@ -204,6 +206,7 @@ pub fn start_new_session_message(
     turn::register_turn(&turn_id, &session_id)?;
 
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let session_id_for_thread = session_id.clone();
     let turn_id_for_thread = turn_id.clone();
     let cwd = project_path;
@@ -213,6 +216,7 @@ pub fn start_new_session_message(
             app,
             claude_path,
             path_env,
+            child_env,
             cwd,
             session_id_for_thread,
             turn_id_for_thread,

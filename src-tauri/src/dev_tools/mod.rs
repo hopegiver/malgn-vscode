@@ -51,8 +51,8 @@ use platform::Platform;
 // 경로만 쓴다) — 아래 커맨드 함수 시그니처에만 필요하므로 `pub use`로 재노출하지
 // 않고 이 파일 안에서만 쓰는 `use`로 최소화한다.
 use contract::{DevToolActionResult, DevToolPreview, DevToolStatus};
-pub(crate) use app_node::NPM_GLOBAL_CLAUDE_CANDIDATE;
-pub(crate) use process::{build_child_path_env, run_process_with_timeout_cancellable};
+pub(crate) use app_node::{claude_child_env, NPM_GLOBAL_CLAUDE_CANDIDATE};
+pub(crate) use process::{build_child_path_env, env_refs, run_process_with_timeout_cancellable};
 
 // ==================== 1. 도구 화이트리스트 ====================
 

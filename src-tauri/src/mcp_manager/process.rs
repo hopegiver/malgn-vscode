@@ -56,6 +56,7 @@ pub(super) fn run_mcp_command_with_env(
         .args(args)
         .current_dir(&home)
         .env("PATH", &path_env)
+        .envs(crate::dev_tools::claude_child_env(&resolved))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

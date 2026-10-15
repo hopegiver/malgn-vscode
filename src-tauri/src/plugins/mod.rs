@@ -283,11 +283,12 @@ fn run_claude_binary(
     timeout: Duration,
 ) -> CommandResult {
     let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let child_env = crate::dev_tools::claude_child_env(resolved);
     let output = crate::dev_tools::run_process_with_timeout_cancellable(
         resolved,
         &owned_args,
         path_env,
-        &[],
+        &crate::dev_tools::env_refs(&child_env),
         timeout,
         None,
         None,

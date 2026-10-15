@@ -322,6 +322,7 @@ pub(crate) fn run_turn(
     app: tauri::AppHandle,
     claude_path: String,
     path_env: String,
+    child_env: Vec<(String, String)>,
     cwd: String,
     session_id: String,
     turn_id: String,
@@ -334,6 +335,7 @@ pub(crate) fn run_turn(
     command.args(&args);
     command.current_dir(&cwd);
     command.env("PATH", &path_env);
+    command.envs(child_env);
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());

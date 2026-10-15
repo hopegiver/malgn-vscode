@@ -122,6 +122,7 @@ fn execute(snapshot: &TaskSnapshot, final_prompt: &str, key: &TaskKey) -> ExecOu
     };
 
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let args = vec!["-p".to_string(), final_prompt.to_string()];
     let key_for_spawn = key.clone();
     let on_spawn = |pid: u32| {
@@ -133,7 +134,7 @@ fn execute(snapshot: &TaskSnapshot, final_prompt: &str, key: &TaskKey) -> ExecOu
         &claude_path,
         &args,
         &path_env,
-        &[],
+        &crate::dev_tools::env_refs(&child_env),
         Duration::from_secs(snapshot.timeout_minutes as u64 * 60),
         Some(&on_spawn),
         Some(&should_abort),

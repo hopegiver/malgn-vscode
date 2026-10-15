@@ -147,6 +147,33 @@ pub(crate) fn npm_prefix_env(runner: Runner, runner_path: &str) -> Vec<(String, 
     npm_prefix_env_for(mac_layout().as_ref(), runner, runner_path)
 }
 
+/// 앱이 띄우는 `claude` 자식 프로세스(세션 채팅·자율업무·MCP·플러그인·인증 조회)에 줄 환경변수.
+/// `claude`가 앱의 npm 전역 prefix(`npm-global/…`)에서 실행되는 경우에만
+/// `npm_config_prefix=<npm-global>`을 준다.
+///
+/// 이유: 앱 Node로 `npm i -g @anthropic-ai/claude-code`를 한 Claude는 자기 갱신 때 `npm install -g`를
+/// 부르는데, 그 npm의 기본 prefix는 실행 파일 기준 `node/<버전>`이라(P2-3b 실측) 새 사본이 앱이
+/// 찾는 `npm-global/bin/claude`가 아니라 `node/<버전>/bin/claude`로 떨어진다 — 앱은 옛 버전을
+/// 계속 보고, Node가 갱신되면 그 사본은 정리로 사라진다. 갱신이 같은 prefix에 쓰이도록 개발 도구
+/// 화면의 설치·갱신(`npm_prefix_env`)과 같은 값을 준다.
+///
+/// 조건이 "claude 실행 파일의 위치"인 이유: Homebrew/기존 Node의 npm 전역이나 네이티브 설치
+/// (`~/.local/bin/claude`) Claude는 이 폴더 밖이라 아무것도 주입하지 않아 기존 동작 그대로다.
+/// env로만 주입하므로 `~/.npmrc`·셸 rc는 바뀌지 않고, 앱이 띄운 프로세스 트리에만 미친다.
+/// (사용자가 터미널에서 직접 띄우는 claude에는 닿지 않는다 — 그 환경의 npm 설정은 사용자 소유다.)
+pub(crate) fn claude_child_env_for(layout: Option<&Layout>, claude_path: &str) -> Vec<(String, String)> {
+    let Some(layout) = layout else { return Vec::new() };
+    if !layout.contains_npm_global_path(Path::new(claude_path)) {
+        return Vec::new();
+    }
+    vec![("npm_config_prefix".to_string(), layout.npm_global().to_string_lossy().to_string())]
+}
+
+/// `claude_child_env_for`의 실제 홈 기준 버전(macOS 외에서는 항상 빈 목록).
+pub(crate) fn claude_child_env(claude_path: &str) -> Vec<(String, String)> {
+    claude_child_env_for(mac_layout().as_ref(), claude_path)
+}
+
 /// 이 runner_path가 앱 관리 Node 아래인가(쓰기권한 검사를 npm 전역 prefix 기준으로 바꾸는 데 쓴다).
 pub(crate) fn is_app_managed_runner(layout: Option<&Layout>, runner_path: &str) -> bool {
     layout.map(|l| l.contains_node_path(Path::new(runner_path))).unwrap_or(false)
@@ -451,6 +478,96 @@ mod tests {
         assert_eq!(out.exit_code, Some(1));
         assert!(failure_message(&out).contains("취소"));
         assert!(!layout.base.exists(), "취소는 아무 흔적도 남기지 않아야 합니다");
+    }
+
+    // ── RV-002: 앱이 설치한 claude의 자기 갱신이 앱이 찾는 위치(npm-global)에 떨어지게 한다 ──
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_child_env_points_updates_of_an_app_installed_claude_at_the_app_npm_prefix() {
+        let layout = Layout::for_home(Path::new("/Users/x"));
+        let expected = vec![("npm_config_prefix".to_string(), "/Users/x/.local/share/malgn-agent/npm-global".to_string())];
+        // 앱 npm 전역에 설치된 claude(shim 경로와 패키지 실물 경로 모두).
+        assert_eq!(
+            claude_child_env_for(Some(&layout), "/Users/x/.local/share/malgn-agent/npm-global/bin/claude"),
+            expected
+        );
+        assert_eq!(
+            claude_child_env_for(
+                Some(&layout),
+                "/Users/x/.local/share/malgn-agent/npm-global/lib/node_modules/@anthropic-ai/claude-code/cli.js"
+            ),
+            expected
+        );
+        // 그 외 환경에는 아무것도 주입하지 않는다 — Homebrew/기존 Node의 npm 전역, 네이티브 설치,
+        // 앱 Node 폴더 안, 이름만 비슷한 형제 폴더, 홈을 모르는 경우.
+        for other in [
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+            "/Users/x/.local/bin/claude",
+            "/Users/x/.npm-global/bin/claude",
+            "/Users/x/.local/share/malgn-agent/node/current/bin/claude",
+            "/Users/x/.local/share/malgn-agent/npm-global-evil/bin/claude",
+            "claude",
+            "",
+        ] {
+            assert!(claude_child_env_for(Some(&layout), other).is_empty(), "{other:?}");
+        }
+        assert!(claude_child_env_for(None, "/Users/x/.local/share/malgn-agent/npm-global/bin/claude").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_child_env_reaches_a_real_child_process_through_env_refs() {
+        let layout = Layout::for_home(Path::new("/Users/x"));
+        let env = claude_child_env_for(Some(&layout), "/Users/x/.local/share/malgn-agent/npm-global/bin/claude");
+        let out = super::super::process::run_process_with_timeout(
+            "/bin/sh",
+            &["-c".to_string(), "printf %s \"$npm_config_prefix\"".to_string()],
+            "/usr/bin:/bin",
+            &super::super::process::env_refs(&env),
+            Duration::from_secs(5),
+        );
+        assert_eq!(out.stdout, "/Users/x/.local/share/malgn-agent/npm-global");
+    }
+
+    // 앱이 `claude`를 직접 띄우는 모든 지점(PATH를 `build_child_path_env`로 만드는 파일)은 같은 규칙으로
+    // env도 만들어야 한다 — 한 곳이라도 빠지면 그 경로로 뜬 claude의 자기 갱신만 어긋난다.
+    // 일곱 번째 지점이 생겨도 자동으로 걸리도록 src 전체를 훑는다.
+    #[test]
+    fn every_claude_spawn_site_applies_the_claude_child_env() {
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().map(|e| e == "rs").unwrap_or(false) {
+                    out.push(p);
+                }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let dev_tools_dir = root.join("dev_tools");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        let mut checked = Vec::new();
+        for f in files {
+            if f.starts_with(&dev_tools_dir) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap();
+            // 테스트 모듈 이전 본문만 본다.
+            let body = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            if body.contains("build_child_path_env(Some(") {
+                assert!(
+                    body.contains("claude_child_env("),
+                    "{}: claude를 띄우면서 claude_child_env를 적용하지 않았습니다 — 앱 npm 전역에 설치된 claude의 자기 갱신이 앱이 찾는 위치에서 어긋납니다",
+                    f.display()
+                );
+                checked.push(f.file_name().unwrap().to_string_lossy().to_string());
+            }
+        }
+        assert!(checked.len() >= 5, "claude 실행 지점을 충분히 찾지 못했습니다(가드가 공허해짐): {checked:?}");
     }
 
     // ── RV-004: 실행 경로가 없는 기능(롤백)을 약속하지 않는다 ──
