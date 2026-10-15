@@ -16,6 +16,7 @@ mod hub_auth;
 mod loopback_oauth;
 mod mcp_manager;
 mod otel_ingest_key;
+mod otel_link;
 mod otel_settings;
 mod plugins;
 mod process_util;
@@ -136,6 +137,7 @@ pub fn run() {
             plugins::list_global_catalog,
             otel_settings::otel_settings_get,
             otel_settings::otel_settings_save,
+            otel_link::otel_ingest_link_status,
             plugins::update_plugin,
             plugins::install_plugin,
             plugins::refresh_marketplaces,

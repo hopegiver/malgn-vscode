@@ -43,8 +43,10 @@ impl SecretString {
     }
 }
 
-#[cfg(test)]
 impl SecretString {
+    /// 외부에서 받은 문자열(프론트 입력은 serde가 만든다)을 비밀값으로 감싼다. 향후 허브 발급기
+    /// 구현(`otel_link::IngestKeyIssuer`)이 응답에서 꺼낸 키를 돌려줄 때 쓴다.
+    #[allow(dead_code)] // 허브 계약 후 실제 발급기가 쓰기 전까지는 테스트에서만 호출된다.
     pub(crate) fn new(value: &str) -> Self {
         Self(value.to_string())
     }

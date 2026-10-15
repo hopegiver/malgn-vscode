@@ -1456,6 +1456,13 @@ textarea.settings-input { resize: vertical; }
 .onboard-row.is-error .onboard-marker,
 .onboard-row.is-loading .onboard-marker { color: var(--status-warn); }
 .onboard-row.is-blocked .onboard-title { color: var(--text-muted-aa); }
+/* OTEL 연동 참고 항목 — 진행률(n/3)에 들어가지 않는다. partial=적용됨·수신 미확인(완료 아님), failed=확정 실패. */
+.onboard-tag {
+  margin-left: var(--space-2); padding: 0 var(--space-1-5); border: var(--border-width) solid var(--border-soft);
+  font-size: var(--font-size-caption); font-weight: 400; color: var(--text-muted-aa);
+}
+.onboard-row.is-partial .onboard-marker { color: var(--accent); }
+.onboard-row.is-failed .onboard-marker { color: var(--status-warn); }
 .onboard-slim {
   display: flex; align-items: center; gap: var(--space-2-5);
   padding: var(--space-1-5) var(--space-3); border: var(--border-width) solid var(--border-soft);

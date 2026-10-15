@@ -65,6 +65,10 @@ const SECRET_PATTERNS: ReadonlyArray<readonly [RegExp, Replacement]> = [
   [/\bsk-ant-[A-Za-z0-9_-]{6,}/g, `sk-ant-${MASK}`], // Anthropic
   [/\bsk-[A-Za-z0-9_-]{16,}/g, `sk-${MASK}`], // OpenAI 류
   [/\bmhd_[A-Za-z0-9_-]{6,}/g, `mhd_${MASK}`], // 허브 기기 토큰
+  // 허브 OTLP 수집키 — 기기 토큰과 별개 자격이다(쓰기 전용). 접두 없는 긴 불투명 토큰 규칙은
+  // 대소문자·숫자가 모두 있어야 걸려서, 소문자만인 키는 이 규칙이 없으면 새어 나간다. 허브가 화면용으로
+  // 내려주는 마스킹 표시값(`mhk_AbCd…`, 본문 4자)은 6자 미만이라 가려지지 않고 그대로 보인다.
+  [/\bmhk_[A-Za-z0-9_-]{6,}/g, `mhk_${MASK}`],
   [/\bgh[pousr]_[A-Za-z0-9]{16,}/g, `gh_${MASK}`], // GitHub
   [/\bgithub_pat_[A-Za-z0-9_]{16,}/g, `github_pat_${MASK}`],
   [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, `xox-${MASK}`], // Slack

@@ -2,7 +2,7 @@ import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOver
 import { errorMessage, errorMessagePersistent, sanitizeBackendText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
-import { fetchOtelSettings, saveOtelSettings } from '../otelApi';
+import { fetchIngestLinkStatus, fetchOtelSettings, saveOtelSettings } from '../otelApi';
 import type { OtelSettings, IngestKeyChange } from '../otelApi';
 import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID, renderInstallFallbackNote } from './catalog';
 import { successToastWithFallbackNote } from '../installFallbackNote';
@@ -142,6 +142,30 @@ export async function loadOtelEnv(): Promise<void> {
   }
 }
 
+// 홈 시작 체크리스트의 OTEL 연동 항목용 상태 — settings.json만 읽는다. 요청이 겹치면 마지막 요청만 반영한다.
+// 조회 실패 문구는 errorMessage()를 거쳐(토큰·키 마스킹) 보관한다.
+let ingestLinkSeq = 0;
+export async function loadIngestLink(): Promise<void> {
+  const seq = ++ingestLinkSeq;
+  state.ingestLink.loading = true;
+  state.ingestLink.error = null;
+  notifyChange();
+  try {
+    const status = await fetchIngestLinkStatus();
+    if (seq !== ingestLinkSeq) return;
+    state.ingestLink.status = status;
+    state.ingestLink.loaded = true;
+  } catch (err) {
+    if (seq !== ingestLinkSeq) return;
+    state.ingestLink.error = errorMessage(err, '원인을 알 수 없습니다.');
+  } finally {
+    if (seq === ingestLinkSeq) {
+      state.ingestLink.loading = false;
+      notifyChange();
+    }
+  }
+}
+
 async function handleSaveOtelSettings(values: Record<string, string>, ingestKey: IngestKeyChange): Promise<void> {
   state.otel.saving = true;
   notifyChange();
@@ -154,6 +178,7 @@ async function handleSaveOtelSettings(values: Record<string, string>, ingestKey:
     // 재초기화가 일어나지 않는 경우에도 원문이 메모리/입력칸에 남지 않게).
     otelDraft.ingestKey = '';
     showToast(INGEST_KEY_COPY.savedToast);
+    void loadIngestLink();
   } catch (err) {
     showToast(`OTel 설정 저장에 실패했습니다: ${errorMessage(err)}`);
   } finally {
@@ -176,6 +201,7 @@ async function handleClearIngestKey(): Promise<void> {
     otelDraft = { forSettings: result, values: otelDraft.values, ingestKey: '' };
     state.otel.settings = result;
     showToast(INGEST_KEY_COPY.clearedToast);
+    void loadIngestLink();
   } catch (err) {
     showToast(`수집키를 삭제하지 못했습니다: ${errorMessage(err)}`);
   } finally {

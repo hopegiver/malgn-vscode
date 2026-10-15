@@ -10,11 +10,16 @@
 // 조회가 성공했고 값이 명시적으로 그 상태일 때만 나온다.
 import type { DevToolStatus } from './devToolsApi';
 import type { ClaudeAuthStatus } from './sessionsApi';
+import type { IngestLinkStatus } from './otelApi';
 
-export type StepKind = 'required-tools' | 'claude-install' | 'claude-login';
+export type StepKind = 'required-tools' | 'claude-install' | 'claude-login' | 'otel-link';
 
-/** done/todo는 확정, loading/error는 판정 불가, blocked는 선행 단계 미완료로 아직 진행 불가. */
-export type StepState = 'done' | 'todo' | 'loading' | 'error' | 'blocked';
+/**
+ * done/todo는 확정, loading/error는 판정 불가, blocked는 선행 단계 미완료로 아직 진행 불가.
+ * partial/failed는 otel-link 전용 — partial은 "수집키는 적용됐지만 수신은 확인 못 함"(완료가 아니다),
+ * failed는 "연동 경로가 실패 원인과 함께 막힘"(판정 불가가 아니라 확정된 실패).
+ */
+export type StepState = 'done' | 'todo' | 'loading' | 'error' | 'blocked' | 'partial' | 'failed';
 
 export interface OnboardingStep {
   readonly kind: StepKind;
@@ -22,10 +27,18 @@ export interface OnboardingStep {
   readonly state: StepState;
   /** 상태 한 줄 설명(미완료 사유, 확인 불가 사유 등). */
   readonly detail: string;
+  /**
+   * true면 참고용 항목 — 진행률(doneCount/coreTotal)·allDone·currentKind·hasTodo·hasUnknown 판정에
+   * 들어가지 않는다. 이 단계가 todo여도 이미 설치·로그인을 끝낸 사용자의 홈에 체크리스트가 다시 뜨지 않는다.
+   */
+  readonly advisory?: boolean;
 }
 
 export interface OnboardingModel {
+  /** 화면에 그릴 행 전체(필수 3단계 + 있으면 참고 항목). */
   readonly steps: readonly OnboardingStep[];
+  /** 진행률 분모 — advisory 항목을 뺀 필수 단계 수. */
+  readonly coreTotal: number;
   readonly doneCount: number;
   /** 선행 단계가 모두 완료된 상태에서 처음으로 만나는 미완료(todo) 단계. 없으면 null. */
   readonly currentKind: StepKind | null;
@@ -48,6 +61,13 @@ export interface OnboardingInput {
   };
   readonly claudeAuth: {
     readonly status: ClaudeAuthStatus | null;
+    readonly loaded: boolean;
+    readonly loading: boolean;
+    readonly error: string | null;
+  };
+  /** 있으면 OTEL 연동 참고 항목을 만든다. 생략하면 항목 자체가 없다(autonomyPrereq 등 기존 입력 호환). */
+  readonly ingestLink?: {
+    readonly status: IngestLinkStatus | null;
     readonly loaded: boolean;
     readonly loading: boolean;
     readonly error: string | null;
@@ -129,27 +149,77 @@ function claudeLoginStep(input: OnboardingInput, installState: ClaudeInstallStat
   return { kind: 'claude-login', title, state: 'todo', detail: 'Anthropic 계정으로 로그인하세요.' };
 }
 
+// Rust가 내려주는 마스킹 표시값(`mhk_`+최대 4자+…)만 화면에 허용한다. 형식이 다르면(원문일 가능성 포함)
+// 아예 표시하지 않는다.
+const MASKED_KEY_SHAPE = /^mhk_[A-Za-z0-9_-]{1,4}…$/;
+function safeMasked(masked: string | null): string | null {
+  return masked !== null && MASKED_KEY_SHAPE.test(masked) ? masked : null;
+}
+
+/**
+ * OTEL 연동 참고 항목. 자동 발급·수신 확인은 아직 구현되지 않았으므로(issueSupported /
+ * receiptCheckSupported = false) "자동 연동"·"연동 완료"를 말하지 않는다. 지금 실제로 도달하는 상태는
+ * unlinked / applied / failed 뿐이며 issuing / confirmed는 타입상으로만 처리한다.
+ */
+function otelLinkStep(link: NonNullable<OnboardingInput['ingestLink']>): OnboardingStep {
+  const base = { kind: 'otel-link' as const, title: 'OTEL 연동(사용량 수집키)', advisory: true };
+  if (link.error) {
+    return { ...base, state: 'error', detail: `수집키 적용 상태를 확인하지 못했습니다: ${link.error}` };
+  }
+  const status = link.status;
+  if (!link.loaded || !status) return { ...base, state: 'loading', detail: '수집키 적용 상태 확인 중…' };
+  const masked = safeMasked(status.masked);
+  const keyTag = masked ? ` (${masked})` : '';
+  switch (status.state) {
+    case 'unlinked':
+      return {
+        ...base,
+        state: 'todo',
+        detail:
+          '수집키가 적용되어 있지 않습니다. 설정 > OTel에서 허브 관리자에게 받은 수집키를 직접 붙여넣어 저장하세요. 허브 웹에 수집키 발급 화면이 아직 없어 발급 방법은 허브 관리자에게 문의해야 하며, 허브 연결의 기기 토큰은 수집키가 아닙니다.' +
+          (status.issueSupported ? '' : ' 자동 발급은 아직 지원되지 않습니다.'),
+      };
+    case 'issuing':
+      return { ...base, state: 'loading', detail: '수집키를 발급받아 적용하는 중…' };
+    case 'applied':
+      return {
+        ...base,
+        state: 'partial',
+        detail: `수집키가 적용되었습니다${keyTag}. 수신은 아직 확인하지 않았습니다. 새로 시작하는 Claude Code 세션부터 적용됩니다.`,
+      };
+    case 'confirmed':
+      return { ...base, state: 'done', detail: `수집키가 적용되었고 허브에서 수신이 확인되었습니다${keyTag}.` };
+    case 'failed': {
+      const msg = status.failure?.message ?? '수집키 적용 상태에 문제가 있습니다.';
+      return { ...base, state: 'failed', detail: masked ? `${msg} 적용된 수집키${keyTag}.` : msg };
+    }
+  }
+}
+
 export function computeOnboarding(input: OnboardingInput): OnboardingModel {
   const installState = claudeInstallState(input.devTools);
-  const steps: OnboardingStep[] = [requiredToolsStep(input.devTools), claudeInstallStep(input.devTools), claudeLoginStep(input, installState)];
+  const core: OnboardingStep[] = [requiredToolsStep(input.devTools), claudeInstallStep(input.devTools), claudeLoginStep(input, installState)];
+  const steps: OnboardingStep[] = input.ingestLink ? [...core, otelLinkStep(input.ingestLink)] : core;
 
   // 현재 단계 = 앞선 단계가 모두 done인 상태에서 처음 만나는 todo. 앞에 판정 불가/블록이
   // 끼어 있으면 순서를 보장할 수 없으므로 현재 단계를 지정하지 않는다.
   let currentKind: StepKind | null = null;
-  for (const s of steps) {
+  for (const s of core) {
     if (s.state === 'done') continue;
     if (s.state === 'todo') currentKind = s.kind;
     break;
   }
 
-  const doneCount = steps.filter((s) => s.state === 'done').length;
+  // 진행률·전체 판정은 필수 단계(core)만 본다 — advisory 항목은 여기에 영향을 주지 않는다.
+  const doneCount = core.filter((s) => s.state === 'done').length;
   return {
     steps,
+    coreTotal: core.length,
     doneCount,
     currentKind,
-    allDone: doneCount === steps.length,
-    hasTodo: steps.some((s) => s.state === 'todo'),
-    hasUnknown: steps.some((s) => s.state === 'loading' || s.state === 'error'),
-    hasError: steps.some((s) => s.state === 'error'),
+    allDone: doneCount === core.length,
+    hasTodo: core.some((s) => s.state === 'todo'),
+    hasUnknown: core.some((s) => s.state === 'loading' || s.state === 'error'),
+    hasError: core.some((s) => s.state === 'error'),
   };
 }

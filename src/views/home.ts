@@ -24,7 +24,7 @@ import { portfolioSummary } from '../projectActivity';
 import { loadCatalog } from './catalog';
 import type { AutonomousTask } from '../state';
 import { loadAutonomousTasks } from './autonomousTasks';
-import { loadMcp } from './settings';
+import { loadMcp, loadIngestLink } from './settings';
 import { describeHubAuth } from '../hubAuthApi';
 import { ensureAppVersionLoaded } from '../sidebar';
 import { checkClaudeAuthStatus, openClaudeLoginTerminal, logoutClaudeAuth } from '../sessionsApi';
@@ -109,16 +109,25 @@ const ONBOARDING_MARKERS: Record<StepState, string> = {
   loading: '…',
   error: '?',
   blocked: '○',
+  partial: '◐', // 수집키 적용됨·수신 미확인 — 완료(✓)로 보이지 않게 한다.
+  failed: '!',
 };
 
 function retryOnboardingChecks(): void {
   if (state.devTools.error) void loadDevTools();
   if (state.claudeAuth.error) void loadClaudeAuthStatus();
+  if (state.ingestLink.error) void loadIngestLink();
 }
 
 function onboardingStepAction(step: OnboardingStep, isCurrent: boolean): HTMLElement | null {
   if (step.state === 'error') {
     return el('button', { className: 'btn btn-sm', onClick: retryOnboardingChecks }, ['다시 확인']);
+  }
+  if (step.kind === 'otel-link') {
+    // 발급은 이 앱에서 못 한다 — 현재 경로는 설정 > OTel에서 수집키를 직접 붙여넣는 것뿐이다.
+    if (step.state === 'todo') return el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['수집키 입력하기']);
+    if (step.state === 'failed') return el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['OTel 설정 열기']);
+    return null;
   }
   if (step.state !== 'todo') return null;
   if (step.kind === 'required-tools' || step.kind === 'claude-install') {
@@ -140,7 +149,7 @@ function onboardingRow(step: OnboardingStep, isCurrent: boolean): HTMLElement {
   const row = el('div', { className: `onboard-row is-${step.state}${isCurrent ? ' is-current' : ''}` }, [
     onboardingMarker(isCurrent ? '❯' : ONBOARDING_MARKERS[step.state]),
     el('div', { className: 'onboard-text' }, [
-      el('div', { className: 'onboard-title' }, [step.title]),
+      el('div', { className: 'onboard-title' }, [step.title, ...(step.advisory ? [el('span', { className: 'onboard-tag' }, ['선택'])] : [])]),
       el('div', { className: 'onboard-detail' }, [step.detail]),
     ]),
   ]);
@@ -169,7 +178,7 @@ function renderOnboarding(): HTMLElement | Text {
   }
 
   const box = el('div', { className: 'box onboard-box' }, [
-    boxHead('시작하기', el('span', { className: 'count' }, [`${model.doneCount}/${model.steps.length} 완료`])),
+    boxHead('시작하기', el('span', { className: 'count' }, [`${model.doneCount}/${model.coreTotal} 완료`])),
     el('div', { className: 'box-body' }, [
       el('div', { className: 'onboard-list' }, model.steps.map((s) => onboardingRow(s, s.kind === model.currentKind))),
     ]),

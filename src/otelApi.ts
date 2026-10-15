@@ -70,6 +70,48 @@ export interface OtelSavePayload {
   readonly ingestKey?: IngestKeyChange;
 }
 
+// ---- 수집키 연동 상태(허브 발급·수신확인 경로의 데이터 계약) ----
+//
+// 상태 문구/원인은 기기 토큰(mhd_)·수집키(mhk_) 원문을 담지 않는다 — masked는 `mhk_`+4자뿐이고
+// failure.message는 Rust가 원인(cause)별로 고정한 문구다.
+//
+// 현재 실제로 도달하는 상태는 unlinked / applied / failed 이며 모두 settings.json 실물에서
+// 도출된다. issuing / confirmed 는 허브 발급·수신확인 계약이 붙어야 생긴다(그 전에는 오지 않는다).
+export type IngestLinkState = 'unlinked' | 'issuing' | 'applied' | 'confirmed' | 'failed';
+
+export type IngestLinkFailureCause =
+  | 'settingsUnreadable' // settings.json을 JSON으로 해석하지 못함(파일 도출)
+  | 'headerUnrecognized' // 허브 형식이 아닌 Authorization 헤더가 있음(파일 도출)
+  | 'notSupported' // 허브 자동 발급·수신 확인이 아직 지원되지 않음
+  | 'deviceTokenUnavailable' // 허브 연결(기기 토큰)이 없거나 만료됨
+  | 'hubRejected' // 허브가 요청을 거부함
+  | 'unreachable' // 허브에 닿지 못함
+  | 'invalidKeyReturned' // 허브가 돌려준 값이 수집키 형식이 아님
+  | 'applyFailed'; // 검증된 키를 설정 파일에 적용하지 못함
+
+export interface IngestLinkFailure {
+  readonly cause: IngestLinkFailureCause;
+  // 원인별 고정 문구(그대로 화면에 써도 된다).
+  readonly message: string;
+}
+
+export interface IngestLinkStatus {
+  readonly state: IngestLinkState;
+  // `mhk_AbCd…` 형태. 키가 적용된 상태(applied/confirmed)이거나 키가 적용된 채 다음 단계가
+  // 실패한 경우에만 있고, 그 외에는 null.
+  readonly masked: string | null;
+  // state === 'failed'일 때만 있다.
+  readonly failure: IngestLinkFailure | null;
+  // 허브 자동 발급 / 수신 확인이 가능한가 — 지금은 둘 다 false(허브 계약 전).
+  readonly issueSupported: boolean;
+  readonly receiptCheckSupported: boolean;
+}
+
+// settings.json만 읽는다(허브를 부르지 않는다). 저장 직후에도 이 값은 파일 실물에서 다시 도출된다.
+export async function fetchIngestLinkStatus(): Promise<IngestLinkStatus> {
+  return invoke<IngestLinkStatus>('otel_ingest_link_status');
+}
+
 export async function fetchOtelSettings(): Promise<OtelSettings> {
   return invoke<OtelSettings>('otel_settings_get');
 }

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::otel_ingest_key::{
     apply_change, assess_endpoints, EndpointAssessment, HeadersEdit, IngestKeyChange,
-    IngestKeyStatus, HEADERS_ENV_KEY,
+    IngestKeyStatus, SecretString, HEADERS_ENV_KEY,
 };
 
 pub(crate) const MANAGED_OTEL_KEYS: [&str; 15] = [
@@ -95,7 +95,7 @@ fn build_defaults() -> (std::collections::BTreeMap<String, String>, bool) {
     (map, true)
 }
 
-fn settings_path() -> Option<PathBuf> {
+pub(crate) fn settings_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("settings.json"))
 }
 
@@ -385,7 +385,7 @@ fn backup_without_ingest_key(content: &str, edit: &HeadersEdit) -> Result<String
 ///
 /// 수집키는 `values`가 아니라 `payload.ingest_key`로만 바꾼다(원문 비노출 불변식,
 /// `otel_ingest_key.rs` 머리말). 기존 헤더의 `Authorization` 외 항목은 보존한다.
-fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), String> {
+pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), String> {
     let existing_content = std::fs::read_to_string(path).ok();
     let mut root: Value = match &existing_content {
         Some(content) => serde_json::from_str(content)
@@ -491,6 +491,34 @@ fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), St
     let pretty = serde_json::to_string_pretty(&root)
         .map_err(|e| format!("설정을 직렬화하지 못했습니다: {e}"))?;
     write_atomically_private(path, &pretty)
+}
+
+/// 외부에서 주입받은 수집키(`mhk_…`)를 `settings.json`에 적용하는 진입점.
+///
+/// 수집키가 설정 파일에 들어가는 길은 `IngestKeyChange::Set`을 담은 `save_to_settings_file`
+/// 하나뿐이다 — 검증(`normalize_ingest_key`)·`Authorization` 헤더 병합·백업(롤링 1세대)·
+/// 원자적 쓰기·`0600`이 전부 거기 있다. 수동 입력(`otel_settings_save`, 다른 설정값과 한 번에
+/// 저장)과 이 함수(키만 적용)는 같은 엔진으로 합류하며, 둘이 같은 입력에 같은 파일을 만든다는
+/// 것은 `otel_link`의 테스트가 고정한다. 키의 출처(사용자 붙여넣기 / 허브 발급 응답)는 여기서
+/// 구분하지 않고, 기기 토큰(`mhd_`)은 형식 검증에서 거부된다(수집키 형식이 아니다).
+///
+/// 실패 문자열은 입력을 인용하지 않는 고정 문구다(`otel_ingest_key.rs` 불변식).
+#[allow(dead_code)] // 허브 발급 계약 후 `otel_link::issue_and_apply`가 실제 호출한다(현재는 테스트만).
+pub(crate) fn apply_ingest_key(path: &Path, key: SecretString) -> Result<(), String> {
+    save_to_settings_file(
+        path,
+        OtelSavePayload {
+            values: Default::default(),
+            identity: None,
+            ingest_key: IngestKeyChange::Set { key },
+        },
+    )
+}
+
+/// 연동 상태 도출용 읽기 — (`settings.json` 해석 실패 여부, 수집키 상태). 값 문자열은 내보내지 않는다.
+pub(crate) fn read_ingest_inputs(path: &Path) -> (bool, IngestKeyStatus) {
+    let (_values, parse_error, ingest_key) = read_managed_values(path);
+    (parse_error.is_some(), ingest_key)
 }
 
 #[tauri::command]

@@ -13,7 +13,7 @@ import type { GithubStatus, CloudflareStatus } from './integrationsApi';
 import type { AutonomyRunStatus, AutonomyScheduleMode } from './autonomyApi';
 import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
 import type { HubAuthStatus } from './hubAuthApi';
-import type { OtelSettings } from './otelApi';
+import type { IngestLinkStatus, OtelSettings } from './otelApi';
 import type { MalgnAgentConfigStatus } from './configApi';
 import type { AppLinksStatus } from './appLinksApi';
 
@@ -352,6 +352,14 @@ export interface AppState {
     loaded: boolean;
     saving: boolean;
   };
+  // 홈 시작 체크리스트의 OTEL 연동 항목용 — otel_ingest_link_status(settings.json만 읽음) 결과.
+  // 수집키 원문은 오지 않고(masked만) error는 errorMessage()를 거친 마스킹 문구다.
+  ingestLink: {
+    status: IngestLinkStatus | null;
+    loading: boolean;
+    error: string | null;
+    loaded: boolean;
+  };
   // 전역 설정 파일(~/.claude/malgn-agent.json) 상태 — 자율업무 화면(autonomy·
   // logs 필드)과 프로젝트 화면(workspaces 필드)이 이 하나의 slice를 함께
   // 조회·표시한다. 저장 API가 4개 필드를 항상 통째로 덮어쓰는 풀 오버라이트라,
@@ -523,6 +531,7 @@ function createInitialState(): AppState {
   globalCatalog: { data: null, loading: false, error: null, loaded: false },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false, adding: false, removingId: null },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
+  ingestLink: { status: null, loading: false, error: null, loaded: false },
   malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editingAutonomy: false, editingWorkspaces: false, saving: false },
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },
   hubAuth: { status: null, loading: false, error: null, loaded: false, busy: null },

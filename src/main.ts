@@ -48,6 +48,7 @@ import { loadDevTools } from './views/devTools';
 import {
   renderSettingsView,
   loadOtelEnv,
+  loadIngestLink,
   loadGithubStatus,
   loadCloudflareStatus,
   loadMcp,
@@ -262,6 +263,7 @@ function handleNavigation(): void {
   if (!state.mcp.loaded && !state.mcp.loading) void loadMcp();
   if (!state.hubAuth.loaded && !state.hubAuth.loading) void loadHubAuth();
   if (!state.claudeAuth.loaded && !state.claudeAuth.loading) void loadClaudeAuthStatus();
+  if (!state.ingestLink.loaded && !state.ingestLink.loading && !state.ingestLink.error) void loadIngestLink();
   if (!state.mcpCatalog.loaded && !state.mcpCatalog.loading) void loadMcpCatalog();
   // m5 수정(2026-09-24) — 이 주석이 "사이드바가 전 화면에 상시 렌더"라고
   // 적어뒀었지만 실제로는 앱 링크 사이드바가 그 탭(#/settings/applinks)에서만

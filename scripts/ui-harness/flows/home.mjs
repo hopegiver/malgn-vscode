@@ -688,5 +688,139 @@ export function scenarios(base) {
         }
       },
     },
+    // ---- R16 OTEL 연동 참고 항목(src/onboarding.ts:otelLinkStep) ----
+    // 불변식: ① 상태별로 다른 문구·data-state ② 자동 연동/연동 완료/수신 확인 주장 없음 ③ mhd_/mhk_ 원문은 화면 어디에도 없음
+    // ④ 진행 카운트(n/3)와 박스 노출 여부는 이 항목의 영향을 받지 않는다(참고 항목).
+    ...otelLinkScenarios(base),
+  ];
+}
+
+const LINK_OFF = { issueSupported: false, receiptCheckSupported: false };
+const FAKE_DEVICE_TOKEN = `mhd_${'x'.repeat(43)}`;
+const FAKE_INGEST_KEY = `mhk_${'Z'.repeat(43)}`;
+const BANNED_CLAIMS = ['자동 연동', '연동 완료', '연동되었습니다', '수신 확인됨', '수신이 확인되었습니다', '수신을 확인했습니다'];
+
+async function otelRow(page) {
+  const row = page.locator('.onboard-row[data-step="otel-link"]');
+  if ((await row.count()) === 0) return null;
+  return {
+    state: await row.getAttribute('data-state'),
+    text: (await row.textContent()) ?? '',
+    buttons: await row.locator('button').allTextContents(),
+    marker: (await row.locator('.onboard-marker').textContent()) ?? '',
+  };
+}
+
+async function checkOtelCommon(page, bugs, row, { expectState, mustInclude, forbidSecrets = [] }) {
+  if (!row) {
+    bugs.push({ severity: 'Critical', symptom: 'OTEL 연동 행이 렌더되지 않음', file: CHECKLIST });
+    return;
+  }
+  if (row.state !== expectState) bugs.push({ severity: 'Critical', symptom: `OTEL 행 data-state가 ${expectState}가 아님(실제: ${row.state})`, file: CHECKLIST });
+  for (const phrase of mustInclude) {
+    if (!row.text.includes(phrase)) bugs.push({ severity: 'Major', symptom: `OTEL 행에 "${phrase}" 문구가 없음(실제: ${row.text})`, file: CHECKLIST });
+  }
+  for (const phrase of BANNED_CLAIMS) {
+    if (row.text.includes(phrase)) bugs.push({ severity: 'Critical', symptom: `미구현 기능을 주장하는 문구 "${phrase}" 노출`, file: CHECKLIST });
+  }
+  const dump = await page.evaluate(() => document.documentElement.outerHTML + '\n' + document.body.innerText);
+  for (const secret of [FAKE_DEVICE_TOKEN, FAKE_INGEST_KEY, ...forbidSecrets]) {
+    if (dump.includes(secret) || dump.includes(secret.slice(0, 16))) {
+      bugs.push({ severity: 'Critical', symptom: `DOM에 토큰/키 원문(앞 16자 포함)이 남아 있음: ${secret.slice(0, 8)}…`, file: CHECKLIST });
+    }
+  }
+  const count = await page.locator('.onboard-box .box-head .count').textContent().catch(() => null);
+  if (!count || !count.includes('2/3')) bugs.push({ severity: 'Major', symptom: `OTEL 항목이 진행 카운트에 영향을 줌(기대 2/3, 실제: ${count})`, file: CHECKLIST });
+}
+
+function otelLinkScenarios(base) {
+  // 필수 3단계 중 2개 완료(설치 완료·미로그인) — 체크리스트 박스가 열려 있는 상태에서 OTEL 행을 본다.
+  const open = { ...base, check_claude_auth_status: AUTH_OUT };
+  return [
+    {
+      id: 'otel-link-unlinked',
+      fixtures: { ...open, otel_ingest_link_status: { state: 'unlinked', masked: null, failure: null, ...LINK_OFF } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-unlinked');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, { expectState: 'todo', mustInclude: ['설정 > OTel', '직접 붙여넣어', '발급 화면이 아직 없어', '자동 발급은 아직 지원되지 않습니다'] });
+        if (row && !row.buttons.includes('수집키 입력하기')) bugs.push({ severity: 'Major', symptom: `unlinked인데 "수집키 입력하기" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
+        if (row) {
+          await page.locator('.onboard-row[data-step="otel-link"]').getByRole('button', { name: '수집키 입력하기' }).click();
+          await page.waitForTimeout(200);
+          if (!(await page.evaluate(() => location.hash)).startsWith('#/settings/otel')) bugs.push({ severity: 'Major', symptom: '버튼이 #/settings/otel로 이동하지 않음', file: CHECKLIST });
+        }
+      },
+    },
+    {
+      id: 'otel-link-applied',
+      // masked에 원문이 섞여 와도(방어 확인) 형식이 다르면 표시하지 않는다는 점은 별도 시나리오가 본다.
+      fixtures: { ...open, otel_ingest_link_status: { state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-applied');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, { expectState: 'partial', mustInclude: ['mhk_AbCd…', '수신은 아직 확인하지 않았습니다'] });
+        if (row && row.marker.trim() === '✓') bugs.push({ severity: 'Critical', symptom: 'applied(수신 미확인)가 완료 체크(✓)로 표시됨', file: CHECKLIST });
+      },
+    },
+    {
+      id: 'otel-link-failed-header-unrecognized',
+      fixtures: {
+        ...open,
+        otel_ingest_link_status: {
+          state: 'failed',
+          masked: null,
+          failure: {
+            cause: 'headerUnrecognized',
+            message: '설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있어 자동으로 바꾸지 않았습니다. 확인 후 직접 교체하거나 삭제하세요.',
+          },
+          ...LINK_OFF,
+        },
+      },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-failed');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, { expectState: 'failed', mustInclude: ['허브 수집키 형식이 아닌 Authorization 헤더', '직접 교체하거나 삭제하세요'] });
+        if (row && !row.buttons.includes('OTel 설정 열기')) bugs.push({ severity: 'Major', symptom: `failed인데 "OTel 설정 열기" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
+      },
+    },
+    {
+      // 조회 실패 — 에러 문구에 기기 토큰 원문이 섞여 와도 errorMessage 경로가 마스킹해 화면에 원문이 없다.
+      id: 'otel-link-fetch-error',
+      fixtures: { ...open, otel_ingest_link_status: { __throw: `상태 조회 실패: 헤더 Bearer ${FAKE_DEVICE_TOKEN} 거부` } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-fetch-error');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, { expectState: 'error', mustInclude: ['수집키 적용 상태를 확인하지 못했습니다', '***'] });
+        if (row && !row.buttons.includes('다시 확인')) bugs.push({ severity: 'Major', symptom: '조회 실패인데 "다시 확인" 버튼이 없음', file: CHECKLIST });
+      },
+    },
+    {
+      // 방어: 백엔드가 masked 자리에 원문 모양 값을 실수로 주더라도 화면에 내지 않는다.
+      id: 'otel-link-applied-unsafe-masked-not-shown',
+      fixtures: { ...open, otel_ingest_link_status: { state: 'applied', masked: FAKE_INGEST_KEY, failure: null, ...LINK_OFF } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-otel-applied-unsafe-masked');
+        const row = await otelRow(page);
+        await checkOtelCommon(page, bugs, row, { expectState: 'partial', mustInclude: ['수집키가 적용되었습니다', '수신은 아직 확인하지 않았습니다'] });
+      },
+    },
+    {
+      // 참고 항목은 박스를 다시 띄우지 않는다 — 필수 3단계가 모두 끝났으면 수집키가 없어도 체크리스트는 숨겨진 채다.
+      id: 'otel-link-unlinked-does-not-reopen-checklist',
+      fixtures: { ...base, check_claude_auth_status: AUTH_IN, otel_ingest_link_status: { state: 'unlinked', masked: null, failure: null, ...LINK_OFF } },
+      async run(page, { shot, bugs }) {
+        await page.waitForTimeout(400);
+        await shot('01-all-core-done');
+        if ((await page.locator('.onboard-box, .onboard-slim').count()) > 0) {
+          bugs.push({ severity: 'Critical', symptom: '필수 단계 완료 후 OTEL 미적용만으로 체크리스트가 다시 열림(기존 사용자 회귀)', file: CHECKLIST });
+        }
+      },
+    },
   ];
 }
