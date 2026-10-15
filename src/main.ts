@@ -48,6 +48,7 @@ import { loadDevTools } from './views/devTools';
 import {
   renderSettingsView,
   loadOtelEnv,
+  refreshOtelFormFromFile,
   loadIngestLink,
   maybeAskReissueConfirm,
   loadGithubStatus,
@@ -281,8 +282,10 @@ function handleNavigation(): void {
     void ensureOtelAutoConfigured();
   }
 
-  if (route.kind === 'settings' && route.tab === 'otel' && !state.otel.loaded && !state.otel.loading) {
-    void loadOtelEnv();
+  if (route.kind === 'settings' && route.tab === 'otel') {
+    if (!state.otel.loaded && !state.otel.loading) void loadOtelEnv();
+    // 이미 불러온 폼도 탭에 들어올 때 파일을 다시 읽는다 — 그동안 자동 연동이 서버 권장값을 썼을 수 있다(고치던 입력칸은 보존).
+    else if (state.otel.loaded) void refreshOtelFormFromFile();
   }
   if (route.kind === 'settings' && route.tab === 'github' && !state.github.loaded && !state.github.loading) {
     void loadGithubStatus();

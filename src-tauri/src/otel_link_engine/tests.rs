@@ -1696,6 +1696,30 @@ fn rv05_a_rotated_key_that_arrives_after_disconnect_is_not_written_and_the_old_k
 }
 
 #[test]
+fn rv05_a_created_201_carrying_env_that_arrives_after_disconnect_writes_neither_key_nor_env() {
+    // 해제 뒤에 도착한 201의 env도 파일에 닿지 않는다 — 키와 env는 같은 쓰기라 세대 확인에서 함께 버려진다.
+    let rig = Rig::new("rv05-create-env");
+    let original = write_ready(&rig.path, None); // 파일의 로그 주기는 5000
+    rig.api.push_get(state_policy(IssuePolicy::Auto, None));
+    rig.api.push_create(created_with_env('K', contract_env()));
+    let engine = LinkEngine::new();
+    let api = ConnectionChangesMidCall { engine: &engine, path: rig.path.clone(), inner: &rig.api, on: "create", reconnect: false };
+
+    run_with_api(&engine, &rig, &api, Trigger::Startup, T0);
+
+    assert!(!file(&rig).contains("mhk_"), "{}", file(&rig));
+    assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("5000"), "서버 값(60000)이 해제 뒤에 쓰이면 안 된다");
+    assert_eq!(env_str(&rig, "OTEL_METRIC_EXPORT_INTERVAL"), None);
+    assert_eq!(env_str(&rig, "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"), None);
+    let before: serde_json::Value = serde_json::from_str(&original).unwrap();
+    assert_eq!(file_json(&rig)["env"], before["env"], "env 전체가 해제 전 그대로");
+    let view = engine.view();
+    assert_eq!(view.phase, Phase::NoDeviceToken);
+    assert!(view.env_changed.is_empty(), "버린 응답의 바뀐 키를 화면에 알리면 안 된다: {:?}", view.env_changed);
+    assert!(engine.with(|m| m.pending_write.is_none()), "버린 키·env를 메모리에 보관하지 않는다");
+}
+
+#[test]
 fn rv05_a_lost_rotate_response_does_not_trigger_a_retry_after_disconnect() {
     let rig = Rig::new("rv05-lost");
     write_ready(&rig.path, Some(&fake_key('S')));
@@ -1837,6 +1861,34 @@ fn r19_rotate_201_applies_server_env_too_and_the_server_value_wins_over_a_user_v
             "OTEL_METRIC_EXPORT_INTERVAL"
         ]
     );
+}
+
+#[test]
+fn r19_rotation_with_env_keeps_the_new_key_and_the_server_values_out_of_the_backup() {
+    // 백업은 저장 직전 원본 1세대다(롤백 가치) — 회전으로 폐기되는 옛 키가 거기 남는 것은 설계다(수집키 삭제 때만 뺀다).
+    // 지켜야 할 것은 반대 방향: env가 실린 회전에서도 새 키 원문과 서버 값이 백업으로 새지 않는다.
+    let rig = Rig::new("r19-rotate-backup");
+    let mut v: serde_json::Value = serde_json::from_str(&ready_settings(Some(&fake_key('O')))).unwrap();
+    v["env"]["OTEL_LOGS_EXPORT_INTERVAL"] = "30000".into();
+    let original = v.to_string();
+    std::fs::write(&rig.path, &original).unwrap();
+    rig.api.push_get(state_has_current(&prefix_of('P'), false));
+    rig.api.push_rotate(created_with_env('N', contract_env()));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+
+    let backup = std::fs::read_to_string(backup_path_for(&rig.path)).unwrap();
+    assert_eq!(backup, original, "백업은 저장 직전 원본 그대로");
+    assert!(!backup.contains(&fake_key('N')), "새 키 원문이 백업에 있으면 안 된다");
+    let backup_json: serde_json::Value = serde_json::from_str(&backup).unwrap();
+    assert_eq!(backup_json["env"]["OTEL_LOGS_EXPORT_INTERVAL"], "30000", "서버 값(60000)이 백업에 있으면 안 된다");
+    assert!(backup_json["env"].get("OTEL_METRIC_EXPORT_INTERVAL").is_none());
+    // 본 파일은 새 키 + 서버 값, 옛 키는 없다.
+    assert!(!file(&rig).contains(&fake_key('O')), "{}", file(&rig));
+    assert!(headers_of(&rig).contains(&fake_key('N')));
+    assert_eq!(env_str(&rig, "OTEL_LOGS_EXPORT_INTERVAL").as_deref(), Some("60000"));
+    #[cfg(unix)]
+    assert_eq!(mode_of(&backup_path_for(&rig.path)), 0o600);
 }
 
 #[test]

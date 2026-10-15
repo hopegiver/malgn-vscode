@@ -182,10 +182,23 @@ export const AUTO_LINK_SERVER_KEYS: readonly string[] = [
 /** 자동 연동이 settings.json에서 바꾸는 것의 전부. 화면의 여러 안내문이 같은 문장을 쓴다. */
 export const AUTO_LINK_CHANGES_NOTE = `자동 연동이 settings.json에서 바꾸는 항목: 수집키(env.OTEL_EXPORTER_OTLP_HEADERS의 Authorization 항목)와, 수집키를 새로 발급·교체할 때 허브가 보내는 수집 설정 6개(${AUTO_LINK_SERVER_KEYS.join(', ')}). 이 6개는 허브 값이 기존 값(앱 기본값·직접 정한 값)보다 우선합니다. 엔드포인트·직원 식별(OTEL_RESOURCE_ATTRIBUTES)·프라이버시 설정 등 그 밖의 항목은 허브가 보내도 바꾸지 않습니다.`;
 
+/**
+ * 설정 화면은 6키 안내를 폼 위쪽에 한 번 따로 보여 준다(`otel-autolink-changes-note`). 같은 화면의 연동 상세에는 이 문장을 다시
+ * 싣지 않도록, 단계 문구(`detail`)에서 안내문 부분만 뺀다. 홈 체크리스트는 이 함수를 거치지 않고 한 번 그대로 보여 준다.
+ */
+export function withoutAutoLinkNote(detail: string): string {
+  return detail.replace(` ${AUTO_LINK_CHANGES_NOTE}`, '').replace(AUTO_LINK_CHANGES_NOTE, '');
+}
+
 // 백엔드가 걸러 준 키 이름만 화면에 쓴다(영숫자·_·.·- 64자 이하, 또는 백엔드의 고정 자리표시자). 그 밖의 문자열은 버린다.
-const ENV_NAME_SHAPE = /^(?:[A-Za-z0-9_.-]{1,64}|\((?:이름 형식 불명|그 밖 \d{1,3}개)\))$/;
-function envNames(names: readonly string[] | undefined): string[] {
-  return (names ?? []).filter((n) => typeof n === 'string' && ENV_NAME_SHAPE.test(n));
+// "(그 밖 N개)"의 N은 백엔드가 제한 없이 세므로(u32까지) 자릿수 상한을 넉넉히 둔다 — 좁으면 큰 N에서 꼬리가 통째로 사라진다.
+const ENV_NAME_SHAPE = /^(?:[A-Za-z0-9_.-]{1,64}|\((?:이름 형식 불명|그 밖 \d{1,10}개)\))$/;
+/** 화면에 쓸 수 있는 이름만 남긴다. 형식에 걸려 버린 이름은 개수를 "(표시하지 않은 N개)"로 더해 거부가 실제보다 적게 보이지 않게 한다. */
+export function envNames(names: readonly string[] | undefined): string[] {
+  const all = (names ?? []).filter((n) => typeof n === 'string');
+  const shown = all.filter((n) => ENV_NAME_SHAPE.test(n));
+  const dropped = all.length - shown.length;
+  return dropped > 0 ? [...shown, `(표시하지 않은 ${dropped}개)`] : shown;
 }
 
 /** 마지막 발급·회전에서 허브가 보낸 수집 설정을 어떻게 다뤘는지 — 바뀐 키와 거부한 키 이름만(값 없음). */

@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AUTO_LINK_CHANGES_NOTE, AUTO_LINK_SERVER_KEYS, computeOnboarding } from '../../src/onboarding.ts';
+import { AUTO_LINK_CHANGES_NOTE, AUTO_LINK_SERVER_KEYS, computeOnboarding, withoutAutoLinkNote } from '../../src/onboarding.ts';
 
 const tool = (id, installed, required = true) => ({ id, name: id, installed, version: installed ? '1.0.0' : null, path: installed ? `/bin/${id}` : null, required });
 const base = {
@@ -391,7 +391,34 @@ test('R19: 이름 형식이 아닌 문자열은 화면에 쓰지 않고, 백엔�
     })
   ).detail;
   assert.doesNotMatch(d, /LEAK|Bearer|<b>|A B/);
-  assert.match(d, /\(이름 형식 불명\), \(그 밖 3개\), OTEL_OK\./);
+  // 형식에 걸려 버린 4개(LEAK·<b>·A B 포함)는 이름 없이 개수로만 남아 거부가 실제보다 적게 보이지 않는다.
+  assert.match(d, /\(이름 형식 불명\), \(그 밖 3개\), OTEL_OK, \(표시하지 않은 3개\)\./);
+});
+
+test('R19 N-2: "(그 밖 N개)"는 N이 커도(1,200개·u32 끝자리) 꼬리 표시가 사라지지 않는다', () => {
+  for (const n of [999, 1200, 4294967295]) {
+    const d = step(st('applied', { masked: 'mhk_AbCd…', serverEnvRejected: ['OTEL_A', `(그 밖 ${n}개)`] })).detail;
+    assert.ok(d.includes(`OTEL_A, (그 밖 ${n}개).`), `${n}: ${d}`);
+    assert.doesNotMatch(d, /표시하지 않은/);
+  }
+  // 자릿수 상한을 넘는 가짜 자리표시자는 여전히 버린다(개수로만 센다).
+  const fake = step(st('applied', { masked: 'mhk_AbCd…', serverEnvRejected: ['(그 밖 12345678901개)'] })).detail;
+  assert.doesNotMatch(fake, /12345678901/);
+  assert.match(fake, /\(표시하지 않은 1개\)/);
+});
+
+test('R19 RV-02: 설정 화면용 문구는 6키 안내를 뺀 연동 상세만 돌려주고 홈 문구는 그대로 한 번 싣는다', () => {
+  for (const status of [st('unlinked'), st('unlinked', { hubConnected: false })]) {
+    const detail = step(status).detail;
+    assert.equal(detail.split(AUTO_LINK_CHANGES_NOTE).length - 1, 1, '홈 체크리스트 문구는 안내를 정확히 1회');
+    const forSettings = withoutAutoLinkNote(detail);
+    assert.ok(!forSettings.includes('OTEL_LOGS_EXPORT_INTERVAL'), forSettings);
+    assert.ok(!forSettings.includes('허브 값이 기존 값'), forSettings);
+    assert.ok(forSettings.length > 20 && !forSettings.endsWith(' '), forSettings);
+  }
+  // 안내가 없는 문구는 그대로.
+  const applied = step(st('applied', { masked: 'mhk_AbCd…' })).detail;
+  assert.equal(withoutAutoLinkNote(applied), applied);
 });
 
 test('R19: 서버 env 필드가 없는 옛 상태 객체에서도 문구가 깨지지 않는다', () => {

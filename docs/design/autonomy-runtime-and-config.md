@@ -230,8 +230,10 @@ pub(crate) fn run_process_with_timeout_cancellable(
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | |
 | `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | `otlp` / `otlp` | |
 | `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `cumulative` | |
-| `OTEL_METRIC_EXPORT_INTERVAL` / `OTEL_LOGS_EXPORT_INTERVAL` | `60000` / `5000` | ms |
+| `OTEL_METRIC_EXPORT_INTERVAL` / `OTEL_LOGS_EXPORT_INTERVAL` | `60000` / `60000` | ms. 로그 주기는 예전에 `5000`이었다 — 아래 "허브 201 `env` 적용" 참고 |
 | `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_RAW_API_BODIES` | 전부 `0` | **읽기 전용 고정값**(아래) |
+
+**허브 201 `env` 적용 (R19 결정, 허브 계약 §14 Q3의 앱 쪽 결론)** — 수집키 발급·회전 201의 `env`는 아래 6개 키만, 값 형식(주기 5,000~3,600,000ms 숫자·프로토콜 `http/protobuf`·exporter `otlp`·temporality 3값)을 통과할 때 수집키 교체와 같은 원자적 쓰기로 적용하고 서버 값이 앱 기본값·파일 값을 이긴다. 6키: `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_LOGS_EXPORT_INTERVAL`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`. 엔드포인트·헤더·`OTEL_RESOURCE_ATTRIBUTES`·프라이버시 4키 등은 서버가 보내도 쓰지 않고 이름만 알린다. 파일의 exporter가 이미 `otlp`를 포함한 목록이면 그 키는 덮지 않는다. 이미 파일에 있는 옛 `5000`은 앱이 **이행하지 않는다**(앱이 쓴 5000과 사용자가 정한 5000을 가를 수 없다) — 설정 화면이 권장값을 안내만 하고, 서버 값이 닿는 것은 그 기기가 새 키를 받을 때(발급·회전 201)뿐이다. 이미 키가 적용된 기기에는 허브가 값을 바꿔도 전파되지 않는다(허브 상태 응답에 env를 싣는 안은 별도 결정). 구현 정본: `src-tauri/src/otel_server_env.rs`, 결정 기록: `src-tauri/src/otel_link.rs` 머리말 R19.
 
 프라이버시 4개는 UI에서 값만 보여주고 **편집 불가**로 렌더한다(`readOnlyKeys`). 이 값을 1로 올리면 프롬프트 원문·툴 입출력이 collector로 나가므로, 사내 대시보드용 앱이 원클릭으로 켜줄 성격이 아니다. 필요하면 사용자가 `settings.json`을 직접 편집한다(이 앱은 그 값을 **덮어쓰지 않고 그대로 보존**한다).
 

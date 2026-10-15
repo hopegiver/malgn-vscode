@@ -3,7 +3,7 @@ import { errorMessage, errorMessagePersistent, sanitizeBackendText } from '../er
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
 import { answerIngestReissueConfirm, fetchIngestLinkStatus, fetchOtelSettings, recheckIngestLink, retryIngestLink, saveOtelSettings } from '../otelApi';
-import type { OtelSettings, IngestKeyChange } from '../otelApi';
+import type { OtelSettings, IngestKeyChange, IngestLinkStatus } from '../otelApi';
 import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID, renderInstallFallbackNote } from './catalog';
 import { successToastWithFallbackNote } from '../installFallbackNote';
 import { renderAppLinksPanel } from './appLinks';
@@ -28,7 +28,8 @@ import {
 } from '../hubAuthApi';
 import type { HubAuthStatus, HubDisconnectResult } from '../hubAuthApi';
 import { navigate, parseRoute } from '../route';
-import { AUTO_LINK_CHANGES_NOTE, computeOnboarding } from '../onboarding';
+import { AUTO_LINK_CHANGES_NOTE, computeOnboarding, withoutAutoLinkNote } from '../onboarding';
+import { baselineValues, mergeDraftOnRefresh, sameFormContent, valuesToSave } from '../otelForm';
 import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueOutcome } from '../otelLinkText';
 import type { OnboardingStep } from '../onboarding';
 import { renderDevToolsView } from './devTools';
@@ -100,7 +101,8 @@ export function renderSettingsView(tab: SettingsTab): HTMLElement {
 // 입력하지 않고 저장하면 기존 키는 그대로 유지된다(ingestKey 생략=keep).
 const INGEST_KEY_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
 
-// 허브 수집키 안내 문구 — 한 곳에서 관리한다.
+// 허브 수집키 안내 문구 — 한 곳에서 관리한다. 자동 연동이 바꾸는 6개 키 안내(AUTO_LINK_CHANGES_NOTE)는 여기 넣지 않는다:
+// 설정 화면에는 폼 위쪽 `otel-autolink-changes-note` 한 곳에만 둔다(한 화면 1회).
 // 현재 사실: 허브에는 수집키(mhk_) 발급·폐기 셀프서비스 화면이 아직 없다. 허브 "인증키 관리"
 // (/keys)는 MCP 기기 토큰(mhd_)만 다루고, 거기서 만든 토큰은 수집키가 아니라 여기에 넣을 수 없다.
 // 개인 수집키는 본인 허브 로그인 세션으로만 발급되는 API라 관리자가 대신 발급하지 못한다(관리자가 발급하는
@@ -111,10 +113,10 @@ const INGEST_KEY_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
 // Rust `IngestKeyStatus`에 다시 실어(otel_ingest_key.rs) 버튼을 되살린다.
 const INGEST_KEY_COPY = {
   issue:
-    `허브에 연결되어 있으면 앱이 수집키(mhk_…)를 자동으로 발급해 적용합니다(위 "허브 수집키 자동 연동"). 직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다. 단, 그 뒤 허브에 연결하면 앱이 발급한 키로 교체됩니다. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다. ${AUTO_LINK_CHANGES_NOTE}`,
+    `허브에 연결되어 있으면 앱이 수집키(mhk_…)를 자동으로 발급해 적용합니다(위 "허브 수집키 자동 연동"). 직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다. 단, 그 뒤 허브에 연결하면 앱이 발급한 키로 교체됩니다. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.`,
   // 허브에 연결되어 앱이 수집키를 관리하는 동안(RV-02): 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 교체되고 키 교체 횟수만 쓴다.
   issueManaged:
-    `허브에 연결되어 있는 동안은 앱이 수집키(mhk_…)를 자동으로 발급·교체합니다(위 "허브 수집키 자동 연동"). 직접 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 바뀌고 이 기기의 키 교체 횟수(24시간 6회)만 쓰기 때문에 입력을 막았습니다. 직접 받은 수집키를 쓰려면 허브 연결을 해제하세요(malgnai-hub 연결도 함께 해제됩니다). 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다. ${AUTO_LINK_CHANGES_NOTE}`,
+    `허브에 연결되어 있는 동안은 앱이 수집키(mhk_…)를 자동으로 발급·교체합니다(위 "허브 수집키 자동 연동"). 직접 붙여넣은 키는 다음 점검에서 앱이 발급한 키로 바뀌고 이 기기의 키 교체 횟수(24시간 6회)만 쓰기 때문에 입력을 막았습니다. 직접 받은 수집키를 쓰려면 허브 연결을 해제하세요(malgnai-hub 연결도 함께 해제됩니다). 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.`,
   placeholderManaged: '허브 연결 중에는 앱이 수집키를 자동 관리합니다',
   storage:
     '저장하면 settings.json에 Authorization=Bearer … 형태로 기록되며 값은 이 화면에 다시 표시되지 않습니다. 비워 두고 저장하면 기존 키를 그대로 둡니다.',
@@ -153,6 +155,15 @@ export async function loadOtelEnv(): Promise<void> {
   }
 }
 
+// 연동 상태를 받는 모든 경로(이벤트 재조회·[다시 시도]·재발급 확인·저장 후 재점검)가 거치는 한 곳. 점검이 settings.json의
+// 서버 권장값 6개를 바꿨을 수 있으므로(자동 연동이 같은 파일에 쓴다) 설정 > OTel 폼도 파일에서 다시 읽는다 — 안 그러면 위쪽
+// 상태는 "허브 값으로 바뀐 설정"이라 하면서 입력칸은 옛 값을 보여 준다.
+function applyIngestStatus(status: IngestLinkStatus): void {
+  state.ingestLink.status = status;
+  state.ingestLink.loaded = true;
+  void refreshOtelFormFromFile();
+}
+
 // 홈 시작 체크리스트·OTel 설정의 연동 상태 — settings.json과 앱 안 점검 엔진의 메모리 상태만 읽는다(허브를
 // 부르지 않는다). 요청이 겹치면 마지막 요청만 반영한다. 조회 실패 문구는 errorMessage()를 거쳐(토큰·키
 // 마스킹) 보관한다. 백엔드가 `otel-link-changed` 이벤트를 쏘면 main.ts가 이 함수를 다시 부른다.
@@ -165,8 +176,7 @@ export async function loadIngestLink(): Promise<void> {
   try {
     const status = await fetchIngestLinkStatus();
     if (seq !== ingestLinkSeq) return;
-    state.ingestLink.status = status;
-    state.ingestLink.loaded = true;
+    applyIngestStatus(status);
   } catch (err) {
     if (seq !== ingestLinkSeq) return;
     state.ingestLink.error = errorMessage(err, '원인을 알 수 없습니다.');
@@ -186,8 +196,7 @@ export async function retryIngestLinkNow(): Promise<void> {
   state.ingestLink.retrying = true;
   notifyChange();
   try {
-    state.ingestLink.status = await retryIngestLink();
-    state.ingestLink.loaded = true;
+    applyIngestStatus(await retryIngestLink());
     state.ingestLink.error = null;
   } catch (err) {
     showToast(`수집키 점검을 시작하지 못했습니다: ${errorMessage(err)}`);
@@ -202,8 +211,7 @@ export async function retryIngestLinkNow(): Promise<void> {
 // 다시 점검한다(그 밖에는 아무것도 하지 않아 점검 시점을 늘리지 않는다). 결과는 이벤트로도 오지만 응답으로 바로 반영한다.
 async function recheckIngestLinkAfterSave(): Promise<void> {
   try {
-    state.ingestLink.status = await recheckIngestLink();
-    state.ingestLink.loaded = true;
+    applyIngestStatus(await recheckIngestLink());
     notifyChange();
     maybeAskReissueConfirm();
   } catch {
@@ -229,8 +237,7 @@ export async function askReissueConfirm(): Promise<void> {
       cancelLabel: '발급하지 않음',
       defaultFocus: 'cancel',
     });
-    state.ingestLink.status = await answerIngestReissueConfirm(accepted);
-    state.ingestLink.loaded = true;
+    applyIngestStatus(await answerIngestReissueConfirm(accepted));
     const outcome = reissueOutcome(state.ingestLink.status, accepted, beforeMasked);
     if (outcome.text) showToast(outcome.text);
   } catch (err) {
@@ -252,10 +259,22 @@ export function maybeAskReissueConfirm(): void {
   if (state.ingestLink.status?.confirmRequired && !reissueConfirmOpen && onScreenThatShowsLinkState()) void askReissueConfirm();
 }
 
-async function handleSaveOtelSettings(values: Record<string, string>, ingestKey: IngestKeyChange): Promise<void> {
+async function handleSaveOtelSettings(
+  form: { keys: readonly string[]; draft: Record<string, string>; baseline: Record<string, string>; readOnlyKeys: readonly string[] },
+  ingestKey: IngestKeyChange
+): Promise<void> {
   state.otel.saving = true;
   notifyChange();
   try {
+    // 폼이 그려진 뒤 자동 연동이 서버 권장값을 썼을 수 있다 — 저장 직전 파일을 다시 읽어, 사용자가 고치지 않은 칸은 보내지
+    // 않는다(되돌려 쓰지 않는다). 다시 읽지 못하면 화면이 아는 파일 값으로 판단한다(그 경우에도 고친 칸은 모두 저장된다).
+    let fileValues: Record<string, string> = { ...(state.otel.settings?.values ?? {}) };
+    try {
+      fileValues = { ...(await fetchOtelSettings()).values };
+    } catch {
+      /* 아래 저장이 성공/실패를 말한다 */
+    }
+    const values = valuesToSave({ ...form, fileValues });
     // 비로그인이면 identity: null — 백엔드가 이 경우 OTEL_RESOURCE_ATTRIBUTES를
     // 손대지 않는다(기존 귀속 정보를 지우는 것이 가장 나쁜 결과라서).
     const identity = state.auth.userEmail ? { email: state.auth.userEmail, name: state.auth.userName } : null;
@@ -285,8 +304,8 @@ async function handleClearIngestKey(): Promise<void> {
     const result = await saveOtelSettings({ values: {}, identity: null, ingestKey: { action: 'clear' } });
     // 새 settings 객체로 바뀌면 드래프트가 초기화되므로, 아직 저장 안 된 다른 필드
     // 입력은 보존하고 수집키 입력칸만 비운다.
-    otelDraft = { forSettings: result, values: otelDraft.values, ingestKey: '' };
-    state.otel.settings = result;
+    otelDraft.ingestKey = '';
+    adoptOtelSettings(result);
     showToast(INGEST_KEY_COPY.clearedToast);
     void loadIngestLink();
   } catch (err) {
@@ -374,6 +393,35 @@ let otelDraft: { forSettings: OtelSettings | null; values: Record<string, string
   ingestKey: '',
 };
 
+// 입력칸이 없는 키(직원 식별은 읽기 전용 안내, 수집키는 별도 블록).
+const NO_INPUT_KEYS: readonly string[] = ['OTEL_RESOURCE_ATTRIBUTES', INGEST_KEY_ENV];
+
+// 파일에서 새로 읽은 설정을 폼에 채택한다. 사용자가 고치던 입력칸은 그대로 두고, 고치지 않은 칸만 새 파일 값으로 바꾼다
+// (otelForm.mergeDraftOnRefresh). 저장 시 "고치지 않은 칸"의 기준도 이 새 설정이라, 서버가 바꾼 값을 되돌려 쓰지 않는다.
+function adoptOtelSettings(next: OtelSettings): void {
+  const merged = mergeDraftOnRefresh(otelDraft.forSettings, next, otelDraft.values, NO_INPUT_KEYS);
+  otelDraft = { forSettings: next, values: merged, ingestKey: otelDraft.ingestKey };
+  state.otel.settings = next;
+}
+
+// 폼이 열려 있는 동안 파일이 폼 밖에서 바뀌었는지(자동 연동이 서버 값을 씀) 조용히 다시 읽는다. 내용이 같으면 아무것도
+// 하지 않는다(재렌더 없음). 불러오는 중·저장 중에는 그쪽 결과가 이기므로 건너뛴다. 실패는 폼을 건드리지 않는다.
+let otelRefreshSeq = 0;
+export async function refreshOtelFormFromFile(): Promise<void> {
+  if (!state.otel.loaded || state.otel.loading || state.otel.saving || !state.otel.settings) return;
+  const seq = ++otelRefreshSeq;
+  let next: OtelSettings;
+  try {
+    next = await fetchOtelSettings();
+  } catch {
+    return;
+  }
+  if (seq !== otelRefreshSeq || state.otel.saving || state.otel.loading || !state.otel.settings) return;
+  if (sameFormContent(state.otel.settings, next)) return;
+  adoptOtelSettings(next);
+  notifyChange();
+}
+
 function renderOtelPanel(): HTMLElement {
   if (state.otel.loading && !state.otel.loaded) {
     return el('div', { className: 'state-block' }, [el('div', { className: 'state-block-title' }, ['불러오는 중…'])]);
@@ -407,14 +455,7 @@ function renderOtelPanel(): HTMLElement {
   // settings 객체가 "새로 불러온" 것일 때만(참조가 바뀌었을 때만) 드래프트를
   // 다시 채운다 — 배경 이벤트로 인한 재렌더는 여기 도달하지 않는다(참조 동일).
   if (otelDraft.forSettings !== settings) {
-    const values: Record<string, string> = {};
-    for (const key of settings.managedKeys) {
-      if (key === 'OTEL_RESOURCE_ATTRIBUTES' || key === INGEST_KEY_ENV) continue;
-      const hasValue = key in settings.values;
-      const hasDefault = key in settings.defaults;
-      values[key] = hasValue ? settings.values[key] : hasDefault ? settings.defaults[key] : '';
-    }
-    otelDraft = { forSettings: settings, values, ingestKey: '' };
+    otelDraft = { forSettings: settings, values: baselineValues(settings, NO_INPUT_KEYS), ingestKey: '' };
   }
 
   const inputs = new Map<string, HTMLInputElement>();
@@ -491,16 +532,16 @@ function renderOtelPanel(): HTMLElement {
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const values: Record<string, string> = {};
-    for (const [key, input] of inputs) {
-      if (settings.readOnlyKeys.includes(key)) continue;
-      values[key] = input.value;
-    }
+    // 입력칸 값(= 드래프트)을 지금 시점으로 고정해 둔다. 무엇을 보낼지는 저장 직전에 파일을 다시 읽어 정한다(otelForm.valuesToSave).
+    const draft: Record<string, string> = {};
+    for (const [key, input] of inputs) draft[key] = input.value;
+    const keys = [...inputs.keys()];
+    const baseline = baselineValues(settings, NO_INPUT_KEYS);
     // 새 키를 입력했을 때만 set — 비워 두면 keep(기존 키 유지). 마스킹 표시값은 어디에도
     // 입력 필드 값으로 쓰이지 않으므로 되돌려 보낼 일이 없다.
     const typed = keyManagedByHub(state.ingestLink.status) ? '' : otelDraft.ingestKey;
     const ingestKey: IngestKeyChange = typed.trim() === '' ? { action: 'keep' } : { action: 'set', key: typed };
-    void handleSaveOtelSettings(values, ingestKey);
+    void handleSaveOtelSettings({ keys, draft, baseline, readOnlyKeys: settings.readOnlyKeys }, ingestKey);
   });
 
   const saveBtn = el('button', { className: 'btn btn-primary', disabled: state.otel.saving }, [state.otel.saving ? '저장 중…' : '저장']);
@@ -563,7 +604,7 @@ function renderIngestLinkPanel(): HTMLElement {
   const panel = el('div', { className: 'settings-field' }, [
     el('span', { className: 'settings-field-label' }, ['허브 수집키 자동 연동']),
     el('div', {}, [el('span', { className: `badge badge-${badge.tone}` }, [badgeLabel])]),
-    withId(el('div', { className: 'settings-form-hint' }, [step.detail]), 'otel-link-detail'),
+    withId(el('div', { className: 'settings-form-hint' }, [withoutAutoLinkNote(step.detail)]), 'otel-link-detail'),
     ...(action ? [el('div', { className: 'settings-form-actions' }, [action])] : []),
   ]);
   panel.id = 'otel-link-panel';

@@ -401,6 +401,17 @@ pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Re
 /// `save_to_settings_file`의 본체. 저장에 성공하면 `payload.values` 중 **파일의 이전 값과 달라진** 키(새로 생긴 키 포함,
 /// 삭제 신호 제외)의 이름을 돌려준다 — 자동 연동이 서버 권장값으로 무엇을 바꿨는지 화면이 말할 근거다. 값은 싣지 않는다.
 fn save_reporting_changes(path: &Path, payload: OtelSavePayload) -> Result<Vec<String>, String> {
+    save_reporting_changes_with(path, payload, false)
+}
+
+/// `keep_otlp_exporter_lists`가 true면(서버 권장값을 쓰는 `apply_ingest_key`만) 파일의 `OTEL_METRICS_EXPORTER`·
+/// `OTEL_LOGS_EXPORTER`가 이미 `otlp`를 포함하는 쉼표 목록(`otlp,console` 등)일 때 그 키를 쓰지 않는다 — 서버 값(`otlp`)은
+/// "otlp로 내보낸다"는 뜻이고 파일이 이미 그렇다. 덮어쓰면 사용자가 곁들인 exporter(`console`)만 조용히 사라진다.
+fn save_reporting_changes_with(
+    path: &Path,
+    payload: OtelSavePayload,
+    keep_otlp_exporter_lists: bool,
+) -> Result<Vec<String>, String> {
     // 읽고-고치고-쓰는 전체를 한 번에 직렬화한다 — 설정 화면 저장, 자동 연동(수집키 적용), 연결 해제가
     // 서로 다른 스레드에서 같은 파일을 만져도 한쪽 변경이 다른 쪽 변경을 덮어쓰지 않게 한다.
     // (다른 프로세스·사용자의 직접 편집까지는 막지 못한다 — 그 경우의 보호는 원자적 쓰기와 백업이다.)
@@ -444,6 +455,18 @@ fn save_reporting_changes(path: &Path, payload: OtelSavePayload) -> Result<Vec<S
     }
 
     let mut values = payload.values.clone();
+    if keep_otlp_exporter_lists {
+        for key in ["OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER"] {
+            let existing = root
+                .get("env")
+                .and_then(|e| e.get(key))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if exporter_includes_otlp(existing.as_ref()) {
+                values.remove(key);
+            }
+        }
+    }
     if let Some(identity) = &payload.identity {
         let existing_attrs = root
             .get("env")
@@ -542,19 +565,22 @@ fn save_reporting_changes(path: &Path, payload: OtelSavePayload) -> Result<Vec<S
 /// 쓰인(또는 그 반대) 중간 상태가 파일에 남지 않는다. 서버 값은 앱 기본값·파일의 기존 값과 달라도 이긴다(서버가 값을
 /// 바꾸면 앱 수정 없이 따라간다). 통과 값은 `validate_value`가 한 번 더 본다 — 서버 규칙은 그보다 좁아서(주기 하한,
 /// exporter `otlp`뿐) 여기서 실패하지 않으며, 그래서 env가 수집키 적용을 실패시키는 경로는 없다(테스트가 고정).
+/// 단 하나의 예외: 파일의 metrics·logs exporter가 이미 `otlp`를 포함하는 목록이면 그 키는 서버 값으로 덮지 않는다
+/// (`otlp,console`의 `console`을 지키는 사용자 값 보존 — 수집 준비 판정은 어느 쪽이든 같다).
 /// 반환: 파일의 이전 값과 달라진 env 키 이름(수집키 제외, 값 없음).
 pub(crate) fn apply_ingest_key(
     path: &Path,
     key: SecretString,
     server_env: &ServerEnv,
 ) -> Result<Vec<String>, String> {
-    save_reporting_changes(
+    save_reporting_changes_with(
         path,
         OtelSavePayload {
             values: server_env.accepted.clone(),
             identity: None,
             ingest_key: IngestKeyChange::Set { key },
         },
+        true,
     )
 }
 
@@ -1642,6 +1668,37 @@ mod tests {
         assert_eq!(saved["env"]["OTEL_RESOURCE_ATTRIBUTES"], "employee.id=dev");
         assert_eq!(saved["permissions"]["allow"][0], "Bash(ls)");
         assert_eq!(std::fs::read_to_string(backup_path_for(&path)).unwrap(), original);
+    }
+
+    #[test]
+    fn server_otlp_does_not_strip_an_existing_otlp_list_but_replaces_a_non_otlp_value() {
+        use crate::otel_server_env::sanitize_server_env;
+        let path = temp_settings_path("apply-keep-exporter-list");
+        let original = r#"{"env":{"OTEL_METRICS_EXPORTER":"console, OTLP","OTEL_LOGS_EXPORTER":"none","OTEL_LOGS_EXPORT_INTERVAL":"5000"}}"#;
+        std::fs::write(&path, original).unwrap();
+        let server_env = sanitize_server_env(Some(&serde_json::json!({
+            "OTEL_METRICS_EXPORTER": "otlp",
+            "OTEL_LOGS_EXPORTER": "otlp",
+            "OTEL_LOGS_EXPORT_INTERVAL": "60000",
+        })));
+        let changed = apply_ingest_key(&path, SecretString::new(&fake_ingest_key()), &server_env).unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // otlp를 이미 포함한 목록은 그대로(사용자가 곁들인 console 보존), 바뀐 키로도 보고하지 않는다.
+        assert_eq!(saved["env"]["OTEL_METRICS_EXPORTER"], "console, OTLP");
+        // otlp를 포함하지 않는 값은 서버 값이 이긴다(기존 규칙).
+        assert_eq!(saved["env"]["OTEL_LOGS_EXPORTER"], "otlp");
+        assert_eq!(saved["env"]["OTEL_LOGS_EXPORT_INTERVAL"], "60000");
+        assert!(!changed.contains(&"OTEL_METRICS_EXPORTER".to_string()), "{changed:?}");
+        assert!(changed.contains(&"OTEL_LOGS_EXPORTER".to_string()), "{changed:?}");
+        // 수동 저장 경로는 이 예외를 타지 않는다(사용자가 명시한 값은 그대로 쓴다).
+        let manual = OtelSavePayload {
+            values: [("OTEL_METRICS_EXPORTER".to_string(), "otlp".to_string())].into_iter().collect(),
+            identity: None,
+            ingest_key: IngestKeyChange::Keep,
+        };
+        save_to_settings_file(&path, manual).unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["env"]["OTEL_METRICS_EXPORTER"], "otlp");
     }
 
     #[test]
