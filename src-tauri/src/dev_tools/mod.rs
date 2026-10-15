@@ -359,8 +359,9 @@ pub async fn open_manual_instruction(
 }
 
 /// 진행 중인 앱 내장 Node 설치(P2-3a)를 취소한다. 다운로드·해제·검증 어느 단계든 중단하고
-/// 스테이징을 지우며 기존 설치는 그대로 둔다. 진행 중인 설치가 없으면 아무 일도 하지 않는다
-/// (다음 설치는 시작할 때 취소 표시를 지운다).
+/// 스테이징을 지우며 기존 설치는 그대로 둔다. 호출 시점에 진행 중이던 작업만 멈추고(세대 카운터,
+/// app_node.rs `CancelSwitch`), 진행 중인 작업이 없으면 아무 일도 하지 않으며 이후의 미리보기·
+/// 설치도 막지 않는다.
 #[tauri::command]
 pub fn cancel_node_install() {
     app_node::request_cancel();

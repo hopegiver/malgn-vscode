@@ -21,7 +21,7 @@ use super::platform::{platform_now, Platform};
 use super::process::ProcessRunOutput;
 use super::DevTool;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// 설치 계획의 리터럴 argv 토큰(plan_table.rs RUN_APP_NODE_*). 실제 설치 버전은 동적 값이라
@@ -41,16 +41,52 @@ pub(crate) const NPM_GLOBAL_CLAUDE_CANDIDATE: &str = "~/.local/share/malgn-agent
 
 // ---------------- 취소 ----------------
 
-static CANCEL: AtomicBool = AtomicBool::new(false);
-
-/// 진행 중인 설치를 취소한다(앱 종료 · `cancel_node_install` 커맨드). 다음 설치는 시작할 때
-/// 플래그를 지우므로 취소가 이후 설치를 막지 않는다.
-pub(crate) fn request_cancel() {
-    CANCEL.store(true, Ordering::SeqCst);
+/// 세대 카운터 방식의 취소 스위치. "취소됨"을 불리언으로 들고 있으면 누가 언제 내리는지가
+/// 문제가 된다(내리는 곳이 한 곳뿐이면 그 전 단계가 영구히 실패하고, 진행 중 작업이 없을 때의
+/// 취소가 다음 작업까지 막는다). 그래서 상태를 두지 않고 세대 번호만 올린다:
+///   - 작업은 시작할 때 현재 세대를 기억한 토큰(`token()`)을 받는다.
+///   - `cancel()`은 세대를 1 올린다 — 이미 시작한 토큰은 "취소됨"이 되고, 그 뒤에 시작하는
+///     토큰은 새 세대를 기억하므로 영향이 없다.
+///   - 진행 중인 작업이 없을 때의 `cancel()`은 아무 토큰도 취소하지 않아 무해하다.
+/// 따라서 되돌리는(리셋) 코드가 필요 없고, 취소는 호출 시점에 진행 중이던 작업만 멈춘다.
+pub(crate) struct CancelSwitch {
+    generation: AtomicU64,
 }
 
-fn is_cancelled() -> bool {
-    CANCEL.load(Ordering::SeqCst)
+pub(crate) struct CancelToken<'a> {
+    switch: &'a CancelSwitch,
+    started_at: u64,
+}
+
+impl CancelSwitch {
+    pub(crate) const fn new() -> Self {
+        Self { generation: AtomicU64::new(0) }
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn token(&self) -> CancelToken<'_> {
+        CancelToken { switch: self, started_at: self.generation.load(Ordering::SeqCst) }
+    }
+}
+
+impl CancelToken<'_> {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.switch.generation.load(Ordering::SeqCst) != self.started_at
+    }
+}
+
+static CANCEL: CancelSwitch = CancelSwitch::new();
+
+/// 호출 시점에 진행 중인 Node 설치·버전 확인을 취소한다(앱 종료 · `cancel_node_install`
+/// 커맨드). 이후에 시작하는 미리보기·설치는 영향을 받지 않고, 진행 중인 작업이 없으면 아무
+/// 일도 일어나지 않는다. 한계: 한 번의 실행이 "버전 결정 → 설치" 두 단계로 나뉘어 각자 토큰을
+/// 받으므로, 두 단계 사이의 짧은 틈에 도착한 취소는 놓칠 수 있다(취소 UI를 붙일 때 같은
+/// 토큰을 두 단계에 넘기도록 확장한다).
+pub(crate) fn request_cancel() {
+    CANCEL.cancel();
 }
 
 // ---------------- 배치(기준 폴더) ----------------
@@ -140,7 +176,8 @@ pub(crate) fn app_npm_for_global_package(layout: Option<&Layout>, canonical: &Pa
 
 /// 지금 설치할(= 동의 화면에 보여줄) LTS 버전을 정한다. 네트워크 1회(index.json).
 pub(crate) fn resolve_target_tag() -> Result<String, String> {
-    resolve_target_tag_with(&RealEnv::new(), NodeArch::current(), &is_cancelled)
+    let token = CANCEL.token();
+    resolve_target_tag_with(&RealEnv::new(), NodeArch::current(), &|| token.is_cancelled())
 }
 
 pub(crate) fn resolve_target_tag_with(
@@ -246,10 +283,10 @@ fn update_preview_for_tag(
 /// 고정(pinned)된 `target_tag`를 설치한다. 결과는 기존 실행기와 같은 `ProcessRunOutput`:
 /// 성공 = exit 0 + 단계 로그(stdout), 실패 = exit 1 + 사유(stderr), 취소 = `aborted`.
 pub(crate) fn run_pinned(target_tag: &str) -> ProcessRunOutput {
-    CANCEL.store(false, Ordering::SeqCst);
+    let token = CANCEL.token();
     match (current_layout(), NodeArch::current(), NodeVersion::parse_tag(target_tag)) {
         (Some(layout), Some(arch), Some(version)) => {
-            run_pinned_with(&RealEnv::new(), &layout, arch, version, &is_cancelled)
+            run_pinned_with(&RealEnv::new(), &layout, arch, version, &|| token.is_cancelled())
         }
         (None, _, _) => failed_output(
             InstallError::Io("홈 디렉터리를 알 수 없습니다".to_string()).to_string(),
@@ -350,7 +387,7 @@ mod tests {
         assert_eq!(a, compute_plan_id("/r", &bind_target(&args, "v24.22.0"), ""), "같은 입력은 안정적");
     }
 
-    /// 항상 네트워크 오류를 내는 환경 — 실패/취소가 `ProcessRunOutput`으로 올바르게 옮겨지는지 본다.
+    /// 항상 네트워크 오류를 내는(취소 신호가 서 있으면 취소로 끝나는) 환경 — 실패/취소가 `ProcessRunOutput`으로 올바르게 옮겨지는지 본다.
     struct DeadEnv;
     impl InstallEnv for DeadEnv {
         fn http_get(
@@ -358,8 +395,12 @@ mod tests {
             _url: &str,
             _max: u64,
             _sink: &mut dyn Write,
-            _cancel: &dyn Fn() -> bool,
+            cancel: &dyn Fn() -> bool,
         ) -> Result<(), node_install::FetchErrorForTests> {
+            // 실제 HTTP 클라이언트처럼 취소 신호를 먼저 본다.
+            if cancel() {
+                return Err(node_install::FetchErrorForTests::Cancelled);
+            }
             Err(node_install::FetchErrorForTests::Network("연결 거부".to_string()))
         }
         fn create_file(&self, _p: &Path) -> std::io::Result<Box<dyn Write>> {
@@ -399,6 +440,64 @@ mod tests {
         assert_eq!(out.exit_code, Some(1));
         assert!(failure_message(&out).contains("취소"));
         assert!(!layout.base.exists(), "취소는 아무 흔적도 남기지 않아야 합니다");
+    }
+
+    // ── RV-001: 취소는 호출 시점에 진행 중이던 작업만 멈춘다 ──
+
+    #[test]
+    fn cancel_stops_the_operation_in_progress_but_not_ones_started_after() {
+        let sw = CancelSwitch::new();
+        let running = sw.token();
+        assert!(!running.is_cancelled());
+        sw.cancel();
+        assert!(running.is_cancelled(), "진행 중이던 작업은 취소된다");
+        // 취소 뒤에 시작하는 작업(다음 미리보기·설치)은 영향이 없다 — 리셋 호출 없이도.
+        let next = sw.token();
+        assert!(!next.is_cancelled());
+        assert!(running.is_cancelled(), "이미 취소된 토큰이 되살아나지 않는다");
+        // 두 작업이 겹쳐 진행될 때의 취소는 둘 다 멈춘다(앱 종료 시 일괄 정리와 같은 의미).
+        sw.cancel();
+        assert!(next.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_with_nothing_in_progress_is_harmless() {
+        let sw = CancelSwitch::new();
+        sw.cancel();
+        sw.cancel();
+        assert!(!sw.token().is_cancelled(), "진행 중인 작업이 없을 때의 취소가 다음 작업을 막으면 안 된다");
+    }
+
+    #[test]
+    fn version_lookup_after_a_prior_cancel_is_not_reported_as_cancelled() {
+        // 회귀: 예전에는 한 번 취소하면 플래그가 남아 resolve_target_tag 단계가 앱 재시작까지
+        // "취소되었습니다"로 실패했다. 취소 뒤 새로 시작한 조회는 취소가 아닌 실제 결과(여기서는
+        // 네트워크 오류)로 끝나야 한다.
+        let sw = CancelSwitch::new();
+        sw.cancel();
+        let fresh = sw.token();
+        let err = resolve_target_tag_with(&DeadEnv, Some(NodeArch::Arm64), &|| fresh.is_cancelled()).unwrap_err();
+        assert!(!err.contains("취소"), "{err}");
+        assert!(err.contains("nodejs.org"), "{err}");
+        // 반대로 조회 도중(시작 뒤)의 취소는 취소로 보고된다.
+        let started = sw.token();
+        sw.cancel();
+        let err = resolve_target_tag_with(&DeadEnv, Some(NodeArch::Arm64), &|| started.is_cancelled()).unwrap_err();
+        assert!(err.contains("취소"), "{err}");
+    }
+
+    // 전역 스위치 경로(request_cancel → 이후 시작한 작업). 이 테스트만 request_cancel을 부른다.
+    #[test]
+    fn global_request_cancel_does_not_poison_later_operations() {
+        request_cancel();
+        let after = CANCEL.token();
+        assert!(!after.is_cancelled());
+        let home = std::env::temp_dir().join(format!("r22-app-node-after-cancel-{}", std::process::id()));
+        let layout = Layout::for_home(&home);
+        let v = NodeVersion::parse_tag("v24.22.0").unwrap();
+        let out = run_pinned_with(&DeadEnv, &layout, NodeArch::Arm64, v, &|| after.is_cancelled());
+        assert!(!out.aborted, "취소 뒤 새로 시작한 설치가 취소로 보고되면 안 된다: {}", out.stderr);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     // ── P2-3b ──
