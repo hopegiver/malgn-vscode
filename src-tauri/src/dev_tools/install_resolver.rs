@@ -250,6 +250,13 @@ pub(crate) fn resolve_install_plan(tool: ToolId, runners: &ResolvedRunners) -> I
         let Some(runner_path) = runners.path_for(candidate.runner) else {
             continue;
         };
+        // 앱 npm 전역 prefix에 설치된 pnpm은 `pnpm add -g`가 전역 bin 설정(셸 rc 수정)을 요구해
+        // 실패한다 — 러너에서 제외해 Wrangler 같은 도구가 npm 후보로 넘어가게 한다(app_node 주석).
+        if candidate.runner == Runner::Pnpm
+            && super::app_node::is_in_app_npm_global(super::app_node::current_layout().as_ref(), &runner_path)
+        {
+            continue;
+        }
         if !install_prefix_writable(tool, candidate.runner, &runner_path) {
             return InstallResolution::Manual(MANUAL_NOT_WRITABLE);
         }
@@ -783,6 +790,42 @@ mod tests {
                 assert_eq!(installer_label, "winget");
             }
             InstallResolution::Manual(_) => panic!("winget만 있어도 Node는 winget Run이어야 합니다"),
+        }
+    }
+
+    // P2-3b: 앱 npm 전역 prefix의 pnpm은 `pnpm add -g`가 셸 rc 수정을 요구해 쓸 수 없다(실측:
+    // ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH) — Wrangler 설치는 pnpm 대신 npm 후보로 넘어간다.
+    #[test]
+    fn wrangler_install_skips_an_app_npm_global_pnpm_and_uses_npm() {
+        let layout = super::super::app_node::current_layout().expect("home");
+        let app_pnpm = layout.npm_global_bin().join("pnpm").to_string_lossy().to_string();
+        let app_npm = layout.node_bin_dir().join("npm").to_string_lossy().to_string();
+        let runners = ResolvedRunners {
+            brew: None,
+            npm: Some(app_npm.clone()),
+            pnpm: Some(app_pnpm),
+            winget: None,
+            app_node: None,
+        };
+        match resolve_install_plan(ToolId::Wrangler, &runners) {
+            InstallResolution::Run { runner_path, argv, installer_label, .. } => {
+                assert_eq!(installer_label, "npm");
+                assert_eq!(runner_path, app_npm);
+                assert_eq!(argv, vec!["install", "-g", "wrangler"]);
+            }
+            InstallResolution::Manual(_) => panic!("npm이 있으면 Run이어야 합니다"),
+        }
+        // 그 외 위치의 pnpm(Homebrew 등)은 기존처럼 우선한다.
+        let brew_pnpm = ResolvedRunners {
+            pnpm: Some("/opt/homebrew/bin/pnpm".to_string()),
+            npm: Some(app_npm),
+            brew: None,
+            winget: None,
+            app_node: None,
+        };
+        match resolve_install_plan(ToolId::Wrangler, &brew_pnpm) {
+            InstallResolution::Run { installer_label, .. } => assert_eq!(installer_label, "pnpm"),
+            InstallResolution::Manual(_) => panic!("Run이어야 합니다"),
         }
     }
 

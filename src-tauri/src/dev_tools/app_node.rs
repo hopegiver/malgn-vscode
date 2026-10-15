@@ -106,6 +106,14 @@ pub(crate) fn is_app_managed_runner(layout: Option<&Layout>, runner_path: &str) 
     layout.map(|l| l.contains_node_path(Path::new(runner_path))).unwrap_or(false)
 }
 
+/// 이 실행 파일이 앱의 npm 전역 prefix(`npm-global/…`) 안에 있는가. pnpm 러너 판정에 쓴다:
+/// `npm i -g pnpm`으로 들어온 pnpm은 `pnpm add -g`가 전역 bin 디렉터리를 PATH에 요구하고
+/// (`ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH`, 샌드박스 실측) 그 설정(`pnpm setup`)은 셸 rc를
+/// 수정한다 — 이 기능은 rc 불변이므로 그런 pnpm은 설치 러너로 쓰지 않고 npm으로 간다.
+pub(crate) fn is_in_app_npm_global(layout: Option<&Layout>, path: &str) -> bool {
+    layout.map(|l| l.contains_npm_global_path(Path::new(path))).unwrap_or(false)
+}
+
 /// `canonical` 경로의 도구가 앱의 npm 전역 prefix 안에 있으면(= 앱 npm으로 설치된 전역 패키지)
 /// 그 갱신에 써야 할 앱 관리 `npm` 경로를 돌려준다. Homebrew npm이 먼저 잡히는 기기에서도
 /// 앱 prefix의 패키지는 앱 npm으로 갱신해 "두 번째 사본이 다른 prefix에 설치되는" 어긋남을 막는다.
