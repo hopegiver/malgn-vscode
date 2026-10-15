@@ -16,8 +16,19 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const APPLE_PLATFORM_BINARY: &str = "/bin/ls";
-/// `/bin/ls`의 leaf 인증서(`Software Signing`)의 OU — 양성 대조용(`openssl x509 -subject`로 확인한 값).
-const APPLE_LEAF_OU: &str = "Apple Software";
+/// 양성 대조용 후보: leaf 인증서(OU)를 가진 Apple 서명 바이너리를 앞에서부터 찾는다. leaf의 OU
+/// 값("Apple Software" 등)은 macOS 버전·이미지마다 달라질 수 있어 리터럴로 박지 않고 호스트에서 읽는다
+/// (macOS 26.5 로컬은 `/bin/ls`의 OU가 "Apple Software"지만 GitHub macos-26 러너 이미지 26.6.2에서는
+/// 같은 값으로 통과하지 않았다).
+const APPLE_CONTROL_CANDIDATES: &[&str] = &[
+    "/bin/ls",
+    "/bin/cat",
+    "/usr/bin/codesign",
+    "/usr/bin/openssl",
+    "/usr/bin/ssh",
+    "/usr/bin/tar",
+];
+const OPENSSL: &str = "/usr/bin/openssl";
 
 /// 테스트 전용 임시 폴더(테스트 temp 디렉터리 아래). 드롭하면 지운다.
 struct TempDir(PathBuf);
@@ -49,6 +60,33 @@ fn adhoc_signed_copy(dir: &TempDir) -> PathBuf {
 fn codesign(args: &[&str]) -> ToolRun {
     let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     RealEnv::new().run_tool(CODESIGN, &args, Duration::from_secs(60), &|| false)
+}
+
+/// `target`의 leaf 인증서 subject OU를 읽는다. 인증서가 없거나(인증서 없는 플랫폼 서명) 읽지 못하면 `None`.
+fn leaf_ou_of(target: &str) -> Option<String> {
+    let dir = TempDir::new(&format!("leaf-ou-{}", target.replace('/', "_")));
+    let prefix = dir.0.join("cert");
+    let run = codesign(&["-d", &format!("--extract-certificates={}", prefix.display()), target]);
+    if !run.succeeded() {
+        return None;
+    }
+    let leaf = dir.0.join("cert0"); // 0번이 leaf, 이후가 중간·루트 CA
+    let args: Vec<String> = ["x509", "-inform", "der", "-noout", "-subject", "-nameopt", "RFC2253", "-in"]
+        .iter()
+        .map(|a| a.to_string())
+        .chain(std::iter::once(leaf.to_string_lossy().into_owned()))
+        .collect();
+    let out = RealEnv::new().run_tool(OPENSSL, &args, Duration::from_secs(30), &|| false);
+    if !out.succeeded() {
+        return None;
+    }
+    // RFC2253: "subject=CN=...,OU=Apple Software,O=Apple Inc.,C=US" — OU 값은 쉼표로 끊기지 않는 경우만 신뢰한다.
+    out.stdout
+        .trim()
+        .trim_start_matches("subject=")
+        .split(',')
+        .find_map(|part| part.trim().strip_prefix("OU=").map(str::to_string))
+        .filter(|ou| !ou.is_empty() && !ou.contains(['"', '\\']))
 }
 
 fn check_requirement(requirement: &str, target: &Path) -> ToolRun {
@@ -90,17 +128,33 @@ fn real_codesign_rejects_an_adhoc_signed_copy_for_the_openjs_requirement() {
 
 #[test]
 fn the_ou_clause_is_what_rejects_apple_signed_code() {
-    // 양성 대조 1: 같은 템플릿에 Apple의 OU를 넣으면 /bin/ls가 통과한다 — 요구식이 파싱되고
-    // `certificate leaf[subject.OU]` 비교가 실제로 평가된다는 증거.
-    let apple_ou = format!("=anchor apple generic and certificate leaf[subject.OU] = \"{APPLE_LEAF_OU}\"");
-    let ok = check_requirement(&apple_ou, Path::new(APPLE_PLATFORM_BINARY));
-    assert!(ok.succeeded(), "대조 요구식이 /bin/ls에 통과해야 합니다: {} {}", ok.stderr, ok.stdout);
-    // 양성 대조 2: OU 조건을 지운 요구식(= OU 조건이 느슨해진 회귀)은 Apple 서명 코드를 통과시킨다.
-    // 즉 위의 거부는 OU 조건 덕분이다.
+    // 대조 2(OU 값과 무관): OU 조건을 지운 요구식(= OU 조건이 느슨해진 회귀)은 Apple 서명 코드를 통과시킨다.
+    // 즉 현재 요구식의 거부는 OU 조건 덕분이다. (`anchor apple generic` 통과는 다른 테스트도 단언한다.)
     let without_ou = check_requirement("=anchor apple generic", Path::new(APPLE_PLATFORM_BINARY));
     assert!(without_ou.succeeded(), "OU 조건이 없으면 /bin/ls가 통과해야 합니다: {}", without_ou.stderr);
     // 현재 요구식은 같은 대상을 거부한다.
     assert!(!check_requirement(&developer_id_requirement(), Path::new(APPLE_PLATFORM_BINARY)).succeeded());
+
+    // 양성 대조 1: 같은 템플릿에 그 바이너리의 실제 leaf OU를 넣으면 통과한다 — 요구식이 파싱되고
+    // `certificate leaf[subject.OU]` 비교가 실제로 평가된다는 증거. OU는 호스트에서 읽는다(리터럴 금지).
+    let Some((binary, apple_ou)) = APPLE_CONTROL_CANDIDATES
+        .iter()
+        .find_map(|b| leaf_ou_of(b).map(|ou| (*b, ou)))
+    else {
+        // 이 호스트의 Apple 서명 바이너리 중 leaf 인증서를 가진 것이 없다(인증서 없는 플랫폼 서명뿐) —
+        // OU 비교를 평가시킬 재료가 없으므로 양성 대조 1만 건너뛴다. 보안 단언(OpenJS 요구식이 Apple
+        // 바이너리·ad-hoc 사본을 거부)은 위 단언과 다른 테스트가 그대로 지킨다.
+        eprintln!("leaf 인증서를 가진 Apple 서명 바이너리가 없어 OU 양성 대조 1을 건너뜁니다");
+        return;
+    };
+    let apple_req = format!("=anchor apple generic and certificate leaf[subject.OU] = \"{apple_ou}\"");
+    let ok = check_requirement(&apple_req, Path::new(binary));
+    assert!(ok.succeeded(), "대조 요구식({apple_req})이 {binary}에 통과해야 합니다: {} {}", ok.stderr, ok.stdout);
+    // 같은 템플릿에서 OU 값만 다르면 거부된다(종료 코드 3) — OU 문자열 비교가 실제로 일어난다는 증거.
+    let other = format!("=anchor apple generic and certificate leaf[subject.OU] = \"{apple_ou}-not\"");
+    assert_requirement_not_satisfied(&check_requirement(&other, Path::new(binary)), "다른 OU 값");
+    // 그리고 OpenJS 요구식은 이 바이너리도 거부한다.
+    assert!(!check_requirement(&developer_id_requirement(), Path::new(binary)).succeeded());
 }
 
 #[test]

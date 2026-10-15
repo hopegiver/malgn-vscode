@@ -758,6 +758,9 @@ mod tests {
     }
 
     // P2-3a 판단: Homebrew가 있으면 기존 동작(Manual: `brew install node` 안내)을 유지한다.
+    // macOS 전용 전제다 — Windows에는 Homebrew가 없고 Node 후보가 winget이라 `brew install node`
+    // 안내 자체가 성립하지 않는다(Windows 러너에서는 winget 명령이 나온다).
+    #[cfg(target_os = "macos")]
     #[test]
     fn node_install_stays_manual_with_homebrew_present_to_avoid_a_second_competing_node() {
         let runners = ResolvedRunners {
