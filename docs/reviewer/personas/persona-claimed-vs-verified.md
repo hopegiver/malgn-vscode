@@ -143,3 +143,6 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-14 / target_id `r13b-daily-series` / 2차(재검토, 축소) / `docs/reviewer/review-r13b-daily-series-2026-10-14-r2.md`
   — 재사용 사유: 커밋이 주장한 RV-001·002·004 반영이 실제 라인·캡처와 일치하는지 대조가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 바꾸지 말아야 할 곳(차트 지표 버튼 '세션 수') 보존 확인, 하네스 탐색 키까지 새 라벨로 바뀌었는지(옛 접두어로 우연 통과 방지), 잔여 "예상" 주석.
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
+  — 재사용 사유: 하네스 픽스처가 백엔드가 실제로 만들 수 있는 모양인지(목표 6)와 주석·커밋 주장이 코드와 일치하는지가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: nodeUnverified 픽스처(win/manual만) vs mac Homebrew run 모양, usage not-installed 픽스처의 check_dev_tools 모순(RV-004), check-failed __throw 픽스처의 도달성(RV-003).

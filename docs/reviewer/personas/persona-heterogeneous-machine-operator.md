@@ -67,3 +67,6 @@ Intel 맥 6대와 nvm·volta·corepack이 뒤섞인 머신이 아직 살아 있�
 - 2026-10-13 / target_id `devtools-l1-l2-l4` / 1차(최초, Standard) / `docs/reviewer/review-2026-10-13-devtools-l1-l2-l4.md`
   — 재사용 사유: 3초 프로브 오판과 비표준 brew prefix 사용자 손실이 '이기종 머신에서 뜨는가'의 과녁. 6대 요소 무수정.
   — 이번 라운드 집중: 느린 첫 실행 미설치 오판·진단 로그 부재(RV-001), L4로 잃는 사용자 범위(GUI 런치는 HOMEBREW_PREFIX 미상속), Windows cfg 컴파일(로컬 미확인).
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
+  — 재사용 사유: mac(Node 구조적 manual)·Windows(winget 불신뢰 미리보기)에서 연쇄가 실제로 이어지는지, 막다른 골목은 없는지가 과녁. 6대 요소 무수정.
+  — 이번 라운드 집중: mac 공식 pkg(/usr/local 루트 소유)→NOT_WRITABLE stuck 문구(RV-002), nvm 설치 후 "다시 확인" 약속 미이행(RV-005), Windows npm.cmd 고정 후보로 재조회 후 run 전환.

@@ -72,3 +72,6 @@
 - 2026-10-13 / target_id `r9-rv008-anomaly-today-pending` / 2차(재검토, Standard 경량) / `docs/reviewer/review-r9-rv008-anomaly-today-pending-2026-10-13-r2.md`
   — 재사용 사유: "판정 안 함" 사유 구분(S5)의 후속 확인. 6대 요소 무수정.
   — 이번 라운드 집중: today-pending·insufficient 캡처 열람, 30일 창 경계에서 기준선이 잘리는 입력의 문구 진위(창 범위 각주로 기각).
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
+  — 재사용 사유: P2-4 배너·P2-6 빈 상태가 로딩/판정 불가/확정 미충족을 구분해 말하는가가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: list_installed_plugins의 읽기 실패=빈 배열 붕괴가 "설치되어 있지 않아" 단정으로 새는 경로(RV-003), 화면 간 Claude 설치 정의 불일치(RV-009), 로딩 침묵 캡처 열람.

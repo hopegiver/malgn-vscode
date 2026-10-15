@@ -67,3 +67,6 @@
 - 2026-09-18 / target_id `malgn-vscode-installer-release-autoupdate` / 1차(최초, 풀패널 — Sensitive 등급) / `docs/reviewer/review-installer-release-autoupdate-2026-09-18.md`
   — 재사용 사유: 역할개념("앱이 넘긴 권한의 크기를 사용자가 **사전에** 알고 **사후에** 확인할 수 있는가")이 이번 위임의 쟁점 2 그 자체다. 자동업데이트는 앱이 사용자 동의 없이 설치 프로그램을 띄우고 자기 프로세스를 죽이는 동작이라, 관심사 2(사전 고지)·5(화면을 떠난 뒤에도 도는 실행의 인지·중단)가 정확히 과녁. 6대 요소 무수정 — §5 참고파일은 이번 라운드에서 `src/updateApi.ts`·`src/main.ts`·`src/sidebar.ts`로 치환해 읽었다.
   — 이번 라운드 집중: 캐리오버 자동설치(`updateApi.ts:156-169`)가 사전 고지·취소 수단 없이 `install()`+`relaunch()`로 직행하는 경로(D3 미충족 → M2), pendingVersion을 "감지 시점"에 쓰는 설계(`:172`)가 미인증 화면에서 버튼을 한 번도 보여주지 않은 채 플래그를 남기는 문제(→ M1), download에 타임아웃·진행표시가 없어 사용자가 실행 중임을 인지할 표면이 0인 점(→ m3), 실패 전부를 조용히 삼켜 사후 감사 표면이 없는 점(→ m4).
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
+  — 재사용 사유: P2-9 이어서 설치가 사용자 머신에서 설치 명령을 이어 실행하는 새 경로라, "넘긴 권한을 사전에 아는가(이름 적힌 동의)"가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 동의 목록 == 실행 목록 불변식(offerInstallChain), 거절·바깥 클릭 시 0실행, previewAndRun 공유로 기존 신뢰성/다중영향 게이트 유지, 배치 요약의 blocked 필터 범위(RV-001).
