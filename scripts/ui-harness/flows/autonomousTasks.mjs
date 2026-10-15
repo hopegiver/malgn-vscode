@@ -474,6 +474,12 @@ export function scenarios(rawBase) {
         await page.waitForTimeout(500);
         await expectKinds(page, bugs, ['plugin-missing'], 'list_installed_plugins=[]');
         await expectRowsStillRender(page, bugs, '#/tasks, 플러그인 없음');
+        // R14 RV-003: 백엔드 list_installed_plugins는 읽기·파싱 실패도 빈 목록으로 돌려주므로 "설치되어 있지
+        // 않다"고 단정하지 않고 "목록에서 찾지 못했다"고만 말해야 한다.
+        const pluginMsg = (await page.locator('[data-prereq="plugin-missing"]').first().textContent()) ?? '';
+        if (!pluginMsg.includes('찾지 못했습니다') || /설치되어 있지 않/.test(pluginMsg)) {
+          bugs.push({ severity: 'Major', symptom: `플러그인 없음 배너가 읽기 실패와 구분되지 않는 단정 문구를 씀(실제: ${pluginMsg})`, file: 'src/autonomyPrereq.ts', repro: 'list_installed_plugins=[]' });
+        }
         await shot('01-prereq-plugin-missing');
         await page.locator('[data-prereq="plugin-missing"] button').click();
         await page.waitForTimeout(200);
@@ -528,6 +534,9 @@ export function scenarios(rawBase) {
     {
       id: 'prereq-check-failed',
       // 세 조회 모두 실패 — 미설치/미로그인/플러그인 없음으로 단정하지 않고 "확인 불가" 한 건만.
+      // 주의: 실제 백엔드의 check_dev_tools/list_installed_plugins는 Vec를 반환하고 실패를 빈 값으로 삼키므로
+      // (installed.rs·plugins/mod.rs unwrap_or_default) 이 reject 모양은 IPC 수준 실패에서만 나온다.
+      // 읽기·파싱 실패가 만드는 실제 모양은 위 prereq-plugin-missing(빈 목록)이며 그쪽 문구가 "찾지 못했다"로 약해져 있다.
       fixtures: {
         ...base,
         check_dev_tools: { __throw: '개발 도구 조회 실패(테스트 강제 에러)' },

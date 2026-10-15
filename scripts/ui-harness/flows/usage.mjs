@@ -64,6 +64,32 @@ async function checkEmptyCause(page, bugs, { kind, reason, mustInclude, mustExcl
 const NOT_INSTALLED_TITLE = 'Claude Code가 설치돼 있지 않은 것으로 보입니다';
 const NO_HISTORY_TITLE = 'Claude Code는 설치돼 있지만 아직 사용 기록이 없습니다';
 
+// R14 RV-004: 빈 상태 원인 신호(get_usage_source_status.claudeBinaryFound)와 개발 도구 목록(check_dev_tools의
+// claude 항목 → 상태바 "claude <버전>")은 백엔드에서 같은 resolve_tool_path를 쓰므로(usage_stats/source.rs,
+// dev_tools/query.rs) 같은 시점에 서로 모순되는 조합을 만들 수 없다. 실행 파일이 없는 장면에서는
+// claude 항목도 path:null/installed:false(query.rs 미설치 분기)로 맞춘다.
+function withClaudeMissing(base, fixtures) {
+  return {
+    ...fixtures,
+    check_dev_tools: base.check_dev_tools.map((t) =>
+      t.id === 'claude' ? { ...t, installed: false, version: null, path: null, installMethod: null, actionKind: 'manual' } : t
+    ),
+  };
+}
+
+// 상태바(claude 버전 세그먼트)와 본문 빈 상태가 같은 사실을 말하는지 — 미설치 본문 옆에 "claude 2.1.0"이 있으면 모순.
+async function expectStatusBarAgrees(page, bugs, { claudeFound, tab }) {
+  const bodyText = (await page.locator('body').textContent().catch(() => '')) ?? '';
+  const hasVersion = /claude \d+\.\d+/.test(bodyText);
+  if (hasVersion !== claudeFound) {
+    bugs.push({
+      severity: 'Major',
+      symptom: `${tab}: 상태바 claude 버전 표시(${hasVersion})와 본문 빈 상태의 Claude 설치 판정(${claudeFound ? '설치됨' : '미설치'})이 모순`,
+      file: 'scripts/ui-harness/flows/usage.mjs(픽스처: check_dev_tools ↔ get_usage_source_status 불일치)',
+    });
+  }
+}
+
 export function scenarios(base) {
   return [
     {
@@ -254,10 +280,11 @@ export function scenarios(base) {
     },
     {
       id: 'empty-not-installed',
-      fixtures: emptyFixtures(base, { claudeBinaryFound: false, claudeDirExists: false, projectsDirHasEntries: false }),
+      fixtures: withClaudeMissing(base, emptyFixtures(base, { claudeBinaryFound: false, claudeDirExists: false, projectsDirHasEntries: false })),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
         await shot('01-daily-not-installed');
+        await expectStatusBarAgrees(page, bugs, { claudeFound: false, tab: 'daily(not-installed)' });
         await checkEmptyCause(page, bugs, {
           tab: 'daily',
           kind: 'not-installed',
@@ -279,6 +306,7 @@ export function scenarios(base) {
         await page.waitForTimeout(300);
         await shot('03-models-not-installed');
         await checkEmptyCause(page, bugs, { tab: 'models', kind: 'not-installed', mustInclude: [NOT_INSTALLED_TITLE, '모델 사용 기록이 없습니다'], mustExclude: [] });
+        await expectStatusBarAgrees(page, bugs, { claudeFound: false, tab: 'models(not-installed)' });
       },
     },
     {
@@ -287,6 +315,7 @@ export function scenarios(base) {
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
         await shot('01-daily-installed-no-history');
+        await expectStatusBarAgrees(page, bugs, { claudeFound: true, tab: 'daily(installed-no-history)' });
         await checkEmptyCause(page, bugs, {
           tab: 'daily',
           kind: 'installed-no-history',
@@ -301,10 +330,11 @@ export function scenarios(base) {
     },
     {
       id: 'empty-unknown-binary-missing-traces',
-      fixtures: emptyFixtures(base, { claudeBinaryFound: false, claudeDirExists: true, projectsDirHasEntries: true }),
+      fixtures: withClaudeMissing(base, emptyFixtures(base, { claudeBinaryFound: false, claudeDirExists: true, projectsDirHasEntries: true })),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
         await shot('01-daily-unknown-traces');
+        await expectStatusBarAgrees(page, bugs, { claudeFound: false, tab: 'daily(unknown-traces)' });
         await checkEmptyCause(page, bugs, {
           tab: 'daily',
           kind: 'unknown',
@@ -347,7 +377,7 @@ export function scenarios(base) {
     },
     {
       id: 'daily-error-not-empty-state',
-      fixtures: { ...base, get_daily_usage: { __throw: '테스트 강제 에러: get_daily_usage 실패' }, get_usage_source_status: { claudeBinaryFound: false, claudeDirExists: false, projectsDirHasEntries: false } },
+      fixtures: withClaudeMissing(base, { ...base, get_daily_usage: { __throw: '테스트 강제 에러: get_daily_usage 실패' }, get_usage_source_status: { claudeBinaryFound: false, claudeDirExists: false, projectsDirHasEntries: false } }),
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(300);
         await shot('01-daily-error');

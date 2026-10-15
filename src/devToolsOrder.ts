@@ -90,6 +90,66 @@ export function describeUnmetDependencies(unmetIds: readonly string[], items: re
   return parts.join(' / ');
 }
 
+// 경로는 찾았는데 `--version`에 응답하지 않아 installed=false인 도구(백엔드 query.rs: installed =
+// version.is_some(), path는 따로 채움). "설치돼 있지 않다"가 아니라 "버전을 확인하지 못했다"이고,
+// 실행하면 설치가 아니라 업데이트가 돈다(actions.rs: 경로가 있으면 install → update 위임).
+export function isVersionUnverified(tool: ChainTool): boolean {
+  return !tool.installed && !!tool.path;
+}
+
+export interface BatchInstallPlan<T extends ChainTool> {
+  // 설치돼 있는 도구의 업데이트(요약 동의 없이 배치 처리 — 기존 동의 범위).
+  readonly updateTargets: T[];
+  // 아직 설치되지 않은 도구 중 이번 배치에서 실제로 설치될 수 있는 것(경로 없음) — "설치합니다" 목록.
+  readonly installTargets: T[];
+  // 경로는 있는데 버전을 확인하지 못한 실행 대상 — "설치"가 아니라 "업데이트(버전 미확인)"로 따로 묻는다.
+  readonly unverifiedTargets: T[];
+  // 선행 도구가 설치 확인되지 않았고 이번 배치에서 확인될 보장도 없어 처음부터 제외하는 도구.
+  readonly blocked: T[];
+  // blocked 중 선행 도구가 "버전 미확인으로 실행되는" 경우 — 그 도구의 버전이 확인되면 이어서 설치로 다시 묻는다.
+  readonly deferredByUnverified: T[];
+}
+
+// "전체 업데이트"의 동의 대상 계산(순수). 동의 문구에 오르는 도구 == 실제로 실행될 도구가 되도록,
+// 선행 도구가 (a) 이번 배치의 실행 대상이 아니거나 (b) 버전 미확인이라 이번 배치에서 설치 확인이
+// 보장되지 않으면 의존 도구를 처음부터 제외한다.
+export function planBatchInstall<T extends ChainTool>(items: readonly T[]): BatchInstallPlan<T> {
+  const runnable = items.filter((t) => t.actionKind === 'run');
+  const installedNow = new Set(items.filter((t) => t.installed).map((t) => t.id));
+  const runnableIds = new Set(runnable.map((t) => t.id));
+  const pending = runnable.filter((t) => !t.installed);
+  const unverifiedIds = new Set(pending.filter(isVersionUnverified).map((t) => t.id));
+  const unmetOf = (t: T) => unmetInstallDependencies(t, installedNow);
+  const blocked = pending.filter((t) => unmetOf(t).some((dep) => !runnableIds.has(dep) || unverifiedIds.has(dep)));
+  const rest = pending.filter((t) => !blocked.includes(t));
+  return {
+    updateTargets: runnable.filter((t) => t.installed),
+    installTargets: rest.filter((t) => !isVersionUnverified(t)),
+    unverifiedTargets: rest.filter(isVersionUnverified),
+    blocked,
+    deferredByUnverified: blocked.filter((t) => unmetOf(t).some((dep) => unverifiedIds.has(dep))),
+  };
+}
+
+// 배치 동의창 문구(순수). 설치와 "업데이트(버전 미확인)"를 따로 적어 실제 일어날 일과 맞춘다.
+export function describeBatchConsent(
+  installTargets: readonly { name: string }[],
+  unverifiedTargets: readonly { name: string }[],
+  deferred: readonly { name: string }[]
+): string {
+  const names = (xs: readonly { name: string }[]) => xs.map((t) => t.name).join(', ');
+  const parts: string[] = [];
+  if (installTargets.length > 0) parts.push(`다음 ${installTargets.length}개 도구를 설치합니다: ${names(installTargets)}.`);
+  if (unverifiedTargets.length > 0) {
+    parts.push(`다음 ${unverifiedTargets.length}개 도구는 이 PC에서 파일이 발견됐지만 버전을 확인하지 못해, 설치가 아니라 업데이트를 시도합니다(버전 미확인): ${names(unverifiedTargets)}.`);
+  }
+  if (deferred.length > 0) {
+    parts.push(`선행 도구의 버전이 확인되기 전이라 ${names(deferred)}은(는) 이번에는 설치하지 않으며, 확인되면 이름을 적어 다시 묻습니다.`);
+  }
+  parts.push('계속할까요?');
+  return parts.join(' ');
+}
+
 // 이 도구를 선행 도구로 삼는데 아직 설치되지 않은 도구들(화면 안내 문구용).
 export function pendingDependentsOf<T extends ChainTool>(toolId: string, items: readonly T[]): T[] {
   return items.filter((t) => !t.installed && (t.installDependsOn ?? []).includes(toolId));

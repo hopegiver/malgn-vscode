@@ -44,7 +44,7 @@ import { state, notifyChange } from '../state';
 import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, openManualInstruction } from '../devToolsApi';
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 import { parseRoute } from '../route';
-import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, describeUnmetDependencies, pendingDependentsOf, planInstallChain } from '../devToolsOrder';
+import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, describeUnmetDependencies, pendingDependentsOf, planInstallChain, planBatchInstall, describeBatchConsent } from '../devToolsOrder';
 
 // IA §4-5(§7-6): 개발 도구 사이드바 행을 클릭하면 본문의 해당 행으로 스크롤 +
 // 일시 강조한다(새 라우트·API 없음, 순수 클라이언트 동작). 강조는 영속 상태가
@@ -356,33 +356,33 @@ function toggleLog(toolId: string): void {
 // 영향 제외)은 그대로이고 순서와 건너뜀만 바뀐다.
 async function handleUpdateAll(): Promise<void> {
   const itemsBefore = state.devTools.items;
-  const runnable = state.devTools.items.filter((t) => t.actionKind === 'run');
-  const updateTargets = runnable.filter((t) => t.installed);
-  const installTargets = runnable.filter((t) => !t.installed);
+  const plan = planBatchInstall(state.devTools.items);
+  const { updateTargets, blocked, installTargets, unverifiedTargets } = plan;
+  const runnableIds = new Set(state.devTools.items.filter((t) => t.actionKind === 'run').map((t) => t.id));
 
   // 이전 배치의 건너뜀 사유는 새 배치 시작과 함께 지운다.
   for (const t of state.devTools.items) batchSkipReason[t.id] = null;
   const installedNow = new Set(state.devTools.items.filter((t) => t.installed).map((t) => t.id));
-  const runnableIds = new Set(runnable.map((t) => t.id));
   let skippedCount = 0;
 
-  // 동의 문구가 실제 실행될 대상과 일치하도록(R14): 선행 도구가 설치돼 있지 않은데 그
-  // 선행 도구가 이번 배치의 실행 대상도 아니면(예: Node.js가 `--version` 응답 없음으로
-  // installed=false이고 manual이라 배치에 못 들어오는 경우) 이 도구는 어떤 동의를 받아도 이번
-  // 배치에서 실행될 수 없다 — "설치합니다" 요약에 이름을 올리지 않고 처음부터 사유와 함께
-  // 건너뛴다.
-  const blocked = installTargets.filter((t) => unmetInstallDependencies(t, installedNow).some((dep) => !runnableIds.has(dep)));
+  // 동의 문구가 실제 실행될 대상과 일치하도록(R14): 선행 도구가 설치돼 있지 않은데 (a) 그 선행
+  // 도구가 이번 배치의 실행 대상도 아니거나(예: Node.js가 `--version` 응답 없음으로
+  // installed=false이고 manual) (b) 경로는 있지만 버전 미확인이라 이번 배치에서 설치 확인이
+  // 보장되지 않으면(예: macOS Homebrew Node가 run이지만 실제로는 업데이트가 돌고 버전이 끝내
+  // 확인되지 않을 수 있음) 이 도구는 이번 배치에서 실행될 수 없다 — "설치합니다" 요약에 이름을
+  // 올리지 않고 처음부터 사유와 함께 건너뛴다. 판정은 planBatchInstall(devToolsOrder.ts).
   for (const t of blocked) {
     batchSkipReason[t.id] = describeUnmetDependencies(unmetInstallDependencies(t, installedNow), state.devTools.items);
     state.devTools.lastResult[t.id] = null;
     skippedCount += 1;
   }
-  const askable = installTargets.filter((t) => !blocked.includes(t));
 
+  // 동의 목록 = 실행 목록. 경로는 있으나 버전 미확인인 도구는 "설치"가 아니라 "업데이트(버전
+  // 미확인)"로 따로 적는다 — 실행은 backend가 install→update로 위임하므로 실제로도 업데이트다.
+  const askable = [...installTargets, ...unverifiedTargets];
   let confirmedInstallTargets: DevToolStatus[] = [];
   if (askable.length > 0) {
-    const names = askable.map((t) => t.name).join(', ');
-    const proceed = await confirmDialog(`다음 ${askable.length}개 도구를 설치합니다: ${names}. 계속할까요?`);
+    const proceed = await confirmDialog(describeBatchConsent(installTargets, unverifiedTargets, plan.deferredByUnverified));
     if (proceed) {
       confirmedInstallTargets = askable;
     }
@@ -435,8 +435,12 @@ async function handleUpdateAll(): Promise<void> {
   notifyChange();
 
   // 배치가 끝난 뒤 새로 확인된 선행 도구가 있으면 이어서 설치를 제안한다. 이번 배치가 이미
-  // 다룬 도구(runnable 전체 — 실행·건너뜀·개별 확인 대기·요약 거절 모두)는 다시 제안하지 않는다.
-  await offerInstallChain(itemsBefore, runnableIds);
+  // 다룬 도구(실행·개별 확인 대기·요약 거절)는 다시 제안하지 않는다. 선행 도구 미확인으로 처음부터
+  // 제외한 도구(blocked)는 다루지 않았으므로 제외 대상이 아니다 — 그 선행 도구가 이번 배치에서
+  // 버전 확인되면(false→true) 이름을 적은 동의를 받아 이어서 설치한다.
+  const handled = new Set(runnableIds);
+  for (const t of blocked) handled.delete(t.id);
+  await offerInstallChain(itemsBefore, handled);
 }
 
 // 한 도구의 "미리보기 → 신뢰성/영향 범위 검사 → 실행" 한 단계. 배치와 이어서 설치가 같은
@@ -819,7 +823,7 @@ function renderChainHint(tool: DevToolStatus, mode: 'preview' | 'manual'): HTMLE
   const text =
     mode === 'preview'
       ? `설치가 확인되면 이어서 설치할 수 있는 도구(${names})를 이름을 적어 한 번 더 묻습니다. 동의하기 전에는 설치하지 않습니다.`
-      : `${tool.name}을(를) 직접 설치한 뒤 "↻ 다시 확인"을 누르면 이어서 설치할 수 있는 도구(${names})를 확인해 이름을 적어 묻습니다. 이 앱이 ${tool.name} 설치를 대신하지는 않습니다.`;
+      : `${tool.name}을(를) 직접 설치한 뒤 "↻ 다시 확인"을 누르면 이어서 설치할 수 있는 도구(${names})를 확인해 이름을 적어 묻습니다. 단, 앱이 감지하는 설치(Homebrew 또는 공식 설치 프로그램)일 때만 그렇습니다 — nvm·fnm·volta 같은 버전 관리자로 설치한 ${tool.name}은(는) 앱이 감지하지 못하므로 ${names}도 터미널에서 직접 설치해야 합니다. 이 앱이 ${tool.name} 설치를 대신하지는 않습니다.`;
   const node = el('div', { className: 'devtool-panel-notes devtool-chain-hint' }, [text]);
   return node;
 }

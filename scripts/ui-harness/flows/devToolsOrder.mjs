@@ -180,8 +180,10 @@ function chainList(platform, phase) {
     // 미설치 분기: Windows는 winget 후보가 있어 run, macOS는 구조적 manual.
     node = backendTool('node', 'Node.js', { installed: false, actionKind: win ? 'run' : 'manual', manualHint: win ? null : MAC_NODE_HINT, required: true });
   } else if (phase === 'nodeUnverified') {
-    // 설치됨 분기이지만 version=None: installed=false, path는 채워짐. Windows Node의 업데이트 경로는 manual.
-    node = backendTool('node', 'Node.js', { installed: false, path: nodePath, installMethod: win ? 'MSI 설치본' : 'Homebrew', actionKind: 'manual', manualHint: '업데이트는 앱이 대신 실행하지 않습니다.', required: true });
+    // 설치됨 분기이지만 version=None: installed=false, path는 채워짐(query.rs:82-101). actionKind는 업데이트 표를 따른다:
+    // Windows MSI 설치본은 manual, macOS Homebrew 설치본은 run(plan_table.rs:661-665 HomebrewFormula→Run).
+    // run이면 실제로 도는 것은 설치가 아니라 업데이트다(actions.rs:237-239: 경로가 있으면 install→update 위임).
+    node = backendTool('node', 'Node.js', { installed: false, path: nodePath, installMethod: win ? 'MSI 설치본' : 'Homebrew', actionKind: win ? 'manual' : 'run', manualHint: win ? '업데이트는 앱이 대신 실행하지 않습니다.' : null, required: true });
   } else {
     node = backendTool('node', 'Node.js', { installed: true, version: '22.11.0', path: nodePath, installMethod: win ? 'MSI 설치본' : 'Homebrew', actionKind: win ? 'manual' : 'run', manualHint: win ? '업데이트는 앱이 대신 실행하지 않습니다.' : null, required: true });
   }
@@ -197,7 +199,7 @@ function chainList(platform, phase) {
 
 // 스텁: 모든 invoke를 window.__calls에 `cmd:toolId`로 기록한다. check_dev_tools는 window.__list를 돌려주고,
 // 설치 성공이면 그 도구를 installed로 바꾼다(Node 성공 시에는 afterList로 통째 교체 — 재조회 후 의존 도구가 run이 된 응답).
-function installChainStub({ afterList, nodeOutcome }) {
+function installChainStub({ afterList, nodeOutcome, nodePreviewReliable = false, nodeCommand = 'winget install --id OpenJS.NodeJS.LTS -e' }) {
   const orig = window.__TAURI_INTERNALS__.invoke;
   window.__calls = [];
   window.__afterList = afterList;
@@ -208,7 +210,7 @@ function installChainStub({ afterList, nodeOutcome }) {
     }
     if (cmd === 'check_dev_tools') return window.__list;
     if (cmd === 'preview_dev_tool_update') {
-      return { id, planId: `plan-${id}`, willRun: true, commandDisplay: id === 'node' ? 'winget install --id OpenJS.NodeJS.LTS -e' : `npm install -g ${id}`, affected: [id], notes: id === 'node' ? 'winget은 사전 시뮬레이션을 제공하지 않아 함께 변경될 항목을 미리 확인할 수 없습니다.' : '', previewReliable: id !== 'node' };
+      return { id, planId: `plan-${id}`, willRun: true, commandDisplay: id === 'node' ? nodeCommand : `npm install -g ${id}`, affected: [id], notes: id === 'node' && !nodePreviewReliable ? 'winget은 사전 시뮬레이션을 제공하지 않아 함께 변경될 항목을 미리 확인할 수 없습니다.' : '', previewReliable: id === 'node' ? nodePreviewReliable : true };
     }
     if (cmd === 'install_dev_tool' || cmd === 'update_dev_tool') {
       const outcome = id === 'node' ? nodeOutcome : 'updated';
@@ -260,7 +262,8 @@ function chainScenarios(base) {
     fixtures: { ...base, check_dev_tools: chainList(platform, phase) },
     async run(page, ctx) {
       await page.evaluate((arg) => { window.__list = arg.list; }, { list: chainList(platform, phase) });
-      await page.evaluate(installChainStub, { afterList: chainList(platform, 'afterNode'), nodeOutcome });
+      // 이 모듈의 Windows 픽스처는 winget(미리보기 불신뢰), macOS 픽스처는 Homebrew(brew --dry-run 미리보기 신뢰).
+      await page.evaluate(installChainStub, { afterList: chainList(platform, 'afterNode'), nodeOutcome, nodePreviewReliable: platform !== 'win', nodeCommand: platform === 'win' ? 'winget install --id OpenJS.NodeJS.LTS -e' : 'brew upgrade node' });
       // 초기 로드는 스텁 설치 전에 끝났으므로 목록을 스텁 기준으로 다시 맞춘다.
       await page.getByRole('button', { name: '↻ 다시 확인' }).click();
       await page.waitForSelector('.devtool-row');
@@ -356,6 +359,9 @@ function chainScenarios(base) {
       await shot('01-mac-node-manual-guide');
       const hint = (await page.locator('.devtool-chain-hint').first().textContent()) ?? '';
       if (!hint.includes('직접 설치한 뒤') || !hint.includes('Claude Code') || !hint.includes('설치를 대신하지는 않습니다')) bugs.push({ severity: 'Major', symptom: `[mac] Node 안내의 이어서 설치 문구가 부정확함: ${hint}`, file: 'src/views/devTools.ts:renderChainHint' });
+      // R14 RV-005: "다시 확인하면 이어서 묻는다"는 약속은 앱이 감지할 수 있는 설치(Homebrew·공식 설치 프로그램)로 한정하고,
+      // 버전 관리자(nvm 등) 설치는 감지되지 않으니 직접 설치하라고 사실대로 적는다.
+      if (!hint.includes('Homebrew 또는 공식 설치 프로그램') || !hint.includes('nvm') || !hint.includes('감지하지 못하므로')) bugs.push({ severity: 'Major', symptom: `[mac] Node 안내가 앱이 감지하는 설치 방법으로 약속을 한정하지 않음: ${hint}`, file: 'src/views/devTools.ts:renderChainHint' });
       const bodyText = (await page.locator('body').textContent()) ?? '';
       if (/한 번에|한번에|자동으로 (모두|함께) 설치/.test(bodyText)) bugs.push({ severity: 'Major', symptom: '[mac] 화면이 macOS에서 한 번에 설치된다고 주장함', file: 'src/views/devTools.ts' });
       // 전체 업데이트: 설치 대상(run)이 없으므로 확인창이 뜨지 않고 Node/의존 도구에 아무 것도 하지 않는다.
@@ -415,6 +421,70 @@ function chainScenarios(base) {
       calls = await callsOf(page);
       expectChainOrder(calls, bugs, 'unverified-recover');
       if ((await page.locator('.devtool-panel-skipped').count()) !== 0) bugs.push({ severity: 'Major', symptom: '[unverified] 설치 확인 뒤에도 건너뜀 패널이 남음', file: 'src/views/devTools.ts:renderDevToolItem' });
+    }),
+
+    // R14 RV-001: macOS Homebrew Node가 `--version`에 응답하지 않는 모양(installed=false, path 있음, actionKind=run).
+    // 배치가 Node를 "설치"로 적거나, 이번 배치에서 확인될 보장이 없는 의존 도구를 "설치합니다" 목록에 올리면 안 된다.
+    mk('chain-mac-node-unverified-run', { platform: 'mac', phase: 'nodeUnverified' }, async (page, { shot, bugs }) => {
+      const FILE_B = 'src/devToolsOrder.ts:planBatchInstall / src/views/devTools.ts:handleUpdateAll';
+      await page.getByRole('button', { name: '전체 업데이트' }).click();
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      const text = (await modalText(page)) ?? '';
+      await shot('01-mac-unverified-batch-consent');
+      if (/개 도구를 설치합니다/.test(text)) bugs.push({ severity: 'Critical', symptom: `[mac-unverified] 설치 대상이 없는데 동의창이 "설치합니다"로 적음: ${text}`, file: FILE_B });
+      if (!text.includes('(버전 미확인): Node.js. ') || !text.includes('업데이트를 시도합니다') || !text.includes('파일이 발견됐지만 버전을 확인하지 못해')) {
+        bugs.push({ severity: 'Critical', symptom: `[mac-unverified] Node.js가 "업데이트(버전 미확인)"로 적히지 않음: ${text}`, file: FILE_B });
+      }
+      // 동의 대상(": " 뒤)은 Node.js 하나뿐이고, Claude/pnpm/Wrangler는 "이번에는 설치하지 않으며" 문장에만 나온다.
+      const listed = text.split('(버전 미확인): ')[1] ?? '';
+      if (!/^Node\.js\. /.test(listed)) bugs.push({ severity: 'Critical', symptom: `[mac-unverified] 동의 대상 목록이 Node.js 하나가 아님: ${listed}`, file: FILE_B });
+      if (!text.includes('이번에는 설치하지 않으며')) bugs.push({ severity: 'Major', symptom: `[mac-unverified] 의존 도구를 이번에 설치하지 않는다는 고지가 없음: ${text}`, file: FILE_B });
+      let calls = await callsOf(page);
+      if (execOn(calls, ['node', ...DEPS]).length > 0 || anyOn(calls, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[mac-unverified] 동의 전에 커맨드가 호출됨: ${JSON.stringify(calls)}`, file: FILE_B });
+      await page.locator('.modal-body').getByRole('button', { name: '확인' }).click();
+      // Node 업데이트가 버전 확인(updated)되면 이어서 설치 동의창이 이름을 적어 다시 묻는다. 그 전에 의존 도구 호출은 0건.
+      await page.waitForSelector('.modal-body', { timeout: 6000 });
+      calls = await callsOf(page);
+      const chainText = (await modalText(page)) ?? '';
+      await shot('02-mac-unverified-then-chain-consent');
+      if (!chainText.includes('Node.js 설치가 확인되었습니다') || !chainText.includes('Claude Code') || !chainText.includes('pnpm') || !chainText.includes('Wrangler')) {
+        bugs.push({ severity: 'Critical', symptom: `[mac-unverified] Node 확인 뒤 이어서 설치 동의창이 대상 이름을 적지 않음: ${chainText}`, file: 'src/views/devTools.ts:handleUpdateAll(handled)' });
+      }
+      if (anyOn(calls, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[mac-unverified] 배치 중 의존 도구에 커맨드가 호출됨: ${JSON.stringify(anyOn(calls, DEPS))}`, file: FILE_B });
+      if (!calls.includes('install_dev_tool:node') || execOn(calls, ['node']).length !== 1) bugs.push({ severity: 'Critical', symptom: `[mac-unverified] Node 실행이 정확히 1회가 아님: ${JSON.stringify(calls)}`, file: FILE_B });
+      await page.locator('.modal-body').getByRole('button', { name: '이어서 설치' }).click();
+      await waitIdle(page);
+      calls = await callsOf(page);
+      expectChainOrder(calls, bugs, 'mac-unverified');
+      if (execOn(calls, ['node']).length !== 1) bugs.push({ severity: 'Critical', symptom: `[mac-unverified] Node 중복 실행: ${JSON.stringify(execOn(calls, ['node']))}`, file: FILE_B });
+    }),
+
+    // 같은 모양에서 업데이트 뒤에도 버전이 확인되지 않으면(unknownAfter) 의존 도구는 끝내 실행되지 않고 사유가 남는다.
+    mk('chain-mac-node-unverified-still-unknown', { platform: 'mac', phase: 'nodeUnverified', nodeOutcome: 'unknownAfter' }, async (page, { shot, bugs }) => {
+      await page.getByRole('button', { name: '전체 업데이트' }).click();
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      await page.locator('.modal-body').getByRole('button', { name: '확인' }).click();
+      await waitIdle(page);
+      await page.waitForTimeout(300);
+      await shot('01-mac-unverified-still-unknown');
+      if ((await page.locator('.modal-body').count()) !== 0) bugs.push({ severity: 'Critical', symptom: '[mac-unverified-unknown] 버전이 끝내 확인되지 않았는데 이어서 설치 확인창이 뜸', file: 'src/views/devTools.ts:offerInstallChain' });
+      const calls = await callsOf(page);
+      if (anyOn(calls, DEPS).length > 0) bugs.push({ severity: 'Critical', symptom: `[mac-unverified-unknown] 의존 도구에 커맨드가 호출됨: ${JSON.stringify(anyOn(calls, DEPS))}`, file: 'src/views/devTools.ts:handleUpdateAll' });
+      for (const id of DEPS) {
+        const panel = page.locator(`#devtool-row-${id}`).locator('xpath=ancestor::div[contains(@class,"devtool-item")]').locator('.devtool-panel-skipped');
+        const t = (await panel.count()) > 0 ? ((await panel.first().textContent()) ?? '') : null;
+        if (t === null || !t.includes('파일이 발견됐지만')) bugs.push({ severity: 'Major', symptom: `[mac-unverified-unknown] ${id}: 건너뜀 사유가 "파일은 있으나 버전 미확인"이 아님: ${t}`, file: 'src/devToolsOrder.ts:describeUnmetDependencies' });
+      }
+    }),
+
+    // 같은 모양에서 동의를 거절하면 아무 것도 실행되지 않는다(Node도, 의존 도구도).
+    mk('chain-mac-node-unverified-declined', { platform: 'mac', phase: 'nodeUnverified' }, async (page, { bugs }) => {
+      await page.getByRole('button', { name: '전체 업데이트' }).click();
+      await page.waitForSelector('.modal-body', { timeout: 4000 });
+      await page.locator('.modal-body').getByRole('button', { name: '취소' }).click();
+      await waitIdle(page);
+      const calls = await callsOf(page);
+      if (execOn(calls, ['node', ...DEPS]).length > 0) bugs.push({ severity: 'Critical', symptom: `[mac-unverified-declined] 거절했는데 설치/업데이트가 실행됨: ${JSON.stringify(calls)}`, file: 'src/views/devTools.ts:handleUpdateAll' });
     }),
 
     // 배치 경로: 전체 업데이트로 Node(개별 확인 대기) → 개별 확인 설치 → 이어서 설치. 배치 동의창은 Node 한 개만 올린다.
@@ -633,6 +703,19 @@ export function scenarios(base) {
                 chainTwoDeps: ids(m.planInstallChain(
                   [c('x', { installDependsOn: ['node', 'git'], actionKind: 'manual' }), c('node'), c('git')],
                   [c('x', { installDependsOn: ['node', 'git'] }), c('node', { installed: true }), c('git')], new Set())),
+                ...(() => {
+                  const mk2 = (id, o = {}) => ({ id, name: id.toUpperCase(), installed: false, actionKind: 'run', installDependsOn: [], path: null, ...o });
+                  const shape = (b) => ({ update: b.updateTargets.map((t) => t.id), install: b.installTargets.map((t) => t.id), unverified: b.unverifiedTargets.map((t) => t.id), blocked: b.blocked.map((t) => t.id), deferred: b.deferredByUnverified.map((t) => t.id) });
+                  const deps = (node) => [node, mk2('claude', { installDependsOn: ['node'] }), mk2('gh', { installed: true, path: '/gh' })];
+                  return {
+                    batchUnverifiedRun: shape(m.planBatchInstall(deps(mk2('node', { path: '/opt/homebrew/bin/node' })))),
+                    batchUnverifiedManual: shape(m.planBatchInstall(deps(mk2('node', { path: 'C:/node.exe', actionKind: 'manual' })))),
+                    batchMissingRun: shape(m.planBatchInstall(deps(mk2('node')))),
+                    batchInstalled: shape(m.planBatchInstall(deps(mk2('node', { installed: true, path: '/n' })))),
+                    consentInstallOnly: m.describeBatchConsent([{ name: 'A' }, { name: 'B' }], [], []),
+                    consentUnverified: m.describeBatchConsent([], [{ name: 'Node.js' }], [{ name: 'Claude Code' }]),
+                  };
+                })(),
                 unverifiedText: m.describeUnmetDependencies(['node'], [{ id: 'node', name: 'Node.js', installed: false, actionKind: 'manual', path: 'C:/node.exe' }]),
                 missingText: m.describeUnmetDependencies(['node'], [{ id: 'node', name: 'Node.js', installed: false, actionKind: 'manual', path: null }]),
               };
@@ -662,6 +745,12 @@ export function scenarios(base) {
         expect('chainPartialHandled', out.chainPartialHandled, { causes: ['node'], candidates: ['pnpm'], stuck: [] });
         expect('chainStuck(run이 아니면 후보 아님)', out.chainStuck, { causes: ['node'], candidates: ['claude'], stuck: ['pnpm'] });
         expect('chainTwoDeps(다른 선행 도구 미설치면 후보 아님)', out.chainTwoDeps, { causes: ['node'], candidates: [], stuck: ['x'] });
+        expect('batchUnverifiedRun(경로 있음+run: Node는 업데이트로 따로, 의존 도구 제외)', out.batchUnverifiedRun, { update: ['gh'], install: [], unverified: ['node'], blocked: ['claude'], deferred: ['claude'] });
+        expect('batchUnverifiedManual(Node가 실행 대상 아님: 의존 도구 제외, 연기 아님)', out.batchUnverifiedManual, { update: ['gh'], install: [], unverified: [], blocked: ['claude'], deferred: [] });
+        expect('batchMissingRun(경로 없음+run: 순수 설치)', out.batchMissingRun, { update: ['gh'], install: ['node', 'claude'], unverified: [], blocked: [], deferred: [] });
+        expect('batchInstalled', out.batchInstalled, { update: ['node', 'gh'], install: ['claude'], unverified: [], blocked: [], deferred: [] });
+        expect('consentInstallOnly(기존 문구 유지)', out.consentInstallOnly, '다음 2개 도구를 설치합니다: A, B. 계속할까요?');
+        expect('consentUnverified', out.consentUnverified.includes('(버전 미확인): Node.js.') && !out.consentUnverified.includes('설치합니다') && out.consentUnverified.includes('Claude Code은(는)'), true);
         expect('unverifiedText', out.unverifiedText.includes('파일이 발견됐지만') && !out.unverifiedText.includes('설치가 확인되지 않아'), true);
         expect('missingText', out.missingText, '선행 도구(Node.js) 설치가 확인되지 않아 건너뜀');
       },

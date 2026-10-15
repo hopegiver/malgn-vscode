@@ -62,12 +62,14 @@ export function computeAutonomyPrereqs(input: AutonomyPrereqInput, pluginId: str
     });
   }
 
-  // (c) 플러그인 없음 — 목록 조회가 성공했고 그 안에 조직 표준 플러그인이 없을 때만.
+  // (c) 플러그인 없음 — 목록 조회가 성공했고 그 안에 조직 표준 플러그인이 없을 때만. 단 백엔드
+  // list_installed_plugins는 홈 디렉터리 없음·JSON 파싱 실패·스키마 변경도 오류 없이 빈 목록으로
+  // 돌려주므로 "설치되어 있지 않다"고 단정하지 않고 "목록에서 찾지 못했다"고만 말한다.
   if (catalog.loaded && !catalog.error && !catalog.plugins.some((p) => p.id === pluginId)) {
     const none = catalog.plugins.length === 0;
     notices.push({
       kind: 'plugin-missing',
-      message: 'malgn-agent 플러그인이 설치되어 있지 않아 서브에이전트·스킬을 쓰는 자율 작업이 실패할 수 있습니다.',
+      message: '설치된 플러그인 목록에서 malgn-agent 플러그인을 찾지 못했습니다. 서브에이전트·스킬을 쓰는 자율 작업이 실패할 수 있습니다.',
       actionLabel: '플러그인 설치하러 가기',
       // 설치 버튼이 있는 곳: 설치된 플러그인이 전혀 없으면 카탈로그 빈 상태, 그 외에는 MCP 설정의
       // malgnai-hub 안내 행(둘 다 같은 installPlugin 흐름).
