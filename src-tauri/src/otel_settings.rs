@@ -193,6 +193,11 @@ fn build_status(path: &Path, path_display: String, file_exists: bool) -> OtelSet
     }
 }
 
+#[cfg(test)]
+pub(crate) fn otel_settings_get_for_test(path: &Path) -> OtelSettings {
+    build_status(path, path.to_string_lossy().to_string(), path.is_file())
+}
+
 #[tauri::command]
 pub fn otel_settings_get() -> OtelSettings {
     let Some(path) = settings_path() else {
@@ -386,6 +391,13 @@ fn backup_without_ingest_key(content: &str, edit: &HeadersEdit) -> Result<String
 /// 수집키는 `values`가 아니라 `payload.ingest_key`로만 바꾼다(원문 비노출 불변식,
 /// `otel_ingest_key.rs` 머리말). 기존 헤더의 `Authorization` 외 항목은 보존한다.
 pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Result<(), String> {
+    // 읽고-고치고-쓰는 전체를 한 번에 직렬화한다 — 설정 화면 저장, 자동 연동(수집키 적용), 연결 해제가
+    // 서로 다른 스레드에서 같은 파일을 만져도 한쪽 변경이 다른 쪽 변경을 덮어쓰지 않게 한다.
+    // (다른 프로세스·사용자의 직접 편집까지는 막지 못한다 — 그 경우의 보호는 원자적 쓰기와 백업이다.)
+    static SETTINGS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let existing_content = std::fs::read_to_string(path).ok();
     let mut root: Value = match &existing_content {
         Some(content) => serde_json::from_str(content)
@@ -454,18 +466,24 @@ pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Re
     }
     apply_headers_edit(env_obj, &headers_edit);
 
-    // 저장 검증: 텔레메트리가 켜져 있는데 엔드포인트가 비었거나 형식이
-    // 틀리면 저장을 거부한다(반쯤 켜진 상태로 저장되면 원인 모를 미수집이 된다).
+    // 저장 검증: 텔레메트리가 켜져 있는데 엔드포인트가 비었거나 형식이 틀리면
+    // 저장을 거부한다(반쯤 켜진 상태로 저장되면 원인 모를 미수집이 된다). 신호별 엔드포인트가 없으면
+    // 범용 `OTEL_EXPORTER_OTLP_ENDPOINT`가 그 자리를 채우므로(Claude Code의 해석과 같다) 그 값도 인정한다.
     let telemetry_enabled = env_obj
         .get("CLAUDE_CODE_ENABLE_TELEMETRY")
         .and_then(|v| v.as_str())
         == Some("1");
     if telemetry_enabled {
+        let generic = env_obj
+            .get(GENERIC_ENDPOINT_KEY)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         for ep_key in [
             "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
             "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
         ] {
-            let ep = env_obj.get(ep_key).and_then(|v| v.as_str()).unwrap_or("");
+            let specific = env_obj.get(ep_key).and_then(|v| v.as_str()).unwrap_or("");
+            let ep = if specific.is_empty() { generic } else { specific };
             if ep.is_empty() || !(ep.starts_with("http://") || ep.starts_with("https://")) {
                 return Err(format!(
                     "텔레메트리가 켜져 있는데 '{ep_key}'가 비어 있거나 올바른 URL이 아닙니다."
@@ -503,7 +521,6 @@ pub(crate) fn save_to_settings_file(path: &Path, payload: OtelSavePayload) -> Re
 /// 구분하지 않고, 기기 토큰(`mhd_`)은 형식 검증에서 거부된다(수집키 형식이 아니다).
 ///
 /// 실패 문자열은 입력을 인용하지 않는 고정 문구다(`otel_ingest_key.rs` 불변식).
-#[allow(dead_code)] // 허브 발급 계약 후 `otel_link::issue_and_apply`가 실제 호출한다(현재는 테스트만).
 pub(crate) fn apply_ingest_key(path: &Path, key: SecretString) -> Result<(), String> {
     save_to_settings_file(
         path,
@@ -515,38 +532,138 @@ pub(crate) fn apply_ingest_key(path: &Path, key: SecretString) -> Result<(), Str
     )
 }
 
+/// 파일 실물에서 읽은 "수집이 실제로 일어날 수 있는가" 사실들 — 앱 기본값(폼 미리 채움용)을 섞지 않는다.
+///
+/// 설정 화면의 `ingestEndpoint`(`assess_effective_endpoints`: 파일 값 → 앱 기본값)는 "저장하면 이렇게
+/// 기록된다"는 폼 기준이다. 그런데 Claude Code는 앱 기본값을 모른다 — 엔드포인트·프로토콜에는 기본값이
+/// 없고, 신호별 엔드포인트가 없으면 범용 `OTEL_EXPORTER_OTLP_ENDPOINT`를 쓴다. 그래서 연동 상태 판정과
+/// 발급 전 선검사는 이 구조체(파일 실물만)를 쓴다.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CollectionFacts {
+    /// `CLAUDE_CODE_ENABLE_TELEMETRY`가 파일에서 `"1"`이다.
+    pub telemetry_enabled: bool,
+    /// `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` 값(쉼표 목록 포함)에 `otlp`가 들어 있다.
+    pub metrics_exporter_otlp: bool,
+    pub logs_exporter_otlp: bool,
+    /// `OTEL_EXPORTER_OTLP_PROTOCOL`이 `http/protobuf`다(허브 `/v1/*`가 받는 형식).
+    pub protocol_http_protobuf: bool,
+    /// 신호별 유효 엔드포인트(신호별 값 → 범용 `OTEL_EXPORTER_OTLP_ENDPOINT`)가 파일에 있다.
+    pub metrics_endpoint_present: bool,
+    pub logs_endpoint_present: bool,
+    /// 신호별 유효 엔드포인트가 허브 origin이다.
+    pub metrics_endpoint_hub: bool,
+    pub logs_endpoint_hub: bool,
+    /// 파일에 있는 **모든** 엔드포인트 값(신호별 2개 + 범용 1개) 중 허브 밖/평문이 하나라도 있다.
+    /// 범용 값은 이 신호들이 쓰지 않더라도 헤더(수집키)가 실리는 다른 exporter가 쓸 수 있어 함께 본다.
+    pub any_foreign_host: bool,
+    pub any_insecure: bool,
+}
+
+const GENERIC_ENDPOINT_KEY: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+
+fn non_empty_trimmed(v: Option<&String>) -> Option<&str> {
+    v.map(|s| s.trim()).filter(|s| !s.is_empty())
+}
+
+fn exporter_includes_otlp(v: Option<&String>) -> bool {
+    non_empty_trimmed(v)
+        .map(|s| s.split(',').any(|t| t.trim().eq_ignore_ascii_case("otlp")))
+        .unwrap_or(false)
+}
+
+/// 파일 값(`values`)과 범용 엔드포인트(`generic`)에서 수집 사실을 뽑는다(순수 함수).
+pub(crate) fn collection_facts(
+    values: &std::collections::BTreeMap<String, String>,
+    generic: Option<&str>,
+    hub_origin: &str,
+) -> CollectionFacts {
+    let generic = generic.map(str::trim).filter(|s| !s.is_empty());
+    let metrics_specific = non_empty_trimmed(values.get("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"));
+    let logs_specific = non_empty_trimmed(values.get("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"));
+    let metrics_effective = metrics_specific.or(generic);
+    let logs_effective = logs_specific.or(generic);
+
+    let all_present: Vec<&str> = [metrics_specific, logs_specific, generic]
+        .into_iter()
+        .flatten()
+        .collect();
+    let overall = assess_endpoints(all_present, hub_origin);
+    let hub_of = |ep: Option<&str>| match ep {
+        Some(e) => {
+            let a = assess_endpoints([e], hub_origin);
+            a.targets_hub && !a.foreign_host
+        }
+        None => false,
+    };
+    CollectionFacts {
+        telemetry_enabled: values.get("CLAUDE_CODE_ENABLE_TELEMETRY").map(String::as_str)
+            == Some("1"),
+        metrics_exporter_otlp: exporter_includes_otlp(values.get("OTEL_METRICS_EXPORTER")),
+        logs_exporter_otlp: exporter_includes_otlp(values.get("OTEL_LOGS_EXPORTER")),
+        protocol_http_protobuf: non_empty_trimmed(values.get("OTEL_EXPORTER_OTLP_PROTOCOL"))
+            == Some("http/protobuf"),
+        metrics_endpoint_present: metrics_effective.is_some(),
+        logs_endpoint_present: logs_effective.is_some(),
+        metrics_endpoint_hub: hub_of(metrics_effective),
+        logs_endpoint_hub: hub_of(logs_effective),
+        any_foreign_host: overall.foreign_host,
+        any_insecure: overall.insecure,
+    }
+}
+
+/// 파일에서 범용 `OTEL_EXPORTER_OTLP_ENDPOINT`만 읽는다(읽기 전용 — 이 앱은 이 키를 쓰지 않는다).
+fn read_generic_endpoint(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let root: Value = serde_json::from_str(&content).ok()?;
+    root.get("env")?
+        .get(GENERIC_ENDPOINT_KEY)?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// 연동 상태 도출용 입력 — `settings.json`에서 읽은 사실만 담는다(값 문자열·URL은 없다).
 pub(crate) struct IngestInputs {
     /// 파일을 JSON으로 해석하지 못했다.
     pub unreadable: bool,
     pub key: IngestKeyStatus,
-    /// 파일의 `CLAUDE_CODE_ENABLE_TELEMETRY`가 `"1"`이다(저장 검증과 같은 판정). 파일에 없으면
-    /// false — 설정 화면의 기본값 "1"은 저장 전까지 파일에 없는 미리 채움일 뿐이라, 키만 주입된
-    /// 파일(`apply_ingest_key`)은 텔레메트리가 꺼진 것으로 본다.
-    pub telemetry_enabled: bool,
-    /// 유효 엔드포인트의 성격 — 설정 화면(`ingestEndpoint`)과 같은 판정(`assess_effective_endpoints`:
-    /// 파일 값 → 기본값). 파일을 읽지 못하면 기본값(전부 false).
-    pub endpoint: EndpointAssessment,
+    /// 수집 준비 사실 — 파일 실물만(앱 기본값 없음). 파일을 읽지 못하면 전부 false.
+    pub facts: CollectionFacts,
 }
 
 /// 연동 상태 도출용 읽기. 값 문자열은 내보내지 않는다.
 pub(crate) fn read_ingest_inputs(path: &Path) -> IngestInputs {
     let (values, parse_error, key) = read_managed_values(path);
     let unreadable = parse_error.is_some();
-    let telemetry_enabled =
-        values.get("CLAUDE_CODE_ENABLE_TELEMETRY").map(String::as_str) == Some("1");
-    let endpoint = if unreadable {
-        EndpointAssessment::default()
+    let facts = if unreadable {
+        CollectionFacts::default()
     } else {
-        let (defaults, _) = build_defaults();
-        assess_effective_endpoints(&values, &defaults)
+        let generic = read_generic_endpoint(path);
+        collection_facts(&values, generic.as_deref(), &crate::hub_auth::consts::hub_origin())
     };
     IngestInputs {
         unreadable,
         key,
-        telemetry_enabled,
-        endpoint,
+        facts,
     }
+}
+
+/// 수집키(`Authorization`) 항목만 지운다(연결 해제, 계약 D-13). 다른 헤더 항목과 나머지 설정은 그대로 둔다.
+/// 지울 허브 형식(`mhk_…`) 키가 없으면 파일을 건드리지 않는다(형식이 다른 Authorization은 이 앱이 만든 것이
+/// 아니므로 남긴다). 반환: 실제로 지웠으면 true.
+pub(crate) fn remove_ingest_key(path: &Path) -> Result<bool, String> {
+    let inputs = read_ingest_inputs(path);
+    if inputs.unreadable || inputs.key.state != crate::otel_ingest_key::IngestKeyState::Set {
+        return Ok(false);
+    }
+    save_to_settings_file(
+        path,
+        OtelSavePayload {
+            values: Default::default(),
+            identity: None,
+            ingest_key: IngestKeyChange::Clear,
+        },
+    )?;
+    Ok(true)
 }
 
 #[tauri::command]

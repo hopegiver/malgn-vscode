@@ -99,6 +99,12 @@ pub(crate) fn init(config_dir: PathBuf) {
     }
 }
 
+/// 앱 전역 컨텍스트(초기화되지 않았거나 지원하지 않는 OS면 None). 수집키 자동 연동(`otel_link`)이
+/// 최신 기기 토큰을 읽고 `GET /api/devices/self`로 연결 상태를 확인하는 데 쓴다.
+pub(crate) fn current_ctx() -> Option<Arc<HubCtx>> {
+    CTX.get().cloned()
+}
+
 fn ctx() -> Result<Arc<HubCtx>, String> {
     CTX.get()
         .cloned()
@@ -143,16 +149,29 @@ pub async fn hub_auth_status() -> Result<HubAuthStatus, String> {
 #[tauri::command]
 pub async fn hub_auth_connect(app: tauri::AppHandle) -> Result<HubAuthStatus, String> {
     let ctx = ctx()?;
-    connect::connect(app, ctx).await.map_err(|e| e.to_string())
+    let status = connect::connect(app, ctx).await.map_err(|e| e.to_string())?;
+    // 새 연결로 취급해 수집키 자동 연동이 곧바로 점검한다(수집키 계약 D-7).
+    crate::otel_link::on_hub_connected();
+    Ok(status)
 }
 
 #[tauri::command]
 pub async fn hub_auth_disconnect() -> Result<HubAuthStatus, String> {
     let ctx = ctx()?;
-    run_blocking(move || connect::disconnect(&ctx, Utc::now()))
+    let status = run_blocking(move || connect::disconnect(&ctx, Utc::now()))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // 연결 해제: 서버가 이 기기의 수집키를 함께 폐기하므로(수집키 계약 D-13) settings.json의
+    // Authorization 항목도 지운다. 해제 자체가 성공한 뒤에만 한다(잠금 경합 등으로 아무 일도 안 한
+    // 해제 실패에서는 키를 지우지 않는다).
+    let _ = run_blocking(|| {
+        if let Some(path) = crate::otel_settings::settings_path() {
+            let _ = crate::otel_link::after_hub_disconnect(&path);
+        }
+    })
+    .await;
+    Ok(status)
 }
 
 /// [지금 갱신]: 갱신 창과 무관하게 서버에 물어본다(서버가 RENEW_TOO_EARLY로 교정한다).

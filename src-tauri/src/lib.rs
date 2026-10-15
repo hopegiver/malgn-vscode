@@ -15,8 +15,10 @@ mod google_oauth;
 mod hub_auth;
 mod loopback_oauth;
 mod mcp_manager;
+mod otel_hub_client;
 mod otel_ingest_key;
 mod otel_link;
+mod otel_link_engine;
 mod otel_settings;
 mod plugins;
 mod process_util;
@@ -118,6 +120,8 @@ pub fn run() {
                     hub_auth::init(config_dir);
                 }
             }
+            // 허브 수집키 자동 연동 — 기동·연결 직후·1시간 간격 점검과 첫 데이터 확인(허브 연결이 있을 때만 동작).
+            otel_link::spawn_scheduler(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -138,6 +142,9 @@ pub fn run() {
             otel_settings::otel_settings_get,
             otel_settings::otel_settings_save,
             otel_link::otel_ingest_link_status,
+            otel_link::otel_link_retry,
+            otel_link::otel_link_recheck,
+            otel_link::otel_link_answer_confirm,
             plugins::update_plugin,
             plugins::install_plugin,
             plugins::refresh_marketplaces,
