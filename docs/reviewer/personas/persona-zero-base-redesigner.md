@@ -159,3 +159,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
   — 재사용 사유: 발산형 필수, 역할개념 유효. 6대 요소 무수정.
   — 이번 라운드 집중: 신규 Rethink 없음. 배치 동의 한 문단에 업데이트·제외·재질문이 몰린 것을 RT-3(설정 계획 패널) 근거로 추가, RT-1~3 이월.
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15.md`
+  — 재사용 사유: 역할개념 그대로 덮이는 표면, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: RT-1(confirmed 저장 위치 부재·Issuing 구조상 비도달), RT-2(연동 상태를 체크리스트 대신 허브 위젯으로).
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 2차(재검토, 풀패널 — 직전 Major 존재로 축소 불가) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15-r2.md`
+  — 재사용 사유: 같은 표면의 반영 확인, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: RT-1·RT-2 이월 확인. 자동 발급 경로가 키만 주입해 텔레메트리 꺼짐 경고로 끝나는 구조(N-5)를 계약 WBS 쟁점으로.

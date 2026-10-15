@@ -55,3 +55,9 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
   — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 바뀐 issue·warnUnsetHub 문구가 값 보간 없는 상수인지, 마스킹 유지.
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15.md`
+  — 재사용 사유: 역할개념 그대로 덮이는 표면, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: errorMessage.ts mhk_ 규칙(소문자 키 포함)과 마스킹 표시값 mhk_AbCd… 보존, 프론트 safeMasked 이중 방어.
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 2차(재검토, 풀패널 — 직전 Major 존재로 축소 불가) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15-r2.md`
+  — 재사용 사유: 같은 표면의 반영 확인, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: 신규 플래그(telemetryEnabled·endpoint·collectionReady)가 불리언뿐이라 URL·키가 상태에 실리지 않음을 테스트로 확인. 신규 slim 줄의 DOM 원문 검사.

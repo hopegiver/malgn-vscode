@@ -66,3 +66,9 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
   — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 새 문구로 완주 재시뮬레이션, 관리자 대리 발급 기대 제거 확인.
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15.md`
+  — 재사용 사유: 역할개념 그대로 덮이는 표면, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: 체크리스트 OTEL 행 완주 시뮬레이션 — 필수 3단계 완료 시 행이 사라짐(RV-001).
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 2차(재검토, 풀패널 — 직전 Major 존재로 축소 불가) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15-r2.md`
+  — 재사용 사유: 같은 표면의 반영 확인, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-001 해소 확인 — 필수 완료 후 slim 한 줄(미적용·실패·경고)과 준비 완료 시 미노출, PNG 06/07.

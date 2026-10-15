@@ -52,3 +52,9 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
   — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 저장·전송 로직 무변경 확인, 관리자 폐기 권한(DELETE /:id administrator) 재확인, 공용 키 우회 유도 제거.
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15.md`
+  — 재사용 사유: 역할개념 그대로 덮이는 표면, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: mhd_/mhk_ 분리(상태·에러·Debug·settings.json·백업·회전 백업), 0600·원자적 rename 행동 검증, 키 목적지 검사 부재(RV-004).
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 2차(재검토, 풀패널 — 직전 Major 존재로 축소 불가) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15-r2.md`
+  — 재사용 사유: 같은 표면의 반영 확인, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-004 선검사(EndpointNotHub) 확인, 발급 전 정지·파일/백업 불변 테스트 대조. 선검사가 앱 기본값으로 빈 엔드포인트를 허브로 간주하고 범용 OTEL_EXPORTER_OTLP_ENDPOINT를 안 읽는 빈틈(RV-005).

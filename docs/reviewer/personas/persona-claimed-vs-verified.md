@@ -150,3 +150,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
   — 재사용 사유: "4건 해소" 주장과 새 단언의 판별력 대조가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 16efbdd를 별도 worktree로 풀어 새 하네스를 돌려 RV-001/003/005 단언이 옛 코드에서 실패함을 확인(devToolsOrder 7건, autonomousTasks 1건). usage는 픽스처 수정이라 소스로 갈리지 않음. 낡은 주석 RV-011.
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15.md`
+  — 재사용 사유: 역할개념 그대로 덮이는 표면, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: 미구현 기능 주장 금지 대조 — 금지어 밖의 '자동으로 바꾸지 않았습니다'(RV-002), '세션부터 적용됩니다'(RV-003), 머리말 '구현체만 바뀐다' 과장.
+- 2026-10-15 / target_id `r16-otel-link-pre-contract` / 2차(재검토, 풀패널 — 직전 Major 존재로 축소 불가) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15-r2.md`
+  — 재사용 사유: 같은 표면의 반영 확인, 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-002/RV-003 문구 해소 확인. collectionReady가 파일에 없는 앱 기본값으로 '수집 준비됨'을 주장(RV-005), '텔레메트리가 꺼져 있음'이 관측(파일에 1 없음)보다 강한 단정(N-6).
