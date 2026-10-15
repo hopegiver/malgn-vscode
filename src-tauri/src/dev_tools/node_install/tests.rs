@@ -610,6 +610,25 @@ fn stale_staging_directories_from_a_crashed_run_are_swept_on_next_install() {
 }
 
 #[test]
+fn stale_current_tmp_links_from_a_crashed_flip_are_swept_on_next_install() {
+    // N-1: flip_current가 symlink() 뒤 rename() 전에 크래시하면 node/ 아래에 임시 링크가 남는다.
+    let fx = Fixture::new("sweep-link");
+    std::fs::create_dir_all(fx.layout.node_root()).unwrap();
+    let stale = fx.layout.node_root().join(".current-new-99999-1");
+    std::os::unix::fs::symlink("v24.0.0", &stale).unwrap();
+    // 비슷한 이름의 일반 파일·디렉터리, 정상 버전 폴더는 건드리지 않는다.
+    let lookalike_dir = fx.layout.node_root().join(".current-new-dir");
+    std::fs::create_dir_all(&lookalike_dir).unwrap();
+    assert!(fx.staging_leftovers().contains(&".current-new-99999-1".to_string()), "사전 조건: 잔여 링크가 있다");
+    fx.install_ok();
+    assert!(std::fs::symlink_metadata(&stale).is_err(), "크래시 잔여 임시 링크가 지워져야 합니다");
+    assert!(lookalike_dir.is_dir(), "링크가 아닌 항목은 지우지 않습니다");
+    std::fs::remove_dir(&lookalike_dir).unwrap();
+    assert_eq!(fx.staging_leftovers(), Vec::<String>::new());
+    assert_eq!(read_current_tag(&fx.layout), Some(fx.version));
+}
+
+#[test]
 fn pinned_version_with_unexpected_shape_cannot_be_constructed() {
     // 버전은 NodeVersion을 통해서만 URL·경로에 들어간다 — 문자열에서 만드는 길은 엄격 파서뿐이다.
     for bad in ["v24.22.0/../..", "v24.22", "24.22.0", "v24.22.0-rc.1", "v024.22.0"] {

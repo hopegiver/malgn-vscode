@@ -506,15 +506,21 @@ impl Fixture {
         std::fs::write(self.layout.npm_global().join("lib").join("KEEP"), "global-pkg").unwrap();
     }
 
+    /// 크래시·실패 잔여물: 기준 폴더의 `.staging-*`와 `node/` 아래의 `.current-new-*` 임시 링크.
     pub(super) fn staging_leftovers(&self) -> Vec<String> {
-        match std::fs::read_dir(&self.layout.base) {
-            Ok(read) => read
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.starts_with(".staging-"))
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+        let names = |dir: &Path, prefix: &str| -> Vec<String> {
+            match std::fs::read_dir(dir) {
+                Ok(read) => read
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| n.starts_with(prefix))
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        };
+        let mut out = names(&self.layout.base, ".staging-");
+        out.extend(names(&self.layout.node_root(), ".current-new-"));
+        out
     }
 
     /// 실패 후 불변식: 이전 설치 보존 + 스테이징 잔여물 0 + 새 버전 디렉터리 없음.

@@ -65,6 +65,11 @@ impl Layout {
         ".staging-"
     }
 
+    /// `flip_current`의 임시 링크 이름 접두사(`node/` 아래에 생긴다).
+    pub(crate) fn current_tmp_prefix() -> &'static str {
+        ".current-new-"
+    }
+
     /// `path`가 이 앱의 Node 폴더(`node/`) 아래인가. 심볼릭 링크를 풀기 전/후 경로 모두
     /// 다룰 수 있게 기준 폴더의 원문과 canonical 두 가지로 비교한다.
     pub(crate) fn contains_node_path(&self, path: &Path) -> bool {
@@ -126,14 +131,28 @@ impl Drop for StagingDir {
     }
 }
 
-/// 잠금을 잡은 상태에서만 호출한다: 이전 실행이 남긴 `.staging-*`는 (잠금이 있으니) 반드시
-/// 죽은 실행의 잔여물이다.
-pub(crate) fn sweep_stale_staging(base: &Path) {
-    let Ok(read) = std::fs::read_dir(base) else { return };
-    for entry in read.flatten() {
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with(Layout::staging_prefix()) {
-            let _ = std::fs::remove_dir_all(entry.path());
+/// 잠금을 잡은 상태에서만 호출한다: 이전 실행이 남긴 `.staging-*`(기준 폴더)와 `.current-new-*`
+/// (`flip_current`가 symlink() 뒤 rename() 전에 크래시하면 `node/` 아래에 남는 임시 링크)는
+/// (잠금이 있으니) 반드시 죽은 실행의 잔여물이다. 임시 링크는 링크일 때만 지운다.
+pub(crate) fn sweep_stale_staging(layout: &Layout) {
+    if let Ok(read) = std::fs::read_dir(&layout.base) {
+        for entry in read.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with(Layout::staging_prefix()) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    if let Ok(read) = std::fs::read_dir(layout.node_root()) {
+        for entry in read.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with(Layout::current_tmp_prefix()) {
+                continue;
+            }
+            let path = entry.path();
+            if std::fs::symlink_metadata(&path).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
 }
@@ -223,7 +242,7 @@ pub(crate) fn flip_current(env: &dyn InstallEnv, layout: &Layout, tag: &str) -> 
         .unwrap_or_default();
     let tmp = layout
         .node_root()
-        .join(format!(".current-new-{}-{}", std::process::id(), nanos));
+        .join(format!("{}{}-{}", Layout::current_tmp_prefix(), std::process::id(), nanos));
     make_symlink(tag, &tmp)?;
     if let Err(e) = env.rename(&tmp, &layout.current_link()) {
         let _ = std::fs::remove_file(&tmp);

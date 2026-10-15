@@ -335,7 +335,7 @@ pub(crate) fn install_version(
 
     // 같은 앱 인스턴스끼리는 EXECUTION_LOCK이 직렬화한다. 이 flock은 앱이 둘 뜬 경우의 방어선.
     let _lock = InstallLock::acquire(layout)?;
-    sweep_stale_staging(&layout.base);
+    sweep_stale_staging(layout);
     std::fs::create_dir_all(layout.node_root()).map_err(|e| io_error("node 폴더 생성", e))?;
     let previous = read_current_tag(layout);
     let tag = version.to_tag();
