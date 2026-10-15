@@ -91,7 +91,7 @@ export type IngestLinkFailureCause =
   | 'endpointNotHub' // 수집 엔드포인트가 허브 밖이거나 평문 http라 발급 전에 멈춤
   | 'notReady' // 설정 파일에서 수집이 켜져 있지 않아(텔레메트리·exporter·프로토콜·엔드포인트) 발급 전에 멈춤
   | 'featureUnavailable' // 허브에 이 기능이 아직 없음(연결은 정상, 1시간 뒤 다시 확인)
-  | 'reconnectRequired' // 허브가 이 기기의 연결을 끊음 — 재연결 필요
+  | 'reconnectRequired' // 이 PC의 맑은에이전트 연결이 해제됨 — 앱에서 다시 로그인해 연결해야 함(재발급이 아니다)
   | 'notDesktopToken' // 데스크톱 앱이 발급한 토큰이 아님(재시도하지 않음)
   | 'hubRejected' // 허브가 요청을 거부함
   | 'unreachable' // 허브에 닿지 못함(자동 재시도)
@@ -181,9 +181,25 @@ export async function recheckIngestLink(): Promise<IngestLinkStatus> {
   return invoke<IngestLinkStatus>('otel_link_recheck');
 }
 
-// 재발급 확인창(confirm_required)의 답. 거절하면 이번 앱 실행 동안 다시 묻지 않는다.
-export async function answerIngestReissueConfirm(accept: boolean): Promise<IngestLinkStatus> {
-  return invoke<IngestLinkStatus>('otel_link_answer_confirm', { accept });
+// 재발급 확인창(confirm_required)에 답한 뒤 실제로 일어난 일. 백엔드 엔진이 직접 알려 주는 값이고 토스트와 1:1로 대응한다 —
+// 프론트는 상태의 masked를 비교해 성공을 역산하지 않는다(otelLinkText.ts의 reissueToast).
+export type IngestReissueOutcome =
+  | { readonly kind: 'declined' } // 사용자가 거절했다
+  | { readonly kind: 'minted'; readonly masked: string } // 새 수집키를 받아 설정 파일에 적용했다
+  | { readonly kind: 'notStarted'; readonly reason: 'busy' | 'notPending' } // 요청을 시작하지 않았다
+  | { readonly kind: 'noConnection' } // 허브 연결이 없거나 요청 도중 바뀌어 쓰지 않았다
+  | { readonly kind: 'notApplied' } // 요청을 마쳤지만 새 키가 적용되지 않았고 알릴 실패 원인도 없다
+  | { readonly kind: 'failed'; readonly failure: IngestLinkFailure; readonly transient: boolean }; // 실패(transient: 앱이 스스로 다시 시도하는 일시 원인)
+
+export interface IngestReissueAnswer {
+  readonly status: IngestLinkStatus;
+  readonly outcome: IngestReissueOutcome;
+}
+
+// 재발급 확인창(confirm_required)의 답. 거절하면 이번 앱 실행 동안 다시 묻지 않는다. 동의하면 요청이 끝난 뒤의 상태와
+// 무슨 일이 일어났는지(outcome)를 함께 돌려준다.
+export async function answerIngestReissueConfirm(accept: boolean): Promise<IngestReissueAnswer> {
+  return invoke<IngestReissueAnswer>('otel_link_answer_confirm', { accept });
 }
 
 // 백엔드가 연동 상태를 바꿀 때마다 오는 이벤트(점검 시작·끝, 첫 데이터 확인 등).

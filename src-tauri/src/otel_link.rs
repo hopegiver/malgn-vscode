@@ -62,7 +62,7 @@ use crate::hub_auth::HubCtx;
 use crate::otel_hub_client::{BlockedReason, ReqwestIngestApi};
 use crate::otel_ingest_key::{EndpointAssessment, IngestKeyState, SecretString};
 use crate::otel_link_engine::{
-    DeviceTokens, Env, HubSelfProbe, LinkEngine, Phase, RuntimeView, Trigger,
+    DeviceTokens, Env, HubSelfProbe, LinkEngine, NotStarted, Phase, ReissueResult, RuntimeView, Trigger,
 };
 use crate::otel_settings::{CollectionFacts, IngestInputs};
 use serde::Serialize;
@@ -194,6 +194,61 @@ impl IngestLinkFailure {
             cause,
             message: cause.message().to_string(),
         }
+    }
+}
+
+/// 재발급 확인창에 답한 뒤 실제로 일어난 일(R20 RT-4). 엔진이 직접 알려 주는 값이고 프론트 토스트와 1:1로 대응한다 —
+/// 프론트는 확인창 전의 `masked`와 응답 상태를 비교해 성공을 역산하지 않는다. 직렬화: `{ "kind": "minted", … }`.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum IngestReissueOutcome {
+    /// 사용자가 재발급을 거절했다(토스트 없음).
+    Declined,
+    /// 새 수집키를 받아 설정 파일에 적용했다. `masked`는 `mhk_`+4자 마스킹.
+    Minted { masked: String },
+    /// 요청을 시작하지 않았다(`busy`: 다른 점검이 진행 중 / `notPending`: 확인을 기다리는 상태가 아님).
+    NotStarted { reason: ReissueNotStarted },
+    /// 허브 연결이 없거나 요청 도중 연결이 바뀌어 새 키를 쓰지 않았다.
+    NoConnection,
+    /// 요청을 마쳤지만 새 키가 적용되지 않았고 알려 줄 실패 원인도 없다(예: 이미 다른 경로가 만든 키가 적용돼 있었다).
+    NotApplied,
+    /// 실패 — 원인과 고정 문구. `transient`이면 앱이 스스로 다시 시도하는 일시 원인이다.
+    Failed { failure: IngestLinkFailure, transient: bool },
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReissueNotStarted {
+    Busy,
+    NotPending,
+}
+
+/// `otel_link_answer_confirm`의 응답: 갱신된 연동 상태 + 방금 답의 결과.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestReissueAnswer {
+    pub status: IngestLinkStatus,
+    pub outcome: IngestReissueOutcome,
+}
+
+/// 엔진의 재발급 결과를 프론트가 그대로 말할 수 있는 값으로 옮긴다(순수 함수).
+pub(crate) fn reissue_outcome(result: ReissueResult) -> IngestReissueOutcome {
+    match result {
+        ReissueResult::Minted { prefix } => IngestReissueOutcome::Minted { masked: format!("{prefix}…") },
+        ReissueResult::NotStarted(NotStarted::Busy) => {
+            IngestReissueOutcome::NotStarted { reason: ReissueNotStarted::Busy }
+        }
+        ReissueResult::NotStarted(NotStarted::NotPending) => {
+            IngestReissueOutcome::NotStarted { reason: ReissueNotStarted::NotPending }
+        }
+        ReissueResult::Ended(Phase::NoDeviceToken) => IngestReissueOutcome::NoConnection,
+        ReissueResult::Ended(phase) => match cause_of(&phase) {
+            Some(cause) => IngestReissueOutcome::Failed {
+                failure: IngestLinkFailure::of(cause),
+                transient: cause.is_transient(),
+            },
+            None => IngestReissueOutcome::NotApplied,
+        },
     }
 }
 
@@ -732,16 +787,22 @@ pub async fn otel_link_recheck() -> Result<IngestLinkStatus, String> {
     .map_err(|e| e.to_string())
 }
 
-/// 확인창(D-1)의 답. 거절하면 이번 앱 실행 동안 다시 묻지 않는다.
+/// 확인창(D-1)의 답. 거절하면 이번 앱 실행 동안 다시 묻지 않는다. 동의하면 재발급 요청이 끝난 뒤의 상태와
+/// **무슨 일이 일어났는지**(`outcome`)를 함께 돌려준다 — 프론트 토스트는 `outcome`만 본다.
 #[tauri::command]
-pub async fn otel_link_answer_confirm(accept: bool) -> Result<IngestLinkStatus, String> {
+pub async fn otel_link_answer_confirm(accept: bool) -> Result<IngestReissueAnswer, String> {
     crate::hub_auth::run_blocking(move || {
-        if accept {
-            with_env(|env| engine().accept_confirm(env, now_ms()));
+        let outcome = if accept {
+            // 허브 연결 기능이 초기화되지 않았으면 요청을 시작하지 않은 것과 같다.
+            match with_env(|env| engine().accept_confirm(env, now_ms())) {
+                Some(result) => reissue_outcome(result),
+                None => IngestReissueOutcome::NoConnection,
+            }
         } else {
             engine().decline_confirm();
-        }
-        current_status()
+            IngestReissueOutcome::Declined
+        };
+        IngestReissueAnswer { status: current_status(), outcome }
     })
     .await
     .map_err(|e| e.to_string())

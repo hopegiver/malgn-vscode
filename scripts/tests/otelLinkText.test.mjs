@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueOutcome } from '../../src/otelLinkText.ts';
+import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueToast } from '../../src/otelLinkText.ts';
 
 const HUB_EP = { targetsHub: true, insecure: false, foreignHost: false };
 const base = {
@@ -11,7 +11,6 @@ const base = {
   firstDataTimedOut: false, blockedReason: null, retryAt: null, notice: null, serverEnvChanged: [], serverEnvRejected: [],
 };
 const st = (over = {}) => ({ ...base, ...over });
-const fail = (cause, message) => ({ cause, message });
 
 test('RV-02: 허브에 연결되어 앱이 관리할 수 있을 때만 수동 입력을 막는다', () => {
   assert.equal(keyManagedByHub(st()), true);
@@ -20,65 +19,67 @@ test('RV-02: 허브에 연결되어 앱이 관리할 수 있을 때만 수동 �
   assert.equal(keyManagedByHub(null), false, '상태를 못 읽었으면 막지 않는다(백엔드가 최종 판단)');
 });
 
-const OLD = 'mhk_OLDK…';
-const NEW = 'mhk_AbCd…';
+const fail = (cause, message) => ({ cause, message });
 
-test('RV-06: 재발급 성공 토스트는 다른 키가 적용됐다는 관측이 있을 때만 나온다', () => {
-  const ok = reissueOutcome(st({ state: 'applied', masked: NEW, waitingFirstData: true }), true, OLD);
-  assert.equal(ok.kind, 'applied');
-  assert.match(ok.text, /다시 발급해 적용했습니다/);
-  assert.equal(reissueOutcome(st({ state: 'confirmed', masked: NEW }), true, OLD).kind, 'applied');
-  // 키가 없던 상태(null)에서 시작해 키가 생겼다.
-  assert.equal(reissueOutcome(st({ state: 'applied', masked: NEW }), true, null).kind, 'applied');
-  // 일시 보조 안내(notice)가 붙어도 새 키가 적용된 사실은 성공이다.
-  assert.equal(reissueOutcome(st({ state: 'applied', masked: NEW, notice: fail('unreachable', 'x') }), true, OLD).kind, 'applied');
+// ---- R20 RT-4: 재발급 토스트는 백엔드가 돌려준 결과(outcome) 하나와 1:1로 대응한다 ----
+// (이전에는 확인창 전의 masked와 응답 상태를 비교해 성공·실패·대기를 역산했다.)
+
+test('r20: 토스트는 백엔드 결과만으로 정해진다 — "다시 발급해 적용했습니다"는 minted일 때만 나온다', () => {
+  const minted = reissueToast({ kind: 'minted', masked: 'mhk_AbCd…' });
+  assert.equal(minted.kind, 'applied');
+  assert.match(minted.text, /수집키를 다시 발급해 적용했습니다\. 새로 시작하는 Claude Code 세션부터 적용됩니다/);
+  const others = [
+    { kind: 'declined' },
+    { kind: 'notStarted', reason: 'busy' },
+    { kind: 'notStarted', reason: 'notPending' },
+    { kind: 'noConnection' },
+    { kind: 'notApplied' },
+    { kind: 'failed', failure: fail('unreachable', '허브에 연결하지 못했습니다.'), transient: true },
+    { kind: 'failed', failure: fail('blocked', '막힘'), transient: false },
+    { kind: 'failed', failure: fail('reconnectRequired', '연결 해제'), transient: false },
+  ];
+  for (const o of others) {
+    const t = reissueToast(o);
+    assert.notEqual(t.kind, 'applied', JSON.stringify(o));
+    assert.ok(t.text === null || !t.text.includes('적용했습니다'), `${JSON.stringify(o)}: ${t.text}`);
+  }
+  // 화면 상태를 읽지 않는다 — 인자는 결과 하나뿐이다.
+  assert.equal(reissueToast.length, 1);
 });
 
-test('RV-09: 폐기된 키가 그대로 남은 채 발급 요청이 일시 오류로 끝나면 성공이라 말하지 않는다', () => {
-  const notice = fail('unreachable', '허브에 연결하지 못했습니다. 잠시 후 다시 시도합니다.');
-  // 백엔드가 이 경우 내는 모양: applied(이전 키) + revokedByHub(confirm 플래그 꺼짐) + notice.
-  for (const status of [
-    st({ state: 'applied', masked: OLD, revokedByHub: true, notice }),
-    st({ state: 'confirmed', masked: OLD, revokedByHub: true, notice }),
-    st({ state: 'applied', masked: OLD, revokedByHub: true, notice: fail('rateLimited', '요청이 많아 잠시 후 다시 시도합니다.') }),
-  ]) {
-    const o = reissueOutcome(status, true, OLD);
-    assert.equal(o.kind, 'failed', JSON.stringify(status));
-    assert.ok(!o.text.includes('적용했습니다'), o.text);
-    assert.ok(o.text.includes(status.notice.message), '일시 원인을 알린다');
-    assert.match(o.text, /폐기된 수집키가 아직 이 PC에 남아 있습니다/);
-  }
-  // 폐기 표시가 없더라도 키가 그대로면(같은 마스킹) 새 키가 적용됐다는 관측이 없다.
-  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: OLD }), true, OLD).kind, 'applied');
-  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: OLD, notice: fail('unreachable', 'x') }), true, OLD).kind, 'applied');
-  // 답하기 전 상태를 몰랐다면 관측할 수 없다.
-  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: NEW }), true, undefined).kind, 'applied');
-  // 새 키가 적용됐더라도 폐기 판정이 이어지는 상태라면(다른 점검이 새 판정을 준 경우 등) 성공이라 말하지 않는다.
-  assert.notEqual(reissueOutcome(st({ state: 'applied', masked: NEW, revokedByHub: true }), true, OLD).kind, 'applied');
+test('r20: 결과 종류마다 서로 다른 문구가 대응한다(거절만 토스트가 없다)', () => {
+  assert.deepEqual(reissueToast({ kind: 'declined' }), { kind: 'declined', text: null });
+  const texts = [
+    reissueToast({ kind: 'minted', masked: 'mhk_AbCd…' }).text,
+    reissueToast({ kind: 'notStarted', reason: 'busy' }).text,
+    reissueToast({ kind: 'notStarted', reason: 'notPending' }).text,
+    reissueToast({ kind: 'noConnection' }).text,
+    reissueToast({ kind: 'notApplied' }).text,
+    reissueToast({ kind: 'failed', failure: fail('unreachable', 'A'), transient: true }).text,
+  ];
+  assert.equal(new Set(texts).size, texts.length, texts.join('\n'));
+  assert.match(reissueToast({ kind: 'notStarted', reason: 'busy' }).text, /다른 점검이 진행 중이라 재발급을 시작하지 못했습니다/);
+  assert.equal(reissueToast({ kind: 'notStarted', reason: 'busy' }).kind, 'pending');
+  assert.equal(reissueToast({ kind: 'noConnection' }).kind, 'failed');
 });
 
-test('RV-06: 동의했지만 결과가 적용이 아니면 성공이라 말하지 않고 원인을 보여 준다', () => {
-  for (const cause of ['notReady', 'endpointNotHub', 'credentialLimit', 'unreachable', 'blocked']) {
-    const o = reissueOutcome(st({ state: 'failed', failure: fail(cause, `고정 문구:${cause}`) }), true, OLD);
-    assert.equal(o.kind, 'failed', cause);
-    assert.ok(!o.text.includes('적용했습니다'), o.text);
-    assert.ok(o.text.includes(`고정 문구:${cause}`), o.text);
-  }
-  // 다른 점검이 진행 중이라 백엔드가 아무것도 하지 않은 경우: 여전히 확인 대기(또는 파일에 폐기된 키가 남은 applied+confirmRequired).
-  for (const status of [st({ confirmRequired: true }), st({ state: 'applied', masked: 'mhk_AbCd…', confirmRequired: true }), st({ confirmDeclined: true })]) {
-    const o = reissueOutcome(status, true, 'mhk_AbCd…');
-    assert.equal(o.kind, 'pending');
-    assert.ok(!o.text.includes('적용했습니다'), o.text);
-  }
-  assert.equal(reissueOutcome(st({ state: 'issuing' }), true, null).kind, 'pending');
-  // 키가 없고 실패 원인도 없다(예: 허브 연결 없음) — 성공이 아니다.
-  const none = reissueOutcome(st({ hubConnected: false }), true, null);
-  assert.equal(none.kind, 'failed');
-  assert.ok(!none.text.includes('적용했습니다'));
+test('r20: 실패 토스트는 백엔드의 고정 원인 문구를 그대로 싣고, 일시 원인에는 [다시 시도] 길을 남긴다', () => {
+  const transient = reissueToast({ kind: 'failed', failure: fail('unreachable', '허브에 연결하지 못했습니다. 잠시 후 다시 시도합니다.'), transient: true });
+  assert.equal(transient.kind, 'failed');
+  assert.ok(transient.text.includes('허브에 연결하지 못했습니다. 잠시 후 다시 시도합니다.'));
+  assert.match(transient.text, /\[다시 시도\]로 다시 발급할 수 있습니다/);
+  const permanent = reissueToast({ kind: 'failed', failure: fail('credentialLimit', '수집키 상한(5개)에 도달했습니다.'), transient: false });
+  assert.ok(permanent.text.includes('수집키 상한(5개)에 도달했습니다.'));
+  assert.ok(!permanent.text.includes('[다시 시도]'), '다시 시도로 풀리지 않는 원인에 그 버튼을 권하지 않는다');
 });
 
-test('RV-06: 거절은 토스트가 없다', () => {
-  assert.deepEqual(reissueOutcome(st({ confirmDeclined: true }), false, null), { kind: 'declined', text: null });
+test('r20: 연결이 끊겨 실패한 재발급 토스트는 재발급이 아니라 다시 로그인해 연결하라고 말한다', () => {
+  const message = '이 PC의 맑은에이전트 연결이 해제되었습니다. 앱에서 다시 로그인해 연결하세요.';
+  const t = reissueToast({ kind: 'failed', failure: fail('reconnectRequired', message), transient: false });
+  assert.equal(t.kind, 'failed');
+  assert.ok(t.text.includes('다시 로그인해 연결하세요'), t.text);
+  assert.ok(!t.text.includes('다시 발급'), `연결이 끊긴 상태에서 "다시 발급"을 행동으로 권하지 않는다: ${t.text}`);
+  assert.ok(!t.text.includes('[다시 시도]'), t.text);
 });
 
 test('RV-06: 해제 토스트는 이 PC의 수집키를 실제로 지웠을 때만 "지웠습니다"라고 말한다', () => {

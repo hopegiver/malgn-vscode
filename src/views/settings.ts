@@ -28,9 +28,9 @@ import {
 } from '../hubAuthApi';
 import type { HubAuthStatus, HubDisconnectResult } from '../hubAuthApi';
 import { navigate, parseRoute } from '../route';
-import { AUTO_LINK_CHANGES_NOTE, computeOnboarding, withoutAutoLinkNote } from '../onboarding';
+import { AUTO_LINK_CHANGES_NOTE, computeOnboarding, DEVICE_KEY_MANAGED_NOTE, REISSUE_CONFIRM_MESSAGE, withoutAutoLinkNote } from '../onboarding';
 import { baselineValues, mergeDraftOnRefresh, sameFormContent, valuesToSave } from '../otelForm';
-import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueOutcome } from '../otelLinkText';
+import { disconnectToast, keyManagedByHub, legacyIntervalHint, reissueToast } from '../otelLinkText';
 import type { OnboardingStep } from '../onboarding';
 import { renderDevToolsView } from './devTools';
 
@@ -222,14 +222,12 @@ async function recheckIngestLinkAfterSave(): Promise<void> {
 // 재발급 확인창(계약 D-1) — 웹에서 이 기기 수집키가 폐기된 경우에만 사람에게 묻는다. 거절하면 백엔드가
 // 이번 앱 실행 동안 다시 묻지 않는다(confirmDeclined). 한 번에 한 창만 연다.
 // 초점은 '발급하지 않음'에 둔다 — 앱이 백그라운드 이벤트로 스스로 띄우는 창이라, 다른 일을 하다 누른 Enter 한 번이
-// 사람의 확인(D-1)을 대신하면 안 된다. 성공 토스트는 응답이 실제로 적용됨일 때만 말한다(reissueOutcome).
-export const REISSUE_CONFIRM_MESSAGE = '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요?';
+// 사람의 확인(D-1)을 대신하면 안 된다. 토스트는 백엔드가 돌려준 결과(outcome)와 1:1로 대응한다(reissueToast) — 확인창 전후의
+// 마스킹을 비교해 성공을 추론하지 않는다.
 let reissueConfirmOpen = false;
 export async function askReissueConfirm(): Promise<void> {
   if (reissueConfirmOpen) return;
   reissueConfirmOpen = true;
-  // 새 키가 적용됐는지는 확인창에 답하기 전의 파일 키와 비교해야 알 수 있다(RV-09). 키가 없던 상태는 null.
-  const beforeMasked: string | null | undefined = state.ingestLink.status ? state.ingestLink.status.masked : undefined;
   try {
     const accepted = await confirmDialog(REISSUE_CONFIRM_MESSAGE, {
       title: '수집키 재발급',
@@ -237,9 +235,10 @@ export async function askReissueConfirm(): Promise<void> {
       cancelLabel: '발급하지 않음',
       defaultFocus: 'cancel',
     });
-    applyIngestStatus(await answerIngestReissueConfirm(accepted));
-    const outcome = reissueOutcome(state.ingestLink.status, accepted, beforeMasked);
-    if (outcome.text) showToast(outcome.text);
+    const answer = await answerIngestReissueConfirm(accepted);
+    applyIngestStatus(answer.status);
+    const toast = reissueToast(answer.outcome);
+    if (toast.text) showToast(toast.text);
   } catch (err) {
     showToast(`수집키 재발급을 진행하지 못했습니다: ${errorMessage(err)}`);
   } finally {
@@ -693,6 +692,8 @@ function renderIngestKeyBlock(settings: OtelSettings): HTMLElement {
     ...blocks,
     input,
     withId(el('div', { className: 'settings-form-hint' }, [managed ? INGEST_KEY_COPY.issueManaged : INGEST_KEY_COPY.issue]), 'otel-ingest-key-issue-hint'),
+    // 앱이 관리하는 키는 허브 웹 /keys에서 회전할 수 없다 — 회전은 앱이 하고, 폐기 뒤의 길(재발급/재연결)이 다르다는 안내.
+    ...(managed ? [withId(el('div', { className: 'settings-form-hint' }, [DEVICE_KEY_MANAGED_NOTE]), 'otel-ingest-key-managed-note')] : []),
     el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.storage]),
     withId(el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.scope]), 'otel-ingest-key-scope-hint'),
     el('div', { className: 'settings-form-hint' }, [INGEST_KEY_COPY.revoke]),

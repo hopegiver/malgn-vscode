@@ -234,10 +234,33 @@ struct RunState {
     epoch: u64,
     /// 사용자의 [다시 시도]로 시작한 점검이다 — 15분 타임아웃 뒤에도 첫 데이터 확인을 다시 시작한다(RV-03).
     restart_watch: bool,
+    /// 이번 점검에서 서버가 새로 준 수집키(201)를 설정 파일에 실제로 적용했다면 그 키의 앞 8자(R20 RT-4).
+    /// `accept_confirm`이 이 값으로 "새 키를 받아 적용했다"를 직접 말한다 — 화면 상태에서 역산하지 않는다.
+    minted: Option<String>,
 }
 
 /// 한 번의 점검에서 rotate는 응답 유실 재시도를 포함해 최대 2회다(계약 D 머리말).
 const MAX_ROTATES_PER_CHECK: u8 = 2;
+
+/// 확인창에서 동의한 뒤(`accept_confirm`) 실제로 일어난 일. 엔진이 POST 결과를 이미 알고 있으므로 직접 돌려주고,
+/// 프론트 토스트는 이 값과 1:1로 대응한다(R20 RT-4 — 확인창 전 `masked`와 응답 상태를 비교하는 역산을 없앤다).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReissueResult {
+    /// 새 수집키를 받아 설정 파일에 적용했다. `prefix`는 그 키의 앞 8자(`mhk_`+4자).
+    Minted { prefix: String },
+    /// 요청을 시작하지 않았다.
+    NotStarted(NotStarted),
+    /// 요청을 마쳤지만 새 키는 적용되지 않았다. 점검이 끝난 단계(= 원인)를 그대로 싣는다.
+    Ended(Phase),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotStarted {
+    /// 다른 점검이 진행 중이라 이 요청은 아무것도 하지 않았다.
+    Busy,
+    /// 확인을 기다리는 상태가 아니다(이미 처리됐거나 상태가 바뀌었다).
+    NotPending,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mint {
@@ -440,6 +463,11 @@ impl LinkEngine {
             // 명확한 답)로 끝나면 간격을 처음(1분)으로 되돌린다.
             if !matches!(phase, Phase::Transient | Phase::RateLimited) {
                 m.backoff_ms = 0;
+            }
+            // 연결이 끊겼거나(재로그인 필요) 이 연결로는 발급이 막혔다면 "폐기된 키를 다시 발급할지" 묻는 상태는 끝났다 —
+            // 다시 발급이 아니라 다시 연결이 답이다(R20). 이전 폐기 판정을 남겨 두면 화면이 두 안내를 섞는다.
+            if matches!(phase, Phase::Reconnect | Phase::Blocked(_)) {
+                m.revoked_prefix = None;
             }
             m.phase = phase;
         });
@@ -791,7 +819,7 @@ impl LinkEngine {
     ///
     /// `server_env`는 201 `env` 중 허용 목록·형식을 통과한 값(`otel_server_env`)이다. 거부된 키가 있어도 수집키 적용은
     /// 그대로 진행한다 — 키를 버리면 회전 예산만 소진된다. 거부된 키 이름은 상태(`env_rejected`)로 남긴다.
-    fn accept_key(&self, env: &Env, key: SecretString, server_env: ServerEnv, now: u64, st: &RunState) -> Phase {
+    fn accept_key(&self, env: &Env, key: SecretString, server_env: ServerEnv, now: u64, st: &mut RunState) -> Phase {
         // 응답을 받았으니 "유실로 끝난 점검"이 아니다(rotate 201이든 발급 201이든 수는 0이 된다).
         if !self.is_stale(st) {
             self.with(|m| {
@@ -818,6 +846,7 @@ impl LinkEngine {
             Applied::Written => {
                 self.with(|m| m.pending_write = None);
                 self.after_applied(&prefix, now);
+                st.minted = Some(prefix);
                 Phase::Idle
             }
             Applied::Failed => {
@@ -921,13 +950,15 @@ impl LinkEngine {
         self.notify();
     }
 
-    /// 사용자가 확인창에서 동의했다(D-1) — `POST {label, confirm_reissue:true}`를 보낸다.
-    pub(crate) fn accept_confirm(&self, env: &Env, now: u64) {
+    /// 사용자가 확인창에서 동의했다(D-1) — `POST {label, confirm_reissue:true}`를 보내고, 무슨 일이 일어났는지를
+    /// 직접 돌려준다(`ReissueResult`).
+    pub(crate) fn accept_confirm(&self, env: &Env, now: u64) -> ReissueResult {
         let Ok(_run) = self.run.try_lock() else {
-            return;
+            return ReissueResult::NotStarted(NotStarted::Busy);
         };
         if self.with(|m| m.phase != Phase::ConfirmRequired) {
-            return; // 확인을 요구하는 상태가 아니다(이미 처리됐거나 상태가 바뀌었다).
+            // 확인을 요구하는 상태가 아니다(이미 처리됐거나 상태가 바뀌었다).
+            return ReissueResult::NotStarted(NotStarted::NotPending);
         }
         self.with(|m| {
             m.phase = Phase::Checking;
@@ -942,7 +973,12 @@ impl LinkEngine {
             Some(mut token) => self.mint(env, &mut token, Mint::Create { confirm: true }, now, &mut st),
             None => Phase::NoDeviceToken,
         };
-        self.finish(phase, &st);
+        let minted = st.minted.take();
+        self.finish(phase.clone(), &st);
+        match minted {
+            Some(prefix) => ReissueResult::Minted { prefix },
+            None => ReissueResult::Ended(phase),
+        }
     }
 
     // ---------------- 첫 데이터 확인(D-12) ----------------
