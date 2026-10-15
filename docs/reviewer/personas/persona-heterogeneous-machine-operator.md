@@ -74,3 +74,9 @@ Intel 맥 6대와 nvm·volta·corepack이 뒤섞인 머신이 아직 살아 있�
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
   — 재사용 사유: mac Homebrew run 모양·nvm 안내 한정이 실제 탐지 경로와 맞는가가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: nodeUnverified mac=run 픽스처, brew 미리보기 신뢰/winget 불신뢰 스텁 분리, nvm 계열 "터미널에서 직접" 안내.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15.md`
+  — 재사용 사유: Windows 회귀·Homebrew 유무·Intel/arm64 조합이 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: Windows 분기 가드(runner_path/mac_layout/default_path_dirs), 로컬 Windows 교차 컴파일 불가(ring C 헤더) → CI 의존, 릴리스가 arm64 전용이라 X64 분기 미실행.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 2차(재검토, 증분 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15-r2.md`
+  — 재사용 사유: Homebrew/기존 Node/네이티브 claude/Windows 조합에서 RV-002 주입이 기존 동작을 바꾸지 않는가가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: CLAUDE_PATH_CANDIDATES 순서(앱 npm-global이 마지막), mac_layout Windows None, nvm 공존 기기.

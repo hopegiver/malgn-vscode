@@ -95,3 +95,9 @@
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
   — 재사용 사유: Windows force_kill_all_remaining CI 실검증(RV-003)이 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: CI run 38361489303 windows-latest 해당 테스트 ok 대조, pid 4242 테스트 이월 타당성.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15.md`
+  — 재사용 사유: 새 외부 도구 실행(tar/xattr/codesign/node)·npm_config_prefix 주입·기본 PATH 확장이 역할개념(argv·env·PATH) 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 절대경로 도구 + PATH=/usr/bin:/bin, prefix 주입 범위(Runner::Npm + 앱 npm만), mac 기본 PATH 뒤쪽 추가의 섀도잉 여부.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 2차(재검토, 증분 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15-r2.md`
+  — 재사용 사유: RV-002 반영이 claude 자식 5개 모듈의 env를 바꿔 역할개념(argv·env·PATH) 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: claude_child_env 주입 조건(path_is_under)·후보 순서·유사 이름/심볼릭 링크/`..` 오판정, 손자 프로세스(Bash 도구·MCP·nvm)로의 env 상속.

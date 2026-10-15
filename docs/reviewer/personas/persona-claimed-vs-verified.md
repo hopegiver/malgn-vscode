@@ -177,3 +177,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-15 / target_id `r20-otel-revoke-align` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
   — 이번 라운드 집중: RV-001~007 주장 대조, cargo/test:ts/tsc 직접 실행, Rust M5 재투입(이제 실패), TS 변이 10종 중 생존 T10(RV-009).
+- 2026-10-15 / target_id `r22-node-userspace-install` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15.md`
+  — 재사용 사유: "검증 순서·실패 시 무설치" 주장을 테스트가 실제로 단언하는지, 가짜 환경이 실패를 숨기는지가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: FakeEnv 호출 순서 단언, codesign 전량 목(실제 codesign 음성 테스트 부재), 취소 플래그 문서 주장 대 코드, cargo test 1103 직접 실행.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 2차(재검토, 증분 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15-r2.md`
+  — 재사용 사유: 반영 6커밋의 "해소" 주장을 코드·테스트로 대조하는 일이 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-002 전제(claude 자기 갱신=npm -g) 미실측 상태의 단정 주석, RV-005 실물 양성 경로 미실측, 가드 테스트의 공허성, cargo test 1122 직접 실행.

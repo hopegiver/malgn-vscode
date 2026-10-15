@@ -186,3 +186,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-15 / target_id `r20-otel-revoke-align` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
   — 이번 라운드 집중: 🔵 RT-5 재평가 — 프론트 fileKeyLiveness로 절반 진척, 백엔드 이식·hub_auth 전파는 이월.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15.md`
+  — 재사용 사유: "앱이 두 번째 Node를 사용자 공간에 소유하는 구조가 애초에 옳은가"가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: rc 불변의 대가(터미널에서 안 보이는 node/claude), 앱 자식 전체로의 prefix 일원화, 서명 밖 npm JS의 신뢰 근거.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 2차(재검토, 증분 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15-r2.md`
+  — 재사용 사유: "prefix를 자식마다 env로 붙이는 구조가 옳은가"가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 🔵 RT-4 env 주입 대신 앱 Node 내장 npmrc(builtin config)로 prefix 고정, RT-1~3 재평가.
