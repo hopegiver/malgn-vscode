@@ -139,7 +139,7 @@
     // ── default_path_dirs ──
 
     #[test]
-    fn default_path_dirs_mac_matches_existing_six_literals_exactly() {
+    fn default_path_dirs_mac_matches_existing_six_literals_then_the_two_app_managed_dirs() {
         let roots = mac_roots();
         assert_eq!(
             default_path_dirs(Platform::Mac, &roots),
@@ -150,8 +150,56 @@
                 "/bin".to_string(),
                 "/usr/sbin".to_string(),
                 "/sbin".to_string(),
+                // P2-3b: 앱 관리 Node와 npm 전역 prefix의 bin(홈이 있을 때만).
+                "/Users/hopegiver/.local/share/malgn-agent/node/current/bin".to_string(),
+                "/Users/hopegiver/.local/share/malgn-agent/npm-global/bin".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn default_path_dirs_mac_without_home_keeps_exactly_the_six_system_dirs() {
+        let roots = EnvRoots { home: None, ..mac_roots() };
+        assert_eq!(
+            default_path_dirs(Platform::Mac, &roots),
+            vec!["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        );
+    }
+
+    // 도구 위치 지식(DEV_TOOLS·NPM 러너 후보)과 PATH 조립 목록이 따로 관리되면 어긋난다는
+    // 기존 교훈(Windows git/node 가드)을 mac의 앱 관리 디렉터리에도 적용한다 — 양방향이다:
+    //  ① 앱 기준 폴더(`~/.local/share/malgn-agent/…`)를 가리키는 모든 mac 후보의 디렉터리는
+    //     default_path_dirs(Mac)에 들어 있어야 한다(후보만 늘리고 PATH를 빼먹으면 실패).
+    //  ② default_path_dirs(Mac)의 앱 기준 폴더 디렉터리는 적어도 하나의 후보가 가리켜야 한다
+    //     (PATH만 늘리고 후보를 빼먹으면 실패).
+    #[test]
+    fn default_path_dirs_mac_and_app_managed_path_candidates_cover_each_other() {
+        use crate::dev_tools::node_install::BASE_TILDE;
+        let roots = mac_roots();
+        let dirs = default_path_dirs(Platform::Mac, &roots);
+        let app_prefix = expand_path_tokens(Platform::Mac, BASE_TILDE, &roots).unwrap();
+
+        let mut candidate_dirs: Vec<String> = Vec::new();
+        for def in crate::dev_tools::DEV_TOOLS.iter() {
+            for candidate in def.path_candidates.iter().filter(|c| c.starts_with(BASE_TILDE)) {
+                let expanded = expand_path_tokens(Platform::Mac, candidate, &roots).unwrap();
+                let parent = std::path::Path::new(&expanded).parent().unwrap().to_string_lossy().to_string();
+                assert!(
+                    dirs.contains(&parent),
+                    "DEV_TOOLS {}의 후보 '{candidate}'의 디렉터리 '{parent}'가 default_path_dirs(Mac)에 없습니다",
+                    def.key
+                );
+                candidate_dirs.push(parent);
+            }
+        }
+        // npm 러너 후보(runners.rs)도 같은 기준 폴더를 쓴다 — 그 쪽 가드는 runners.rs 테스트가 맡는다.
+        for dir in dirs.iter().filter(|d| d.starts_with(&app_prefix)) {
+            assert!(
+                candidate_dirs.contains(dir),
+                "default_path_dirs(Mac)의 앱 기준 폴더 디렉터리 '{dir}'를 가리키는 DEV_TOOLS 후보가 없습니다"
+            );
+        }
+        assert!(!candidate_dirs.is_empty(), "앱 기준 폴더 후보가 하나도 없으면 이 가드가 공허해집니다");
     }
 
     #[test]
@@ -335,9 +383,12 @@
         // 이미 있는 값이라 중복 배제 규칙(dirs.contains 검사)이 걸려 한 번만
         // 나와야 한다 — build_child_path_env_prioritizes_runner_bin_dir(기존
         // 테스트)의 전제와 동일하다.
+        // P2-3b: 기본 목록 끝에 앱 관리 Node/npm 전역 bin이 붙는다(기존 여섯은 그대로·같은 순서).
         assert_eq!(
             path,
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\
+             /Users/hopegiver/.local/share/malgn-agent/node/current/bin:\
+             /Users/hopegiver/.local/share/malgn-agent/npm-global/bin"
         );
     }
 
@@ -347,8 +398,26 @@
         let path = compose_path_env(Platform::Mac, None, &roots);
         assert_eq!(
             path,
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\
+             /Users/hopegiver/.local/share/malgn-agent/node/current/bin:\
+             /Users/hopegiver/.local/share/malgn-agent/npm-global/bin"
         );
+    }
+
+    // 앱 관리 npm이 러너일 때: 러너 bin(node/current/bin)이 맨 앞으로 오고 기본 목록의 같은
+    // 디렉터리는 중복 배제된다 — npm의 `#!/usr/bin/env node`가 같은 폴더의 node를 쓴다.
+    #[test]
+    fn compose_path_env_mac_with_app_managed_npm_runner_puts_its_bin_first_without_duplicates() {
+        let roots = mac_roots();
+        let runner = "/Users/hopegiver/.local/share/malgn-agent/node/current/bin/npm";
+        let path = compose_path_env(Platform::Mac, Some(runner), &roots);
+        assert_eq!(
+            path,
+            "/Users/hopegiver/.local/share/malgn-agent/node/current/bin:\
+             /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\
+             /Users/hopegiver/.local/share/malgn-agent/npm-global/bin"
+        );
+        assert_eq!(path.matches("node/current/bin").count(), 1);
     }
 
     #[test]

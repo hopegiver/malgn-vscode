@@ -16,9 +16,11 @@
 use super::contract::DevToolPreview;
 use super::diagnostics::compute_plan_id;
 use super::node_install::{self, InstallEnv, InstallError, Layout, NodeArch, NodeVersion, RealEnv};
+use super::plan_table::Runner;
 use super::platform::{platform_now, Platform};
 use super::process::ProcessRunOutput;
 use super::DevTool;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -28,6 +30,12 @@ pub(crate) const INSTALL_ARG: &str = "install-lts";
 
 /// 사용자에게 보이는 설치 주체 라벨(`installer_label`, 메시지에 "…(으)로 설치되었습니다"로 쓰임).
 pub(crate) const INSTALLER_LABEL: &str = "맑은에이전트";
+
+/// npm 전역 prefix로 설치된 Claude Code의 위치(`~/` 표기). `claude`를 직접 찾는 모든 후보 목록
+/// (dev_tools DEV_TOOLS · plugins · autonomy · mcp_manager · session_chat · claude_auth)이 이
+/// 값을 포함해야 앱이 설치한 Claude를 앱의 모든 기능이 찾는다 — `claude_candidate_lists_all_
+/// include_the_app_npm_global_location`(아래 테스트)이 여섯 목록의 누락을 잡는다.
+pub(crate) const NPM_GLOBAL_CLAUDE_CANDIDATE: &str = "~/.local/share/malgn-agent/npm-global/bin/claude";
 
 // ---------------- 취소 ----------------
 
@@ -61,6 +69,53 @@ pub(crate) fn runner_path_for(plat: Platform, layout: Option<&Layout>) -> Option
         return None;
     }
     layout.map(|l| l.node_root().to_string_lossy().to_string())
+}
+
+// ---------------- npm 전역 prefix (P2-3b) ----------------
+
+/// 앱이 설치한 Node의 `npm`을 자식 프로세스로 실행할 때 주입할 환경변수. 앱 관리 Node의 기본
+/// 전역 prefix는 `execPath` 기준 버전 폴더 안(`node/<버전>/lib/node_modules`)이라 `current`를
+/// 새 버전으로 전환하면 전역 패키지가 사라진다(실측) — 그래서 `npm_config_prefix`를 node/ 밖
+/// 형제 폴더(`npm-global`)로 돌린다. env로만 주입하므로 `~/.npmrc`는 바뀌지 않고, env가
+/// 사용자 npmrc의 `prefix=`보다 우선한다(실측). 다른 npm(Homebrew 등)이나 다른 러너에는
+/// 아무것도 주입하지 않는다.
+pub(crate) fn npm_prefix_env_for(
+    layout: Option<&Layout>,
+    runner: Runner,
+    runner_path: &str,
+) -> Vec<(String, String)> {
+    let Some(layout) = layout else { return Vec::new() };
+    if runner != Runner::Npm || !layout.contains_node_path(Path::new(runner_path)) {
+        return Vec::new();
+    }
+    vec![(
+        "npm_config_prefix".to_string(),
+        layout.npm_global().to_string_lossy().to_string(),
+    )]
+}
+
+pub(crate) fn npm_prefix_env(runner: Runner, runner_path: &str) -> Vec<(String, String)> {
+    if platform_now() != Platform::Mac {
+        return Vec::new();
+    }
+    npm_prefix_env_for(current_layout().as_ref(), runner, runner_path)
+}
+
+/// 이 runner_path가 앱 관리 Node 아래인가(쓰기권한 검사를 npm 전역 prefix 기준으로 바꾸는 데 쓴다).
+pub(crate) fn is_app_managed_runner(layout: Option<&Layout>, runner_path: &str) -> bool {
+    layout.map(|l| l.contains_node_path(Path::new(runner_path))).unwrap_or(false)
+}
+
+/// `canonical` 경로의 도구가 앱의 npm 전역 prefix 안에 있으면(= 앱 npm으로 설치된 전역 패키지)
+/// 그 갱신에 써야 할 앱 관리 `npm` 경로를 돌려준다. Homebrew npm이 먼저 잡히는 기기에서도
+/// 앱 prefix의 패키지는 앱 npm으로 갱신해 "두 번째 사본이 다른 prefix에 설치되는" 어긋남을 막는다.
+pub(crate) fn app_npm_for_global_package(layout: Option<&Layout>, canonical: &Path) -> Option<String> {
+    let layout = layout?;
+    if !layout.contains_npm_global_path(canonical) {
+        return None;
+    }
+    let npm = layout.node_bin_dir().join("npm");
+    super::platform::path_exists(&npm.to_string_lossy()).then(|| npm.to_string_lossy().to_string())
 }
 
 // ---------------- 계획 ↔ 버전 묶기 ----------------
@@ -278,5 +333,95 @@ mod tests {
         assert_eq!(out.exit_code, Some(1));
         assert!(failure_message(&out).contains("취소"));
         assert!(!layout.base.exists(), "취소는 아무 흔적도 남기지 않아야 합니다");
+    }
+
+    // ── P2-3b ──
+
+    #[test]
+    fn npm_prefix_is_injected_only_for_the_app_managed_npm() {
+        let layout = Layout::for_home(Path::new("/Users/x"));
+        let app_npm = "/Users/x/.local/share/malgn-agent/node/current/bin/npm";
+        let injected = npm_prefix_env_for(Some(&layout), Runner::Npm, app_npm);
+        assert_eq!(
+            injected,
+            vec![("npm_config_prefix".to_string(), "/Users/x/.local/share/malgn-agent/npm-global".to_string())]
+        );
+        // Homebrew/시스템 npm은 건드리지 않는다.
+        for other in ["/opt/homebrew/bin/npm", "/usr/local/bin/npm", "/Users/x/.npm-global/bin/npm", "npm"] {
+            assert!(npm_prefix_env_for(Some(&layout), Runner::Npm, other).is_empty(), "{other}");
+        }
+        // 이름만 비슷한 형제 폴더(성분 단위 비교)도 아니다.
+        assert!(npm_prefix_env_for(Some(&layout), Runner::Npm, "/Users/x/.local/share/malgn-agent/node-evil/bin/npm").is_empty());
+        // 다른 러너(pnpm·brew)는 같은 폴더 아래여도 주입하지 않는다.
+        assert!(npm_prefix_env_for(Some(&layout), Runner::Pnpm, app_npm).is_empty());
+        assert!(npm_prefix_env_for(Some(&layout), Runner::Brew, app_npm).is_empty());
+        assert!(npm_prefix_env_for(None, Runner::Npm, app_npm).is_empty());
+    }
+
+    #[test]
+    fn npm_prefix_lives_outside_the_versioned_node_dir_so_it_survives_node_upgrades() {
+        let layout = Layout::for_home(Path::new("/Users/x"));
+        let prefix = layout.npm_global();
+        assert!(!prefix.starts_with(layout.node_root()), "전역 prefix가 node/ 안이면 current 전환 때 패키지가 사라진다");
+        assert_eq!(prefix.parent(), layout.node_root().parent(), "node/와 형제 폴더");
+    }
+
+    #[test]
+    fn app_npm_is_used_for_packages_living_in_the_app_npm_global_prefix() {
+        let tmp = std::env::temp_dir().join(format!("r22-app-npm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let layout = Layout::for_home(&tmp);
+        std::fs::create_dir_all(layout.node_root().join("v24.22.0").join("bin")).unwrap();
+        std::fs::write(layout.node_root().join("v24.22.0").join("bin").join("npm"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("v24.22.0", layout.current_link()).unwrap();
+        let pkg = layout.npm_global().join("lib").join("node_modules").join("@anthropic-ai").join("claude-code");
+        let found = app_npm_for_global_package(Some(&layout), &pkg);
+        #[cfg(unix)]
+        assert_eq!(found, Some(layout.node_bin_dir().join("npm").to_string_lossy().to_string()));
+        // 다른 위치의 패키지(Homebrew 등)는 해당 없음.
+        assert_eq!(app_npm_for_global_package(Some(&layout), Path::new("/opt/homebrew/lib/node_modules/pnpm")), None);
+        assert_eq!(app_npm_for_global_package(None, &pkg), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // 도구 위치 지식이 여러 곳에 복붙된 `claude` 후보 목록은 하나라도 빠지면 "앱이 설치한 Claude를
+    // 어떤 기능은 못 찾는" 조용한 회귀가 된다(dev_tools 상수 비공유 관례 때문에 목록이 여섯 곳).
+    // src 전체를 훑어 `claude` mac 후보 목록을 가진 파일은 전부 이 상수를 참조해야 한다 — 일곱 번째
+    // 목록이 생겨도 자동으로 걸린다.
+    #[test]
+    fn every_claude_candidate_list_includes_the_app_npm_global_location() {
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().map(|e| e == "rs").unwrap_or(false) {
+                    out.push(p);
+                }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        // cli_launcher.rs는 후보 목록이 아니라 확장 동작 테스트에서 경로 문자열을 예로 쓸 뿐이다.
+        let allow_listed = ["cli_launcher.rs", "app_node.rs"];
+        let mut checked = Vec::new();
+        for f in files {
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            if allow_listed.contains(&name.as_str()) || name.ends_with("_tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap();
+            if text.contains("\"/opt/homebrew/bin/claude\"") && text.contains("\"~/.local/bin/claude\"") {
+                assert!(
+                    text.contains("NPM_GLOBAL_CLAUDE_CANDIDATE"),
+                    "{}의 claude 후보 목록에 app_node::NPM_GLOBAL_CLAUDE_CANDIDATE가 없습니다 — 앱이 npm 전역 prefix에 설치한 Claude를 이 기능이 못 찾습니다",
+                    f.display()
+                );
+                checked.push(name);
+            }
+        }
+        assert!(checked.len() >= 6, "claude 후보 목록 파일을 충분히 찾지 못했습니다(가드가 공허해짐): {checked:?}");
     }
 }

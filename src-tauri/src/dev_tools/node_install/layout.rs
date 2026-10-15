@@ -43,8 +43,18 @@ impl Layout {
         self.node_root().join("current")
     }
 
+    /// 앱 관리 Node의 bin 디렉터리(`node`, `npm`, `npx`) — `current` 링크를 거친 경로.
+    pub(crate) fn node_bin_dir(&self) -> PathBuf {
+        self.current_link().join("bin")
+    }
+
     pub(crate) fn npm_global(&self) -> PathBuf {
         self.base.join("npm-global")
+    }
+
+    /// npm 전역 설치 실행 파일(shim)이 놓이는 디렉터리(`claude`, `pnpm`, `wrangler` …).
+    pub(crate) fn npm_global_bin(&self) -> PathBuf {
+        self.npm_global().join("bin")
     }
 
     pub(crate) fn lock_path(&self) -> PathBuf {
@@ -53,6 +63,30 @@ impl Layout {
 
     pub(crate) fn staging_prefix() -> &'static str {
         ".staging-"
+    }
+
+    /// `path`가 이 앱의 Node 폴더(`node/`) 아래인가. 심볼릭 링크를 풀기 전/후 경로 모두
+    /// 다룰 수 있게 기준 폴더의 원문과 canonical 두 가지로 비교한다.
+    pub(crate) fn contains_node_path(&self, path: &Path) -> bool {
+        path_is_under(path, &self.node_root())
+    }
+
+    /// `path`가 npm 전역 prefix(`npm-global/`) 아래인가(원문·canonical 모두 비교).
+    pub(crate) fn contains_npm_global_path(&self, path: &Path) -> bool {
+        path_is_under(path, &self.npm_global())
+    }
+}
+
+/// `dir` 아래인가: 원문 비교 + `dir`을 canonicalize한 값과의 비교(홈 경로 자체가 심볼릭 링크를
+/// 거치는 환경에서 canonical 경로와 원문 경로가 어긋나는 경우를 흡수한다). 어휘적
+/// `starts_with`라 `node-evil/` 같은 형제 접두는 걸리지 않는다(성분 단위 비교).
+pub(crate) fn path_is_under(path: &Path, dir: &Path) -> bool {
+    if path.starts_with(dir) {
+        return true;
+    }
+    match std::fs::canonicalize(dir) {
+        Ok(canon) => path.starts_with(canon),
+        Err(_) => false,
     }
 }
 

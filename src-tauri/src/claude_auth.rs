@@ -81,10 +81,12 @@ use crate::process_util::{
 /// `dev_tools.rs`/`autonomy.rs`/`mcp_manager.rs`/`session_chat/mod.rs`가 이미
 /// 정한 관례(후보 상수를 공유하지 않고 각자 별도로 둔다, 회귀 위험 0)를
 /// 그대로 따른다.
-const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
+const CLAUDE_PATH_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     "~/.local/bin/claude",
+    // P2-3b: 앱이 설치한 Node의 npm 전역 prefix에 설치된 Claude(dev_tools DEV_TOOLS와 같은 값).
+    crate::dev_tools::NPM_GLOBAL_CLAUDE_CANDIDATE,
 ];
 
 /// 앱 쪽 자체 상한. `google_oauth::wait_for_oauth_callback`의 5분과 동일한

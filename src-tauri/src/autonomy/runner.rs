@@ -44,10 +44,12 @@ const EMAIL_TOOL_FOOTER: &str = "\n\n이메일을 보내야 하는 작업이면 
 /// `dev_tools.rs`의 Claude 도구 정의(`DEV_TOOLS`)와 값은 같지만, 그 파일이
 /// 이미 정한 관례(상수를 공유하지 않고 각자 별도로 둔다, 회귀 위험 0)를 그대로
 /// 따라 이 모듈에도 독립적으로 둔다.
-const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
+const CLAUDE_PATH_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     "~/.local/bin/claude",
+    // P2-3b: 앱이 설치한 Node의 npm 전역 prefix에 설치된 Claude(dev_tools DEV_TOOLS와 같은 값).
+    crate::dev_tools::NPM_GLOBAL_CLAUDE_CANDIDATE,
 ];
 
 pub(crate) fn build_final_prompt(prompt: &str, subagent: &Option<String>) -> String {

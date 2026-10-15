@@ -51,6 +51,7 @@ use platform::Platform;
 // 경로만 쓴다) — 아래 커맨드 함수 시그니처에만 필요하므로 `pub use`로 재노출하지
 // 않고 이 파일 안에서만 쓰는 `use`로 최소화한다.
 use contract::{DevToolActionResult, DevToolPreview, DevToolStatus};
+pub(crate) use app_node::NPM_GLOBAL_CLAUDE_CANDIDATE;
 pub(crate) use process::{build_child_path_env, run_process_with_timeout_cancellable};
 
 // ==================== 1. 도구 화이트리스트 ====================
@@ -118,6 +119,9 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "~/.local/bin/claude",
             "~/.npm-global/bin/claude",
             "~/.claude/local/claude",
+            // P2-3b: 앱이 설치한 Node의 npm 전역 prefix(npm_config_prefix 주입 위치).
+            // 값의 정본은 app_node::NPM_GLOBAL_CLAUDE_CANDIDATE다(드리프트 가드 테스트가 대조).
+            app_node::NPM_GLOBAL_CLAUDE_CANDIDATE,
         ],
         // 설계 §B.5(미검증): 네이티브 설치기(~/.local/bin과 동형), npm 전역
         // shim, winget 앱 실행 별칭 순.
@@ -134,7 +138,13 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
         key: "node",
         label: "Node.js",
         version_args: &["--version"],
-        path_candidates: &["/opt/homebrew/bin/node", "/usr/local/bin/node"],
+        path_candidates: &[
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            // P2-3b: 앱이 사용자 공간에 설치한 Node(P2-3a). Homebrew/시스템 설치본이 있으면
+            // 그쪽이 먼저 잡힌다.
+            "~/.local/share/malgn-agent/node/current/bin/node",
+        ],
         // 설계 §B.5(미검증): nvm-windows 등 버전매니저 관리본은 앱이 못 보는 게
         // 의도된 동작이다(G4 — devtools-install-matrix §3.3과 동일 이유).
         //
@@ -211,6 +221,8 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "/usr/local/bin/pnpm",
             "~/Library/pnpm/pnpm",
             "~/.local/share/pnpm/pnpm",
+            // P2-3b: 앱 npm 전역 prefix(`npm install -g pnpm`의 결과 위치).
+            "~/.local/share/malgn-agent/npm-global/bin/pnpm",
         ],
         // 설계 §B.5(미검증): standalone 설치(winget/공식 스크립트) + npm 경유
         // 설치 순.
@@ -236,6 +248,8 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "/usr/local/bin/wrangler",
             "~/Library/pnpm/bin/wrangler",
             "~/.local/share/pnpm/bin/wrangler",
+            // P2-3b: 앱 npm 전역 prefix(pnpm이 없을 때 `npm install -g wrangler`의 결과 위치).
+            "~/.local/share/malgn-agent/npm-global/bin/wrangler",
         ],
         // 설계 §B.5(미검증): pnpm 전역 shim + npm 전역 shim 순(설치 후보 우선순위
         // — install_resolver::install_candidates의 Wrangler 행과 동일 순서).
@@ -381,12 +395,17 @@ mod tests {
                 "~/.local/bin/claude",
                 "~/.npm-global/bin/claude",
                 "~/.claude/local/claude",
+                "~/.local/share/malgn-agent/npm-global/bin/claude",
             ]
         );
         let node = tool_definition(ToolId::Node);
         assert_eq!(
             node.path_candidates,
-            &["/opt/homebrew/bin/node", "/usr/local/bin/node"]
+            &[
+                "/opt/homebrew/bin/node",
+                "/usr/local/bin/node",
+                "~/.local/share/malgn-agent/node/current/bin/node",
+            ]
         );
     }
 

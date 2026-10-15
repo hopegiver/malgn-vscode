@@ -15,7 +15,7 @@ use super::plan_table::{
 // 경로로 계속 쓰므로 재노출한다(그 두 파일의 기존 import 문을 한 글자도 고치지
 // 않기 위함).
 pub(crate) use super::runners::ResolvedRunners;
-use super::runners::{install_prefix_writable, resolve_runner_path};
+use super::runners::{install_prefix_writable, resolve_runner_for_tool};
 use super::ToolId;
 use std::path::Path;
 
@@ -55,7 +55,7 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
 
     let resolved_action = match action {
         Action::Manual(mp) => ResolvedAction::Manual(mp),
-        Action::Run(plan) => match resolve_runner_path(plan.runner, Some(resolved_tool_path)) {
+        Action::Run(plan) => match resolve_runner_for_tool(plan.runner, Some(resolved_tool_path), &canonical) {
             Some(runner_path) => ResolvedAction::Run { runner_path, plan },
             // T3(review-devtools-windows-parity-2026-09-15-r3.md): 플랫폼별
             // 실행기 후보만 말한다(brew/winget 양방향 누출 방지).

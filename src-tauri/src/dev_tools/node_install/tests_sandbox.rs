@@ -8,11 +8,20 @@
 //   HOME=<scratch>/r22-sandbox/home <바이너리> sandbox_roundtrip --ignored --nocapture
 //
 // 검증 내용(실제 네트워크·실제 /usr/bin/tar·xattr·codesign·실제 Node 실행):
-//   1) 이전 LTS 패치 설치 → 2) 최신 LTS로 갱신(current 전환 + 이전 버전 한 단계 보존) →
-//   3) 같은 버전 재실행은 다운로드 없이 멱등 → 4) current/bin/node --version 일치.
+//   1) 이전 LTS 패치 설치
+//   2) (P2-3b) 앱 실행 경로(`actions::spawn_plan_process` + install 후보 해석)로 `npm i -g pnpm` —
+//      npm_config_prefix 주입으로 npm-global에 설치되는지, `npm prefix -g` 값, Manual 강등 없음
+//   3) 최신 LTS로 갱신(current 전환 + 이전 버전 한 단계 보존) — npm-global 패키지가 살아남는지
+//   4) 같은 버전 재실행은 다운로드 없이 멱등
+//   5) current/bin/node --version 일치, 셸 rc·~/.npmrc 미생성
 
 use super::types::NodeVersion;
 use super::{install_version, resolve_latest, InstallEnv, Layout, NodeArch, RealEnv};
+use crate::dev_tools::actions::spawn_plan_process;
+use crate::dev_tools::install_resolver::{resolve_install_plan, InstallResolution, ResolvedRunners};
+use crate::dev_tools::plan_table::{Runner, RunPlan};
+use crate::dev_tools::runners::install_prefix_writable_with;
+use crate::dev_tools::ToolId;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -83,6 +92,50 @@ fn sandbox_roundtrip_real_nodejs_org() {
     assert!(!r1.already_installed);
     assert_eq!(std::fs::read_link(layout.current_link()).unwrap().to_string_lossy(), older.to_tag());
 
+    // 1-b) 앱 실행 경로로 npm 연쇄 설치(P2-3b). 러너는 앱 관리 npm만 있는 상태를 흉내 낸다
+    //      (이 PC에는 Homebrew npm이 따로 있어 후보 해석을 그대로 쓰면 그쪽이 잡히므로 주입한다).
+    let npm_path = layout.node_bin_dir().join("npm").to_string_lossy().to_string();
+    assert!(install_prefix_writable_with(Some(&layout), ToolId::Pnpm, Runner::Npm, &npm_path));
+    let runners = ResolvedRunners {
+        brew: None,
+        npm: Some(npm_path.clone()),
+        pnpm: None,
+        winget: None,
+        app_node: Some(layout.node_root().to_string_lossy().to_string()),
+    };
+    let prefix_plan = RunPlan { runner: Runner::Npm, args: &[], preview_args: None, env: &[], timeout_secs: 120 };
+    let out = spawn_plan_process(&npm_path, &["prefix".to_string(), "-g".to_string()], &prefix_plan);
+    println!("=== [1b] npm prefix -g (앱 주입 env) → {:?} (exit {:?})", out.stdout.trim(), out.exit_code);
+    // npm은 UUID처럼 보이는 경로 조각(이 샌드박스 경로에는 세션 ID가 들어 있다)을 출력에서 `***`로
+    // 가린다 — 값 전체가 아니라 끝부분으로 대조하고, 실제 효과(설치 위치)는 아래에서 파일로 확인한다.
+    assert!(out.stdout.trim().ends_with(".local/share/malgn-agent/npm-global"), "{}", out.stdout);
+    let (_, plain_prefix, _) = run_clean(
+        std::path::Path::new(&npm_path),
+        &["prefix", "-g"],
+        &home,
+        &layout.node_bin_dir().to_string_lossy(),
+    );
+    println!("=== [1b] (대조) env 주입 없이 npm prefix -g → {plain_prefix:?}");
+    assert!(plain_prefix.contains("/node/"), "주입이 없으면 버전 폴더 안이어야 합니다: {plain_prefix}");
+
+    match resolve_install_plan(ToolId::Pnpm, &runners) {
+        InstallResolution::Run { runner_path, argv, plan, .. } => {
+            assert_eq!(runner_path, npm_path);
+            println!("=== [1b] install 계획: {runner_path} {argv:?}");
+            let out = spawn_plan_process(&runner_path, &argv, &plan);
+            println!("=== [1b] npm install -g pnpm → exit {:?} ({:?})\n{}", out.exit_code, out.duration, out.stdout.trim());
+            assert_eq!(out.exit_code, Some(0), "stderr: {}", out.stderr);
+        }
+        InstallResolution::Manual(mp) => panic!("앱 npm이 있으면 Manual로 강등되면 안 됩니다: {}", mp.message_ko),
+    }
+    let pnpm_bin = layout.npm_global_bin().join("pnpm");
+    assert!(pnpm_bin.exists(), "pnpm이 npm-global/bin에 설치돼야 합니다");
+    assert!(!layout.version_dir(older).join("lib").join("node_modules").join("pnpm").exists(), "버전 폴더 안에 설치되면 안 됩니다");
+    let path_env = crate::dev_tools::build_child_path_env(Some(&pnpm_bin.to_string_lossy()));
+    let (code, out, err) = run_clean(&pnpm_bin, &["--version"], &home, &path_env);
+    println!("=== [1b] npm-global/bin/pnpm --version (앱 PATH) → code={code} out={out:?} err={err:?}");
+    assert_eq!(code, 0, "앱 PATH에 node가 있어야 shim이 동작합니다");
+
     // 2) 최신으로 갱신.
     let started = std::time::Instant::now();
     let r2 = install_version(&env, &layout, arch, latest, &cancel).expect("최신 버전 설치");
@@ -90,6 +143,12 @@ fn sandbox_roundtrip_real_nodejs_org() {
     assert_eq!(r2.previous, Some(older));
     assert_eq!(std::fs::read_link(layout.current_link()).unwrap().to_string_lossy(), latest.to_tag());
     assert!(layout.version_dir(older).join("bin").join("node").exists(), "이전 버전은 한 단계 남아야 합니다");
+
+    // 2-b) Node를 갱신해도 npm-global 패키지가 살아남고 새 node로 실행된다.
+    assert!(pnpm_bin.exists());
+    let (code, out, err) = run_clean(&pnpm_bin, &["--version"], &home, &path_env);
+    println!("=== [2b] Node 갱신 후 pnpm --version → code={code} out={out:?} err={err:?}");
+    assert_eq!(code, 0);
 
     // 3) 멱등 재실행: 다운로드 없이 빠르게 끝나야 한다.
     let started = std::time::Instant::now();
@@ -101,10 +160,15 @@ fn sandbox_roundtrip_real_nodejs_org() {
 
     // 4) 실제 실행: current/bin/node --version.
     let bin = layout.current_link().join("bin");
-    let (code, out, err) = run_clean(&bin.join("node"), &["--version"], &home, "");
+    let (code, out, err) = run_clean(&bin.join("node"), &["--version"], &home, &bin.to_string_lossy());
     println!("=== [4] current/bin/node --version → code={code} out={out:?} err={err:?}");
     assert_eq!(code, 0);
     assert_eq!(out, latest.to_tag());
+
+    // 셸 rc·~/.npmrc 불변: 샌드박스 홈에 만들어지지 않았다.
+    for rc in [".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile", ".npmrc"] {
+        assert!(!home.join(rc).exists(), "{rc}가 생겼습니다");
+    }
 
     // 스테이징·임시 파일 잔여물 없음.
     let leftovers: Vec<String> = std::fs::read_dir(&layout.base)

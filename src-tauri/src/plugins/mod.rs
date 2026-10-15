@@ -103,10 +103,12 @@ pub(crate) struct CommandResult {
 /// 실행 자체가 엉뚱한 경로로 흘러가거나 실패한다 — 이 플러그인 설치/업데이트
 /// 경로에서만 재현되고 `dev_tools`의 claude 조회(체크 화면)에서는 재현되지
 /// 않았던 이유이기도 하다(그쪽은 애초에 `tool_path_candidates`를 쓴다).
-const CLAUDE_PATH_CANDIDATES_MAC: [&str; 3] = [
+const CLAUDE_PATH_CANDIDATES_MAC: [&str; 4] = [
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     "~/.local/bin/claude",
+    // P2-3b: 앱이 설치한 Node의 npm 전역 prefix에 설치된 Claude(dev_tools DEV_TOOLS와 같은 값).
+    crate::dev_tools::NPM_GLOBAL_CLAUDE_CANDIDATE,
 ];
 /// `dev_tools::DEV_TOOLS`의 Claude `windows_path_candidates`와 동일한 순서·값
 /// (네이티브 설치기 → npm 전역 shim → winget 앱 실행 별칭). 설계 §B.5 그대로

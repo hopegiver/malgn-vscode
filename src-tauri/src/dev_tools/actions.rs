@@ -21,7 +21,7 @@ use super::plan_table::{
 use super::locks::{try_acquire_lock, EXECUTION_BUSY_MESSAGE, EXECUTION_LOCK};
 use super::process::{
     build_child_path_env, check_tool_version, normalize_version, run_process_with_timeout,
-    truncate_log,
+    truncate_log, ProcessRunOutput,
 };
 use super::{resolve_tool_path, tool_definition, DevTool, ToolId};
 use crate::cli_launcher::{open_terminal_command, TerminalLaunchResult};
@@ -74,6 +74,34 @@ fn winget_generic_cancelled_message(action_label: &str) -> String {
     )
 }
 
+/// 계획 하나를 외부 프로세스로 실행하는 단일 지점(update/install 공용). PATH는 러너 bin
+/// 디렉터리 + 기본 목록으로 조립하고, 러너가 앱 관리 Node의 npm이면 `npm_config_prefix`를
+/// 앱 전역 폴더로 주입한다(P2-3b) — env로만 주입하므로 `~/.npmrc`·셸 rc는 바뀌지 않고, 전역
+/// 설치가 관리자 권한이 필요한 시스템 prefix가 아니라 사용자 공간에 떨어진다.
+pub(crate) fn spawn_plan_process(runner_path: &str, args: &[String], plan: &RunPlan) -> ProcessRunOutput {
+    let injected = app_node::npm_prefix_env(plan.runner, runner_path);
+    spawn_plan_process_with(runner_path, args, plan, &injected)
+}
+
+/// `spawn_plan_process`의 본체 — 주입할 env를 인자로 받는다(테스트가 실제 홈 없이 주입 경로를 검증).
+fn spawn_plan_process_with(
+    runner_path: &str,
+    args: &[String],
+    plan: &RunPlan,
+    injected: &[(String, String)],
+) -> ProcessRunOutput {
+    let path_env = build_child_path_env(Some(runner_path));
+    let mut env: Vec<(&str, &str)> = plan.env.to_vec();
+    env.extend(injected.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    run_process_with_timeout(
+        runner_path,
+        args,
+        &path_env,
+        &env,
+        Duration::from_secs(plan.timeout_secs),
+    )
+}
+
 pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevToolActionResult, String> {
     let tool = ToolId::from_key(tool_id_str)
         .ok_or_else(|| format!("알 수 없는 도구 id입니다: {tool_id_str}"))?;
@@ -112,14 +140,7 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
         );
     }
 
-    let path_env = build_child_path_env(Some(&runner_path));
-    let output = run_process_with_timeout(
-        &runner_path,
-        &args,
-        &path_env,
-        plan.env,
-        Duration::from_secs(plan.timeout_secs),
-    );
+    let output = spawn_plan_process(&runner_path, &args, &plan);
 
     // 경로를 캐시하지 않고 처음부터 다시 해석한다(결정 4.5 — brew relink, claude
     // native의 versions/<new> 갈아타기로 기존 canonical 경로가 사라져 있을 수 있다).
@@ -302,16 +323,7 @@ fn run_install_plan(
     let output = match (plan.runner, app_node_target) {
         // 앱 안에서 직접 설치(외부 프로세스 없음) — 결과를 기존 실행기와 같은 모양으로 받는다.
         (Runner::AppNode, Some(tag)) => app_node::run_pinned(tag),
-        _ => {
-            let path_env = build_child_path_env(Some(runner_path));
-            run_process_with_timeout(
-                runner_path,
-                argv,
-                &path_env,
-                plan.env,
-                Duration::from_secs(plan.timeout_secs),
-            )
-        }
+        _ => spawn_plan_process(runner_path, argv, plan),
     };
 
     // pnpm/brew/npm이 해석돼 실행까지 갔다면(성공이든 실패든) 그 결과를 그대로
@@ -622,5 +634,52 @@ mod tests {
         let other_code = -1i32;
         assert_ne!(other_code, WINGET_INSTALL_CANCELLED_BY_USER);
         assert_ne!(other_code, WINGET_GENERIC_CANCELLED);
+    }
+
+    // ── P2-3b: 앱 자식 프로세스의 npm 실행에 npm_config_prefix 주입 ──
+
+    /// 임시 폴더에 `npm` 흉내 스크립트를 만들어 실제 자식 프로세스 환경을 관찰한다.
+    #[cfg(unix)]
+    fn fake_runner_script(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("r22-actions-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("npm");
+        std::fs::write(&script, "#!/bin/sh\necho \"prefix=$npm_config_prefix\"\necho \"path=$PATH\"\necho \"yes=$npm_config_yes\"\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, script)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_prefix_env_reaches_the_child_process_and_keeps_the_plan_env() {
+        let (dir, script) = fake_runner_script("inject");
+        let plan = RunPlan {
+            runner: Runner::Npm,
+            args: &[],
+            preview_args: None,
+            env: &[("npm_config_yes", "true")],
+            timeout_secs: 20,
+        };
+        let injected = vec![("npm_config_prefix".to_string(), "/Users/x/.local/share/malgn-agent/npm-global".to_string())];
+        let out = spawn_plan_process_with(script.to_str().unwrap(), &[], &plan, &injected);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(out.exit_code, Some(0), "{}", out.stderr);
+        assert!(out.stdout.contains("prefix=/Users/x/.local/share/malgn-agent/npm-global"), "{}", out.stdout);
+        assert!(out.stdout.contains("yes=true"), "기존 계획 env가 유지돼야 합니다: {}", out.stdout);
+        // 러너 bin 디렉터리가 PATH 맨 앞이어야 npm의 `#!/usr/bin/env node`가 같은 폴더의 node를 쓴다.
+        let path_line = out.stdout.lines().find(|l| l.starts_with("path=")).unwrap();
+        assert!(path_line.starts_with(&format!("path={}:", dir.display())), "{path_line}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_injection_the_child_gets_no_npm_prefix() {
+        let (dir, script) = fake_runner_script("noinject");
+        let plan = RunPlan { runner: Runner::Npm, args: &[], preview_args: None, env: &[], timeout_secs: 20 };
+        let out = spawn_plan_process_with(script.to_str().unwrap(), &[], &plan, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.stdout.contains("prefix=\n"), "주입하지 않으면 prefix가 비어 있어야 합니다: {:?}", out.stdout);
     }
 }
