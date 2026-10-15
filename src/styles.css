@@ -1548,3 +1548,8 @@ textarea.settings-input { resize: vertical; }
 .trend-anomaly-basis { font-size: var(--font-size-caption); color: var(--text-muted-aa); }
 .trend-body .unpriced-note { margin-top: 0; word-break: keep-all; }
 .trend-anomalies .unpriced-note { margin-top: var(--space-2-5); }
+
+/* R14 P2-4 */
+/* 자율 작업 사전조건 배너 — 버튼은 줄바꿈 없이 고정폭, 문구는 어절 단위로 줄바꿈 */
+.autonomy-prereq-banner .btn { flex-shrink: 0; white-space: nowrap; }
+.autonomy-prereq-banner > span { word-break: keep-all; }

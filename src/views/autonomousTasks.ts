@@ -41,6 +41,8 @@ import { fetchMalgnAgentConfig, saveMalgnAgentConfig } from '../configApi';
 import type { MalgnAgentConfigInput, MalgnAgentConfigStatus } from '../configApi';
 import { describeWorkspaceScanScope, summarizeSkippedProjects } from '../workspaceScanHint';
 import { navigate, parseRoute } from '../route';
+import { computeAutonomyPrereqs } from '../autonomyPrereq';
+import { DEFAULT_PLUGIN_ID } from './catalog';
 
 const INTERVAL_OPTIONS: readonly { readonly value: string; readonly label: string }[] = [
   { value: '5', label: '5분마다' },
@@ -508,6 +510,27 @@ function renderSchedulerStallBanner(): HTMLElement | null {
   ]);
 }
 
+// ---------------- 사전조건 배너 (R14 P2-4) ----------------
+// claude 미설치 / 미로그인 / malgn-agent 플러그인 없음 — 자율 작업이 실제로 돌 수 없는 상태를
+// 목록·진행상황판 상단에 알린다. 판정은 순수 함수(autonomyPrereq.ts)가 이미 로드된 전역
+// state만 읽어 한다. 렌더 안에서는 조회도 notifyChange도 하지 않는다(렌더 재진입 방지 —
+// 이력 카드 M1과 같은 교훈) — 버튼은 해당 화면으로 이동할 뿐이다. 모든 조건이 충족되면
+// 아무것도 그리지 않고, 로딩 중이면 침묵하며, 조회 실패는 "확인 불가"로 따로 알린다.
+function renderPrereqBanners(): HTMLElement[] {
+  const notices = computeAutonomyPrereqs(
+    { devTools: state.devTools, claudeAuth: state.claudeAuth, catalog: state.catalog },
+    DEFAULT_PLUGIN_ID
+  );
+  return notices.map((n) => {
+    const banner = el('div', { className: 'alert autonomy-prereq-banner' }, [
+      el('span', {}, [`⚠ ${n.message}`]),
+      el('button', { className: 'btn btn-primary', onClick: () => navigate(n.actionRoute) }, [n.actionLabel]),
+    ]);
+    banner.setAttribute('data-prereq', n.kind);
+    return banner;
+  });
+}
+
 // ---------------- 전역 설정(malgn-agent.json) 상시 표시 + 편집 ----------------
 // 설정 화면(views/settings.ts)이 아니라 이 화면에 둔 이유: 동시 실행 개수·
 // 기본 타임아웃·로그 보존 일수가 이 화면이 실행하는 자율업무 자체의 동작
@@ -865,7 +888,7 @@ export function renderAutonomousTasksListView(): HTMLElement {
     el('div', { className: 'devtool-header-actions' }, [addBtn, ...(configEditToggleBtn ? [configEditToggleBtn] : [])]),
   ]);
 
-  const notices: HTMLElement[] = [];
+  const notices: HTMLElement[] = [...renderPrereqBanners()];
   const stallBanner = renderSchedulerStallBanner();
   if (stallBanner) notices.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
@@ -1485,7 +1508,7 @@ export function renderAutonomousTaskBoardView(): HTMLElement {
     el('div', {}, [el('h1', { className: 'page-title' }, ['자율 작업']), el('div', { className: 'page-subtitle' }, ['진행상황판'])]),
   ]);
 
-  const notices: HTMLElement[] = [];
+  const notices: HTMLElement[] = [...renderPrereqBanners()];
   const stallBanner = renderSchedulerStallBanner();
   if (stallBanner) notices.push(stallBanner);
   const configBanner = renderConfigStatusBanner();
