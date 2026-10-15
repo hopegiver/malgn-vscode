@@ -148,6 +148,7 @@ pub fn run() {
             usage_stats::get_session_detail,
             usage_stats::get_usage_summary,
             usage_stats::get_project_daily_trend,
+            usage_stats::get_usage_source_status,
             google_oauth::google_oauth_login,
             hub_auth::hub_auth_status,
             hub_auth::hub_auth_connect,

@@ -8,6 +8,7 @@ import type { InstalledPlugin, MarketplaceInfo, CommandResult, GlobalCatalog } f
 import type { DailyUsage } from './usageApi';
 import type { DailyDetailReport, SessionDetail } from './dailyDetailApi';
 import type { UsageSummaryReport } from './usageSummaryApi';
+import type { UsageSourceStatus } from './usageSource';
 import type { GithubStatus, CloudflareStatus } from './integrationsApi';
 import type { AutonomyRunStatus, AutonomyScheduleMode } from './autonomyApi';
 import type { McpServerSummary, McpCatalogEntry } from './mcpApi';
@@ -208,6 +209,10 @@ export interface AppState {
     loading: boolean;
     error: string | null;
     loaded: boolean;
+    // items가 비었을 때만 채우는 "왜 비었나" 신호(usageSource.ts) — 비어 있지 않으면
+    // 조회하지 않고 null. null은 "조회 안 함/실패/판정 불가" 모두를 뜻하며, 이때
+    // 화면은 원인을 단정하지 않는다.
+    source: UsageSourceStatus | null;
   };
   // "일별 사용량" 날짜 행을 클릭했을 때 펼치는 상세 — 실제 로컬 데이터(그 날짜
   // 하루만 세션/서브에이전트/툴 단위로 재집계). dailyDetailApi.ts 주석 참고.
@@ -482,7 +487,7 @@ function createInitialState(): AppState {
     submitting: false,
   },
   claudeAuth: { status: null, loading: false, error: null, loaded: false, loggingOut: false },
-  dailyUsage: { items: [], loading: false, error: null, loaded: false },
+  dailyUsage: { items: [], loading: false, error: null, loaded: false, source: null },
   dailyDetail: { selectedDate: null, report: null, loading: false, error: null },
   sessionAgentHistory: { sessionId: null, detail: null, found: false, loading: false, error: null },
   usageSummary: { report: null, loading: false, error: null, loaded: false },

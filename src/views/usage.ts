@@ -23,6 +23,7 @@
 // 그대로 쓴다(재스캔하지 않는다). 실시간 감시는 하지 않는다 — "사용량" 탭에
 // 새로 진입할 때마다 다시 불러온다(sidebar.ts).
 import { el, clickable } from '../dom';
+import { navigate } from '../route';
 import { errorMessage } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { UsageTab } from '../state';
@@ -33,6 +34,8 @@ import { createLatestGate } from '../latestGate';
 import type { AgentUsage, SessionDetail, ToolUsage } from '../dailyDetailApi';
 import { fetchUsageSummary, fetchProjectDailyTrend } from '../usageSummaryApi';
 import type { ModelUsageSummary, ProjectUsageSummary, UsageSummaryReport } from '../usageSummaryApi';
+import { classifyUsageEmpty, fetchUsageSourceStatus } from '../usageSource';
+import type { UsageEmptyCause, UsageSourceStatus } from '../usageSource';
 import { evaluateEfficiencyGuide } from '../efficiencyGuide';
 import type { GuideFinding } from '../efficiencyGuide';
 import { computeUsageTrend, metricValue, TREND_THRESHOLDS } from '../usageTrend';
@@ -169,6 +172,70 @@ function unpricedNote(unpricedTokens: number): HTMLElement {
   return el('div', { className: 'unpriced-note' }, [`※ 이 화면 비용 합계 기준 — ${formatTokenCount(unpricedTokens)} 토큰은 단가 미등록으로 비용 미산정`]);
 }
 
+// ---------------- 빈 상태 원인 구분 (R14 P2-6) ----------------
+// 사용량이 0건일 때 "Claude Code가 없어서"와 "있지만 아직 안 써서"를 같은 문구로
+// 뭉개지 않는다. 판정은 usageSource.ts classifyUsageEmpty(순수 함수)가 하고, 이
+// 함수는 문구와 다음 행동만 정한다. 일별 조회가 끝나 "정말 0건"이 확인된 경우에만
+// 원인을 말한다 — 아직 불러오는 중이거나 일별은 있는데 요약만 비어 있으면(원인을
+// 알 수 없는 경우) 예전 일반 문구 그대로 둔다.
+function emptyCauseCopy(cause: UsageEmptyCause, subject: string): { title: string; desc: string; note?: string; action?: { label: string; hash: string } } {
+  switch (cause.kind) {
+    case 'not-installed':
+      return {
+        title: 'Claude Code가 설치돼 있지 않은 것으로 보입니다',
+        desc: '사용량은 Claude Code가 이 컴퓨터에 남긴 기록(~/.claude/projects)에서 집계합니다. 설치된 실행 파일도, ~/.claude 폴더도 찾지 못했습니다.',
+        note: '다른 위치에 설치했다면 이 판단이 틀릴 수 있습니다 — 개발 도구 화면에서 확인할 수 있습니다.',
+        action: { label: '개발 도구에서 설치', hash: '#/settings/devtools' },
+      };
+    case 'installed-no-history':
+      return {
+        title: 'Claude Code는 설치돼 있지만 아직 사용 기록이 없습니다',
+        desc: '프로젝트에서 첫 세션을 시작하면 여기에 쌓입니다.',
+        action: { label: '프로젝트로 이동', hash: '#/projects' },
+      };
+    case 'installed-stale':
+      return {
+        title: `${subject}이 없습니다`,
+        desc: '이전 사용 기록은 있지만 최근 30일 안에는 없습니다. 세션을 시작하면 다시 쌓입니다.',
+        action: { label: '프로젝트로 이동', hash: '#/projects' },
+      };
+    case 'unknown':
+      return cause.reason === 'status-unavailable'
+        ? {
+            title: `${subject}이 없습니다`,
+            desc: '기록이 없는 원인(Claude Code 미설치인지, 아직 사용 전인지)은 확인하지 못했습니다.',
+            action: { label: '개발 도구에서 확인', hash: '#/settings/devtools' },
+          }
+        : {
+            title: `${subject}이 없습니다`,
+            desc: '원인은 단정할 수 없습니다 — 앱이 아는 위치에서 Claude Code 실행 파일을 찾지 못했지만 ~/.claude에는 사용 흔적이 있습니다.',
+            action: { label: '개발 도구에서 확인', hash: '#/settings/devtools' },
+          };
+  }
+}
+
+// subject는 "…이 없습니다"의 앞부분(예: "최근 30일 이내 사용 기록").
+function renderUsageEmptyState(subject: string): HTMLElement {
+  const d = state.dailyUsage;
+  if (!d.loaded || d.error || d.items.length > 0) {
+    const generic = el('div', { className: 'state-block-desc' }, [`${subject}이 없습니다.`]);
+    generic.setAttribute('data-usage-empty', 'generic');
+    return generic;
+  }
+  const cause = classifyUsageEmpty(d.source);
+  const copy = emptyCauseCopy(cause, subject);
+  const children: HTMLElement[] = [el('div', { className: 'state-block-title' }, [copy.title]), el('div', { className: 'state-block-desc' }, [copy.desc])];
+  if (copy.note) children.push(el('div', { className: 'state-block-desc' }, [copy.note]));
+  if (copy.action) {
+    const hash = copy.action.hash;
+    children.push(el('button', { className: 'btn', onClick: () => navigate(hash) }, [copy.action.label]));
+  }
+  const block = el('div', { className: 'state-block' }, children);
+  block.setAttribute('data-usage-empty', cause.kind);
+  if (cause.kind === 'unknown') block.setAttribute('data-usage-empty-reason', cause.reason);
+  return block;
+}
+
 // ---------------- 일별 사용량 (실제 데이터) ----------------
 
 export async function loadDailyUsage(): Promise<void> {
@@ -176,7 +243,19 @@ export async function loadDailyUsage(): Promise<void> {
   state.dailyUsage.error = null;
   notifyChange();
   try {
-    state.dailyUsage.items = await fetchDailyUsage();
+    const items = await fetchDailyUsage();
+    // 비었을 때만 원인 신호를 묻는다(정상 경로는 추가 IPC 없음). 신호 조회 실패는
+    // 사용량 오류가 아니다 — null(판정 불가)로 두고 화면이 원인을 단정하지 않게 한다.
+    let source: UsageSourceStatus | null = null;
+    if (items.length === 0) {
+      try {
+        source = await fetchUsageSourceStatus();
+      } catch {
+        source = null;
+      }
+    }
+    state.dailyUsage.items = items;
+    state.dailyUsage.source = source;
     state.dailyUsage.loaded = true;
   } catch (err) {
     state.dailyUsage.error = errorMessage(err, '사용량 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해도 계속되면 IT/개발팀에 문의하세요.');
@@ -381,7 +460,7 @@ function renderDailyUsageSection(): HTMLElement {
   } else {
     const days = [...state.dailyUsage.items].sort((a, b) => b.date.localeCompare(a.date));
     if (days.length === 0) {
-      body = el('div', { className: 'state-block-desc' }, ['최근 30일 이내 사용 기록이 없습니다.']);
+      body = renderUsageEmptyState('최근 30일 이내 사용 기록');
     } else {
       const maxTotal = Math.max(...days.map(dailyUsageTotal));
       // 비용·세션·도구 호출은 위 "사용 추이"와 같은 값을 날짜별로 그대로 보여 주는 열이다(막대는 토큰 기준).
@@ -912,7 +991,9 @@ function renderProjectsTab(): HTMLElement {
     ]);
   }
   if (!s.report || s.report.projects.length === 0) {
-    return el('div', { className: 'col' }, [el('div', { className: 'state-block-desc' }, ['최근 30일 이내 프로젝트별 사용 기록이 없습니다.'])]);
+    return el('div', { className: 'col' }, [
+      el('div', { className: 'box' }, [boxHead('프로젝트별 사용량 Top 5 (최근 30일)'), el('div', { className: 'box-body' }, [renderUsageEmptyState('최근 30일 이내 프로젝트별 사용 기록')])]),
+    ]);
   }
   const maxTokens = projectMaxTokens(s.report.projects);
   const rows: HTMLElement[] = [];
@@ -971,7 +1052,16 @@ function renderModelsTab(): HTMLElement {
     return el('div', { className: 'col' }, [el('div', { className: 'state-block-desc' }, ['최근 30일 이내 사용 기록이 없습니다.'])]);
   }
   const unpriced = s.report.unpricedTokens > 0 ? unpricedNote(s.report.unpricedTokens) : null;
+  // 요약이 통째로 비어 있고 일별도 0건으로 확인된 경우에만 원인 안내를 위에 얹는다(아래 표의
+  // "기록이 없습니다" 문구는 그대로 둔다).
+  const summaryEmpty = s.report.totalTokens === 0 && s.report.models.length === 0 && s.report.tools.length === 0;
+  const d = state.dailyUsage;
+  const emptyCause =
+    summaryEmpty && d.loaded && !d.error && d.items.length === 0
+      ? [el('div', { className: 'box' }, [boxHead('사용 기록 없음'), el('div', { className: 'box-body' }, [renderUsageEmptyState('최근 30일 이내 사용 기록')])])]
+      : [];
   return el('div', { className: 'col' }, [
+    ...emptyCause,
     el('div', { className: 'box' }, [
       boxHead('모델별 사용 비중 (최근 30일)'),
       el('div', { className: 'box-body' }, [renderModelUsageTable(s.report.models, s.report.totalTokens), ...(unpriced ? [unpriced] : [])]),

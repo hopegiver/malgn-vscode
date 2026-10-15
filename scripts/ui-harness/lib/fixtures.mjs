@@ -239,6 +239,9 @@ export async function buildBaseFixtures() {
     list_known_marketplaces: marketplaces,
     get_daily_usage: dailyUsageSample(),
     get_usage_summary: usageSummarySample(),
+    // 빈 상태 원인 신호(R14 P2-6) — 실제 모양은 src-tauri/src/usage_stats/source.rs UsageSourceStatus(camelCase).
+    // 기본은 "설치됨 + 과거 기록 있음"; 일별 데이터가 있으면 호출되지 않는다.
+    get_usage_source_status: { claudeBinaryFound: true, claudeDirExists: true, projectsDirHasEntries: true },
     get_project_daily_trend: projectDailyTrendSample(),
     autonomy_list: autonomyGroups,
     autonomy_runtime_status: runtimeStatuses,

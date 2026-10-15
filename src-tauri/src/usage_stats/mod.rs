@@ -7,6 +7,7 @@
 mod daily;
 mod detail;
 mod pricing;
+mod source;
 mod summary;
 
 /// `lib.rs`의 `run()` setup이 앱 시작과 동시에 백그라운드에서 어제까지의
@@ -74,4 +75,16 @@ pub async fn get_project_daily_trend(project_key: String) -> Vec<daily::DailyUsa
     })
     .await
     .unwrap_or_default()
+}
+
+/// 사용량이 비어 있을 때 원인(Claude Code 미설치 vs 아직 사용 기록 없음)을 가르는
+/// 사실 신호 3개 — 판정 자체는 프론트가 한다(`source.rs` 주석에 신호별 한계).
+/// 홈 디렉터리를 못 찾으면 `null`(=판정 불가). 후보 경로 탐색이 macOS에서
+/// `claude --version` 존재 확인을 1회 실행할 수 있어 async + `spawn_blocking`.
+/// 비어 있는 경우에만 프론트가 호출한다 — 정상 경로에는 영향이 없다.
+#[tauri::command]
+pub async fn get_usage_source_status() -> Option<source::UsageSourceStatus> {
+    tauri::async_runtime::spawn_blocking(source::collect_usage_source_status)
+        .await
+        .unwrap_or(None)
 }
