@@ -3,7 +3,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AUTO_LINK_CHANGES_NOTE, AUTO_LINK_SERVER_KEYS, computeOnboarding, withoutAutoLinkNote } from '../../src/onboarding.ts';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { AUTO_LINK_CHANGES_NOTE, AUTO_LINK_SERVER_KEYS, computeOnboarding, DEVICE_KEY_MANAGED_NOTE, REISSUE_CONFIRM_MESSAGE, withoutAutoLinkNote } from '../../src/onboarding.ts';
 
 const tool = (id, installed, required = true) => ({ id, name: id, installed, version: installed ? '1.0.0' : null, path: installed ? `/bin/${id}` : null, required });
 const base = {
@@ -159,7 +163,7 @@ test('slim: 필수 완료 후 홈에 한 줄로 노출되는 상태는 미적용
   assert.match(slim(failed('endpointNotHub', OFF)), /수집 엔드포인트가 허브가 아니어서 수집키를 발급받지 않았습니다/);
   assert.match(slim(st('applied', { masked: 'mhk_AbCd…', ...OFF })), /수집되지 않을 수 있습니다 — 설정 파일에 텔레메트리 켜기 설정이 없음/);
   assert.match(slim(st('confirmed', { masked: 'mhk_AbCd…', ...OFF })), /수집되지 않을 수 있습니다/);
-  assert.match(slim(failed('reconnectRequired')), /허브에 다시 연결하세요/);
+  assert.match(slim(failed('reconnectRequired')), /앱에서 다시 로그인해 연결하세요/);
   assert.match(slim(failed('credentialLimit')), /\/keys/);
   assert.match(slim(st('unlinked', { confirmRequired: true })), /다시 발급할지 확인이 필요합니다/);
   assert.match(slim(failed('featureUnavailable')), /적용되어 있지 않습니다/);
@@ -426,4 +430,160 @@ test('R19: 서버 env 필드가 없는 옛 상태 객체에서도 문구가 깨�
   delete old.serverEnvChanged;
   delete old.serverEnvRejected;
   assert.match(step(old).detail, /수집키가 적용되었습니다/);
+});
+
+// ======================= R20: 웹 폐기(일반/유출 의심)와 앱 화면 문구 정렬 =======================
+//
+// 허브 웹 /keys의 "맑은에이전트 관리" 키 동작과 같은 사실을 말한다.
+//   일반 폐기(manual)   : 그 키 1개만 폐기 → 앱이 확인을 물음(confirm_required) → 앱에서 다시 발급, 다시 로그인 불필요
+//   유출 의심 폐기       : 맑은에이전트 연결과 이 기기의 다른 수집키까지 폐기 → 앱에서 다시 로그인해 연결
+//   연결이 끊김(401→self 401, ALREADY_RENEWED, blocked/suspected_leak) : 다시 발급이 아니라 다시 로그인해 연결
+//   self 200            : 기능 없음 — 재로그인도 재발급도 아니다
+
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
+
+/** 백엔드가 실제로 내려주는 고정 문구를 Rust 소스에서 그대로 읽는다 — 프론트 시험용 사본이 갈라지지 않게 한다. */
+function rustMessage(variant) {
+  const src = readFileSync(join(ROOT, 'src-tauri', 'src', 'otel_link.rs'), 'utf8');
+  const m = new RegExp(`Self::${variant} =>\\s*\\{?\\s*"([^"]+)"`).exec(src);
+  assert.ok(m, `${variant} 문구를 otel_link.rs에서 찾지 못했다`);
+  return m[1];
+}
+
+const RELOGIN_REQUIRED = /다시 로그인해 연결/;
+const REISSUE_ACTION = /다시 발급/;
+
+test('r20: 일반 폐기 — 웹에서 폐기됨 → 앱에서 다시 발급, 다시 로그인을 요구하지 않는다(확인 대기·거절·재확인, 키가 남은 경우와 없는 경우)', () => {
+  const cases = [
+    ['확인 대기', st('unlinked', { confirmRequired: true })],
+    ['확인 대기 + 파일 키', st('applied', { masked: KEY, confirmRequired: true })],
+    ['거절', st('unlinked', { confirmDeclined: true })],
+    ['거절 + 파일 키', st('applied', { masked: KEY, confirmDeclined: true })],
+    ['재확인 필요 + 파일 키', st('applied', { masked: KEY, revokedByHub: true, notice: { cause: 'unreachable', message: '허브에 연결하지 못했습니다.' } })],
+  ];
+  for (const [label, status] of cases) {
+    const s = step(status);
+    assert.match(s.detail, /웹에서[^.]*폐기/, `${label}: 웹에서 폐기됐음을 말한다: ${s.detail}`);
+    assert.match(s.detail, /다시 발급|\[다시 시도\]/, `${label}: 앱에서 다시 발급하는 길을 준다: ${s.detail}`);
+    assert.match(s.detail, /다시 로그인할 필요는 없습니다/, `${label}: ${s.detail}`);
+    assert.ok(!RELOGIN_REQUIRED.test(s.detail), `${label}: 재로그인·재연결을 요구하지 않는다: ${s.detail}`);
+    assert.notEqual(s.action, 'connect-hub', `${label}: 허브 연결 화면으로 보내지 않는다`);
+    assert.ok(['confirm-reissue', 'retry'].includes(s.action), `${label}: ${s.action}`);
+  }
+  // 확인창 본문과 홈 한 줄도 같은 사실이다.
+  assert.match(REISSUE_CONFIRM_MESSAGE, /웹에서 이 기기 수집키가 폐기되었습니다\. 다시 발급할까요\?/);
+  assert.match(REISSUE_CONFIRM_MESSAGE, /다시 로그인할 필요는 없습니다/);
+  assert.ok(!RELOGIN_REQUIRED.test(REISSUE_CONFIRM_MESSAGE));
+  assert.match(slim(st('applied', { masked: KEY, confirmRequired: true })), /다시 로그인 불필요/);
+});
+
+test('r20: 연결이 끊김 — 맑은에이전트 연결 해제를 말하고 다시 로그인해 연결하라고 하며 "다시 발급" 행동을 권하지 않는다', () => {
+  const reconnect = rustMessage('ReconnectRequired');
+  const blocked = rustMessage('Blocked');
+  // 백엔드 문구 자체가 사실을 말한다: 연결 해제 + 유출 의심 폐기의 파급 + 재로그인.
+  assert.match(reconnect, /이 PC의 맑은에이전트 연결이 해제되었습니다/);
+  assert.match(reconnect, /유출 의심으로 폐기했다면 이 연결과 이 기기의 다른 수집키도 함께 폐기/);
+  assert.match(reconnect, RELOGIN_REQUIRED);
+  assert.ok(!REISSUE_ACTION.test(reconnect), reconnect);
+  assert.match(blocked, RELOGIN_REQUIRED);
+  assert.ok(!REISSUE_ACTION.test(blocked), blocked);
+
+  const cases = [
+    ['401→self 401 / ALREADY_RENEWED (reconnectRequired)', failed('reconnectRequired', { failure: { cause: 'reconnectRequired', message: reconnect } })],
+    ['reconnectRequired + 파일 키', failed('reconnectRequired', { masked: KEY, failure: { cause: 'reconnectRequired', message: reconnect } })],
+    ['blocked/suspected_leak', failed('blocked', { blockedReason: 'suspectedLeak', failure: { cause: 'blocked', message: blocked } })],
+    ['blocked/suspected_leak + 파일 키', failed('blocked', { masked: KEY, blockedReason: 'suspectedLeak', failure: { cause: 'blocked', message: blocked } })],
+  ];
+  for (const [label, status] of cases) {
+    const s = step(status);
+    assert.equal(s.action, 'connect-hub', `${label}: 다시 로그인해 연결하는 화면으로 간다`);
+    assert.match(s.detail, RELOGIN_REQUIRED, `${label}: ${s.detail}`);
+    assert.ok(!REISSUE_ACTION.test(s.detail), `${label}: "다시 발급"을 행동으로 권하지 않는다: ${s.detail}`);
+    assert.ok(!/\[다시 시도\]/.test(s.detail), `${label}: ${s.detail}`);
+    assert.ok(s.slim && RELOGIN_REQUIRED.test(s.slim) && !REISSUE_ACTION.test(s.slim), `${label}: 홈 한 줄: ${s.slim}`);
+    assert.ok(!(s.tag ?? '').includes('폐기됨 · 재발급'), `${label}: 재발급 배지를 달지 않는다`);
+  }
+  // 유출 의심은 연결과 다른 수집키까지 폐기된다는 사실을 밝힌다.
+  const leak = step(cases[2][1]).detail;
+  assert.match(leak, /사유: 유출 의심/);
+  assert.match(leak, /이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기/);
+  assert.match(slim(cases[2][1]), /맑은에이전트 연결이 해제되었습니다/);
+});
+
+test('r20: 연결이 끊긴 상태에서는 이전의 폐기 확인 표시가 화면을 가리지 않는다(failed 상태가 revokedByHub보다 먼저 보인다)', () => {
+  // 백엔드가 폐기 표시를 비우지만, 남아 있더라도 failed 상태는 재발급 화면이 아니라 재연결 화면이다.
+  const s = step(failed('reconnectRequired', { masked: KEY, revokedByHub: true, failure: { cause: 'reconnectRequired', message: rustMessage('ReconnectRequired') } }));
+  assert.equal(s.action, 'connect-hub');
+  assert.ok(!/폐기됨 · 재발급/.test(s.tag ?? ''));
+});
+
+test('r20: blocked/quota는 기존 안내를 유지한다 — 사유를 밝히고 연결을 다시 만든다(유출 의심 안내를 섞지 않는다)', () => {
+  const blocked = rustMessage('Blocked');
+  const s = step(failed('blocked', { blockedReason: 'quota', failure: { cause: 'blocked', message: blocked } }));
+  assert.match(s.detail, /사유: 사용량 한도 초과/);
+  assert.match(s.detail, RELOGIN_REQUIRED);
+  assert.ok(!s.detail.includes('유출 의심'), s.detail);
+  assert.equal(s.action, 'connect-hub');
+});
+
+test('r20: self 200(서버에 기능 없음) — 재로그인도 재발급도 아니다. 연결은 정상이고 버튼이 없다', () => {
+  const msg = rustMessage('FeatureUnavailable');
+  assert.match(msg, /허브 연결은 정상/);
+  assert.ok(!RELOGIN_REQUIRED.test(msg) && !REISSUE_ACTION.test(msg), msg);
+  const none = step(failed('featureUnavailable', { failure: { cause: 'featureUnavailable', message: msg } }));
+  assert.equal(none.action, undefined);
+  assert.ok(!RELOGIN_REQUIRED.test(none.detail) && !REISSUE_ACTION.test(none.detail), none.detail);
+  // 키가 적용돼 있으면 notice로만 붙고 적용·확인 사실을 지우지 않는다.
+  const withKey = step(st('applied', { masked: KEY, notice: { cause: 'featureUnavailable', message: msg } }));
+  assert.equal(withKey.state, 'partial');
+  assert.equal(withKey.action, undefined);
+  assert.ok(!RELOGIN_REQUIRED.test(withKey.detail) && !REISSUE_ACTION.test(withKey.detail), withKey.detail);
+});
+
+test('r20 N-11: 파일에 폐기된 키가 없으면 "남아 있는 키"라고 말하지 않는다(재확인 필요·거절 분기)', () => {
+  const notice = { cause: 'unreachable', message: '허브에 연결하지 못했습니다.' };
+  // 키가 없는 채 재확인 대기 — 프론트만 보면 가능한 모양(백엔드는 이 모양을 내지 않지만 문구가 거짓을 말해선 안 된다).
+  const noKey = step(st('unlinked', { revokedByHub: true, notice }));
+  assert.match(noKey.tag, /폐기됨 · 재확인 필요/);
+  assert.ok(!noKey.detail.includes('남아 있는'), noKey.detail);
+  assert.ok(!noKey.slim.includes('남아 있어'), noKey.slim);
+  assert.match(noKey.detail, /웹에서 이 기기 수집키가 폐기되었습니다/);
+  const noKeyDeclined = step(st('unlinked', { confirmDeclined: true }));
+  assert.ok(!noKeyDeclined.detail.includes('남아 있는'), noKeyDeclined.detail);
+  // 키가 있으면 마스킹과 함께 남아 있음을 말한다.
+  const onFile = step(st('applied', { masked: KEY, revokedByHub: true, notice }));
+  assert.ok(onFile.detail.includes(`남아 있는 키(${KEY})`), onFile.detail);
+  assert.match(onFile.slim, /남아 있어/);
+});
+
+test('r20: 설정의 수집키 영역 안내 — 앱이 관리하고, 웹 /keys에서는 회전할 수 없고 회전은 앱이 하며, 폐기 뒤 길이 다르다', () => {
+  const n = DEVICE_KEY_MANAGED_NOTE;
+  assert.match(n, /이 PC의 수집키는 맑은에이전트가 관리합니다/);
+  assert.match(n, /\/keys/);
+  assert.match(n, /웹에서는 회전할 수 없고, 회전은 앱이 합니다/);
+  assert.match(n, /웹에서 폐기하면[^.]*앱에서 다시 발급할 수 있습니다\(다시 로그인할 필요는 없습니다\)/);
+  assert.match(n, /웹에서 유출 의심으로 폐기하면 이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기되므로 앱에서 다시 로그인해 연결해야 합니다/);
+});
+
+test('r20: 앱 안(프론트·Rust 사용자 문구)에 "웹에서 회전하라"는 반대 취지 문구가 없다', () => {
+  const files = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|rs)$/.test(name) && name !== 'tests.rs' && name !== 'testkit.rs') files.push(p);
+    }
+  };
+  walk(join(ROOT, 'src'));
+  walk(join(ROOT, 'src-tauri', 'src'));
+  assert.ok(files.length > 50, '소스를 실제로 훑었다');
+  // 웹(허브 /keys)에서 회전·교체하라고 시키는 표현. "웹에서는 회전할 수 없고"는 부정이라 걸리지 않는다.
+  const opposite = /(?:웹|허브|\/keys)[^.\n]{0,15}(?:에서|으로)[^.\n]{0,10}(?:회전|교체)(?:하세요|해 주세요|하십시오|하면|해야|하거나)/;
+  for (const f of files) {
+    const lines = readFileSync(f, 'utf8').split('\n');
+    lines.forEach((line, i) => {
+      if (line.trim().startsWith('//')) return;
+      assert.ok(!opposite.test(line), `${f}:${i + 1}: ${line.trim()}`);
+    });
+  }
 });

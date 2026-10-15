@@ -182,6 +182,19 @@ export const AUTO_LINK_SERVER_KEYS: readonly string[] = [
 /** 자동 연동이 settings.json에서 바꾸는 것의 전부. 화면의 여러 안내문이 같은 문장을 쓴다. */
 export const AUTO_LINK_CHANGES_NOTE = `자동 연동이 settings.json에서 바꾸는 항목: 수집키(env.OTEL_EXPORTER_OTLP_HEADERS의 Authorization 항목)와, 수집키를 새로 발급·교체할 때 허브가 보내는 수집 설정 6개(${AUTO_LINK_SERVER_KEYS.join(', ')}). 이 6개는 허브 값이 기존 값(앱 기본값·직접 정한 값)보다 우선합니다. 엔드포인트·직원 식별(OTEL_RESOURCE_ATTRIBUTES)·프라이버시 설정 등 그 밖의 항목은 허브가 보내도 바꾸지 않습니다.`;
 
+/** 재발급 확인창(웹에서 수집키가 폐기됐을 때) 본문. 앱이 바로 다시 발급하며 재로그인이 필요 없다는 점까지 말한다. */
+export const REISSUE_CONFIRM_MESSAGE = '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요? 앱에서 바로 발급하며 다시 로그인할 필요는 없습니다.';
+
+/**
+ * 설정 > OTel의 수집키 표시 영역 안내(허브에 연결되어 앱이 수집키를 관리하는 동안만 보인다). 허브 웹 /keys의 "맑은에이전트 관리" 배지와
+ * 같은 사실이다: 웹 회전은 막혀 있고(409 DEVICE_MANAGED) 회전은 앱이 한다 / 일반 폐기는 그 키 하나만 폐기돼 앱에서 다시 발급 /
+ * 유출 의심 폐기는 맑은에이전트 연결과 이 기기의 다른 수집키까지 폐기돼 앱에서 다시 로그인해 연결.
+ */
+export const DEVICE_KEY_MANAGED_NOTE =
+  '이 PC의 수집키는 맑은에이전트가 관리합니다. 허브 웹 /keys에서는 "맑은에이전트 관리" 키로 표시되며 웹에서는 회전할 수 없고, 회전은 앱이 합니다. 웹에서 폐기하면 이 PC의 수집이 멈추지만 앱에서 다시 발급할 수 있습니다(다시 로그인할 필요는 없습니다). 웹에서 유출 의심으로 폐기하면 이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기되므로 앱에서 다시 로그인해 연결해야 합니다.';
+
+const NO_RELOGIN = '다시 로그인할 필요는 없습니다.';
+
 /**
  * 설정 화면은 6키 안내를 폼 위쪽에 한 번 따로 보여 준다(`otel-autolink-changes-note`). 같은 화면의 연동 상세에는 이 문장을 다시
  * 싣지 않도록, 단계 문구(`detail`)에서 안내문 부분만 뺀다. 홈 체크리스트는 이 함수를 거치지 않고 한 번 그대로 보여 준다.
@@ -245,6 +258,7 @@ function formatRetryAt(iso: string | null): string | null {
 }
 
 const BLOCKED_REASON_TEXT = { suspectedLeak: '유출 의심', quota: '사용량 한도 초과' } as const;
+const LEAK_REVOKE_FACT = '웹에서 유출 의심으로 폐기하면 이 PC의 맑은에이전트 연결과 이 기기의 다른 수집키도 함께 폐기됩니다.';
 
 type OtelLink = NonNullable<OnboardingInput['ingestLink']>;
 
@@ -282,18 +296,18 @@ function unlinkedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep 
 function revokedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
   const masked = safeMasked(status.masked);
   const onFile = masked !== null;
+  // 파일에 남은 키가 있을 때만 "남아 있는 키(…)"를 말한다 — 없는데 있다고 하지 않는다(R18 N-11).
+  const revokedWhat = onFile ? `웹에서 이 기기의 수집키가 폐기되어 설정 파일에 남아 있는 키(${masked})로는 수집되지 않습니다.` : '웹에서 이 기기 수집키가 폐기되었습니다.';
   if (status.confirmRequired) {
     return {
       ...base,
       state: 'todo',
       action: 'confirm-reissue',
       ...(onFile ? { tag: '폐기됨 · 재발급 필요' } : {}),
-      detail: onFile
-        ? `웹에서 이 기기의 수집키가 폐기되어 설정 파일에 남아 있는 키(${masked})로는 수집되지 않습니다. 다시 발급할까요? 확인하면 새 수집키를 발급해 적용합니다.`
-        : '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요? 확인하면 새 수집키를 발급해 적용합니다.',
+      detail: `${revokedWhat} 다시 발급할까요? 확인하면 앱에서 바로 새 수집키를 발급해 적용합니다. ${NO_RELOGIN}`,
       slim: onFile
-        ? '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다. 다시 발급할지 확인이 필요합니다.'
-        : '선택 · 웹에서 폐기된 이 기기 수집키를 다시 발급할지 확인이 필요합니다.',
+        ? '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다. 앱에서 다시 발급할지 확인이 필요합니다(다시 로그인 불필요).'
+        : '선택 · 웹에서 폐기된 이 기기 수집키를 앱에서 다시 발급할지 확인이 필요합니다(다시 로그인 불필요).',
     };
   }
   if (!status.confirmDeclined) {
@@ -303,8 +317,10 @@ function revokedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
       state: 'todo',
       action: 'retry',
       tag: '폐기됨 · 재확인 필요',
-      detail: `웹에서 이 기기의 수집키가 폐기되어 ${onFile ? `설정 파일에 남아 있는 키(${masked})` : '설정 파일에 남아 있는 키'}로는 수집되지 않습니다. 허브에서 재발급 여부를 아직 다시 확인하지 못했습니다. 바로 확인하려면 [다시 시도]를 누르세요.${noticeTail(status)}`,
-      slim: '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다. 허브를 다시 확인하지 못했습니다.',
+      detail: `${revokedWhat} 허브에서 재발급 여부를 아직 다시 확인하지 못했습니다. 바로 확인하려면 [다시 시도]를 누르세요. ${NO_RELOGIN}${noticeTail(status)}`,
+      slim: onFile
+        ? '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다. 허브를 다시 확인하지 못했습니다.'
+        : '선택 · 웹에서 폐기된 이 기기 수집키의 재발급 여부를 허브에서 다시 확인하지 못했습니다.',
     };
   }
   return {
@@ -313,11 +329,11 @@ function revokedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
     action: 'retry',
     ...(onFile ? { tag: '폐기됨 · 재발급 거절' } : {}),
     detail: onFile
-      ? `웹에서 이 기기의 수집키가 폐기되어 설정 파일에 남아 있는 키(${masked})로는 수집되지 않습니다. 재발급을 거절했습니다. 이번 앱 실행 동안은 다시 묻지 않습니다. 다시 발급하려면 [다시 시도]를 누르세요.`
-      : '수집키 재발급을 거절했습니다. 이번 앱 실행 동안은 다시 묻지 않습니다. 다시 발급하려면 [다시 시도]를 누르세요.',
+      ? `${revokedWhat} 재발급을 거절했습니다. 이번 앱 실행 동안은 다시 묻지 않습니다. 앱에서 다시 발급하려면 [다시 시도]를 누르세요. ${NO_RELOGIN}`
+      : `웹에서 폐기된 이 기기 수집키의 재발급을 거절했습니다. 이번 앱 실행 동안은 다시 묻지 않습니다. 앱에서 다시 발급하려면 [다시 시도]를 누르세요. ${NO_RELOGIN}`,
     slim: onFile
       ? '선택 · 웹에서 폐기된 수집키가 이 PC에 남아 있어 수집되지 않습니다(재발급 거절).'
-      : '선택 · 사용량 수집키가 적용되어 있지 않습니다(재발급 거절).',
+      : '선택 · 웹에서 폐기된 이 기기 수집키의 재발급을 거절해 사용량 수집키가 적용되어 있지 않습니다.',
   };
 }
 
@@ -384,9 +400,9 @@ const FAILURE_ACTION: Readonly<Record<IngestLinkFailureCause, StepAction | null>
 
 // 홈 상단 한 줄(필수 단계를 끝낸 사용자) 문구. 없으면 그 원인으로는 방해하지 않는다 — 자동 재시도 중인 일시 오류.
 const FAILURE_SLIM: Readonly<Partial<Record<IngestLinkFailureCause, string>>> = {
-  reconnectRequired: '선택 · 허브 연결이 끊겨 사용량 수집키를 받을 수 없습니다. 허브에 다시 연결하세요.',
+  reconnectRequired: '선택 · 이 PC의 맑은에이전트 연결이 해제되어 사용량 수집키를 받을 수 없습니다. 앱에서 다시 로그인해 연결하세요.',
   notDesktopToken: '선택 · 이 허브 연결로는 사용량 수집키를 받을 수 없습니다. 허브 연결을 다시 만드세요.',
-  blocked: '선택 · 이 허브 연결로는 사용량 수집키를 발급할 수 없습니다. 연결을 해제한 뒤 다시 연결하세요.',
+  blocked: '선택 · 이 허브 연결로는 사용량 수집키를 발급할 수 없습니다. 연결을 해제한 뒤 다시 로그인해 연결하세요.',
   credentialLimit: '선택 · 수집키 상한(5개)에 도달해 새로 발급하지 못했습니다. 허브 웹 /keys에서 쓰지 않는 키를 폐기하세요.',
   rotateBudgetExceeded: '선택 · 이 기기의 수집키가 너무 자주 바뀌어 잠시 교체를 멈췄습니다.',
   rotationLost: '선택 · 허브 응답이 반복해서 끊겨 수집키 자동 교체를 멈췄습니다.',
@@ -404,6 +420,8 @@ function failedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
   const masked = safeMasked(status.masked);
   let msg = f?.message ?? '수집키 적용 상태에 문제가 있습니다.';
   if (cause === 'blocked' && status.blockedReason) msg += ` (사유: ${BLOCKED_REASON_TEXT[status.blockedReason] ?? '알 수 없음'})`;
+  // 유출 의심 폐기는 그 키 하나가 아니라 맑은에이전트 연결과 이 기기의 다른 수집키까지 폐기한다 — 답은 재발급이 아니라 재로그인·재연결이다.
+  if (cause === 'blocked' && status.blockedReason === 'suspectedLeak') msg += ` ${LEAK_REVOKE_FACT}`;
   if (cause === 'rotateBudgetExceeded') {
     const at = formatRetryAt(status.retryAt);
     if (at) msg += ` 다시 교체할 수 있는 시각: ${at}.`;
@@ -427,7 +445,12 @@ function failedStep(base: StepBase, status: IngestLinkStatus): OnboardingStep {
       slim: '선택 · 설정 파일에서 수집이 켜져 있지 않아 사용량 수집키를 발급하지 않았습니다. 설정 > OTel에서 확인하세요.',
     };
   }
-  const slim = cause ? FAILURE_SLIM[cause] : '선택 · 사용량 수집키 연동에 문제가 있습니다. 설정 > OTel에서 확인하세요.';
+  const slim =
+    cause === 'blocked' && status.blockedReason === 'suspectedLeak'
+      ? '선택 · 웹에서 유출 의심으로 폐기되어 이 PC의 맑은에이전트 연결이 해제되었습니다. 앱에서 다시 로그인해 연결하세요.'
+      : cause
+        ? FAILURE_SLIM[cause]
+        : '선택 · 사용량 수집키 연동에 문제가 있습니다. 설정 > OTel에서 확인하세요.';
   return { ...base, state: 'failed', ...withAction, detail, ...(slim ? { slim } : {}) };
 }
 
@@ -444,7 +467,6 @@ function otelLinkStep(link: OtelLink): OnboardingStep {
   const status = link.status;
   if (!link.loaded || !status) return { ...base, state: 'loading', detail: '수집키 적용 상태 확인 중…' };
   // 웹에서 폐기됐다는 허브의 판정이 있으면 파일에 키가 남아 있어도(applied/confirmed) 그 판정이 먼저다(RV-01).
-  // (otelLinkText.ts의 revokedByHub와 같은 식 — 이 파일은 타입 import만 두어 번들러 없이 시험하므로 값 import를 쓰지 않는다.)
   const revoked = status.confirmRequired || status.confirmDeclined || status.revokedByHub === true;
   if (status.hubConnected && revoked && (status.state === 'unlinked' || status.state === 'applied' || status.state === 'confirmed')) {
     return revokedStep(base, status);
