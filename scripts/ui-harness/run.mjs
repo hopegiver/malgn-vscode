@@ -112,6 +112,8 @@ async function runScenario(browser, flow, scenario, baseFixtures) {
 
   await page.addInitScript(installListenerProbe);
   await page.addInitScript(installTauriBridge, scenario.fixtures);
+  // 시나리오가 상태 있는 스텁(lib/statefulOtelSettings.mjs 등)을 얹을 때 쓴다 — installTauriBridge 뒤에 주입되어 그 invoke를 감싼다.
+  for (const { fn, arg } of scenario.initScripts ?? []) await page.addInitScript(fn, arg);
 
   const shotDir = path.join(SHOTS_DIR, flow.flowId);
   await ensureDir(shotDir);

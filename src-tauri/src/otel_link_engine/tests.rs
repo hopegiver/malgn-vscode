@@ -1865,7 +1865,8 @@ fn r19_rotate_201_applies_server_env_too_and_the_server_value_wins_over_a_user_v
 
 #[test]
 fn r19_rotation_with_env_keeps_the_new_key_and_the_server_values_out_of_the_backup() {
-    // 백업은 저장 직전 원본 1세대다(롤백 가치) — 회전으로 폐기되는 옛 키가 거기 남는 것은 설계다(수집키 삭제 때만 뺀다).
+    // 백업은 저장 직전 원본 1세대다(롤백 가치) — 회전 뒤 48시간 유예(또는 다음 회전)까지 유효한 옛 키가 거기 한 세대 남는 것은
+    // 설계다(본 파일과 같은 0600, 수집키 삭제(Clear)일 때만 백업에서도 뺀다).
     // 지켜야 할 것은 반대 방향: env가 실린 회전에서도 새 키 원문과 서버 값이 백업으로 새지 않는다.
     let rig = Rig::new("r19-rotate-backup");
     let mut v: serde_json::Value = serde_json::from_str(&ready_settings(Some(&fake_key('O')))).unwrap();

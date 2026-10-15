@@ -7,6 +7,8 @@
 // ③ 확인하지 않은 것을 주장하지 않음 ④ 토큰·키 원문이 DOM에 없음 ⑤ 확인창 문구와 응답 전달을 본다.
 //
 // 스크린샷은 `docs/reviewer/r17-otel-autolink-*.png`의 근거다(UI_HARNESS_SHOTS_DIR 아래 otelAutolink/ 에 저장).
+import { installStatefulOtelSettings } from '../lib/statefulOtelSettings.mjs';
+
 export const flowId = 'otelAutolink';
 export const startHash = '#/';
 
@@ -148,6 +150,90 @@ async function checkHome(page, bugs, { state, include = [], exclude = [], button
   const count = await page.locator('.onboard-box .box-head .count').textContent().catch(() => null);
   if (!count || !count.includes('2/3')) bugs.push({ severity: 'Major', symptom: `OTEL 항목이 진행 카운트에 영향을 줌(기대 2/3, 실제: ${count})`, file: CHECKLIST });
   return row;
+}
+
+// ---- R19: 서버 권장값(env) 적용 뒤 설정 > OTel 폼 ----
+// 자동 연동이 발급·회전 201의 서버 권장값을 settings.json에 쓰면, 이미 열려 있는 폼이 그 변경을 따라가고 사용자가 고치던 칸은 지키며
+// 저장은 고친 칸만 보내야 한다. 저장·이벤트·재진입이 모두 `otel_settings_get`을 다시 읽으므로 상태 있는 스텁을 쓴다
+// (lib/statefulOtelSettings.mjs). Rust 쪽 실제 파일 쓰기는 `cargo test`가 맡는다 — 여기는 TS/DOM 층만 본다.
+const FORM = 'src/views/settings.ts:refreshOtelFormFromFile / handleSaveOtelSettings';
+const FORM_MANAGED = [
+  'CLAUDE_CODE_ENABLE_TELEMETRY',
+  'OTEL_EXPORTER_OTLP_PROTOCOL',
+  'OTEL_METRICS_EXPORTER',
+  'OTEL_LOGS_EXPORTER',
+  'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE',
+  'OTEL_METRIC_EXPORT_INTERVAL',
+  'OTEL_LOGS_EXPORT_INTERVAL',
+  'OTEL_LOG_USER_PROMPTS',
+  'OTEL_RESOURCE_ATTRIBUTES',
+  'OTEL_EXPORTER_OTLP_HEADERS',
+];
+const FORM_DEFAULTS = {
+  CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+  OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
+  OTEL_METRICS_EXPORTER: 'otlp',
+  OTEL_LOGS_EXPORTER: 'otlp',
+  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: 'cumulative',
+  OTEL_METRIC_EXPORT_INTERVAL: '60000',
+  OTEL_LOGS_EXPORT_INTERVAL: '60000',
+  OTEL_LOG_USER_PROMPTS: '0',
+};
+// 서버 권장값이 적용되기 전(옛 5000 간격 하나만 파일에 있는 기기)과 적용된 뒤.
+const FORM_FILE_BEFORE = {
+  CLAUDE_CODE_ENABLE_TELEMETRY: '1',
+  OTEL_EXPORTER_OTLP_PROTOCOL: 'http/protobuf',
+  OTEL_METRICS_EXPORTER: 'otlp',
+  OTEL_LOGS_EXPORTER: 'otlp',
+  OTEL_LOGS_EXPORT_INTERVAL: '5000',
+  OTEL_LOG_USER_PROMPTS: '0',
+};
+const FORM_FILE_AFTER = {
+  ...FORM_FILE_BEFORE,
+  OTEL_LOGS_EXPORT_INTERVAL: '60000',
+  OTEL_METRIC_EXPORT_INTERVAL: '60000',
+  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: 'cumulative',
+};
+const SERVER_CHANGED = ['OTEL_LOGS_EXPORT_INTERVAL', 'OTEL_METRIC_EXPORT_INTERVAL', 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE'];
+const TEMPORALITY = 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE';
+
+function formSettings(values) {
+  return {
+    settingsPath: '/Users/dev/.claude/settings.json',
+    fileExists: true,
+    parseError: null,
+    managedKeys: FORM_MANAGED,
+    readOnlyKeys: ['OTEL_LOG_USER_PROMPTS'],
+    values,
+    defaults: FORM_DEFAULTS,
+    endpointDefaultsInjected: true,
+    ingestKey: KEY_SET,
+    ingestEndpoint: HUB_EP,
+  };
+}
+
+async function formInputs(page) {
+  return page.evaluate((keys) => Object.fromEntries(keys.map((k) => [k, document.getElementById(`otel-${k}`)?.value ?? null])), FORM_MANAGED);
+}
+const legacyHintShown = (page) => page.evaluate(() => !!document.getElementById('otel-legacy-hint-OTEL_LOGS_EXPORT_INTERVAL'));
+const stubSaves = (page) => page.evaluate(() => window.__otelStub.saves.map((s) => s.payload.values));
+const stubCalls = (page) => page.evaluate(() => [...window.__otelStub.calls]);
+const settleForm = async (page) => {
+  await page.waitForSelector('#otel-OTEL_LOGS_EXPORT_INTERVAL');
+  await page.waitForTimeout(500);
+};
+// 앱 밖에서 서버 권장값이 파일에 쓰이고 연동 상태가 "바뀐 설정 3키"를 말하게 된 순간을 만든다.
+async function applyServerEnv(page) {
+  await page.evaluate(
+    ({ file, link }) => {
+      window.__otelStub.setFile(file);
+      window.__otelStub.setLink(link);
+    },
+    { file: formSettings(FORM_FILE_AFTER), link: status('applied', { masked: 'mhk_AbCd…', serverEnvChanged: SERVER_CHANGED }) }
+  );
+}
+function expectEqual(bugs, label, actual, expected) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) bugs.push({ severity: 'Major', symptom: `${label}: 기대 ${JSON.stringify(expected)}, 실제 ${JSON.stringify(actual)}`, file: FORM });
 }
 
 async function invoked(page, cmd) {
@@ -592,5 +678,89 @@ export function scenarios(base) {
         for (const t of exclude) if (toast.includes(t)) bugs.push({ severity: 'Critical', symptom: `해제 토스트(${removal})가 사실과 다르게 "${t}"를 말함: ${toast}`, file: 'src/otelLinkText.ts:disconnectToast' });
       },
     })),
+
+    // ---- R19: 서버 권장값이 파일에 쓰인 뒤의 설정 > OTel 폼(이벤트 후 갱신·고치던 칸 보존·고친 칸만 저장·탭 재진입) ----
+    {
+      id: 'server-env-event-refreshes-form-keeps-typing',
+      startHash: '#/settings/otel',
+      fixtures: { ...open, otel_settings_get: formSettings(FORM_FILE_BEFORE), otel_ingest_link_status: status('applied', { masked: 'mhk_AbCd…' }) },
+      initScripts: [{ fn: installStatefulOtelSettings, arg: { settings: formSettings(FORM_FILE_BEFORE), link: status('applied', { masked: 'mhk_AbCd…' }) } }],
+      async run(page, { shot, bugs, emitEvent }) {
+        await settleForm(page);
+        const before = await formInputs(page);
+        expectEqual(bugs, '이벤트 전 로그 간격 칸', before.OTEL_LOGS_EXPORT_INTERVAL, '5000');
+        if (!(await legacyHintShown(page))) bugs.push({ severity: 'Minor', symptom: '파일이 옛 5000 간격인데 안내가 없음(대조군)', file: FORM });
+        // 사용자가 TEMPORALITY 칸을 고치는 중이다.
+        await page.fill(`#otel-${TEMPORALITY}`, 'delta');
+        // 앱 밖에서 서버 권장값이 파일에 쓰이고 연동 이벤트가 온다.
+        await applyServerEnv(page);
+        await emitEvent('otel-link-changed', null);
+        await page.waitForTimeout(600);
+        await shot('01-after-event');
+        const after = await formInputs(page);
+        expectEqual(bugs, '이벤트 뒤 로그 간격 칸이 서버 값을 따라감', after.OTEL_LOGS_EXPORT_INTERVAL, '60000');
+        expectEqual(bugs, '이벤트 뒤 메트릭 간격 칸이 서버 값을 따라감', after.OTEL_METRIC_EXPORT_INTERVAL, '60000');
+        expectEqual(bugs, '이벤트 뒤 사용자가 고치던 칸이 보존됨', after[TEMPORALITY], 'delta');
+        if (await legacyHintShown(page)) bugs.push({ severity: 'Major', symptom: '파일이 60000으로 바뀌었는데 옛 5000 안내가 남아 있음', file: FORM });
+        const detail = (await page.locator('#otel-link-detail').textContent().catch(() => '')) ?? '';
+        if (!detail.includes('허브가 보낸 값으로 바뀐 설정') || !detail.includes('OTEL_LOGS_EXPORT_INTERVAL')) {
+          bugs.push({ severity: 'Major', symptom: `연동 상세가 서버가 바꾼 설정을 말하지 않음: ${detail}`, file: FORM });
+        }
+        // 저장: 고친 칸 하나만 보낸다 — 서버가 쓴 값을 옛 화면 값으로 되돌려 보내지 않는다.
+        await page.click('form.settings-form button[type=submit]');
+        await page.waitForTimeout(600);
+        const saves = await stubSaves(page);
+        if (saves.length !== 1) bugs.push({ severity: 'Major', symptom: `저장이 1회가 아님(${saves.length})`, file: FORM });
+        expectEqual(bugs, '저장 payload의 values(고친 칸만)', saves[0], { [TEMPORALITY]: 'delta' });
+        const saved = await formInputs(page);
+        expectEqual(bugs, '저장 뒤 로그 간격 칸', saved.OTEL_LOGS_EXPORT_INTERVAL, '60000');
+      },
+    },
+    // 이벤트를 놓쳤어도(폼은 옛 5000을 보여 준다) 무관한 칸만 고쳐 저장하면 서버 값이 되돌려지지 않는다.
+    {
+      id: 'server-env-silent-file-change-save-does-not-revert',
+      startHash: '#/settings/otel',
+      fixtures: { ...open, otel_settings_get: formSettings(FORM_FILE_BEFORE), otel_ingest_link_status: status('applied', { masked: 'mhk_AbCd…' }) },
+      initScripts: [{ fn: installStatefulOtelSettings, arg: { settings: formSettings(FORM_FILE_BEFORE), link: status('applied', { masked: 'mhk_AbCd…' }) } }],
+      async run(page, { shot, bugs }) {
+        await settleForm(page);
+        await page.fill('#otel-OTEL_METRICS_EXPORTER', 'otlp,console');
+        // 이벤트 없이 파일만 바뀐다 — 폼은 아직 옛 값을 보여 준다.
+        await applyServerEnv(page);
+        expectEqual(bugs, '이벤트 없이는 폼이 옛 값을 보여 줌(대조군)', (await formInputs(page)).OTEL_LOGS_EXPORT_INTERVAL, '5000');
+        await page.evaluate(() => (window.__otelStub.calls.length = 0));
+        await page.click('form.settings-form button[type=submit]');
+        await page.waitForTimeout(600);
+        await shot('01-after-save');
+        const calls = await stubCalls(page);
+        if (calls.indexOf('otel_settings_get') === -1 || calls.indexOf('otel_settings_get') > calls.indexOf('otel_settings_save')) {
+          bugs.push({ severity: 'Major', symptom: `저장 직전 파일을 다시 읽지 않음(호출 순서 ${JSON.stringify(calls)})`, file: FORM });
+        }
+        const saves = await stubSaves(page);
+        expectEqual(bugs, '저장 payload의 values(고친 칸만, 5000·파일에 새로 생긴 칸은 싣지 않음)', saves[0], { OTEL_METRICS_EXPORTER: 'otlp,console' });
+        const saved = await formInputs(page);
+        expectEqual(bugs, '저장 뒤 로그 간격 칸(서버 값 유지)', saved.OTEL_LOGS_EXPORT_INTERVAL, '60000');
+      },
+    },
+    // 다른 탭에 갔다 돌아오면 파일을 다시 읽어 서버 값을 보여 준다.
+    {
+      id: 'server-env-tab-reentry-refreshes-form',
+      startHash: '#/settings/otel',
+      fixtures: { ...open, otel_settings_get: formSettings(FORM_FILE_BEFORE), otel_ingest_link_status: status('applied', { masked: 'mhk_AbCd…' }) },
+      initScripts: [{ fn: installStatefulOtelSettings, arg: { settings: formSettings(FORM_FILE_BEFORE), link: status('applied', { masked: 'mhk_AbCd…' }) } }],
+      async run(page, { shot, bugs }) {
+        await settleForm(page);
+        await applyServerEnv(page);
+        await page.evaluate(() => (location.hash = '#/settings/mcp'));
+        await page.waitForTimeout(500);
+        await page.evaluate(() => (location.hash = '#/settings/otel'));
+        await settleForm(page);
+        await shot('01-reentry');
+        const after = await formInputs(page);
+        expectEqual(bugs, '재진입 뒤 로그 간격 칸', after.OTEL_LOGS_EXPORT_INTERVAL, '60000');
+        expectEqual(bugs, '재진입 뒤 메트릭 간격 칸', after.OTEL_METRIC_EXPORT_INTERVAL, '60000');
+        if (await legacyHintShown(page)) bugs.push({ severity: 'Major', symptom: '재진입 뒤에도 옛 5000 안내가 남아 있음', file: FORM });
+      },
+    },
   ];
 }

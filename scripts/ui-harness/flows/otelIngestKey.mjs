@@ -5,6 +5,8 @@
 // 핵심 불변식(원문 비노출): 어떤 상태에서도 가짜 키 원문이 화면 DOM(HTML·텍스트·속성)과
 // 스크린샷에 남지 않는다. 입력칸은 password 타입이라 스크린샷에는 점으로만 보인다.
 // 가짜 키는 테스트 전용 값(`mhk_` + 'A'×43 / 'B'×43)만 쓴다 — 실제 키가 아니다.
+import { installStatefulOtelSettings } from '../lib/statefulOtelSettings.mjs';
+
 export const flowId = 'otelIngestKey';
 export const startHash = '#/settings/otel';
 
@@ -49,7 +51,6 @@ function otelSettings({ ingestKey, telemetry = '1', ingestEndpoint = HUB_EP }) {
 
 const UNSET = { state: 'unset', masked: null };
 const SET_A = { state: 'set', masked: 'mhk_AAAA…' };
-const SET_B = { state: 'set', masked: 'mhk_BBBB…' };
 const UNRECOGNIZED = { state: 'unrecognized', masked: null };
 
 // 화면(DOM 전체: HTML 직렬화 + 보이는 텍스트 + input.value)에 원문이 없는지 점검한다.
@@ -202,11 +203,9 @@ export function scenarios(base) {
     // 설정됨(가짜 키) → 마스킹 + 설정됨 배지, 원문 없음, 입력칸은 비어 있음. 새 키 입력 후 저장.
     {
       id: 'set-masked',
-      fixtures: {
-        ...manualBase,
-        otel_settings_get: otelSettings({ ingestKey: SET_A }),
-        otel_settings_save: otelSettings({ ingestKey: SET_B }),
-      },
+      // 저장 응답과 이후 재조회가 같은 상태를 말해야 한다(lib/statefulOtelSettings.mjs) — 고정 픽스처로는 저장 뒤 재조회가 옛 마스킹으로 되돌린다.
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: SET_A }) },
+      initScripts: [{ fn: installStatefulOtelSettings, arg: { settings: otelSettings({ ingestKey: SET_A }) } }],
       async run(page, { shot, bugs }) {
         await page.waitForSelector('#otel-ingest-key');
         await shot('01-set-masked');
@@ -269,11 +268,8 @@ export function scenarios(base) {
     // 삭제 흐름 — 확인 다이얼로그 → clear payload, 다른 입력 드래프트는 보존.
     {
       id: 'clear-flow',
-      fixtures: {
-        ...manualBase,
-        otel_settings_get: otelSettings({ ingestKey: SET_A }),
-        otel_settings_save: otelSettings({ ingestKey: UNSET }),
-      },
+      fixtures: { ...manualBase, otel_settings_get: otelSettings({ ingestKey: SET_A }) },
+      initScripts: [{ fn: installStatefulOtelSettings, arg: { settings: otelSettings({ ingestKey: SET_A }) } }],
       async run(page, { shot, bugs }) {
         await page.waitForSelector('#otel-ingest-key-clear');
         // 저장 전 다른 필드 입력(드래프트) — 삭제 후에도 남아야 한다.
