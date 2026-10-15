@@ -21,11 +21,13 @@
 // perform_install/perform_open_manual_instruction/check_dev_tools_blocking)은
 // `#[tauri::command]`가 아닌 평범한 함수라 안전하게 서브모듈로 옮겼다.
 mod actions;
+mod app_node;
 mod classify;
 mod contract;
 mod diagnostics;
 mod install_resolver;
 mod locks;
+mod node_install;
 mod plan_table;
 // `pub(crate)`인 이유: cli_launcher.rs(크레이트 루트, dev_tools 밖)가 이 모듈의
 // Platform/EnvRoots/quote_token 등을 터미널 열기(§E) + resolve_binary(§D.3)
@@ -340,6 +342,19 @@ pub async fn open_manual_instruction(
     })
     .await
     .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
+}
+
+/// 진행 중인 앱 내장 Node 설치(P2-3a)를 취소한다. 다운로드·해제·검증 어느 단계든 중단하고
+/// 스테이징을 지우며 기존 설치는 그대로 둔다. 진행 중인 설치가 없으면 아무 일도 하지 않는다
+/// (다음 설치는 시작할 때 취소 표시를 지운다).
+#[tauri::command]
+pub fn cancel_node_install() {
+    app_node::request_cancel();
+}
+
+/// 앱 종료 시(lib.rs RunEvent::ExitRequested) 진행 중인 Node 설치를 정리하도록 알린다.
+pub fn request_node_install_cancel() {
+    app_node::request_cancel();
 }
 
 #[cfg(test)]

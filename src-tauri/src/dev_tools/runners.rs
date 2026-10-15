@@ -43,6 +43,7 @@ pub(crate) fn resolve_runner_path(runner: Runner, self_binary_path: Option<&str>
         // 설계 §B.2: winget 해석은 gh 하나만 쓴다. 여기서는 러너 종류로만
         // 분기하고 소비처(install_candidates)가 어떤 도구에 쓸지 결정한다.
         Runner::Winget => resolve_binary_expand_home(&WINGET_CANDIDATES, "winget"),
+        Runner::AppNode => super::app_node::runner_path(),
         Runner::SelfBinary => self_binary_path.map(|s| s.to_string()),
     }
 }
@@ -83,6 +84,8 @@ pub(crate) struct ResolvedRunners {
     pub(crate) npm: Option<String>,
     pub(crate) pnpm: Option<String>,
     pub(crate) winget: Option<String>,
+    /// macOS에서 앱이 직접 Node를 설치하는 러너(P2-3a). 값은 관리 폴더 경로(표시·plan_id용).
+    pub(crate) app_node: Option<String>,
 }
 
 impl ResolvedRunners {
@@ -92,6 +95,7 @@ impl ResolvedRunners {
             npm: resolve_runner_path(Runner::Npm, None),
             pnpm: resolve_runner_path(Runner::Pnpm, None),
             winget: resolve_runner_path(Runner::Winget, None),
+            app_node: resolve_runner_path(Runner::AppNode, None),
         }
     }
 
@@ -101,6 +105,7 @@ impl ResolvedRunners {
             Runner::Npm => self.npm.clone(),
             Runner::Pnpm => self.pnpm.clone(),
             Runner::Winget => self.winget.clone(),
+            Runner::AppNode => self.app_node.clone(),
             // SelfBinary는 설치 후보에 쓰이지 않는다(설치 시점엔 자기 자신의
             // 바이너리가 아직 없다) — install_candidates()의 어떤 행도 이
             // 변형을 쓰지 않으므로 항상 None으로 충분하다.

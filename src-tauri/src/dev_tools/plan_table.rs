@@ -51,6 +51,10 @@ pub(crate) enum Runner {
     // 스스로 설치 경로를 관리) 그 검사는 건너뛴다(runners.rs의 와일드카드
     // 매치가 자동으로 처리한다 — 새 분기가 필요 없다).
     Winget,
+    // macOS 전용(P2-3a) — 외부 프로세스가 아니라 앱 안의 `node_install` 파이프라인이 nodejs.org
+    // 공식 tarball을 사용자 공간에 설치한다(app_node.rs). 인자(argv)는 리터럴 하나뿐이고 실제
+    // 설치 버전은 plan_id에만 묶인다.
+    AppNode,
     SelfBinary,
 }
 
@@ -307,6 +311,17 @@ pub(crate) const RUN_BREW_INSTALL_GH: RunPlan = RunPlan {
     ]),
     env: &BREW_INSTALL_ENV,
     timeout_secs: 600,
+};
+// macOS Node 사용자 공간 설치(P2-3a, hub 결정 01m4z9695r6zvytg7mpnab7w20 + 01m4zfesw2qvhnth3jjg89w04k).
+// 러너는 앱 자신(Runner::AppNode)이라 env/timeout은 쓰이지 않지만(설치 파이프라인이 단계별
+// 상한을 자체 관리한다) RunPlan 모양을 맞추기 위해 채운다. argv는 리터럴 하나 — 설치할 버전은
+// 동적 값이라 argv가 아니라 plan_id에 묶는다(app_node::bind_target).
+pub(crate) const RUN_APP_NODE_INSTALL: RunPlan = RunPlan {
+    runner: Runner::AppNode,
+    args: &[Arg::Lit(super::app_node::INSTALL_ARG)],
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 1800,
 };
 // ── winget(Windows 전용, 설계 §B) ──
 // G-5(보안): `--source winget` 고정(msstore 배제) + `-e`(exact) + `--id` 고정

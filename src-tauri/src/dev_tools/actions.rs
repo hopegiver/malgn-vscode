@@ -4,6 +4,7 @@
 // perform_update/perform_install/perform_open_manual_instruction으로 위임한다.
 // 조회/미리보기는 `query` 모듈 몫이다.
 
+use super::app_node;
 use super::classify::describe_install_method;
 use super::contract::{not_supported_result, DevToolActionResult, Outcome};
 use super::diagnostics::{
@@ -258,14 +259,25 @@ pub(crate) fn perform_install(tool_id_str: &str, plan_id: &str) -> Result<DevToo
             plan,
             installer_label,
         } => {
-            let expected_plan_id = compute_plan_id(&runner_path, &argv, "");
+            // 앱이 직접 설치하는 러너(P2-3a)는 설치할 LTS 버전이 동적 값이라 plan_id에 묶는다 —
+            // 미리보기에서 사용자가 본 버전과 지금 결정되는 버전이 다르면 재미리보기를 요구한다.
+            let app_node_target = if plan.runner == Runner::AppNode {
+                Some(app_node::resolve_target_tag().map_err(|e| format!("최신 LTS 버전을 확인하지 못했습니다 — {e}"))?)
+            } else {
+                None
+            };
+            let bound_argv = match &app_node_target {
+                Some(tag) => app_node::bind_target(&argv, tag),
+                None => argv.clone(),
+            };
+            let expected_plan_id = compute_plan_id(&runner_path, &bound_argv, "");
             if expected_plan_id != plan_id {
                 return Err(
                     "실행 계획이 미리보기 이후 바뀌었습니다. 다시 미리보기를 요청해주세요."
                         .to_string(),
                 );
             }
-            run_install_plan(def, &runner_path, &argv, &plan, installer_label)
+            run_install_plan(def, &runner_path, &argv, &plan, installer_label, app_node_target.as_deref())
         }
     }
 }
@@ -285,15 +297,22 @@ fn run_install_plan(
     argv: &[String],
     plan: &RunPlan,
     installer_label: &'static str,
+    app_node_target: Option<&str>,
 ) -> Result<DevToolActionResult, String> {
-    let path_env = build_child_path_env(Some(runner_path));
-    let output = run_process_with_timeout(
-        runner_path,
-        argv,
-        &path_env,
-        plan.env,
-        Duration::from_secs(plan.timeout_secs),
-    );
+    let output = match (plan.runner, app_node_target) {
+        // 앱 안에서 직접 설치(외부 프로세스 없음) — 결과를 기존 실행기와 같은 모양으로 받는다.
+        (Runner::AppNode, Some(tag)) => app_node::run_pinned(tag),
+        _ => {
+            let path_env = build_child_path_env(Some(runner_path));
+            run_process_with_timeout(
+                runner_path,
+                argv,
+                &path_env,
+                plan.env,
+                Duration::from_secs(plan.timeout_secs),
+            )
+        }
+    };
 
     // pnpm/brew/npm이 해석돼 실행까지 갔다면(성공이든 실패든) 그 결과를 그대로
     // 보고한다 — 다른 러너로 조용히 폴백하지 않는다(요구사항: 실패를 숨기지
@@ -320,6 +339,8 @@ fn run_install_plan(
             base
         };
         (Outcome::TimedOut, false, message)
+    } else if plan.runner == Runner::AppNode && output.exit_code != Some(0) {
+        (Outcome::Failed, false, app_node::failure_message(&output))
     } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_INSTALL_CANCELLED_BY_USER) {
         (
             Outcome::Failed,
@@ -374,11 +395,17 @@ fn run_install_plan(
         version_after,
         normalized_before: None,
         normalized_after,
-        install_method: format!(
-            "{installer_label}Install({})",
-            argv.last().map(|s| s.as_str()).unwrap_or(def.key)
-        ),
-        ran_command: Some(build_command_display(runner_path, argv)),
+        install_method: match app_node_target {
+            Some(tag) => format!("appManagedNode({tag})"),
+            None => format!(
+                "{installer_label}Install({})",
+                argv.last().map(|s| s.as_str()).unwrap_or(def.key)
+            ),
+        },
+        ran_command: Some(match app_node_target {
+            Some(tag) => app_node::command_display(tag),
+            None => build_command_display(runner_path, argv),
+        }),
         exit_code: output.exit_code,
         duration_ms: output.duration.as_millis() as u64,
         message,

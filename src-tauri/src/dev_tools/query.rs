@@ -5,6 +5,7 @@
 // install/manual)은 `actions` 모듈 몫이다.
 
 use super::classify::{describe_install_method, InstallMethod};
+use super::app_node;
 use super::contract::{DevToolPreview, DevToolStatus};
 use super::diagnostics::{
     compute_plan_id, compute_plan_id_for_manual, parse_brew_dry_run_affected,
@@ -250,8 +251,12 @@ fn no_dry_run_install_notes(runner: Runner, installer_label: &str, tool_label: &
 /// 미설치 도구용 설치 프리뷰(요구 1의 단일 정본 `resolve_install_plan`을 통해서만
 /// Run/Manual을 가른다). Wrangler 전용이던 `build_wrangler_install_preview`를
 /// 대체하며, gh/Claude 모두 이 함수 하나로 처리된다.
-fn build_install_preview(def: &DevTool, tool: ToolId, runners: &ResolvedRunners) -> DevToolPreview {
-    match resolve_install_plan(tool, runners) {
+fn build_install_preview(
+    def: &DevTool,
+    tool: ToolId,
+    runners: &ResolvedRunners,
+) -> Result<DevToolPreview, String> {
+    Ok(match resolve_install_plan(tool, runners) {
         InstallResolution::Manual(mp) => {
             // 미설치 상태라 "이전 버전"이 없다 — normalized_before는 빈 문자열로
             // 고정한다(perform_install이 실행 직전 같은 값으로 재계산해 대조하므로
@@ -273,6 +278,11 @@ fn build_install_preview(def: &DevTool, tool: ToolId, runners: &ResolvedRunners)
             plan,
             installer_label,
         } => {
+            // 앱이 직접 설치하는 러너(P2-3a)는 외부 프로세스 dry-run이 없다 — 대신 index.json으로
+            // 설치할 LTS 버전을 정해 동의 화면에 보여주고 plan_id에 묶는다.
+            if plan.runner == Runner::AppNode {
+                return app_node::build_install_preview(def, &runner_path, &argv);
+            }
             let display = build_command_display(&runner_path, &argv);
             let plan_id = compute_plan_id(&runner_path, &argv, "");
 
@@ -288,7 +298,7 @@ fn build_install_preview(def: &DevTool, tool: ToolId, runners: &ResolvedRunners)
                             // 건너뛰어 Manual로 fail-closed되는 것과 같은 방향으로
                             // 통일한다 — Run을 반환하는 대신 안내로 강등한다.
                             let mp = install_manual_plan(tool);
-                            return DevToolPreview {
+                            return Ok(DevToolPreview {
                                 id: def.key.to_string(),
                                 plan_id: compute_plan_id_for_manual(tool, &mp),
                                 will_run: false,
@@ -296,7 +306,7 @@ fn build_install_preview(def: &DevTool, tool: ToolId, runners: &ResolvedRunners)
                                 affected: Vec::new(),
                                 notes: manual_display_message(&mp),
                                 preview_reliable: true,
-                            };
+                            });
                         }
                     };
                     let path_env = build_child_path_env(Some(&runner_path));
@@ -363,7 +373,7 @@ fn build_install_preview(def: &DevTool, tool: ToolId, runners: &ResolvedRunners)
                 preview_reliable,
             }
         }
-    }
+    })
 }
 
 /// 커맨드 진입점용 — 미리보기를 한 번에 1건으로 제한한다(`PREVIEW_LOCK`, 대기 없이
@@ -398,7 +408,7 @@ pub(crate) fn perform_preview(tool_id_str: &str) -> Result<DevToolPreview, Strin
     match resolve_tool_path(def) {
         None => {
             let runners = ResolvedRunners::resolve();
-            Ok(build_install_preview(def, tool, &runners))
+            build_install_preview(def, tool, &runners)
         }
         Some(resolved_path) => {
             let ResolvedPlan { method, action } = resolve_plan(tool, &resolved_path);
@@ -534,8 +544,8 @@ mod tests {
     fn wrangler_install_preview_plan_id_is_stable_across_calls() {
         let def = tool_definition(ToolId::Wrangler);
         let runners = ResolvedRunners::resolve();
-        let a = build_install_preview(def, ToolId::Wrangler, &runners);
-        let b = build_install_preview(def, ToolId::Wrangler, &runners);
+        let a = build_install_preview(def, ToolId::Wrangler, &runners).unwrap();
+        let b = build_install_preview(def, ToolId::Wrangler, &runners).unwrap();
         assert_eq!(a.plan_id, b.plan_id);
         assert_eq!(a.will_run, b.will_run);
     }
