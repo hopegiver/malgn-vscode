@@ -73,3 +73,9 @@
 - 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
   — 이번 라운드 집중: RV-05(b) 반론 판정 — 회전 백업의 옛 키(계약 G: 48시간 유예)와 Clear 경로 백업 키 제거(remove_ingest_key) 대조, 해제 뒤 env 동반 폐기 테스트.
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 1차(최초 깊이, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정. (1차 위임이 보고서 1개만 허용해 2차 라운드에서 함께 기록)
+  — 이번 라운드 집중: RT-4 새 응답형(`IngestReissueOutcome`)에 원문·mhd_ 부재, 폐기된 키가 파일에 남는 자리의 "적용된/설정됨" 표기(RV-001).
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 폐기됐을 수 있는 파일 키 표기(fileKeyLiveness), 자동 삭제하지 않는 결정 유지, [허브 연결 열기] renew가 회전을 쓰는지(`renew.rs` self 선행).

@@ -171,3 +171,9 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
   — 이번 라운드 집중: 개발자 보고(4경로 재조회·고친 칸만 저장·6키 1회)를 스크래치 하네스로 재현, cargo/tsc/test:ts 직접 실행, 기존 하네스 otelIngestKey 회귀(b59dd7e 대비) 실측.
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 1차(최초 깊이, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정. (1차 위임이 보고서 1개만 허용해 2차 라운드에서 함께 기록)
+  — 이번 라운드 집중: 커밋 주장(1:1 대응·분기 고정)을 Rust 변이 7종·TS 변이 6종으로 확인. 생존 변이 M5(쓰기 실패인데 Minted, RV-004).
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-001~007 주장 대조, cargo/test:ts/tsc 직접 실행, Rust M5 재투입(이제 실패), TS 변이 10종 중 생존 T10(RV-009).

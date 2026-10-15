@@ -108,3 +108,9 @@
 - 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
   — 이번 라운드 집중: 설계 문서 233·236행 갱신과 계약 §14 Q3·G(회전 유예) 대조, 머리말 반영 범위 문구.
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 1차(최초 깊이, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정. (1차 위임이 보고서 1개만 허용해 2차 라운드에서 함께 기록)
+  — 이번 라운드 집중: 계약 §D 1·7·10·13, 허브 513f20a `utils.js:960-962`와 앱 문구 조항 단위 대조. blocked/suspected_leak 요약이 계약 `:570` 이중방어를 놓친 것(RV-002), 낡은 주석(RV-006).
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-002 새 문구와 계약 `:570`·B4 대조, 문구가 시키는 동작과 허브 행 버튼(캡처 06) 맞물림, RV-006 주석 사실 대조.

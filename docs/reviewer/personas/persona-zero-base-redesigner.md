@@ -180,3 +180,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
   — 이번 라운드 집중: 🔵 클라이언트 dirty-diff 대신 저장 엔진의 기준값 비교(CAS) — 재조회 창·폴백 경로를 구조로 닫는 대안. RT-1 이월.
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 1차(최초 깊이, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정. (1차 위임이 보고서 1개만 허용해 2차 라운드에서 함께 기록)
+  — 이번 라운드 집중: 🔵 RT-5 키 생사 판정 단일화(`keyLiveness`를 백엔드가 계산, hub_auth 전파).
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 🔵 RT-5 재평가 — 프론트 fileKeyLiveness로 절반 진척, 백엔드 이식·hub_auth 전파는 이월.

@@ -94,3 +94,9 @@
 - 2026-10-15 / target_id `r19-otel-server-env` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r19-otel-server-env-2026-10-15-r2.md`
   — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
   — 이번 라운드 집중: 이벤트 뒤 입력칸 60000·5000 안내 사라짐, 6키 안내 화면당 1회(설정 미연동/적용됨, 홈) DOM 계수.
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 1차(최초 깊이, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다. 6대 요소 무수정. (1차 위임이 보고서 1개만 허용해 2차 라운드에서 함께 기록)
+  — 이번 라운드 집중: 캡처 01~10 상태·문구 대조, 재연결·차단 상태에서 "폐기"와 "적용된/설정됨/연결됨" 공존(RV-001, RV-003).
+- 2026-10-15 / target_id `r20-otel-revoke-align` / 2차(재검토, 풀패널 — Sensitive) / `docs/reviewer/review-r20-otel-revoke-align-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 재검토 표면을 그대로 덮는다. 6대 요소 무수정.
+  — 이번 라운드 집중: 캡처 01~07 쌍 대조(01/04, 05/06, 02/03), 설정 화면 같은 문장 중복·managed 안내 잔존(RV-008), openHubConnection 경합(RV-010).
