@@ -170,7 +170,7 @@ fn sandbox_roundtrip_real_nodejs_org() {
     let run = app_node::run_pinned(&latest.to_tag());
     println!("=== [2] 갱신 실행 {:?} exit={:?}\n{}", started.elapsed(), run.exit_code, run.stdout);
     assert_eq!(run.exit_code, Some(0), "stderr: {}", run.stderr);
-    assert!(run.stdout.contains("한 단계 롤백용"), "이전 버전 보존 안내가 있어야 합니다");
+    assert!(run.stdout.contains("한 단계 보관"), "이전 버전 보존 안내가 있어야 합니다");
     assert_eq!(std::fs::read_link(layout.current_link()).unwrap().to_string_lossy(), latest.to_tag());
     assert!(layout.version_dir(older).join("bin").join("node").exists(), "이전 버전은 한 단계 남아야 합니다");
 

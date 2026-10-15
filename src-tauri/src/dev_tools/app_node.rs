@@ -261,7 +261,7 @@ fn update_preview_for_tag(
     let current_label = installed.map(|v| v.to_tag()).unwrap_or_else(|| installed_plain.to_string());
     let notes = if newer_available {
         format!(
-            "새 LTS {tag}이(가) 있습니다(현재 {current_label}). nodejs.org 공식 배포본을 내려받아 SHA256과 코드서명(Team ID HX7739G8FX)을 확인한 뒤 {}에 설치하고 `current`를 새 버전으로 전환합니다. 이전 버전은 한 단계 남겨 둡니다. 확인에 실패하면 현재 설치를 그대로 둡니다.",
+            "새 LTS {tag}이(가) 있습니다(현재 {current_label}). nodejs.org 공식 배포본을 내려받아 SHA256과 코드서명(Team ID HX7739G8FX)을 확인한 뒤 {}에 설치하고 `current`를 새 버전으로 전환합니다. 이전 버전은 한 단계 보관하며 다음 업데이트 때 정리됩니다. 확인에 실패하면 현재 설치를 그대로 둡니다.",
             install_dir_display(tag)
         )
     } else {
@@ -318,7 +318,7 @@ pub(crate) fn run_pinned_with(
                     if report.already_installed { " — 이미 온전히 설치되어 있어 변경하지 않았습니다" } else { "" }
                 )];
                 if let Some(prev) = report.previous.filter(|p| *p != report.version) {
-                    lines.push(format!("이전 버전 {}은(는) 한 단계 롤백용으로 남겨 둡니다.", prev.to_tag()));
+                    lines.push(previous_kept_line(prev));
                 }
                 lines.extend(report.log);
                 lines.join("\n")
@@ -335,6 +335,12 @@ pub(crate) fn run_pinned_with(
             out
         }
     }
+}
+
+/// 업데이트 뒤 이전 버전을 남겨 두었다는 안내. 되돌리는(롤백) 액션은 없으므로 "롤백용"이라고
+/// 약속하지 않고, 보관 사실과 정리 시점만 말한다(정리는 다음 설치의 `prune_versions`).
+fn previous_kept_line(prev: NodeVersion) -> String {
+    format!("이전 버전 {}은(는) 한 단계 보관합니다(다음 업데이트 때 정리됩니다).", prev.to_tag())
 }
 
 fn failed_output(message: String, cancelled: bool) -> ProcessRunOutput {
@@ -440,6 +446,20 @@ mod tests {
         assert_eq!(out.exit_code, Some(1));
         assert!(failure_message(&out).contains("취소"));
         assert!(!layout.base.exists(), "취소는 아무 흔적도 남기지 않아야 합니다");
+    }
+
+    // ── RV-004: 실행 경로가 없는 기능(롤백)을 약속하지 않는다 ──
+
+    #[test]
+    fn previous_version_texts_do_not_promise_a_rollback_feature() {
+        let prev = NodeVersion::parse_tag("v24.21.0").unwrap();
+        let line = previous_kept_line(prev);
+        assert!(line.contains("v24.21.0") && line.contains("보관"), "{line}");
+        assert!(!line.contains("롤백"), "{line}");
+        let args = vec![UPDATE_ARG.to_string()];
+        let preview = update_preview_for_tag(node_def(), "/r", &args, "24.21.0", "v24.22.0").unwrap();
+        assert!(preview.notes.contains("보관"), "{}", preview.notes);
+        assert!(!preview.notes.contains("롤백"), "{}", preview.notes);
     }
 
     // ── RV-001: 취소는 호출 시점에 진행 중이던 작업만 멈춘다 ──

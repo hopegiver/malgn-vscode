@@ -57,13 +57,13 @@ fn install_places_version_flips_current_and_follows_the_verification_order() {
 }
 
 #[test]
-fn install_from_previous_version_keeps_previous_for_rollback_and_flips_current() {
+fn install_from_previous_version_keeps_previous_one_step_and_flips_current() {
     let fx = Fixture::new("upgrade");
     fx.seed_prior_install(PRIOR);
     let report = fx.install_ok();
     assert_eq!(report.previous, Some(PRIOR));
     assert_eq!(read_current_tag(&fx.layout), Some(fx.version));
-    // 이전 버전은 한 단계 롤백용으로 남고, 그보다 오래된 버전은 정리된다.
+    // 이전 버전은 한 단계 보관되고(되돌리는 기능은 없다), 그보다 오래된 버전은 정리된다.
     assert!(fx.layout.version_dir(PRIOR).join("MARKER").is_file());
     assert_eq!(
         std::fs::read_to_string(fx.layout.npm_global().join("lib").join("KEEP")).unwrap(),
