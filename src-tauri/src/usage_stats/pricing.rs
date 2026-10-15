@@ -1,6 +1,6 @@
 // ---------------- 단가표 ----------------
 // 출처: https://platform.claude.com/docs/en/about-claude/pricing.md
-// (WebFetch로 확인, 확인일 2026-09-24). USD/1M 토큰, Anthropic 1st-party
+// (WebFetch로 확인, 확인일 2026-10-15). USD/1M 토큰, Anthropic 1st-party
 // Claude API(직접 호출) 기준 — Bedrock/Google Cloud/Foundry 등 클라우드
 // 파트너 요금제나 배치/Fast mode 할인은 반영하지 않는다(이 로그가 그쪽
 // 경로로 호출됐는지 구분할 필드가 없다 — 표준가로 근사한다).
@@ -17,7 +17,8 @@
 // 과대청구 방향은 아니다.
 //
 // 캐시읽기 배율은 기본 0.1x(=아래 cache_read 열)이지만 예외가 있다:
-// Opus 5.5는 0.05x($0.20/MTok), Fable 5.1/Mythos 5.1은 0.025x($0.25/MTok).
+// Opus 5.5는 0.05x($0.20/MTok), Sonnet 5.5는 0.05x($0.10/MTok), Fable 5.1/
+// Mythos 5.1은 0.025x($0.25/MTok).
 // 아래 표의 cache_read 값은 이미 그 배율까지 곱해진 절대 단가다.
 //
 // 표에 없는 모델(단가표에 없는 구모델·별칭 "opus"/"sonnet"/"haiku" 등)은
@@ -27,8 +28,9 @@
 // 이번 과대청구 버그의 원인이었다).
 //
 // 실측(이 머신 최근 30일, message.model 분포): claude-sonnet-5, claude-opus-5,
-// claude-opus-5-5, claude-haiku-4-5-20251001(날짜 접미사 있음) 네 가지가
-// 전부이고 "<synthetic>"(usage 전부 0)이 소수 섞여 있다. PM이 언급한 "opus"/
+// claude-opus-5-5, claude-sonnet-5-5, claude-haiku-4-5-20251001(날짜 접미사
+// 있음) 다섯 가지가 주를 이루고(2026-10-15 재실측: sonnet-5-5가 토큰의 약 11%라
+// 단가표에 추가) "<synthetic>"(usage 전부 0)이 소수 섞여 있다. PM이 언급한 "opus"/
 // "sonnet" 짧은 별칭은 실측 결과 message.model 필드의 실제 값이 아니라
 // 도구 호출 프롬프트 문자열(`"model":"opus"` 텍스트가 tool_use input에
 // 인용됨) grep 오탐이었다 — `python3 json.loads`로 top-level message.model만
@@ -142,6 +144,17 @@ const PRICE_TABLE: &[(&str, ModelPrice)] = &[
             cache_write_5m: 18.75,
             cache_write_1h: 30.0,
             cache_read: 1.50,
+        },
+    ),
+    (
+        "claude-sonnet-5-5",
+        ModelPrice {
+            display_name: "Sonnet 5.5",
+            input: 2.0,
+            output: 10.0,
+            cache_write_5m: 2.50,
+            cache_write_1h: 4.0,
+            cache_read: 0.10, // 0.05x 예외
         },
     ),
     (
@@ -365,6 +378,34 @@ mod tests {
             (r.cost_usd - 4.20).abs() < 1e-9,
             "opus-5-5 비용: {}",
             r.cost_usd
+        );
+    }
+
+    // claude-sonnet-5-5 — 캐시읽기 예외(0.05x=0.10/MTok) 포함 전 항목 확인.
+    // input=1_000_000, output=100_000, cache_write_5m=200_000,
+    // cache_write_1h=100_000, cache_read=1_000_000
+    //   = 1.0*2.0 + 0.1*10.0 + 0.2*2.50 + 0.1*4.0 + 1.0*0.10
+    //   = 2.0 + 1.0 + 0.5 + 0.4 + 0.1 = 4.0
+    #[test]
+    fn calculates_sonnet_5_5_cost_with_cache_read_exception() {
+        let r = cost_for_usage(
+            "claude-sonnet-5-5",
+            1_000_000,
+            100_000,
+            200_000,
+            100_000,
+            1_000_000,
+        );
+        assert!(r.pricing_matched);
+        assert!(
+            (r.cost_usd - 4.0).abs() < 1e-9,
+            "sonnet-5-5 비용: {}",
+            r.cost_usd
+        );
+        // "claude-sonnet-5"로 잘못 매칭되지 않는지(캐시읽기 0.10 vs 0.20) 확인.
+        assert_eq!(
+            price_for_model("claude-sonnet-5-5").unwrap().display_name,
+            "Sonnet 5.5"
         );
     }
 
