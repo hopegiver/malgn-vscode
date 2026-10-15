@@ -75,3 +75,7 @@
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
   — 재사용 사유: P2-4 배너·P2-6 빈 상태가 로딩/판정 불가/확정 미충족을 구분해 말하는가가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: list_installed_plugins의 읽기 실패=빈 배열 붕괴가 "설치되어 있지 않아" 단정으로 새는 경로(RV-003), 화면 간 Claude 설치 정의 불일치(RV-009), 로딩 침묵 캡처 열람.
+
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
+  — 재사용 사유: 배너·빈 상태·동의 문구가 단정 없이 실제와 맞는가가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 플러그인 배너 "찾지 못했습니다", usage 상태바↔본문 일치. 동의는 "업데이트(버전 미확인)"인데 결과는 "신규 설치"로 적히는 동사 불일치 RV-010.

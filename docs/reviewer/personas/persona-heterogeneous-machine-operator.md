@@ -70,3 +70,7 @@ Intel 맥 6대와 nvm·volta·corepack이 뒤섞인 머신이 아직 살아 있�
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
   — 재사용 사유: mac(Node 구조적 manual)·Windows(winget 불신뢰 미리보기)에서 연쇄가 실제로 이어지는지, 막다른 골목은 없는지가 과녁. 6대 요소 무수정.
   — 이번 라운드 집중: mac 공식 pkg(/usr/local 루트 소유)→NOT_WRITABLE stuck 문구(RV-002), nvm 설치 후 "다시 확인" 약속 미이행(RV-005), Windows npm.cmd 고정 후보로 재조회 후 run 전환.
+
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
+  — 재사용 사유: mac Homebrew run 모양·nvm 안내 한정이 실제 탐지 경로와 맞는가가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: nodeUnverified mac=run 픽스처, brew 미리보기 신뢰/winget 불신뢰 스텁 분리, nvm 계열 "터미널에서 직접" 안내.

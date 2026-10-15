@@ -146,3 +146,7 @@ QA 리드 출신. 예전에 "배포 성공 100%" 대시보드를 믿고 릴리�
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
   — 재사용 사유: 하네스 픽스처가 백엔드가 실제로 만들 수 있는 모양인지(목표 6)와 주석·커밋 주장이 코드와 일치하는지가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: nodeUnverified 픽스처(win/manual만) vs mac Homebrew run 모양, usage not-installed 픽스처의 check_dev_tools 모순(RV-004), check-failed __throw 픽스처의 도달성(RV-003).
+
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
+  — 재사용 사유: "4건 해소" 주장과 새 단언의 판별력 대조가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 16efbdd를 별도 worktree로 풀어 새 하네스를 돌려 RV-001/003/005 단언이 옛 코드에서 실패함을 확인(devToolsOrder 7건, autonomousTasks 1건). usage는 픽스처 수정이라 소스로 갈리지 않음. 낡은 주석 RV-011.

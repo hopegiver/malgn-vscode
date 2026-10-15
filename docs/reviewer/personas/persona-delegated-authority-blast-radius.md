@@ -70,3 +70,7 @@
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15.md`
   — 재사용 사유: P2-9 이어서 설치가 사용자 머신에서 설치 명령을 이어 실행하는 새 경로라, "넘긴 권한을 사전에 아는가(이름 적힌 동의)"가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 동의 목록 == 실행 목록 불변식(offerInstallChain), 거절·바깥 클릭 시 0실행, previewAndRun 공유로 기존 신뢰성/다중영향 게이트 유지, 배치 요약의 blocked 필터 범위(RV-001).
+
+- 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
+  — 재사용 사유: 반영(planBatchInstall 일반화·handled에서 blocked 제거)이 동의 경계를 넓혔는가가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: unverifiedTargets 일반화가 실행 집합을 바꾸지 않음(문구만 이동), blocked 확대=좁아짐, handled 변경 뒤 새 연쇄 진입로도 이름 적힌 동의+previewAndRun. 잠재 RV-012(blocked 한 단계만 전파).
