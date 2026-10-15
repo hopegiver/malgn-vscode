@@ -200,7 +200,12 @@ struct RunState {
     token_retried: bool,
     /// 409 `ALREADY_ROTATED`/404 `NO_DEVICE_CREDENTIAL` 뒤 GET부터 다시 판정했다(점검당 1회, D-9).
     reeval_used: bool,
+    /// 이번 점검에서 서버에 보낸 rotate 요청 수. 응답 유실 재시도를 포함해 최대 `MAX_ROTATES_PER_CHECK`회(D 머리말).
+    rotate_calls: u8,
 }
+
+/// 한 번의 점검에서 rotate는 응답 유실 재시도를 포함해 최대 2회다(계약 D 머리말).
+const MAX_ROTATES_PER_CHECK: u8 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mint {
@@ -503,6 +508,13 @@ impl LinkEngine {
 
         let mut lost_in_this_check: u8 = 0;
         loop {
+            if kind == Mint::Rotate {
+                // 이 점검에서 rotate를 이미 상한만큼 보냈다 — 점검을 끝낸다(다음 점검의 4번에 맡긴다).
+                if st.rotate_calls >= MAX_ROTATES_PER_CHECK {
+                    return Phase::Idle;
+                }
+                st.rotate_calls += 1;
+            }
             let result = match kind {
                 Mint::Create { confirm } => env.api.create(token.expose(), env.label, confirm),
                 Mint::Rotate => env.api.rotate(token.expose()),
@@ -519,7 +531,7 @@ impl LinkEngine {
                             // D-5: 응답 유실이면 즉시 1회 다시 보낸다. 다만 직전 점검이 유실로 끝났다면
                             // 재시도 없이 1회만 보낸다 — 그래야 자동으로 만들어지는 키가 최대 3개(2+1)다.
                             let previous_lost = self.with(|m| m.lost_checks) > 0;
-                            if lost_in_this_check == 1 && !previous_lost {
+                            if lost_in_this_check == 1 && !previous_lost && st.rotate_calls < MAX_ROTATES_PER_CHECK {
                                 continue;
                             }
                             let n = self.with(|m| {

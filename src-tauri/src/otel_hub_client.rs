@@ -741,7 +741,9 @@ mod tests {
     fn malformed_device_token_is_never_sent() {
         let (origin, seen) = spawn(vec![json(200, GET_OK)]);
         let api = ReqwestIngestApi::new(&origin).unwrap();
-        for bad in ["", "mhk_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCDe", "mhd_short", "mhd_a\r\nX: 1"] {
+        // 수집키(mhk_) 모양은 기기 토큰이 아니다 — 가짜 값은 조립해 만든다(시크릿 스캔 오탐 방지).
+        let ingest_shaped = format!("mhk_{}", "A".repeat(43));
+        for bad in ["", ingest_shaped.as_str(), "mhd_short", "mhd_a\r\nX: 1"] {
             assert_eq!(api.get(bad).unwrap_err(), ApiError::NotSent, "{bad:?}");
         }
         assert!(seen.lock().unwrap().is_empty());

@@ -476,6 +476,33 @@ fn d5_write_failure_state_is_not_persisted_a_new_engine_starts_clean() {
     assert_eq!(rig.api.count("rotate"), 2, "재기동 뒤 첫 점검의 4번에서 회전 1회");
 }
 
+#[test]
+fn d5_one_check_sends_at_most_two_rotate_requests_including_the_loss_retry() {
+    // 계약 D 머리말: "한 번의 점검에서 rotate는 5번의 재시도를 포함해 최대 2회".
+    // ALREADY_ROTATED로 재판정한 뒤의 rotate가 유실돼도 3번째 rotate(재시도)를 보내지 않는다.
+    let rig = Rig::new("d5-max-two");
+    write_ready(&rig.path, None);
+    rig.api.push_get(state_has_current(&prefix_of('Z'), false));
+    rig.api.push_rotate(Err(http(409, "ALREADY_ROTATED")));
+    rig.api.push_get(state_has_current(&prefix_of('Y'), false));
+    rig.api.push_rotate(Err(ApiError::Lost));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Transient);
+    assert_eq!(rig.api.count("rotate"), 2, "세 번째 rotate는 없다");
+    assert_eq!(engine.with(|m| m.lost_checks), 1, "유실로 끝난 점검으로 센다");
+
+    // 유실 재시도 2회로 상한을 채운 뒤에는 재판정(ALREADY_ROTATED)이 와도 더 보내지 않는다.
+    let rig = Rig::new("d5-max-two-b");
+    write_ready(&rig.path, None);
+    rig.api.push_get(state_has_current(&prefix_of('Z'), false));
+    rig.api.push_rotate(Err(ApiError::Lost));
+    rig.api.push_rotate(Err(http(409, "ALREADY_ROTATED")));
+    rig.api.push_get(state_has_current(&prefix_of('Y'), false));
+    let engine = LinkEngine::new();
+    assert_eq!(run(&engine, &rig, Trigger::Startup, T0), Phase::Idle);
+    assert_eq!(rig.api.count("rotate"), 2);
+}
+
 // ======================= D-6 TOKEN_SUPERSEDED =======================
 
 #[test]

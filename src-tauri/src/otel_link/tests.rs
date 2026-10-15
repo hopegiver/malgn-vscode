@@ -869,6 +869,10 @@ mod live_probe {
     //!
     //! 이 모듈에는 GET 호출만 있다 — POST·rotate·DELETE를 부르는 코드가 없고, `reqwest` 클라이언트의
     //! 메서드 호출이 `.get(`뿐이다. 실행: `cargo test -- --ignored live_get_structure_probe --nocapture`
+    //!
+    //! 주의: 테스트 바이너리는 서명된 앱이 아니라서 macOS가 키체인 접근 허용 대화상자를 띄울 수 있다(사람이
+    //! 허용해야 진행된다). 같은 일을 서명된 앱의 CLI 모드로 하는 `scripts/live-get-ingest-credential.sh`가
+    //! 기본 수단이다.
 
     use crate::hub_auth::consts::hub_origin;
     use crate::hub_auth::store::{load, KeyringStore};
@@ -930,6 +934,14 @@ mod live_probe {
         }
         Ok((status, lines))
     }
+}
+
+#[test]
+fn the_shape_the_live_hub_returns_for_a_device_without_a_key_parses_as_auto() {
+    // 실제 허브(GET, 이 PC 기기 토큰)가 돌려준 구조: 키 4개(current·last_revoked·issue_policy·blocked_reason),
+    // current=null, last_revoked=null, issue_policy="auto", blocked_reason=null.
+    let s = crate::otel_hub_client::parse_state(r#"{"current":null,"last_revoked":null,"issue_policy":"auto","blocked_reason":null}"#).unwrap();
+    assert_eq!((s.current, s.issue_policy, s.blocked_reason), (None, IssuePolicy::Auto, None));
 }
 
 #[test]
