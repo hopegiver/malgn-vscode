@@ -79,3 +79,9 @@
 - 2026-10-15 / target_id `r14-install-chain-autonomy-prereq-usage-empty` / 2차(재검토, 축소 — Sensitive) / `docs/reviewer/review-r14-install-chain-prereq-usage-empty-2026-10-15-r2.md`
   — 재사용 사유: 배너·빈 상태·동의 문구가 단정 없이 실제와 맞는가가 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 플러그인 배너 "찾지 못했습니다", usage 상태바↔본문 일치. 동의는 "업데이트(버전 미확인)"인데 결과는 "신규 설치"로 적히는 동사 불일치 RV-010.
+- 2026-10-15 / target_id `r17-otel-autolink` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다(신규 리스크 표면은 자원 소비 루프뿐 — 별도 신규 페르소나로 분리). 6대 요소 무수정.
+  — 이번 라운드 집중: 체크리스트 OTEL 행·설정 패널 상태가 엔진 단계와 맞는가 — 파일에 폐기된 키가 남은 채 confirm_required일 때의 '적용됨/수신 확인됨' 표시, 일시 오류가 정상 키를 '실패'로 덮는 표시.
+- 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: 캡처 17~26·갱신 04/05/09/10 열람. 폐기 키 잔존 표시(RV-01) 해소, 일시 원인 notice(RV-07)와 맞물린 폐기 판정 소실(RV-09), 키 상태 배지 톤 불일치·잠긴 입력칸 외형(N-8).

@@ -165,3 +165,9 @@ R1~R4를 못 채운 제언은 스스로 폐기한다.
 - 2026-10-15 / target_id `r16-otel-link-pre-contract` / 2차(재검토, 풀패널 — 직전 Major 존재로 축소 불가) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15-r2.md`
   — 재사용 사유: 같은 표면의 반영 확인, 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: RT-1·RT-2 이월 확인. 자동 발급 경로가 키만 주입해 텔레메트리 꺼짐 경고로 끝나는 구조(N-5)를 계약 WBS 쟁점으로.
+- 2026-10-15 / target_id `r17-otel-autolink` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다(신규 리스크 표면은 자원 소비 루프뿐 — 별도 신규 페르소나로 분리). 6대 요소 무수정.
+  — 이번 라운드 집중: settings.json 평문 env 주입 + 불일치 시 회전 구조 자체를 otelHeadersHelper(앱 CLI가 키체인에서 읽음)로 대체하는 안, 자동/수동 키 소유 모드 분리.
+- 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: 🔵 RT-3 — phase 한 칸이 '마지막 점검 결과'와 '키에 대한 허브 판정'을 함께 싣는 구조를 두 축(key_verdict / last_outcome)으로 분리 제안. RT-1 이월 확정.

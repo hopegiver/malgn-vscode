@@ -58,3 +58,9 @@
 - 2026-10-15 / target_id `r16-otel-link-pre-contract` / 2차(재검토, 풀패널 — 직전 Major 존재로 축소 불가) / `docs/reviewer/review-r16-otel-link-pre-contract-2026-10-15-r2.md`
   — 재사용 사유: 같은 표면의 반영 확인, 신규 리스크 표면 없음. 6대 요소 무수정.
   — 이번 라운드 집중: RV-004 선검사(EndpointNotHub) 확인, 발급 전 정지·파일/백업 불변 테스트 대조. 선검사가 앱 기본값으로 빈 엔드포인트를 허브로 간주하고 범용 OTEL_EXPORTER_OTLP_ENDPOINT를 안 읽는 빈틈(RV-005).
+- 2026-10-15 / target_id `r17-otel-autolink` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다(신규 리스크 표면은 자원 소비 루프뿐 — 별도 신규 페르소나로 분리). 6대 요소 무수정.
+  — 이번 라운드 집중: mhd_/mhk_ 경계(오류·Debug·이벤트 payload·로그·UI 상태), mint_gate의 목적지 검사(RV-005 해소 확인과 traces 변형), 리다이렉트 차단·헤더 주입 방지, 라이브 GET 스크립트의 토큰 취급.
+- 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: 해제 시 세대 증가·메모리·키 삭제 한 임계구역, 해제 응답 `ingest_key` 열거형의 비밀 미탑재, traces 목적지 선검사(RV-04), 수동 키 거절 문구의 입력값 비인용.

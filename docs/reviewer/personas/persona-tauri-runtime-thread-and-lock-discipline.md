@@ -64,3 +64,6 @@ Tauri v1→v2 데스크톱 앱을 3년 운영하며 "버튼 하나 눌렀더니 
 - 2026-10-13 / target_id `r10-process-drain-unify-and-fallback-note` / 2차(재검토, 축소) / `docs/reviewer/review-r10-process-drain-unify-and-fallback-note-2026-10-13-r2.md`
   — 재사용 사유: 정정 주석의 워치독·취소 해제 경로 서술 확인이 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 순서 무변경 확인, turn/auth 해제 수단 비대칭을 RT-2 설계 입력으로 기록.
+- 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: RV-05 epoch/gate 락 순서(run→gate→SETTINGS_WRITE_LOCK, gate→mem) 교착 부재 확인, `otel_settings_save` run_blocking 전환, 낡은 점검 오류 분기의 메모리 쓰기 stale 확인 누락(N-7).

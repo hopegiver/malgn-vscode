@@ -96,3 +96,9 @@
 - 2026-10-14 / target_id `r12-otlp-ingest-key` / 3차(재검토 확인, 풀패널 유지 — Sensitive) / `docs/reviewer/review-r12-otlp-ingest-key-3rd-2026-10-14.md`
   — 재사용 사유: 반영분이 문구·하네스·캡처뿐이라 새 리스크 표면 없음, 역할개념 그대로. 6대 요소 무수정.
   — 이번 라운드 집중: 앱 문구·주석 3주장(웹 발급 화면 없음/관리자 대리 발급 불가/관리자 폐기 가능)을 ingest-credentials.js 권한 분기와 대조 — RV-006 해소.
+- 2026-10-15 / target_id `r17-otel-autolink` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 역할개념이 이번 표면을 그대로 덮는다(신규 리스크 표면은 자원 소비 루프뿐 — 별도 신규 페르소나로 분리). 6대 요소 무수정.
+  — 이번 라운드 집중: 허브 계약 개정 3.1 요약 A~H 조항 단위 대조 — 요청 측(경로·Bearer·타임아웃), D-1~D-15 분기와 테스트 실재, D-12 '다음 기동 때 GET 1회' 이탈, D-13 해제 순서.
+- 2026-10-15 / target_id `r17-otel-autolink` / 2차(재검토, 풀패널 증분 — Sensitive) / `docs/reviewer/review-r17-otel-autolink-2026-10-15-r2.md`
+  — 재사용 사유: INDEX 대조 결과 같은 target_id 반영 확인이고 역할개념이 이번 표면을 그대로 덮는다. 신규 리스크 표면 없음. 6대 요소 무수정.
+  — 이번 라운드 집중: D-1(폐기 판정 우선)·D-4(수동 키 교체 경로 차단)·D-12(재감시 주기 — 계약 문구와의 차이 N-9)·D-13(해제 경합) 반영 대조.
