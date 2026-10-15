@@ -104,3 +104,10 @@ export async function installDevTool(toolId: string, planId: string): Promise<De
 export async function openManualInstruction(toolId: string, execute: boolean): Promise<TerminalLaunchResult> {
   return invoke<TerminalLaunchResult>('open_manual_instruction', { toolId, execute });
 }
+
+// 진행 중인 "앱 내장 Node 설치"(macOS, Homebrew 없는 기기)를 취소한다. 다운로드·검증·해제
+// 어느 단계든 중단하고 임시 파일을 지우며 기존 설치는 그대로 둔다. 진행 중인 설치가 없으면
+// 아무 일도 하지 않는다. (화면에서 이 함수를 부르는 취소 버튼은 아직 없다 — R22 반환 메모 참조.)
+export async function cancelNodeInstall(): Promise<void> {
+  return invoke<void>('cancel_node_install');
+}

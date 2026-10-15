@@ -16,10 +16,12 @@ const BREW_CANDIDATES: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/br
 // mac에서는 %토큰%이 없는 문자열을 그대로 반환하고, 그 문자열은 mac
 // 파일시스템에 존재하지 않는다) — 무변경 보장은 platform.rs의 골든 테스트가
 // 아니라 이 사실 자체(문자열이 절대 실존 경로와 겹치지 않음)에 있다.
-const NPM_CANDIDATES: [&str; 5] = [
+const NPM_CANDIDATES: [&str; 6] = [
     "/opt/homebrew/bin/npm",
     "/usr/local/bin/npm",
     "~/.npm-global/bin/npm",
+    // P2-3b: 앱이 설치한 Node(P2-3a)의 npm. Homebrew npm이 있으면 그쪽이 먼저 잡힌다.
+    "~/.local/share/malgn-agent/node/current/bin/npm",
     r"C:\Program Files\nodejs\npm.cmd",
     r"%APPDATA%\npm\npm.cmd",
 ];
@@ -43,8 +45,27 @@ pub(crate) fn resolve_runner_path(runner: Runner, self_binary_path: Option<&str>
         // 설계 §B.2: winget 해석은 gh 하나만 쓴다. 여기서는 러너 종류로만
         // 분기하고 소비처(install_candidates)가 어떤 도구에 쓸지 결정한다.
         Runner::Winget => resolve_binary_expand_home(&WINGET_CANDIDATES, "winget"),
+        Runner::AppNode => super::app_node::runner_path(),
         Runner::SelfBinary => self_binary_path.map(|s| s.to_string()),
     }
+}
+
+/// 갱신 대상 도구의 위치까지 고려한 러너 해석: npm 러너인데 도구가 앱의 npm 전역 prefix 안에
+/// 있으면 앱 관리 npm을 우선한다(app_node::app_npm_for_global_package). 그 외에는 기존
+/// `resolve_runner_path` 그대로다.
+pub(crate) fn resolve_runner_for_tool(
+    runner: Runner,
+    self_binary_path: Option<&str>,
+    canonical_tool_path: &Path,
+) -> Option<String> {
+    if runner == Runner::Npm {
+        if let Some(app_npm) =
+            super::app_node::app_npm_for_global_package(super::app_node::mac_layout().as_ref(), canonical_tool_path)
+        {
+            return Some(app_npm);
+        }
+    }
+    resolve_runner_path(runner, self_binary_path)
 }
 
 /// brew/npm/pnpm/winget 실행기 경로를 화면 1회 로드에서 한 번만 해석해 담아
@@ -83,6 +104,8 @@ pub(crate) struct ResolvedRunners {
     pub(crate) npm: Option<String>,
     pub(crate) pnpm: Option<String>,
     pub(crate) winget: Option<String>,
+    /// macOS에서 앱이 직접 Node를 설치하는 러너(P2-3a). 값은 관리 폴더 경로(표시·plan_id용).
+    pub(crate) app_node: Option<String>,
 }
 
 impl ResolvedRunners {
@@ -92,6 +115,7 @@ impl ResolvedRunners {
             npm: resolve_runner_path(Runner::Npm, None),
             pnpm: resolve_runner_path(Runner::Pnpm, None),
             winget: resolve_runner_path(Runner::Winget, None),
+            app_node: resolve_runner_path(Runner::AppNode, None),
         }
     }
 
@@ -101,6 +125,7 @@ impl ResolvedRunners {
             Runner::Npm => self.npm.clone(),
             Runner::Pnpm => self.pnpm.clone(),
             Runner::Winget => self.winget.clone(),
+            Runner::AppNode => self.app_node.clone(),
             // SelfBinary는 설치 후보에 쓰이지 않는다(설치 시점엔 자기 자신의
             // 바이너리가 아직 없다) — install_candidates()의 어떤 행도 이
             // 변형을 쓰지 않으므로 항상 None으로 충분하다.
@@ -135,6 +160,27 @@ impl ResolvedRunners {
 /// "prefix" 개념이 없어(winget이 스스로 설치 경로를 관리) 와일드카드가
 /// `true`(검사 생략)로 처리한다(설계 §D.5, 새 분기 불필요).
 pub(crate) fn install_prefix_writable(tool: ToolId, runner: Runner, runner_path: &str) -> bool {
+    let layout = super::app_node::mac_layout();
+    install_prefix_writable_with(layout.as_ref(), tool, runner, runner_path)
+}
+
+/// `install_prefix_writable`의 본체 — 앱 배치(layout)를 주입할 수 있게 분리했다(테스트용).
+///
+/// P2-3b: 러너가 앱 관리 Node의 npm이면 전역 설치는 node 폴더가 아니라 `npm-global`(env로
+/// 주입되는 prefix)에 쓰이므로 그 폴더를 본다 — 앱이 소유한 사용자 공간이라 정상이면 항상
+/// 쓰기 가능하고, 그래서 npm 연쇄 설치(claude 등)가 Manual로 강등되지 않는다.
+pub(crate) fn install_prefix_writable_with(
+    layout: Option<&super::node_install::Layout>,
+    tool: ToolId,
+    runner: Runner,
+    runner_path: &str,
+) -> bool {
+    if runner == Runner::Npm && super::app_node::is_app_managed_runner(layout, runner_path) {
+        if let Some(layout) = layout {
+            let global = layout.npm_global();
+            return !global.exists() || is_writable_by_current_user(&global);
+        }
+    }
     let Some(prefix) = Path::new(runner_path).parent().and_then(Path::parent) else {
         return true;
     };
@@ -328,5 +374,71 @@ mod tests {
     fn path_for_self_binary_is_always_none() {
         let runners = ResolvedRunners::resolve();
         assert_eq!(runners.path_for(Runner::SelfBinary), None);
+    }
+
+    // ── P2-3b ──
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn npm_candidates_include_the_app_managed_npm_and_its_dir_is_on_the_default_mac_path() {
+        use super::super::platform::{default_path_dirs, expand_path_tokens, EnvRoots, Platform};
+        let roots = EnvRoots {
+            home: Some(std::path::PathBuf::from("/Users/hopegiver")),
+            appdata: None,
+            local_appdata: None,
+            program_files: None,
+            program_files_x86: None,
+            pnpm_home: None,
+            system_root: None,
+        };
+        let app_candidates: Vec<&&str> = NPM_CANDIDATES
+            .iter()
+            .filter(|c| c.starts_with(super::super::node_install::BASE_TILDE))
+            .collect();
+        assert_eq!(app_candidates.len(), 1, "앱 관리 npm 후보가 정확히 하나여야 합니다");
+        let expanded = expand_path_tokens(Platform::Mac, app_candidates[0], &roots).unwrap();
+        let dir = Path::new(&expanded).parent().unwrap().to_string_lossy().to_string();
+        assert!(default_path_dirs(Platform::Mac, &roots).contains(&dir), "{dir}가 기본 PATH에 없습니다");
+        // Homebrew npm이 앱 npm보다 앞선다(Homebrew가 있는 기기의 기존 동작 유지).
+        let pos = |needle: &str| NPM_CANDIDATES.iter().position(|c| *c == needle).unwrap();
+        assert!(pos("/opt/homebrew/bin/npm") < pos(app_candidates[0]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_managed_npm_install_check_looks_at_npm_global_so_chain_installs_are_not_demoted() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("r22-runners-writable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let layout = super::super::node_install::Layout::for_home(&tmp);
+        let node_modules = layout.node_root().join("v24.22.0").join("lib").join("node_modules");
+        std::fs::create_dir_all(&node_modules).unwrap();
+        std::os::unix::fs::symlink("v24.22.0", layout.current_link()).unwrap();
+        std::fs::create_dir_all(layout.npm_global()).unwrap();
+        let npm = layout.node_bin_dir().join("npm").to_string_lossy().to_string();
+
+        // 버전 폴더 안 node_modules가 읽기 전용이어도(예: root 소유 사본) 앱 전역 prefix가 쓰기 가능하면 통과.
+        std::fs::set_permissions(&node_modules, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let allowed = install_prefix_writable_with(Some(&layout), ToolId::Claude, Runner::Npm, &npm);
+        // 전역 prefix가 쓰기 불가면 그때는 막는다(검사가 살아 있다는 증거).
+        std::fs::set_permissions(layout.npm_global(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let blocked = install_prefix_writable_with(Some(&layout), ToolId::Claude, Runner::Npm, &npm);
+
+        let _ = std::process::Command::new("/bin/chmod").args(["-R", "u+rwx"]).arg(&tmp).output();
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(allowed, "앱 npm 전역 설치는 npm-global 기준으로 판정해야 합니다(node 폴더 권한과 무관)");
+        assert!(!blocked, "npm-global이 쓰기 불가면 Manual로 강등돼야 합니다");
+    }
+
+    #[test]
+    fn non_app_npm_keeps_the_existing_prefix_based_check() {
+        // 앱 배치가 있어도 Homebrew npm 경로는 기존 규칙(조부모 prefix의 lib/node_modules)을 그대로 쓴다.
+        let layout = super::super::node_install::Layout::for_home(Path::new("/Users/x"));
+        assert!(install_prefix_writable_with(
+            Some(&layout),
+            ToolId::Claude,
+            Runner::Npm,
+            "/opt/homebrew_does_not_exist_malgn/bin/npm"
+        ));
     }
 }

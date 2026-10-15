@@ -21,11 +21,13 @@
 // perform_install/perform_open_manual_instruction/check_dev_tools_blocking)은
 // `#[tauri::command]`가 아닌 평범한 함수라 안전하게 서브모듈로 옮겼다.
 mod actions;
+mod app_node;
 mod classify;
 mod contract;
 mod diagnostics;
 mod install_resolver;
 mod locks;
+mod node_install;
 mod plan_table;
 // `pub(crate)`인 이유: cli_launcher.rs(크레이트 루트, dev_tools 밖)가 이 모듈의
 // Platform/EnvRoots/quote_token 등을 터미널 열기(§E) + resolve_binary(§D.3)
@@ -49,7 +51,8 @@ use platform::Platform;
 // 경로만 쓴다) — 아래 커맨드 함수 시그니처에만 필요하므로 `pub use`로 재노출하지
 // 않고 이 파일 안에서만 쓰는 `use`로 최소화한다.
 use contract::{DevToolActionResult, DevToolPreview, DevToolStatus};
-pub(crate) use process::{build_child_path_env, run_process_with_timeout_cancellable};
+pub(crate) use app_node::{claude_child_env, NPM_GLOBAL_CLAUDE_CANDIDATE};
+pub(crate) use process::{build_child_path_env, env_refs, run_process_with_timeout_cancellable};
 
 // ==================== 1. 도구 화이트리스트 ====================
 
@@ -116,6 +119,9 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "~/.local/bin/claude",
             "~/.npm-global/bin/claude",
             "~/.claude/local/claude",
+            // P2-3b: 앱이 설치한 Node의 npm 전역 prefix(npm_config_prefix 주입 위치).
+            // 값의 정본은 app_node::NPM_GLOBAL_CLAUDE_CANDIDATE다(드리프트 가드 테스트가 대조).
+            app_node::NPM_GLOBAL_CLAUDE_CANDIDATE,
         ],
         // 설계 §B.5(미검증): 네이티브 설치기(~/.local/bin과 동형), npm 전역
         // shim, winget 앱 실행 별칭 순.
@@ -132,7 +138,13 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
         key: "node",
         label: "Node.js",
         version_args: &["--version"],
-        path_candidates: &["/opt/homebrew/bin/node", "/usr/local/bin/node"],
+        path_candidates: &[
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            // P2-3b: 앱이 사용자 공간에 설치한 Node(P2-3a). Homebrew/시스템 설치본이 있으면
+            // 그쪽이 먼저 잡힌다.
+            "~/.local/share/malgn-agent/node/current/bin/node",
+        ],
         // 설계 §B.5(미검증): nvm-windows 등 버전매니저 관리본은 앱이 못 보는 게
         // 의도된 동작이다(G4 — devtools-install-matrix §3.3과 동일 이유).
         //
@@ -209,6 +221,8 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "/usr/local/bin/pnpm",
             "~/Library/pnpm/pnpm",
             "~/.local/share/pnpm/pnpm",
+            // P2-3b: 앱 npm 전역 prefix(`npm install -g pnpm`의 결과 위치).
+            "~/.local/share/malgn-agent/npm-global/bin/pnpm",
         ],
         // 설계 §B.5(미검증): standalone 설치(winget/공식 스크립트) + npm 경유
         // 설치 순.
@@ -234,6 +248,8 @@ pub(crate) static DEV_TOOLS: [DevTool; 6] = [
             "/usr/local/bin/wrangler",
             "~/Library/pnpm/bin/wrangler",
             "~/.local/share/pnpm/bin/wrangler",
+            // P2-3b: 앱 npm 전역 prefix(pnpm이 없을 때 `npm install -g wrangler`의 결과 위치).
+            "~/.local/share/malgn-agent/npm-global/bin/wrangler",
         ],
         // 설계 §B.5(미검증): pnpm 전역 shim + npm 전역 shim 순(설치 후보 우선순위
         // — install_resolver::install_candidates의 Wrangler 행과 동일 순서).
@@ -342,6 +358,20 @@ pub async fn open_manual_instruction(
     .map_err(|e| format!("내부 작업 실행 오류: {e}"))?
 }
 
+/// 진행 중인 앱 내장 Node 설치(P2-3a)를 취소한다. 다운로드·해제·검증 어느 단계든 중단하고
+/// 스테이징을 지우며 기존 설치는 그대로 둔다. 호출 시점에 진행 중이던 작업만 멈추고(세대 카운터,
+/// app_node.rs `CancelSwitch`), 진행 중인 작업이 없으면 아무 일도 하지 않으며 이후의 미리보기·
+/// 설치도 막지 않는다.
+#[tauri::command]
+pub fn cancel_node_install() {
+    app_node::request_cancel();
+}
+
+/// 앱 종료 시(lib.rs RunEvent::ExitRequested) 진행 중인 Node 설치를 정리하도록 알린다.
+pub fn request_node_install_cancel() {
+    app_node::request_cancel();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,12 +396,17 @@ mod tests {
                 "~/.local/bin/claude",
                 "~/.npm-global/bin/claude",
                 "~/.claude/local/claude",
+                "~/.local/share/malgn-agent/npm-global/bin/claude",
             ]
         );
         let node = tool_definition(ToolId::Node);
         assert_eq!(
             node.path_candidates,
-            &["/opt/homebrew/bin/node", "/usr/local/bin/node"]
+            &[
+                "/opt/homebrew/bin/node",
+                "/usr/local/bin/node",
+                "~/.local/share/malgn-agent/node/current/bin/node",
+            ]
         );
     }
 

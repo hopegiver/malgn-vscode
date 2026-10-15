@@ -44,10 +44,12 @@ const EMAIL_TOOL_FOOTER: &str = "\n\n이메일을 보내야 하는 작업이면 
 /// `dev_tools.rs`의 Claude 도구 정의(`DEV_TOOLS`)와 값은 같지만, 그 파일이
 /// 이미 정한 관례(상수를 공유하지 않고 각자 별도로 둔다, 회귀 위험 0)를 그대로
 /// 따라 이 모듈에도 독립적으로 둔다.
-const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
+const CLAUDE_PATH_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     "~/.local/bin/claude",
+    // P2-3b: 앱이 설치한 Node의 npm 전역 prefix에 설치된 Claude(dev_tools DEV_TOOLS와 같은 값).
+    crate::dev_tools::NPM_GLOBAL_CLAUDE_CANDIDATE,
 ];
 
 pub(crate) fn build_final_prompt(prompt: &str, subagent: &Option<String>) -> String {
@@ -120,6 +122,7 @@ fn execute(snapshot: &TaskSnapshot, final_prompt: &str, key: &TaskKey) -> ExecOu
     };
 
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let args = vec!["-p".to_string(), final_prompt.to_string()];
     let key_for_spawn = key.clone();
     let on_spawn = |pid: u32| {
@@ -131,7 +134,7 @@ fn execute(snapshot: &TaskSnapshot, final_prompt: &str, key: &TaskKey) -> ExecOu
         &claude_path,
         &args,
         &path_env,
-        &[],
+        &crate::dev_tools::env_refs(&child_env),
         Duration::from_secs(snapshot.timeout_minutes as u64 * 60),
         Some(&on_spawn),
         Some(&should_abort),

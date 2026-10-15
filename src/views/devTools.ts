@@ -45,7 +45,7 @@ import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, ope
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 import { parseRoute } from '../route';
 import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, describeUnmetDependencies, pendingDependentsOf, planInstallChain, planBatchInstall, describeBatchConsent } from '../devToolsOrder';
-import { isVersionUnverified, toolStatusKind, toolStatusLabel, classifyRun, updatedSummary, versionChangeNote, chainStuckToast, chainConsentMessage } from '../devToolsText';
+import { isVersionUnverified, toolStatusKind, toolStatusLabel, classifyRun, updatedSummary, versionChangeNote, chainStuckToast, chainConsentMessage, installMethodLabel } from '../devToolsText';
 import type { RunKind } from '../devToolsText';
 
 // IA §4-5(§7-6): 개발 도구 사이드바 행을 클릭하면 본문의 해당 행으로 스크롤 +
@@ -629,7 +629,7 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   const statusBadge = el('span', { className: `badge ${statusKind === 'installed' ? 'badge-active' : 'badge-archived'}` }, [toolStatusLabel(tool, '설치 안 됨')]);
   if (statusKind === 'versionUnverified') statusBadge.style.color = 'var(--status-warn)';
 
-  const metaParts = [tool.id, tool.installMethod, tool.path].filter((v): v is string => !!v);
+  const metaParts = [tool.id, installMethodLabel(tool.installMethod), tool.path].filter((v): v is string => !!v);
   const metaLine = el('div', { className: 'devtool-binary' }, [metaParts.join(' · ')]);
 
   // 배지 클래스는 기존 두 개(badge-active/badge-archived)만 재사용한다(styles.css

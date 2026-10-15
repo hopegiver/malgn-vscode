@@ -57,3 +57,9 @@
 - 2026-09-18 / target_id `malgn-vscode-installer-release-autoupdate` / 1차(최초, 풀패널 — Sensitive 등급) / `docs/reviewer/review-installer-release-autoupdate-2026-09-18.md`
   — 신규 작성 사유: INDEX.md 13개 행의 역할개념을 대조한 결과, 이 저장소의 기존 페르소나는 모두 **앱이 실행 중에 하는 일**(자식 프로세스 권한·컴파일 게이트·화면 정직성·머신 이기종성)을 본다. "빌드가 끝난 뒤 아티팩트가 어떤 채널로 나가고 클라이언트가 무엇을 근거로 그것을 신뢰하는가"는 이번 위임(배포 파이프라인·코드서명·자동업데이트 신뢰체인)에서 처음 생긴 리스크 표면이라 별도로 세웠다. 가장 가까운 `persona-build-profile-gatekeeper.md`는 "무엇이 바이너리에 컴파일되는가"를 보고 이 페르소나는 "컴파일된 것이 누구에게까지 배포되는가"를 본다 — 경계가 빌드 완료 시점에서 갈린다.
   — 이번 라운드 집중: `pubkey: ""`로 릴리스했을 때 신뢰체인이 fail-closed인지 fail-open인지 크레이트 소스로 판정, 설치 후 교체 불가 값 3종(공개키·번들 identifier·updater 엔드포인트) 확정 여부, 공개 저장소의 public Releases와 `build.rs` 빌드타임 시크릿 주입의 노출 범위 대조, draft→사람 Publish 게이트가 기계 검사 없이 무엇을 보증하는지.
+- 2026-10-15 / target_id `r22-node-userspace-install` / 1차(최초, 풀패널 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15.md`
+  — 재사용 사유: INDEX 대조 결과 "클라이언트(이번엔 앱 자신)가 외부 아티팩트를 무엇을 근거로 신뢰하는가"가 역할개념 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: 출처 고정·리다이렉트 정책, SHA256(HTTPS SHASUMS)·codesign Team ID·-R 체인 3중, GPG 미검증 트레이드오프(npm JS는 서명 밖).
+- 2026-10-15 / target_id `r22-node-userspace-install` / 2차(재검토, 증분 — Sensitive) / `docs/reviewer/review-r22-node-userspace-2026-10-15-r2.md`
+  — 재사용 사유: RV-003(요구식 실물 codesign 음성 검증)이 역할개념(무엇을 근거로 신뢰하나) 그대로. 6대 요소 무수정.
+  — 이번 라운드 집중: tests_codesign 8종의 종료코드 3 대 1 구분, 양성 대조, 임시 파일 위치, 3단계(-R)가 verify_node_signature 경유로는 음성 실측되지 않는 공백.

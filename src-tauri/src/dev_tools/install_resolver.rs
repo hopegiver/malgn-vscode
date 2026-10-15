@@ -6,7 +6,7 @@ use super::classify::{canonicalize_best_effort, classify_install_method_with_def
 use super::plan_table::{
     compute_action, install_manual_plan, manual_no_runner_plan, Action, Arg, ManualPlan, Runner,
     RunPlan, MANUAL_NOT_WRITABLE, RUN_BREW_INSTALL_GH, RUN_NPM_GLOBAL_INSTALL_PNPM,
-    RUN_NPM_GLOBAL_INSTALL_WRANGLER, RUN_NPM_INSTALL_CLAUDE, RUN_PNPM_GLOBAL_ADD,
+    RUN_NPM_GLOBAL_INSTALL_WRANGLER, RUN_NPM_INSTALL_CLAUDE, RUN_PNPM_GLOBAL_ADD, RUN_APP_NODE_INSTALL,
     RUN_WINGET_INSTALL_GH, RUN_WINGET_INSTALL_GIT, RUN_WINGET_INSTALL_NODE,
 };
 // 설계 §F.2: 실행기(runner) 해석 자체는 runners.rs로 분리했다(install_resolver.rs
@@ -15,7 +15,7 @@ use super::plan_table::{
 // 경로로 계속 쓰므로 재노출한다(그 두 파일의 기존 import 문을 한 글자도 고치지
 // 않기 위함).
 pub(crate) use super::runners::ResolvedRunners;
-use super::runners::{install_prefix_writable, resolve_runner_path};
+use super::runners::{install_prefix_writable, resolve_runner_for_tool};
 use super::ToolId;
 use std::path::Path;
 
@@ -55,7 +55,7 @@ pub(crate) fn resolve_plan(tool_id: ToolId, resolved_tool_path: &str) -> Resolve
 
     let resolved_action = match action {
         Action::Manual(mp) => ResolvedAction::Manual(mp),
-        Action::Run(plan) => match resolve_runner_path(plan.runner, Some(resolved_tool_path)) {
+        Action::Run(plan) => match resolve_runner_for_tool(plan.runner, Some(resolved_tool_path), &canonical) {
             Some(runner_path) => ResolvedAction::Run { runner_path, plan },
             // T3(review-devtools-windows-parity-2026-09-15-r3.md): 플랫폼별
             // 실행기 후보만 말한다(brew/winget 양방향 누출 방지).
@@ -192,11 +192,20 @@ pub(crate) fn install_candidates(tool: ToolId) -> &'static [InstallCandidate] {
         // resolve_install_plan이 자동으로 Manual로 떨어진다 — mac 쪽 동작은
         // 무변경이다. Windows에서 winget 자체가 없는 머신도 같은 이유로 Manual로
         // 강등된다(install_manual_plan_windows의 갱신된 문구가 그 이유를 명시한다).
-        ToolId::Node => &[InstallCandidate {
-            runner: Runner::Winget,
-            plan: RUN_WINGET_INSTALL_NODE,
-            installer_label: "winget",
-        }],
+        ToolId::Node => &[
+            InstallCandidate {
+                runner: Runner::Winget,
+                plan: RUN_WINGET_INSTALL_NODE,
+                installer_label: "winget",
+            },
+            // macOS 전용(P2-3a): winget은 mac에서 항상 미해석이라 mac에서는 이 후보가 유일한 Run
+            // 후보가 된다. Homebrew가 있으면 건너뛴다 — resolve_install_plan 주석 참고.
+            InstallCandidate {
+                runner: Runner::AppNode,
+                plan: RUN_APP_NODE_INSTALL,
+                installer_label: super::app_node::INSTALLER_LABEL,
+            },
+        ],
         ToolId::Git => &[InstallCandidate {
             runner: Runner::Winget,
             plan: RUN_WINGET_INSTALL_GIT,
@@ -230,9 +239,24 @@ pub(crate) fn resolve_install_plan(tool: ToolId, runners: &ResolvedRunners) -> I
         // winget) 모두 `ResolvedRunners::resolve()` 시점에 캐시된 값을 그대로
         // clone해 돌려주므로(runners.rs) 이 호출이 매번 새로 해석하지 않는다.
         // 기존 `.to_string()` 호출은 더 이상 필요 없다(이미 owned).
+        // macOS에 Homebrew가 있으면 Node 설치는 기존 동작(Manual: `brew install node` 안내)을
+        // 유지한다. 근거: ① Homebrew 사용자는 Node를 brew/버전 매니저로 관리하는 경우가 많고, 앱이
+        // 두 번째 Node를 사용자 공간에 얹으면 어느 쪽이 PATH에서 이기는지 혼란스러워진다(탐지 후보는
+        // brew 경로가 먼저라 앱 설치본은 가려진다). ② 기존 흐름은 이미 검증돼 있어 회귀 위험 0.
+        // ③ 이 액션의 목적은 "Homebrew 없는 새 기기"를 관리자 권한 없이 일으켜 세우는 것이다.
+        if candidate.runner == Runner::AppNode && runners.brew.is_some() {
+            continue;
+        }
         let Some(runner_path) = runners.path_for(candidate.runner) else {
             continue;
         };
+        // 앱 npm 전역 prefix에 설치된 pnpm은 `pnpm add -g`가 전역 bin 설정(셸 rc 수정)을 요구해
+        // 실패한다 — 러너에서 제외해 Wrangler 같은 도구가 npm 후보로 넘어가게 한다(app_node 주석).
+        if candidate.runner == Runner::Pnpm
+            && super::app_node::is_in_app_npm_global(super::app_node::mac_layout().as_ref(), &runner_path)
+        {
+            continue;
+        }
         if !install_prefix_writable(tool, candidate.runner, &runner_path) {
             return InstallResolution::Manual(MANUAL_NOT_WRITABLE);
         }
@@ -573,6 +597,7 @@ mod tests {
             npm: None,
             pnpm: None,
             winget: None,
+            app_node: None,
         };
         for tool in [
             ToolId::Gh,
@@ -607,6 +632,7 @@ mod tests {
             npm: Some("/opt/homebrew/bin/npm".to_string()),
             pnpm: Some("/opt/homebrew/bin/pnpm".to_string()),
             winget: Some(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe".to_string()),
+            app_node: None,
         };
 
         match resolve_install_plan(ToolId::Gh, &runners) {
@@ -704,6 +730,106 @@ mod tests {
         }
     }
 
+    // P2-3a: Homebrew가 없는 macOS에서 Node 설치는 Manual이 아니라 앱 내장 설치 러너로 해석된다.
+    // 설치할 버전은 동적 값이라 argv는 리터럴 하나(install-lts)뿐이다.
+    #[test]
+    fn node_install_resolves_to_app_node_runner_when_no_homebrew() {
+        let runners = ResolvedRunners {
+            brew: None,
+            npm: None,
+            pnpm: None,
+            winget: None,
+            app_node: Some("/Users/x/.local/share/malgn-agent/node".to_string()),
+        };
+        match resolve_install_plan(ToolId::Node, &runners) {
+            InstallResolution::Run {
+                runner_path,
+                argv,
+                plan,
+                installer_label,
+            } => {
+                assert_eq!(plan.runner, Runner::AppNode);
+                assert_eq!(runner_path, "/Users/x/.local/share/malgn-agent/node");
+                assert_eq!(argv, vec!["install-lts"]);
+                assert_eq!(installer_label, "맑은에이전트");
+            }
+            InstallResolution::Manual(_) => panic!("Homebrew가 없으면 Node는 앱 내장 설치(Run)여야 합니다"),
+        }
+    }
+
+    // P2-3a 판단: Homebrew가 있으면 기존 동작(Manual: `brew install node` 안내)을 유지한다.
+    #[test]
+    fn node_install_stays_manual_with_homebrew_present_to_avoid_a_second_competing_node() {
+        let runners = ResolvedRunners {
+            brew: Some("/opt/homebrew/bin/brew".to_string()),
+            npm: None,
+            pnpm: None,
+            winget: None,
+            app_node: Some("/Users/x/.local/share/malgn-agent/node".to_string()),
+        };
+        match resolve_install_plan(ToolId::Node, &runners) {
+            InstallResolution::Manual(mp) => {
+                assert_eq!(mp.copyable_command, Some("brew install node"));
+            }
+            InstallResolution::Run { .. } => panic!("Homebrew가 있으면 기존 Manual 안내를 유지해야 합니다"),
+        }
+    }
+
+    // Windows에서는 앱 내장 러너가 해석되지 않는다(app_node: None) — winget 경로만 남아 회귀 없음.
+    #[test]
+    fn node_install_without_app_node_runner_falls_back_exactly_as_before() {
+        let none = ResolvedRunners { brew: None, npm: None, pnpm: None, winget: None, app_node: None };
+        assert!(matches!(resolve_install_plan(ToolId::Node, &none), InstallResolution::Manual(_)));
+        let winget_only = ResolvedRunners {
+            winget: Some(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe".to_string()),
+            ..none
+        };
+        match resolve_install_plan(ToolId::Node, &winget_only) {
+            InstallResolution::Run { plan, installer_label, .. } => {
+                assert_eq!(plan.runner, Runner::Winget);
+                assert_eq!(installer_label, "winget");
+            }
+            InstallResolution::Manual(_) => panic!("winget만 있어도 Node는 winget Run이어야 합니다"),
+        }
+    }
+
+    // P2-3b: 앱 npm 전역 prefix의 pnpm은 `pnpm add -g`가 셸 rc 수정을 요구해 쓸 수 없다(실측:
+    // ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH) — Wrangler 설치는 pnpm 대신 npm 후보로 넘어간다.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn wrangler_install_skips_an_app_npm_global_pnpm_and_uses_npm() {
+        let layout = super::super::app_node::mac_layout().expect("macOS 홈");
+        let app_pnpm = layout.npm_global_bin().join("pnpm").to_string_lossy().to_string();
+        let app_npm = layout.node_bin_dir().join("npm").to_string_lossy().to_string();
+        let runners = ResolvedRunners {
+            brew: None,
+            npm: Some(app_npm.clone()),
+            pnpm: Some(app_pnpm),
+            winget: None,
+            app_node: None,
+        };
+        match resolve_install_plan(ToolId::Wrangler, &runners) {
+            InstallResolution::Run { runner_path, argv, installer_label, .. } => {
+                assert_eq!(installer_label, "npm");
+                assert_eq!(runner_path, app_npm);
+                assert_eq!(argv, vec!["install", "-g", "wrangler"]);
+            }
+            InstallResolution::Manual(_) => panic!("npm이 있으면 Run이어야 합니다"),
+        }
+        // 그 외 위치의 pnpm(Homebrew 등)은 기존처럼 우선한다.
+        let brew_pnpm = ResolvedRunners {
+            pnpm: Some("/opt/homebrew/bin/pnpm".to_string()),
+            npm: Some(app_npm),
+            brew: None,
+            winget: None,
+            app_node: None,
+        };
+        match resolve_install_plan(ToolId::Wrangler, &brew_pnpm) {
+            InstallResolution::Run { installer_label, .. } => assert_eq!(installer_label, "pnpm"),
+            InstallResolution::Manual(_) => panic!("Run이어야 합니다"),
+        }
+    }
+
     // 4차 리뷰 V2: winget 필드 승격(위 테스트)이 회수한 것은 "러너가 없으면
     // Manual"이라는 음성 방향뿐이었다 — 양성 방향("Windows에서 gh가 winget
     // 러너로 실제로 Run이 된다", 설계 §B.1/§B.2의 핵심 약속)을 검사하는
@@ -720,6 +846,7 @@ mod tests {
             npm: None,
             pnpm: None,
             winget: Some(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\winget.exe".to_string()),
+            app_node: None,
         };
 
         match resolve_install_plan(ToolId::Gh, &runners) {
@@ -754,6 +881,7 @@ mod tests {
             npm: Some("/opt/homebrew/bin/npm".to_string()),
             pnpm: None,
             winget: None,
+            app_node: None,
         };
         match resolve_install_plan(ToolId::Wrangler, &runners) {
             InstallResolution::Run {
@@ -796,6 +924,7 @@ mod tests {
             npm: None,
             pnpm: None,
             winget: None,
+            app_node: None,
         };
 
         // Cellar·bin 모두 쓰기 가능하면 Run이어야 한다.

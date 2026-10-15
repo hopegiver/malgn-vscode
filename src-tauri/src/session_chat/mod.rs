@@ -52,10 +52,12 @@ const MAX_INPUT_CHARS: usize = 32_000;
 
 /// `dev_tools.rs`/`autonomy.rs`/`mcp_manager.rs`가 이미 정한 관례(상수를 공유
 /// 하지 않고 각자 별도로 둔다, 회귀 위험 0)를 그대로 따른다.
-const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
+const CLAUDE_PATH_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     "~/.local/bin/claude",
+    // P2-3b: 앱이 설치한 Node의 npm 전역 prefix에 설치된 Claude(dev_tools DEV_TOOLS와 같은 값).
+    crate::dev_tools::NPM_GLOBAL_CLAUDE_CANDIDATE,
 ];
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -132,6 +134,7 @@ pub fn send_session_message(
     turn::register_turn(&turn_id, &session_id)?;
 
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let session_id_for_thread = session_id.clone();
     let turn_id_for_thread = turn_id.clone();
 
@@ -140,6 +143,7 @@ pub fn send_session_message(
             app,
             claude_path,
             path_env,
+            child_env,
             cwd,
             session_id_for_thread,
             turn_id_for_thread,
@@ -202,6 +206,7 @@ pub fn start_new_session_message(
     turn::register_turn(&turn_id, &session_id)?;
 
     let path_env = crate::dev_tools::build_child_path_env(Some(&claude_path));
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let session_id_for_thread = session_id.clone();
     let turn_id_for_thread = turn_id.clone();
     let cwd = project_path;
@@ -211,6 +216,7 @@ pub fn start_new_session_message(
             app,
             claude_path,
             path_env,
+            child_env,
             cwd,
             session_id_for_thread,
             turn_id_for_thread,

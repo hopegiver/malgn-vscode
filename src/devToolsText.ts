@@ -65,6 +65,16 @@ export function versionChangeNote(
   return `${versionBefore ?? '?'} → ${versionAfter ?? '?'}`;
 }
 
+// 설치방식 표기. 백엔드가 내려주는 코드(describe_install_method: `homebrewFormula(node)`,
+// `npmGlobal(pnpm)` …) 중 사람이 읽는 이름이 따로 있는 것만 바꾸고, 나머지는 원문 그대로 보인다
+// (모르는 코드를 지어내 번역하지 않는다). 앱이 사용자 공간에 직접 설치한 Node는
+// `appManagedNode`(설치 결과에는 `appManagedNode(v24.22.0)` 꼴)로 오며 "맑은에이전트 설치"로 보인다.
+export function installMethodLabel(method: string | null | undefined): string | null {
+  if (!method) return null;
+  if (method === 'appManagedNode' || method.startsWith('appManagedNode(')) return '맑은에이전트 설치';
+  return method;
+}
+
 // 선행 도구는 확인됐지만 이어 설치할 후보가 하나도 없을 때의 토스트. 이유를 하나로 단정하지 않는다
 // (경로를 못 찾은 경우 외에 쓰기 권한 부족 등도 있다) — 이유는 각 항목의 안내에 있다.
 export function chainStuckToast(causeNames: string, stuckNames: string): string {

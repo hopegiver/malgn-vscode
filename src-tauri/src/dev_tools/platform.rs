@@ -204,17 +204,31 @@ fn win_join(base: &str, suffix: &str) -> String {
 /// (platform_tests.rs)가 git 테스트와 대칭으로 이 목록의 어긋남을 잡는다.
 pub(crate) fn default_path_dirs(plat: Platform, roots: &EnvRoots) -> Vec<String> {
     match plat {
-        Platform::Mac => [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect(),
+        Platform::Mac => {
+            let mut dirs: Vec<String> = [
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            // P2-3b: 앱이 사용자 공간에 설치한 Node(P2-3a)와 그 npm 전역 prefix의 bin. 시스템·
+            // Homebrew 디렉터리 뒤에 둬서 기존에 잡히던 도구의 우선순위는 그대로이고, 앱 설치본만
+            // 있는 기기에서만 이 디렉터리가 의미를 갖는다. `#!/usr/bin/env node`인 npm 전역 shim
+            // (claude 등)과 npx 기반 MCP 서버가 PATH에서 node를 찾으려면 `current/bin`이 필요하다.
+            // 값의 정본은 node_install::Layout이고, DEV_TOOLS/NPM_CANDIDATES의 `~/.local/share/
+            // malgn-agent/…` 후보와 어긋나지 않는지는 platform_tests의 양방향 가드 테스트가 지킨다.
+            if let Some(home) = &roots.home {
+                let layout = super::node_install::Layout::for_home(home);
+                dirs.push(layout.node_bin_dir().to_string_lossy().to_string());
+                dirs.push(layout.npm_global_bin().to_string_lossy().to_string());
+            }
+            dirs
+        }
         Platform::Win => {
             let sys_root = system_root_or_default(roots).to_string_lossy().to_string();
             let mut dirs = vec![

@@ -382,6 +382,11 @@ pub(crate) fn build_child_path_env(runner_path: Option<&str>) -> String {
     )
 }
 
+/// `Vec<(String, String)>` 환경변수 목록을 `run_process_with_timeout*`의 `extra_env` 모양으로 빌린다.
+pub(crate) fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
+    env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+}
+
 pub(crate) fn check_tool_version(def: &DevTool, resolved_path: &str) -> Option<String> {
     let path_env = build_child_path_env(Some(resolved_path));
     let args: Vec<String> = def.version_args.iter().map(|s| s.to_string()).collect();

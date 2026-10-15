@@ -4,10 +4,12 @@ use crate::process_util::SilentCommand;
 
 /// `dev_tools.rs`/`autonomy.rs`가 이미 정한 관례(결정 5.2 — 상수를 공유하지
 /// 않고 각자 별도로 둔다) 그대로 이 모듈에도 독립적으로 둔다.
-pub(super) const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
+pub(super) const CLAUDE_PATH_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     "~/.local/bin/claude",
+    // P2-3b: 앱이 설치한 Node의 npm 전역 prefix에 설치된 Claude(dev_tools DEV_TOOLS와 같은 값).
+    crate::dev_tools::NPM_GLOBAL_CLAUDE_CANDIDATE,
 ];
 
 /// `claude mcp *` 서브커맨드가 멈춰도(네트워크 불량, 인증 프롬프트 대기 등)
@@ -54,6 +56,7 @@ pub(super) fn run_mcp_command_with_env(
         .args(args)
         .current_dir(&home)
         .env("PATH", &path_env)
+        .envs(crate::dev_tools::claude_child_env(&resolved))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

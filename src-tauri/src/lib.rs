@@ -137,6 +137,7 @@ pub fn run() {
             dev_tools::update_dev_tool,
             dev_tools::install_dev_tool,
             dev_tools::open_manual_instruction,
+            dev_tools::cancel_node_install,
             plugins::list_installed_plugins,
             plugins::list_known_marketplaces,
             plugins::list_global_catalog,
@@ -225,6 +226,7 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 session_chat::request_shutdown();
                 claude_auth::request_shutdown();
+                dev_tools::request_node_install_cancel();
                 autonomy::request_shutdown_and_wait(std::time::Duration::from_secs(2));
             }
         });

@@ -81,10 +81,12 @@ use crate::process_util::{
 /// `dev_tools.rs`/`autonomy.rs`/`mcp_manager.rs`/`session_chat/mod.rs`가 이미
 /// 정한 관례(후보 상수를 공유하지 않고 각자 별도로 둔다, 회귀 위험 0)를
 /// 그대로 따른다.
-const CLAUDE_PATH_CANDIDATES: [&str; 3] = [
+const CLAUDE_PATH_CANDIDATES: [&str; 4] = [
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
     "~/.local/bin/claude",
+    // P2-3b: 앱이 설치한 Node의 npm 전역 prefix에 설치된 Claude(dev_tools DEV_TOOLS와 같은 값).
+    crate::dev_tools::NPM_GLOBAL_CLAUDE_CANDIDATE,
 ];
 
 /// 앱 쪽 자체 상한. `google_oauth::wait_for_oauth_callback`의 5분과 동일한
@@ -379,11 +381,12 @@ pub fn check_claude_auth_status() -> Result<ClaudeAuthStatus, String> {
     // `run_process_with_timeout_cancellable`이 대신 Windows 전용
     // `child_current_dir` 보정만 적용한다(Mac은 그마저도 없이 기존 동작 유지).
     let cwd = crate::global_cwd::default_global_cwd();
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let output = crate::dev_tools::run_process_with_timeout_cancellable(
         &claude_path,
         &args,
         &path_env,
-        &[],
+        &crate::dev_tools::env_refs(&child_env),
         Duration::from_secs(15),
         None,
         None,
@@ -458,11 +461,12 @@ pub fn logout_claude_auth() -> Result<ClaudeAuthStatus, String> {
     let args = ["auth".to_string(), "logout".to_string()];
     // check_claude_auth_status와 동일한 근거로 CWD를 명시적으로 고정한다.
     let cwd = crate::global_cwd::default_global_cwd();
+    let child_env = crate::dev_tools::claude_child_env(&claude_path);
     let output = crate::dev_tools::run_process_with_timeout_cancellable(
         &claude_path,
         &args,
         &path_env,
-        &[],
+        &crate::dev_tools::env_refs(&child_env),
         Duration::from_secs(15),
         None,
         None,
@@ -605,6 +609,9 @@ fn run_login(app: tauri::AppHandle, claude_path: String, path_env: String) {
     // 기대지 않는다.
     command.args(["auth", "login", "--claudeai"]);
     command.env("PATH", &path_env);
+    for (k, v) in crate::dev_tools::claude_child_env(&claude_path) {
+        command.env(k, v);
+    }
     // check_claude_auth_status와 동일한 근거(전역 호출) — CWD를 명시적으로
     // 고정한다. 후보가 모두 없으면 `.current_dir()`을 호출하지 않고 기존 동작
     // (앱 프로세스의 CWD 상속)을 유지한다.
