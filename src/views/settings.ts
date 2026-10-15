@@ -2,7 +2,7 @@ import { el, showToast, loadingBlock, errorBlock, confirmDialog, createModalOver
 import { errorMessage, errorMessagePersistent, sanitizeBackendText } from '../errorMessage';
 import { state, notifyChange } from '../state';
 import type { SettingsTab } from '../state';
-import { fetchIngestLinkStatus, fetchOtelSettings, saveOtelSettings } from '../otelApi';
+import { answerIngestReissueConfirm, fetchIngestLinkStatus, fetchOtelSettings, recheckIngestLink, retryIngestLink, saveOtelSettings } from '../otelApi';
 import type { OtelSettings, IngestKeyChange } from '../otelApi';
 import { loadCatalog, loadMarketplaces, DEFAULT_PLUGIN_ID, renderInstallFallbackNote } from './catalog';
 import { successToastWithFallbackNote } from '../installFallbackNote';
@@ -28,6 +28,8 @@ import {
 } from '../hubAuthApi';
 import type { HubAuthStatus } from '../hubAuthApi';
 import { navigate } from '../route';
+import { computeOnboarding } from '../onboarding';
+import type { OnboardingStep } from '../onboarding';
 import { renderDevToolsView } from './devTools';
 
 // export: sidebar.ts §4-9가 "설정" 사이드바 nav 행 5종(otel/github/cloudflare/
@@ -108,18 +110,18 @@ const INGEST_KEY_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
 // Rust `IngestKeyStatus`에 다시 실어(otel_ingest_key.rs) 버튼을 되살린다.
 const INGEST_KEY_COPY = {
   issue:
-    '수집키(mhk_…)는 이 화면에서 발급할 수 없고 허브 웹에 수집키 발급 화면도 아직 없습니다. 발급 방법은 허브 관리자에게 문의하세요. 발급받은 수집키를 아래에 붙여넣고 저장하세요. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
+    '허브에 연결되어 있으면 앱이 수집키(mhk_…)를 자동으로 발급해 적용합니다(위 "허브 수집키 자동 연동"). 직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다. 허브 "인증키 관리" 화면의 기기 토큰(mhd_…)은 수집키가 아니라 여기에 넣을 수 없습니다.',
   storage:
     '저장하면 settings.json에 Authorization=Bearer … 형태로 기록되며 값은 이 화면에 다시 표시되지 않습니다. 비워 두고 저장하면 기존 키를 그대로 둡니다.',
   scope: '저장·삭제한 수집키는 새로 시작하는 Claude Code 세션부터 적용됩니다. 이미 실행 중인 세션은 이전 설정을 계속 쓸 수 있습니다.',
   revoke:
     '이 값은 Claude Code가 실행하는 명령에서 보일 수 있습니다. 대화·이슈·채팅에 붙여 넣지 마세요. 유출이 의심되면 허브 관리자에게 해당 수집키의 즉시 폐기를 요청하세요.',
   clearConfirm:
-    '이 PC에 저장된 허브 수집키를 삭제할까요? 삭제하면 이 PC의 사용량이 허브에 수집되지 않습니다(다른 OTel 설정은 그대로입니다). 새로 시작하는 Claude Code 세션부터 적용됩니다. 이 삭제는 이 PC의 설정 파일(백업 포함)에서만 키를 지웁니다. 허브에 등록된 키는 폐기되지 않으므로, 유출이 의심되면 허브 관리자에게 폐기를 요청하세요.',
+    '이 PC에 저장된 허브 수집키를 삭제할까요? 삭제하면 이 PC의 사용량이 허브에 수집되지 않습니다(다른 OTel 설정은 그대로입니다). 새로 시작하는 Claude Code 세션부터 적용됩니다. 이 삭제는 이 PC의 설정 파일(백업 포함)에서만 키를 지웁니다. 허브에 등록된 키는 폐기되지 않으므로, 유출이 의심되면 허브 관리자에게 폐기를 요청하세요. 허브에 연결되어 있으면 앱이 다음 점검 때 새 수집키를 다시 발급해 적용할 수 있습니다(완전히 끊으려면 허브 연결을 해제하세요).',
   savedToast: 'OTel 설정을 저장했습니다. 새로 시작하는 Claude Code 세션부터 적용됩니다.',
   clearedToast: '허브 수집키를 이 PC에서 삭제했습니다. 새로 시작하는 Claude Code 세션부터 적용되며, 허브의 키는 폐기되지 않았습니다.',
   warnUnsetHub:
-    '텔레메트리가 켜져 있지만 수집키가 없어 사용량이 허브에 수집되지 않습니다(허브가 인증 실패로 거부합니다). 허브 웹에 수집키 발급 화면이 아직 없으니 발급 방법은 허브 관리자에게 문의한 뒤 받은 키를 아래에 등록하세요.',
+    '텔레메트리가 켜져 있지만 수집키가 없어 사용량이 허브에 수집되지 않습니다(허브가 인증 실패로 거부합니다). 허브에 연결되어 있으면 앱이 수집키를 자동으로 발급해 적용합니다. 직접 받은 키가 있으면 아래에 등록할 수도 있습니다.',
   warnUnrecognizedHub: '설정된 Authorization 값이 허브 수집키 형식이 아니라 허브가 거부할 수 있습니다. 새 수집키를 입력하고 저장하면 교체됩니다.',
   warnInsecure:
     '수집키가 설정돼 있는데 OTLP 엔드포인트가 http://(암호화 없음)입니다. 키가 평문으로 전송될 수 있으니 https:// 주소인지 확인하세요.',
@@ -142,8 +144,9 @@ export async function loadOtelEnv(): Promise<void> {
   }
 }
 
-// 홈 시작 체크리스트의 OTEL 연동 항목용 상태 — settings.json만 읽는다. 요청이 겹치면 마지막 요청만 반영한다.
-// 조회 실패 문구는 errorMessage()를 거쳐(토큰·키 마스킹) 보관한다.
+// 홈 시작 체크리스트·OTel 설정의 연동 상태 — settings.json과 앱 안 점검 엔진의 메모리 상태만 읽는다(허브를
+// 부르지 않는다). 요청이 겹치면 마지막 요청만 반영한다. 조회 실패 문구는 errorMessage()를 거쳐(토큰·키
+// 마스킹) 보관한다. 백엔드가 `otel-link-changed` 이벤트를 쏘면 main.ts가 이 함수를 다시 부른다.
 let ingestLinkSeq = 0;
 export async function loadIngestLink(): Promise<void> {
   const seq = ++ingestLinkSeq;
@@ -162,8 +165,65 @@ export async function loadIngestLink(): Promise<void> {
     if (seq === ingestLinkSeq) {
       state.ingestLink.loading = false;
       notifyChange();
+      maybeAskReissueConfirm();
     }
   }
+}
+
+// [다시 시도]: 연속 유실 수·백오프·거절 기록을 비우고 1번부터 점검한다. 허브 요청 타임아웃(30초 이상)만큼
+// 걸릴 수 있어 버튼은 그동안 "확인 중…"으로 잠긴다.
+export async function retryIngestLinkNow(): Promise<void> {
+  if (state.ingestLink.retrying) return;
+  state.ingestLink.retrying = true;
+  notifyChange();
+  try {
+    state.ingestLink.status = await retryIngestLink();
+    state.ingestLink.loaded = true;
+    state.ingestLink.error = null;
+  } catch (err) {
+    showToast(`수집키 점검을 시작하지 못했습니다: ${errorMessage(err)}`);
+  } finally {
+    state.ingestLink.retrying = false;
+    notifyChange();
+    maybeAskReissueConfirm();
+  }
+}
+
+// OTel 설정 저장 직후 호출한다. 직전 점검이 "수집 준비 안 됨/허브 밖 엔드포인트"에서 멈춘 경우에만 백엔드가
+// 다시 점검한다(그 밖에는 아무것도 하지 않아 점검 시점을 늘리지 않는다). 결과는 이벤트로도 오지만 응답으로 바로 반영한다.
+async function recheckIngestLinkAfterSave(): Promise<void> {
+  try {
+    state.ingestLink.status = await recheckIngestLink();
+    state.ingestLink.loaded = true;
+    notifyChange();
+    maybeAskReissueConfirm();
+  } catch {
+    /* 조회 실패는 다음 loadIngestLink가 보여 준다 */
+  }
+}
+
+// 재발급 확인창(계약 D-1) — 웹에서 이 기기 수집키가 폐기된 경우에만 사람에게 묻는다. 거절하면 백엔드가
+// 이번 앱 실행 동안 다시 묻지 않는다(confirmDeclined). 한 번에 한 창만 연다.
+export const REISSUE_CONFIRM_MESSAGE = '웹에서 이 기기 수집키가 폐기되었습니다. 다시 발급할까요?';
+let reissueConfirmOpen = false;
+export async function askReissueConfirm(): Promise<void> {
+  if (reissueConfirmOpen) return;
+  reissueConfirmOpen = true;
+  try {
+    const accepted = await confirmDialog(REISSUE_CONFIRM_MESSAGE, { title: '수집키 재발급', confirmLabel: '다시 발급', cancelLabel: '발급하지 않음' });
+    state.ingestLink.status = await answerIngestReissueConfirm(accepted);
+    state.ingestLink.loaded = true;
+    if (accepted) showToast('수집키를 다시 발급해 적용했습니다. 새로 시작하는 Claude Code 세션부터 적용됩니다.');
+  } catch (err) {
+    showToast(`수집키 재발급을 진행하지 못했습니다: ${errorMessage(err)}`);
+  } finally {
+    reissueConfirmOpen = false;
+    notifyChange();
+  }
+}
+
+function maybeAskReissueConfirm(): void {
+  if (state.ingestLink.status?.confirmRequired && !reissueConfirmOpen) void askReissueConfirm();
 }
 
 async function handleSaveOtelSettings(values: Record<string, string>, ingestKey: IngestKeyChange): Promise<void> {
@@ -179,6 +239,7 @@ async function handleSaveOtelSettings(values: Record<string, string>, ingestKey:
     otelDraft.ingestKey = '';
     showToast(INGEST_KEY_COPY.savedToast);
     void loadIngestLink();
+    void recheckIngestLinkAfterSave();
   } catch (err) {
     showToast(`OTel 설정 저장에 실패했습니다: ${errorMessage(err)}`);
   } finally {
@@ -261,6 +322,9 @@ export async function ensureOtelAutoConfigured(): Promise<void> {
   try {
     const result = await saveOtelSettings({ values, identity });
     showToast('OTel 텔레메트리를 기본값으로 자동 설정했습니다. 설정 > OTel 설정에서 확인·변경할 수 있습니다.');
+    // 수집 준비가 끝났으니 수집키 연동 상태를 다시 읽고, 준비 부족으로 멈춰 있던 자동 발급을 이어 간다.
+    void loadIngestLink();
+    void recheckIngestLinkAfterSave();
     // 사용자가 마침 설정 > OTel 탭을 보고 있었다면 화면도 최신 상태로 갱신한다.
     if (state.otel.settings) {
       state.otel.settings = result;
@@ -413,7 +477,67 @@ function renderOtelPanel(): HTMLElement {
   saveBtn.type = 'submit';
   form.appendChild(el('div', { className: 'settings-form-actions' }, [saveBtn]));
 
-  return el('div', { className: 'box' }, [boxHead('OTel 환경변수'), el('div', { className: 'box-body' }, [form])]);
+  return el('div', { className: 'box' }, [boxHead('OTel 환경변수'), el('div', { className: 'box-body' }, [renderIngestLinkPanel(), form])]);
+}
+
+// ---------------- 허브 수집키 자동 연동 상태 ----------------
+// 홈 체크리스트와 같은 판정(onboarding.ts)·같은 버튼을 쓴다 — 상태별 문구가 두 곳에서 갈라지지 않게 한다.
+// 상태: 미연동 / 발급 중 / 적용됨(수신 대기) / 수신 확인됨 / 실패(+원인). 허브 쪽 점검은 앱 시작·허브 연결 직후·
+// 1시간 간격으로 돌고, [다시 시도]는 1번부터 바로 점검한다.
+const INGEST_LINK_BADGE: Readonly<Record<string, { readonly label: string; readonly tone: string }>> = {
+  todo: { label: '미연동', tone: 'unknown' },
+  loading: { label: '확인 중', tone: 'unknown' },
+  partial: { label: '적용됨', tone: 'active' },
+  warn: { label: '적용됨 · 수집 불가 가능', tone: 'unknown' },
+  done: { label: '수신 확인됨', tone: 'active' },
+  failed: { label: '실패', tone: 'archived' },
+  error: { label: '확인 불가', tone: 'archived' },
+};
+
+// 체크리스트 행과 설정 패널이 공유하는 버튼. inSettings면 "OTel 설정 열기"는 이미 여기라 그리지 않는다.
+export function otelLinkActionButton(step: OnboardingStep, opts?: { readonly inSettings?: boolean }): HTMLElement | null {
+  switch (step.action) {
+    case 'retry': {
+      const busy = state.ingestLink.retrying;
+      const b = el('button', { className: 'btn btn-sm', disabled: busy, onClick: () => void retryIngestLinkNow() }, [busy ? '확인 중…' : '다시 시도']);
+      b.type = 'button';
+      return b;
+    }
+    case 'connect-hub': {
+      const b = el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/mcp') }, ['허브 연결 열기']);
+      b.type = 'button';
+      return b;
+    }
+    case 'confirm-reissue': {
+      const b = el('button', { className: 'btn btn-sm btn-primary', onClick: () => void askReissueConfirm() }, ['확인하기']);
+      b.type = 'button';
+      return b;
+    }
+    case 'open-settings': {
+      if (opts?.inSettings) return null;
+      const b = el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['OTel 설정 열기']);
+      b.type = 'button';
+      return b;
+    }
+    default:
+      return null;
+  }
+}
+
+function renderIngestLinkPanel(): HTMLElement {
+  const step = computeOnboarding(state).steps.find((s) => s.kind === 'otel-link');
+  if (!step) return el('div', {});
+  const badge = INGEST_LINK_BADGE[step.state] ?? INGEST_LINK_BADGE.todo;
+  const action = otelLinkActionButton(step, { inSettings: true });
+  const panel = el('div', { className: 'settings-field' }, [
+    el('span', { className: 'settings-field-label' }, ['허브 수집키 자동 연동']),
+    el('div', {}, [el('span', { className: `badge badge-${badge.tone}` }, [badge.label])]),
+    withId(el('div', { className: 'settings-form-hint' }, [step.detail]), 'otel-link-detail'),
+    ...(action ? [el('div', { className: 'settings-form-actions' }, [action])] : []),
+  ]);
+  panel.id = 'otel-link-panel';
+  panel.setAttribute('data-state', step.state);
+  return panel;
 }
 
 // 허브 수집키 블록 — 상태(설정됨/미설정/형식 불명)와 마스킹만 보여준다. 입력칸은
@@ -1055,7 +1179,12 @@ async function runHubAuthAction(
     state.hubAuth.error = null;
     if (kind === 'connect') showToast('허브에 연결했습니다.');
     if (kind === 'disconnect') {
-      showToast(state.hubAuth.status.reason === 'SERVER_REVOKE_FAILED' ? '연결을 해제했지만 서버 폐기에 실패했습니다. 웹 /keys에서 폐기하세요.' : '허브 연결을 해제했습니다.');
+      showToast(state.hubAuth.status.reason === 'SERVER_REVOKE_FAILED' ? '연결을 해제했지만 서버 폐기에 실패했습니다. 웹 /keys에서 폐기하세요.' : '허브 연결을 해제했습니다. 이 PC의 수집키도 지웠습니다.');
+    }
+    // 연결·해제는 수집키 연동 상태(허브 연결 여부, 설정의 Authorization 항목)를 바꾼다.
+    if (kind === 'connect' || kind === 'disconnect') {
+      void loadIngestLink();
+      if (state.otel.loaded) void loadOtelEnv();
     }
   } catch (err) {
     // Tauri invoke 오류는 Rust가 만든 문자열(토큰 없음)이다.
@@ -1071,11 +1200,13 @@ async function handleConnectHub(): Promise<void> {
   await runHubAuthAction('connect', connectHub, '허브 연결에 실패했습니다');
 }
 
+// 연결 해제는 기기 토큰만 지우는 게 아니다 — 서버가 이 기기의 수집키도 함께 폐기하고(계약 D-13), 앱이
+// 이 PC settings.json의 수집키(Authorization 항목)를 지운다. 두 가지 모두 사용량 수집이 멈추는 결과라 확인창에서 밝힌다.
+export const HUB_DISCONNECT_CONFIRM =
+  '이 PC의 허브 연결을 해제할까요? 해제하면 Claude Code에서 malgnai-hub를 쓰려면 다시 연결해야 합니다. 또한 이 기기의 사용량 수집키가 허브 서버에서 함께 폐기되고, 이 PC의 ~/.claude/settings.json에서 수집키(Authorization 항목)가 지워져 사용량 수집이 멈춥니다(다른 OTel 설정은 그대로입니다). 다시 연결하면 수집키가 새로 발급됩니다.';
+
 async function handleDisconnectHub(): Promise<void> {
-  const ok = await confirmDialog('이 PC의 허브 연결을 해제할까요? 해제하면 Claude Code에서 malgnai-hub를 쓰려면 다시 연결해야 합니다.', {
-    confirmLabel: '해제',
-    danger: true,
-  });
+  const ok = await confirmDialog(HUB_DISCONNECT_CONFIRM, { title: '허브 연결 해제', confirmLabel: '해제', danger: true });
   if (!ok) return;
   await runHubAuthAction('disconnect', disconnectHub, '허브 연결 해제에 실패했습니다');
 }

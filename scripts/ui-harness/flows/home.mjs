@@ -700,13 +700,14 @@ export function scenarios(base) {
 const HUB_EP = { targetsHub: true, insecure: false, foreignHost: false };
 const NO_EP = { targetsHub: false, insecure: false, foreignHost: false };
 // 미연동/기본: 수집 준비 안 됨. READY: 텔레메트리 켜짐 + 허브 엔드포인트.
-const LINK_OFF = { issueSupported: false, receiptCheckSupported: false, telemetryEnabled: false, endpoint: NO_EP, collectionReady: false };
-const LINK_READY = { issueSupported: false, receiptCheckSupported: false, telemetryEnabled: true, endpoint: HUB_EP, collectionReady: true };
+const LINK_EXTRA = { issueSupported: true, receiptCheckSupported: true, hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false, blockedReason: null, retryAt: null };
+const LINK_OFF = { ...LINK_EXTRA, telemetryEnabled: false, endpoint: NO_EP, collectionReady: false, blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'] };
+const LINK_READY = { ...LINK_EXTRA, telemetryEnabled: true, endpoint: HUB_EP, collectionReady: true, blockers: [] };
 const FAKE_DEVICE_TOKEN = `mhd_${'x'.repeat(43)}`;
 const FAKE_INGEST_KEY = `mhk_${'Z'.repeat(43)}`;
-// 미구현 기능 주장 + 시도하지 않은 자동 동작을 암시하는 표현(RV-002)
+// 확인하지 않은 것을 주장하는 표현(수신 확인은 confirmed일 때만) + 시도하지 않은 자동 동작을 암시하는 표현(RV-002)
 const BANNED_CLAIMS = [
-  '자동 연동', '연동 완료', '연동되었습니다', '수신 확인됨', '수신이 확인되었습니다', '수신을 확인했습니다',
+  '연동 완료', '연동되었습니다', '수신 확인됨', '수신이 확인되었습니다', '수신을 확인했습니다',
   '자동으로 바꾸', '자동으로 교체', '자동으로 변경', '자동으로 삭제', '자동으로 갱신', '자동 교체', '바꾸지 않았습니다',
 ];
 const HEADER_MSG = '설정 파일에 허브 수집키 형식이 아닌 Authorization 헤더가 있습니다. 허브로 보내려면 설정 > OTel에서 수집키로 교체하세요.';
@@ -823,10 +824,12 @@ function otelLinkScenarios(base) {
         const row = await otelRow(page);
         await checkOtelCommon(page, bugs, row, {
           expectState: 'todo',
-          mustInclude: ['설정 > OTel', '붙여넣으세요', '발급 화면이 아직 없고', '자동 발급도 지원되지 않으며', '기기 토큰은 수집키가 아닙니다'],
+          mustInclude: ['허브에 연결되어 있습니다', '자동으로 발급·적용합니다', '[다시 시도]'],
+          mustExclude: ['발급 화면이 아직 없고', '자동 발급도 지원되지 않으며'],
         });
-        if (row && !row.buttons.includes('수집키 입력하기')) bugs.push({ severity: 'Major', symptom: `unlinked인데 "수집키 입력하기" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
-        if (row) await clickToOtelSettings(page, bugs, page.locator('.onboard-row[data-step="otel-link"]'), '수집키 입력하기');
+        if (row && !row.buttons.includes('다시 시도')) bugs.push({ severity: 'Major', symptom: `unlinked(허브 연결됨)인데 "다시 시도" 버튼이 없음(실제: ${JSON.stringify(row.buttons)})`, file: CHECKLIST });
+        if (row) await page.locator('.onboard-row[data-step="otel-link"]').getByRole('button', { name: '다시 시도' }).click();
+        await page.waitForTimeout(200);
       },
     },
     {
@@ -848,14 +851,14 @@ function otelLinkScenarios(base) {
     {
       // RV-003: 적용됐지만 텔레메트리가 꺼져 있어 수집되지 않을 수 있음 — "새로 시작하는 세션부터 적용"을 말하지 않는다.
       id: 'otel-link-applied-not-ready-telemetry-off',
-      fixtures: { ...open, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, endpoint: HUB_EP }) },
+      fixtures: { ...open, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, blockers: ['telemetryOff'], endpoint: HUB_EP }) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-otel-applied-not-ready');
         const row = await otelRow(page);
         await checkOtelCommon(page, bugs, row, {
           expectState: 'warn',
-          mustInclude: ['mhk_AbCd…', '수집되지 않을 수 있습니다', '텔레메트리가 꺼져 있음', '수신은 확인하지 않았습니다'],
+          mustInclude: ['mhk_AbCd…', '수집되지 않을 수 있습니다', '설정 파일에 텔레메트리 켜기 설정이 없음', '수신은 확인하지 않았습니다'],
           mustExclude: ['새로 시작하는', '허브가 아님'],
         });
         if (row && row.marker.trim() === '✓') bugs.push({ severity: 'Critical', symptom: '수집 불가 경고가 완료 체크(✓)로 표시됨', file: CHECKLIST });
@@ -866,15 +869,15 @@ function otelLinkScenarios(base) {
     {
       // RV-003: 텔레메트리는 켜져 있지만 엔드포인트가 허브가 아님 — 원인이 위 시나리오와 구분돼야 한다.
       id: 'otel-link-applied-not-ready-endpoint-not-hub',
-      fixtures: { ...open, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, telemetryEnabled: true, endpoint: { targetsHub: false, insecure: false, foreignHost: true } }) },
+      fixtures: { ...open, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, blockers: ['endpointNotHub'], telemetryEnabled: true, endpoint: { targetsHub: false, insecure: false, foreignHost: true } }) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-otel-applied-not-ready-endpoint');
         const row = await otelRow(page);
         await checkOtelCommon(page, bugs, row, {
           expectState: 'warn',
-          mustInclude: ['수집되지 않을 수 있습니다', '수집 엔드포인트가 허브가 아님', '허브 밖 주소로도 전송됨'],
-          mustExclude: ['텔레메트리가 꺼져', '새로 시작하는'],
+          mustInclude: ['수집되지 않을 수 있습니다', '수집 엔드포인트가 허브가 아님'],
+          mustExclude: ['텔레메트리 켜기 설정이 없음', '새로 시작하는'],
         });
       },
     },
@@ -935,8 +938,7 @@ function otelLinkScenarios(base) {
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-core-done-slim-unlinked');
-        const slim = await checkCoreDoneSlim(page, bugs, { expectState: 'todo', mustInclude: ['사용량 수집키가 적용되어 있지 않습니다'], button: '수집키 입력하기' });
-        if (slim) await clickToOtelSettings(page, bugs, page.locator('.onboard-slim[data-step="otel-link"]'), '수집키 입력하기');
+        await checkCoreDoneSlim(page, bugs, { expectState: 'todo', mustInclude: ['사용량 수집키가 아직 적용되어 있지 않습니다'], button: '다시 시도' });
       },
     },
     {
@@ -950,13 +952,13 @@ function otelLinkScenarios(base) {
     },
     {
       id: 'otel-link-core-done-slim-applied-not-ready',
-      fixtures: { ...done, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, endpoint: HUB_EP }) },
+      fixtures: { ...done, ...link({ state: 'applied', masked: 'mhk_AbCd…', failure: null, ...LINK_OFF, blockers: ['telemetryOff'], endpoint: HUB_EP }) },
       async run(page, { shot, bugs }) {
         await page.waitForTimeout(400);
         await shot('01-core-done-slim-warn');
         await checkCoreDoneSlim(page, bugs, {
           expectState: 'warn',
-          mustInclude: ['수집키는 적용됐지만', '수집되지 않을 수 있습니다', '텔레메트리가 꺼져 있음'],
+          mustInclude: ['수집키는 적용됐지만', '수집되지 않을 수 있습니다', '설정 파일에 텔레메트리 켜기 설정이 없음'],
           mustExclude: ['새로 시작하는'],
           button: 'OTel 설정 열기',
         });

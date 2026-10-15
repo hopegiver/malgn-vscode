@@ -107,15 +107,17 @@ export function scenarios(base) {
         if ((await page.locator('#otel-ingest-key-block a[href]').count()) !== 0) {
           bugs.push({ severity: 'Major', symptom: '수집키 블록에 외부 링크가 있음', file: 'src/views/settings.ts:renderIngestKeyBlock' });
         }
-        // RV-006: 개인 수집키는 본인 세션으로만 발급되므로 "관리자에게 발급 요청"이라 쓰면 안 되고,
-        // 허브 웹에 발급 화면이 없다는 사실 + 발급 방법 문의로 안내한다. 폐기는 관리자 요청이 사실이다.
+        // RV-006(R17 갱신): 허브에 연결되어 있으면 앱이 수집키를 자동 발급한다 — "관리자에게 발급 요청"이라 쓰면 안 되고
+        // (개인 수집키는 본인 기기 토큰으로만 발급된다), 수동 입력은 "직접 받은 키가 있을 때"의 대체 경로로 안내한다.
+        // 폐기는 관리자 요청이 사실이다.
         if (
-          !/허브 웹에 수집키 발급 화면이 아직 없/.test(bodyText) ||
-          !/발급 방법은 허브 관리자에게 문의/.test(bodyText) ||
+          !/허브에 연결되어 있으면 앱이 수집키\(mhk_…\)를 자동으로 발급해 적용/.test(bodyText) ||
+          !/직접 받은 수집키가 있으면 아래에 붙여넣고 저장할 수도 있습니다/.test(bodyText) ||
           /관리자에게 수집키 발급을 요청/.test(bodyText) ||
+          /발급 방법은 허브 관리자에게 문의/.test(bodyText) ||
           !/관리자에게 해당 수집키의 즉시 폐기를 요청/.test(bodyText)
         ) {
-          bugs.push({ severity: 'Major', symptom: '발급은 "허브 웹에 발급 화면 없음·방법 문의"로, 폐기는 "관리자에게 요청"으로 안내하지 않음', file: 'src/views/settings.ts:INGEST_KEY_COPY' });
+          bugs.push({ severity: 'Major', symptom: '발급은 "허브 연결 시 앱이 자동 발급·직접 받은 키는 수동 입력"으로, 폐기는 "관리자에게 요청"으로 안내하지 않음', file: 'src/views/settings.ts:INGEST_KEY_COPY' });
         }
         if (!/mhd_/.test(bodyText) || /\/keys/.test(bodyText) || /웹에서 발급받아/.test(bodyText)) {
           bugs.push({ severity: 'Major', symptom: '기기 토큰(mhd_)은 수집키가 아니라는 안내가 없거나 /keys 발급을 유도하는 문구가 있음', file: 'src/views/settings.ts:INGEST_KEY_COPY' });

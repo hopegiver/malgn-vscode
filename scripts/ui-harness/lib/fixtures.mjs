@@ -231,12 +231,36 @@ export async function buildBaseFixtures() {
     list_workspace_projects: { projects, skipped: [] },
     list_claude_sessions: sessions,
     check_dev_tools: devToolsSample(),
-    // 홈 시작 체크리스트 OTEL 연동 항목(otel_ingest_link_status) — 베이스는 "수집키 미적용". 모양은
-    // Rust IngestLinkStatus 직렬화와 같다(issueSupported/receiptCheckSupported는 현재 둘 다 false,
-    // telemetryEnabled/endpoint/collectionReady는 수집 준비도 — 미연동 베이스는 전부 false).
+    // 홈 시작 체크리스트·설정 > OTel의 수집키 연동 상태(otel_ingest_link_status) — 베이스는 "허브 연결됨 + 수집키 미적용".
+    // 모양은 Rust IngestLinkStatus 직렬화와 같다(src-tauri/src/otel_link.rs). 연동 상태를 바꾸는 커맨드
+    // (재시도·재확인·재발급 확인 답)는 같은 값을 돌려준다 — 시나리오가 필요하면 override한다.
     otel_ingest_link_status: {
-      state: 'unlinked', masked: null, failure: null, issueSupported: false, receiptCheckSupported: false,
+      state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
       telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
+      blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
+      hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false,
+      blockedReason: null, retryAt: null,
+    },
+    otel_link_retry: {
+      state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
+      telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
+      blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
+      hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false,
+      blockedReason: null, retryAt: null,
+    },
+    otel_link_recheck: {
+      state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
+      telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
+      blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
+      hubConnected: true, confirmRequired: false, confirmDeclined: false, waitingFirstData: false, firstDataTimedOut: false,
+      blockedReason: null, retryAt: null,
+    },
+    otel_link_answer_confirm: {
+      state: 'unlinked', masked: null, failure: null, issueSupported: true, receiptCheckSupported: true,
+      telemetryEnabled: false, endpoint: { targetsHub: false, insecure: false, foreignHost: false }, collectionReady: false,
+      blockers: ['telemetryOff', 'exporterNotOtlp', 'protocolMismatch', 'endpointMissing'],
+      hubConnected: true, confirmRequired: false, confirmDeclined: true, waitingFirstData: false, firstDataTimedOut: false,
+      blockedReason: null, retryAt: null,
     },
     // 허브 기기 토큰 상태(홈 malgnai-hub 위젯이 loadHubAuth로 호출) — 베이스에 없어 모든 흐름에서
     // UNSTUBBED_COMMAND 오탐이 났다. 정상 연결 기본값을 둔다(추가만).

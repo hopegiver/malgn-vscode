@@ -24,7 +24,7 @@ import { portfolioSummary } from '../projectActivity';
 import { loadCatalog } from './catalog';
 import type { AutonomousTask } from '../state';
 import { loadAutonomousTasks } from './autonomousTasks';
-import { loadMcp, loadIngestLink } from './settings';
+import { loadMcp, loadIngestLink, otelLinkActionButton } from './settings';
 import { describeHubAuth } from '../hubAuthApi';
 import { ensureAppVersionLoaded } from '../sidebar';
 import { checkClaudeAuthStatus, openClaudeLoginTerminal, logoutClaudeAuth } from '../sessionsApi';
@@ -125,10 +125,9 @@ function onboardingStepAction(step: OnboardingStep, isCurrent: boolean): HTMLEle
     return el('button', { className: 'btn btn-sm', onClick: retryOnboardingChecks }, ['다시 확인']);
   }
   if (step.kind === 'otel-link') {
-    // 발급은 이 앱에서 못 한다 — 현재 경로는 설정 > OTel에서 수집키를 직접 붙여넣는 것뿐이다.
-    if (step.state === 'todo') return el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['수집키 입력하기']);
-    if (step.state === 'failed' || step.state === 'warn') return el('button', { className: 'btn btn-sm', onClick: () => navigate('#/settings/otel') }, ['OTel 설정 열기']);
-    return null;
+    // 버튼은 상태가 정한다(onboarding.ts의 step.action): 다시 시도 / 허브 연결 열기 / 확인하기 / OTel 설정 열기.
+    // 설정 > OTel 패널이 같은 함수를 쓴다.
+    return otelLinkActionButton(step);
   }
   if (step.state !== 'todo') return null;
   if (step.kind === 'required-tools' || step.kind === 'claude-install') {

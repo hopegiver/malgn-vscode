@@ -359,6 +359,8 @@ export interface AppState {
     loading: boolean;
     error: string | null;
     loaded: boolean;
+    // [다시 시도]로 점검을 요청해 응답을 기다리는 중(최대 수십 초 — 허브 요청 타임아웃 30초 이상).
+    retrying: boolean;
   };
   // 전역 설정 파일(~/.claude/malgn-agent.json) 상태 — 자율업무 화면(autonomy·
   // logs 필드)과 프로젝트 화면(workspaces 필드)이 이 하나의 slice를 함께
@@ -531,7 +533,7 @@ function createInitialState(): AppState {
   globalCatalog: { data: null, loading: false, error: null, loaded: false },
   marketplaces: { items: [], loading: false, error: null, loaded: false, refreshing: false, adding: false, removingId: null },
   otel: { settings: null, loading: false, error: null, loaded: false, saving: false },
-  ingestLink: { status: null, loading: false, error: null, loaded: false },
+  ingestLink: { status: null, loading: false, error: null, loaded: false, retrying: false },
   malgnAgentConfig: { status: null, loading: false, error: null, loaded: false, editingAutonomy: false, editingWorkspaces: false, saving: false },
   mcp: { items: [], loading: false, error: null, loaded: false, loggingInName: null, loggingOutName: null },
   hubAuth: { status: null, loading: false, error: null, loaded: false, busy: null },

@@ -70,6 +70,7 @@ import {
   renderClaudeAuthLoginModal,
   renderClaudeAuthLoginReopenBanner,
 } from './views/sessions';
+import { onIngestLinkChanged } from './otelApi';
 import { onSessionsChanged, onClaudeAuthLoginUrl, onClaudeAuthLoginOutput, onClaudeAuthLoginFinished } from './sessionsApi';
 import {
   renderAutonomousTasksListView,
@@ -309,6 +310,14 @@ let liveWatchersInitialized = false;
 function initLiveWatchers(): void {
   if (liveWatchersInitialized) return;
   liveWatchersInitialized = true;
+
+  // 수집키 자동 연동 상태 변경(점검 시작·끝, 첫 데이터 확인 등) — 백엔드가 쏘는 이벤트로 상태를 다시 읽는다.
+  // 인증 전에는 읽지 않는다(handleNavigation이 로그인 후 첫 로드를 맡는다).
+  onIngestLinkChanged(() => {
+    if (state.authenticated) void loadIngestLink();
+  }).catch(() => {
+    /* Tauri IPC 브리지가 없는 환경 — 이벤트 없이 화면 진입 시 조회만 한다 */
+  });
 
   onSessionsChanged(() => {
     if (state.sessions.loaded) void loadSessions();

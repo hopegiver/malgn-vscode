@@ -8,6 +8,7 @@
 // (설계 §8) — 프론트는 {email, name}만 넘기고 OTEL_RESOURCE_ATTRIBUTES 문자열을
 // 절대 조립하지 않는다.
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export interface OtelIdentity {
   readonly email: string;
@@ -70,17 +71,17 @@ export interface OtelSavePayload {
   readonly ingestKey?: IngestKeyChange;
 }
 
-// ---- 수집키 연동 상태(허브 발급·수신확인 경로의 데이터 계약) ----
+// ---- 수집키 연동 상태(허브 자동 발급·회전·수신확인 경로의 데이터 계약) ----
 //
 // 상태 문구/원인은 기기 토큰(mhd_)·수집키(mhk_) 원문을 담지 않는다 — masked는 `mhk_`+4자뿐이고
 // failure.message는 Rust가 원인(cause)별로 고정한 문구다.
 //
-// 현재 실제로 도달하는 상태는 unlinked / applied / failed 이며 모두 settings.json 실물에서
-// 도출된다. confirmed 는 허브 수신확인 계약이 붙어야 생긴다(그 전에는 오지 않는다). issuing 은
-// 백엔드 응답으로는 오지 않는다 — 발급 호출 중 프론트가 보여 주는 진행 표시용 값이다.
+// 상태는 settings.json 실물에서 도출한 값(unlinked / applied / failed(파일 원인)) 위에 앱 안의 점검 엔진이
+// 메모리로 들고 있는 단계(issuing / confirmed / 허브 쪽 실패 원인)를 얹은 것이다. 엔진 상태는 영속하지
+// 않는다 — 앱을 다시 시작하면 첫 점검이 같은 판단을 다시 만든다. 변경은 `otel-link-changed` 이벤트로 온다.
 //
 // 'applied'는 "키가 파일에 있다"는 뜻일 뿐 수집을 보장하지 않는다. 수집 준비도는 상태값이 아니라
-// 별도 플래그(telemetryEnabled / endpoint / collectionReady)로 온다 — applied(또는 confirmed)인데
+// 별도 플래그(telemetryEnabled / endpoint / collectionReady / blockers)로 온다 — applied(또는 confirmed)인데
 // collectionReady === false 이면 "적용됐지만 수집되지 않을 수 있음"으로 구분해 보여 준다.
 export type IngestLinkState = 'unlinked' | 'issuing' | 'applied' | 'confirmed' | 'failed';
 
@@ -88,12 +89,31 @@ export type IngestLinkFailureCause =
   | 'settingsUnreadable' // settings.json을 JSON으로 해석하지 못함(파일 도출)
   | 'headerUnrecognized' // 허브 형식이 아닌 Authorization 헤더가 있음(파일 도출)
   | 'endpointNotHub' // 수집 엔드포인트가 허브 밖이거나 평문 http라 발급 전에 멈춤
-  | 'notSupported' // 허브 자동 발급·수신 확인이 아직 지원되지 않음
-  | 'deviceTokenUnavailable' // 허브 연결(기기 토큰)이 없거나 만료됨
+  | 'notReady' // 설정 파일에서 수집이 켜져 있지 않아(텔레메트리·exporter·프로토콜·엔드포인트) 발급 전에 멈춤
+  | 'featureUnavailable' // 허브에 이 기능이 아직 없음(연결은 정상, 1시간 뒤 다시 확인)
+  | 'reconnectRequired' // 허브가 이 기기의 연결을 끊음 — 재연결 필요
+  | 'notDesktopToken' // 데스크톱 앱이 발급한 토큰이 아님(재시도하지 않음)
   | 'hubRejected' // 허브가 요청을 거부함
-  | 'unreachable' // 허브에 닿지 못함
+  | 'unreachable' // 허브에 닿지 못함(자동 재시도)
+  | 'rateLimited' // 요청 빈도 초과(잠시 후 자동으로 이어 함)
   | 'invalidKeyReturned' // 허브가 돌려준 값이 수집키 형식이 아님
-  | 'applyFailed'; // 검증된 키를 설정 파일에 적용하지 못함
+  | 'applyFailed' // 발급된 키를 설정 파일에 쓰지 못함(원문은 메모리에 보관 중)
+  | 'blocked' // 이 연결로는 발급·회전 불가 — blockedReason 참고
+  | 'credentialLimit' // 사용자 유효 키 상한(5)에 도달
+  | 'rotateBudgetExceeded' // 이 기기의 회전 예산 소진 — retryAt까지 회전하지 않음
+  | 'rotationLost'; // 응답이 반복해서 끊겨 자동 회전을 멈춤
+
+// 수집이 안 될 수 있는 원인(파일 실물 기준) — 문구는 onboarding.ts가 고른다.
+export type ReadinessBlocker =
+  | 'telemetryOff'
+  | 'exporterNotOtlp'
+  | 'protocolMismatch'
+  | 'endpointMissing'
+  | 'endpointNotHub'
+  | 'endpointForeign'
+  | 'endpointInsecure';
+
+export type IngestBlockedReason = 'suspectedLeak' | 'quota';
 
 export interface IngestLinkFailure {
   readonly cause: IngestLinkFailureCause;
@@ -108,23 +128,56 @@ export interface IngestLinkStatus {
   readonly masked: string | null;
   // state === 'failed'일 때만 있다.
   readonly failure: IngestLinkFailure | null;
-  // 허브 자동 발급 / 수신 확인이 가능한가 — 지금은 둘 다 false(허브 계약 전).
+  // 앱이 수집키를 자동 발급할 수 있는 환경인가 / 수신 확인이 가능한가(허브 연결 기능이 초기화됨).
   readonly issueSupported: boolean;
   readonly receiptCheckSupported: boolean;
   // settings.json의 CLAUDE_CODE_ENABLE_TELEMETRY가 "1"인가(파일에 없으면 false).
   readonly telemetryEnabled: boolean;
-  // 유효 엔드포인트의 성격 — OtelSettings.ingestEndpoint와 같은 판정(URL은 오지 않는다).
-  // 파일을 해석하지 못했으면 전부 false.
+  // 파일 실물 기준 엔드포인트 성격(URL은 오지 않는다). targetsHub는 metrics·logs 둘 다 허브일 때만 true —
+  // OtelSettings.ingestEndpoint(설정 폼 기준, "하나라도")와 의미가 다르다.
   readonly endpoint: IngestEndpointAssessment;
-  // telemetryEnabled && endpoint.targetsHub && !endpoint.foreignHost && !endpoint.insecure.
-  // 앱 밖(셸 환경변수 등)에서 켜진 텔레메트리는 보지 못한다. state와 무관하게 계산되므로
-  // applied/confirmed 행에서만 경고 근거로 쓴다.
+  // blockers가 비어 있는가. 앱 밖(셸 환경변수 등)에서 켜진 텔레메트리는 보지 못한다.
   readonly collectionReady: boolean;
+  readonly blockers: readonly ReadinessBlocker[];
+  // 허브 기기 토큰이 있다(허브에 연결됨).
+  readonly hubConnected: boolean;
+  // 웹에서 폐기된 키라 사람의 확인을 기다린다 — 확인창을 띄운다.
+  readonly confirmRequired: boolean;
+  // 사용자가 확인을 거절했다(이번 앱 실행 동안 다시 묻지 않는다).
+  readonly confirmDeclined: boolean;
+  // 적용된 키의 첫 데이터를 기다리는 중(최대 15분) / 15분 안에 오지 않아 확인을 멈춤.
+  readonly waitingFirstData: boolean;
+  readonly firstDataTimedOut: boolean;
+  // failure.cause === 'blocked'일 때 차단 사유.
+  readonly blockedReason: IngestBlockedReason | null;
+  // failure.cause === 'rotateBudgetExceeded'일 때 다시 회전할 수 있는 시각(RFC 3339).
+  readonly retryAt: string | null;
 }
 
-// settings.json만 읽는다(허브를 부르지 않는다). 저장 직후에도 이 값은 파일 실물에서 다시 도출된다.
+// settings.json과 엔진의 메모리 상태만 읽는다(허브를 부르지 않는다).
 export async function fetchIngestLinkStatus(): Promise<IngestLinkStatus> {
   return invoke<IngestLinkStatus>('otel_ingest_link_status');
+}
+
+// [다시 시도]: 연속 유실 수·백오프·거절 기록을 비우고 1번부터 점검한다. 점검이 끝난 상태를 돌려준다.
+export async function retryIngestLink(): Promise<IngestLinkStatus> {
+  return invoke<IngestLinkStatus>('otel_link_retry');
+}
+
+// 설정 저장 뒤 호출한다. 직전 점검이 설정 파일 상태(수집 준비 안 됨·허브 밖 엔드포인트)에서 멈춘 경우에만
+// 백엔드가 다시 점검한다 — 그 밖에는 아무것도 하지 않는다.
+export async function recheckIngestLink(): Promise<IngestLinkStatus> {
+  return invoke<IngestLinkStatus>('otel_link_recheck');
+}
+
+// 재발급 확인창(confirm_required)의 답. 거절하면 이번 앱 실행 동안 다시 묻지 않는다.
+export async function answerIngestReissueConfirm(accept: boolean): Promise<IngestLinkStatus> {
+  return invoke<IngestLinkStatus>('otel_link_answer_confirm', { accept });
+}
+
+// 백엔드가 연동 상태를 바꿀 때마다 오는 이벤트(점검 시작·끝, 첫 데이터 확인 등).
+export async function onIngestLinkChanged(callback: () => void): Promise<void> {
+  await listen('otel-link-changed', () => callback());
 }
 
 export async function fetchOtelSettings(): Promise<OtelSettings> {
