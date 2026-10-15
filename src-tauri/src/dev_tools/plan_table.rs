@@ -323,6 +323,16 @@ pub(crate) const RUN_APP_NODE_INSTALL: RunPlan = RunPlan {
     env: &COMMON_ENV,
     timeout_secs: 1800,
 };
+// P2-3c: 앱이 설치한 Node의 업데이트 — 같은 앱 내장 설치 파이프라인이 새 LTS를 받아 설치하고
+// current를 전환한다(이미 최신이면 변경 없음). 설치와 마찬가지로 argv는 리터럴 하나이고 대상
+// 버전은 plan_id에 묶인다.
+pub(crate) const RUN_APP_NODE_UPDATE: RunPlan = RunPlan {
+    runner: Runner::AppNode,
+    args: &[Arg::Lit(super::app_node::UPDATE_ARG)],
+    preview_args: None,
+    env: &COMMON_ENV,
+    timeout_secs: 1800,
+};
 // ── winget(Windows 전용, 설계 §B) ──
 // G-5(보안): `--source winget` 고정(msstore 배제) + `-e`(exact) + `--id` 고정
 // 리터럴 + `--accept-*`/`--disable-interactivity`로 모든 프롬프트를 argv에서
@@ -734,6 +744,12 @@ static UPDATE_TABLE: &[Row] = &[
         tool: Some(ToolId::Node),
         method: MethodKind::WingetPackage,
         action: Action::Manual(MANUAL_NODE_WINGET_UPGRADE_UNSUPPORTED),
+    },
+    // P2-3c: 앱이 설치한 Node만 이 행에 매칭된다(분류가 `node/` 폴더 아래만 AppManagedNode로 본다).
+    Row {
+        tool: Some(ToolId::Node),
+        method: MethodKind::AppManagedNode,
+        action: Action::Run(RUN_APP_NODE_UPDATE),
     },
     Row {
         tool: None,

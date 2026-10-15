@@ -136,6 +136,12 @@ fn build_run_preview(
         .and_then(normalize_version)
         .unwrap_or_default();
 
+    // 앱이 직접 설치한 Node의 업데이트(P2-3c): 외부 프로세스 dry-run 대신 index.json으로 새 LTS가
+    // 있는지 확인해 동의 화면에 보여주고, 대상 버전을 plan_id에 묶는다.
+    if plan.runner == Runner::AppNode {
+        return app_node::build_update_preview(def, &runner_path, &args, &normalized_before);
+    }
+
     let (affected, notes, preview_reliable) = match plan.preview_args {
         Some(preview_args) => {
             let preview_argv = resolve_args(preview_args, &method)?;
@@ -712,6 +718,7 @@ mod tests {
                 | MethodKind::SystemManaged
                 | MethodKind::VersionManager
                 | MethodKind::WingetPackage
+                | MethodKind::AppManagedNode
                 | MethodKind::Unknown => {
                     assert!(
                         ALL_METHOD_KINDS.contains(&kind),
@@ -720,7 +727,7 @@ mod tests {
                 }
             }
         }
-        const ALL_METHOD_KINDS: [MethodKind; 10] = [
+        const ALL_METHOD_KINDS: [MethodKind; 11] = [
             MethodKind::HomebrewFormula,
             MethodKind::HomebrewCask,
             MethodKind::PnpmStandalone,
@@ -730,6 +737,7 @@ mod tests {
             MethodKind::SystemManaged,
             MethodKind::VersionManager,
             MethodKind::WingetPackage,
+            MethodKind::AppManagedNode,
             MethodKind::Unknown,
         ];
         for k in ALL_METHOD_KINDS {

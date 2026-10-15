@@ -133,14 +133,28 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
         .and_then(normalize_version)
         .unwrap_or_default();
 
-    let expected_plan_id = compute_plan_id(&runner_path, &args, &normalized_before);
+    // 앱이 직접 설치한 Node의 업데이트(P2-3c): 새 LTS 버전이 동적 값이라 plan_id에 묶는다 —
+    // 미리보기에서 사용자가 본 버전과 지금 결정되는 버전이 다르면 재미리보기를 요구한다.
+    let app_node_target = if plan.runner == Runner::AppNode {
+        Some(app_node::resolve_target_tag().map_err(|e| format!("최신 LTS 버전을 확인하지 못했습니다 — {e}"))?)
+    } else {
+        None
+    };
+    let bound_args = match &app_node_target {
+        Some(tag) => app_node::bind_target(&args, tag),
+        None => args.clone(),
+    };
+    let expected_plan_id = compute_plan_id(&runner_path, &bound_args, &normalized_before);
     if expected_plan_id != plan_id {
         return Err(
             "실행 계획이 미리보기 이후 바뀌었습니다. 다시 미리보기를 요청해주세요.".to_string(),
         );
     }
 
-    let output = spawn_plan_process(&runner_path, &args, &plan);
+    let output = match &app_node_target {
+        Some(tag) => app_node::run_pinned(tag),
+        None => spawn_plan_process(&runner_path, &args, &plan),
+    };
 
     // 경로를 캐시하지 않고 처음부터 다시 해석한다(결정 4.5 — brew relink, claude
     // native의 versions/<new> 갈아타기로 기존 canonical 경로가 사라져 있을 수 있다).
@@ -156,6 +170,8 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
             false,
             timed_out_message(plan.runner),
         )
+    } else if plan.runner == Runner::AppNode && output.exit_code != Some(0) {
+        (Outcome::Failed, false, app_node::failure_message(&output))
     } else if plan.runner == Runner::Winget && output.exit_code == Some(WINGET_ALREADY_LATEST_EXIT_CODE) {
         // 설계 §B.3: winget이 이미 최신일 때 돌려주는 "실패처럼 보이는 성공"
         // 종료 코드(APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE) — Failed로
@@ -226,7 +242,10 @@ pub(crate) fn perform_update(tool_id_str: &str, plan_id: &str) -> Result<DevTool
         },
         normalized_after,
         install_method: describe_install_method(&method),
-        ran_command: Some(build_command_display(&runner_path, &args)),
+        ran_command: Some(match &app_node_target {
+            Some(tag) => app_node::command_display(tag),
+            None => build_command_display(&runner_path, &args),
+        }),
         exit_code: output.exit_code,
         duration_ms: output.duration.as_millis() as u64,
         message,

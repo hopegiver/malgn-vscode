@@ -11,13 +11,18 @@
 //   1) 이전 LTS 패치 설치
 //   2) (P2-3b) 앱 실행 경로(`actions::spawn_plan_process` + install 후보 해석)로 `npm i -g pnpm` —
 //      npm_config_prefix 주입으로 npm-global에 설치되는지, `npm prefix -g` 값, Manual 강등 없음
-//   3) 최신 LTS로 갱신(current 전환 + 이전 버전 한 단계 보존) — npm-global 패키지가 살아남는지
-//   4) 같은 버전 재실행은 다운로드 없이 멱등
+//   3) (P2-3c) 앱 업데이트 경로로 최신 LTS 갱신: 설치방식 분류(appManagedNode) → 업데이트 계획 →
+//      새 LTS 미리보기(plan_id에 대상 버전 바인딩) → 실행 — current 전환 + 이전 버전 한 단계 보존,
+//      npm-global 패키지 생존
+//   4) 같은 버전 재실행은 다운로드 없이 멱등(미리보기도 "이미 최신"으로 will_run=false)
 //   5) current/bin/node --version 일치, 셸 rc·~/.npmrc 미생성
 
 use super::types::NodeVersion;
 use super::{install_version, resolve_latest, InstallEnv, Layout, NodeArch, RealEnv};
 use crate::dev_tools::actions::spawn_plan_process;
+use crate::dev_tools::app_node;
+use crate::dev_tools::classify::{describe_install_method, InstallMethod};
+use crate::dev_tools::install_resolver::{resolve_plan, ResolvedAction};
 use crate::dev_tools::install_resolver::{resolve_install_plan, InstallResolution, ResolvedRunners};
 use crate::dev_tools::plan_table::{Runner, RunPlan};
 use crate::dev_tools::runners::install_prefix_writable_with;
@@ -136,11 +141,36 @@ fn sandbox_roundtrip_real_nodejs_org() {
     println!("=== [1b] npm-global/bin/pnpm --version (앱 PATH) → code={code} out={out:?} err={err:?}");
     assert_eq!(code, 0, "앱 PATH에 node가 있어야 shim이 동작합니다");
 
-    // 2) 최신으로 갱신.
+    // 2) 앱 업데이트 경로(P2-3c)로 최신 LTS 갱신.
+    let node_current = layout.node_bin_dir().join("node").to_string_lossy().to_string();
+    let resolved = resolve_plan(ToolId::Node, &node_current);
+    println!("=== [2] 설치방식 분류 = {:?}", resolved.method);
+    assert_eq!(resolved.method, InstallMethod::AppManagedNode);
+    assert_eq!(describe_install_method(&resolved.method), "appManagedNode");
+    let (runner_path, update_plan) = match resolved.action {
+        ResolvedAction::Run { runner_path, plan } => (runner_path, plan),
+        ResolvedAction::Manual(mp) => panic!("앱이 설치한 Node는 Manual이면 안 됩니다: {}", mp.message_ko),
+    };
+    assert_eq!(update_plan.runner, Runner::AppNode);
+    let update_args: Vec<String> = update_plan.args.iter().map(|a| match a {
+        crate::dev_tools::plan_table::Arg::Lit(s) => s.to_string(),
+        other => panic!("리터럴 인자만 허용: {other:?}"),
+    }).collect();
+    let preview = app_node::build_update_preview(
+        crate::dev_tools::tool_definition(ToolId::Node),
+        &runner_path,
+        &update_args,
+        older.to_tag().trim_start_matches('v'),
+    )
+    .expect("업데이트 미리보기");
+    println!("=== [2] 미리보기: will_run={} reliable={} notes={}", preview.will_run, preview.preview_reliable, preview.notes);
+    assert!(preview.will_run, "이전 버전이 설치돼 있으면 새 LTS 갱신이 가능해야 합니다");
+    assert!(preview.notes.contains(&latest.to_tag()));
     let started = std::time::Instant::now();
-    let r2 = install_version(&env, &layout, arch, latest, &cancel).expect("최신 버전 설치");
-    println!("=== [2] {} 갱신 {:?}\n{}", latest.to_tag(), started.elapsed(), r2.log.join("\n"));
-    assert_eq!(r2.previous, Some(older));
+    let run = app_node::run_pinned(&latest.to_tag());
+    println!("=== [2] 갱신 실행 {:?} exit={:?}\n{}", started.elapsed(), run.exit_code, run.stdout);
+    assert_eq!(run.exit_code, Some(0), "stderr: {}", run.stderr);
+    assert!(run.stdout.contains("한 단계 롤백용"), "이전 버전 보존 안내가 있어야 합니다");
     assert_eq!(std::fs::read_link(layout.current_link()).unwrap().to_string_lossy(), latest.to_tag());
     assert!(layout.version_dir(older).join("bin").join("node").exists(), "이전 버전은 한 단계 남아야 합니다");
 
@@ -151,6 +181,15 @@ fn sandbox_roundtrip_real_nodejs_org() {
     assert_eq!(code, 0);
 
     // 3) 멱등 재실행: 다운로드 없이 빠르게 끝나야 한다.
+    let preview_again = app_node::build_update_preview(
+        crate::dev_tools::tool_definition(ToolId::Node),
+        &runner_path,
+        &update_args,
+        latest.to_tag().trim_start_matches('v'),
+    )
+    .expect("재미리보기");
+    println!("=== [3] 최신 상태 미리보기: will_run={} notes={}", preview_again.will_run, preview_again.notes);
+    assert!(!preview_again.will_run);
     let started = std::time::Instant::now();
     let r3 = install_version(&env, &layout, arch, latest, &cancel).expect("재실행");
     let rerun = started.elapsed();

@@ -70,6 +70,12 @@ impl NodeVersion {
         Self::parse_numbers(rest)
     }
 
+    /// `node --version`을 `normalize_version`으로 정규화한 값("24.22.0")처럼 `v`가
+    /// 없는 형태도 같은 엄격함으로 파싱한다.
+    pub(crate) fn parse_plain(s: &str) -> Option<Self> {
+        Self::parse_numbers(s)
+    }
+
     fn parse_numbers(s: &str) -> Option<Self> {
         let mut parts = s.split('.');
         let major = parse_component(parts.next()?)?;

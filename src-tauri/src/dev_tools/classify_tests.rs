@@ -766,3 +766,84 @@ fn standard_prefixes_still_classify_as_formula_with_defaults() {
         );
     }
 }
+
+// ── P2-3c: 앱이 설치한 Node의 설치방식 분류 ──
+
+#[test]
+fn app_installed_node_is_classified_as_its_own_method() {
+    let prefixes = vec!["/opt/homebrew".to_string(), "/usr/local".to_string()];
+    let home = PathBuf::from("/Users/hopegiver");
+    let node = classify_install_method(
+        &PathBuf::from("/Users/hopegiver/.local/share/malgn-agent/node/v24.22.0/bin/node"),
+        Some(&home),
+        None,
+        &prefixes,
+    );
+    assert_eq!(node, InstallMethod::AppManagedNode);
+    assert_eq!(node.kind(), MethodKind::AppManagedNode);
+    assert_eq!(describe_install_method(&node), "appManagedNode");
+}
+
+#[test]
+fn app_managed_classification_does_not_swallow_lookalikes_or_the_npm_global_prefix() {
+    let prefixes = vec!["/opt/homebrew".to_string(), "/usr/local".to_string()];
+    let home = PathBuf::from("/Users/hopegiver");
+    // 형제 접두(성분 단위 비교)·다른 폴더·홈 정보 없음은 앱 설치본이 아니다.
+    for p in [
+        "/Users/hopegiver/.local/share/malgn-agent/node-evil/v24.22.0/bin/node",
+        "/Users/hopegiver/.local/share/malgn-agent/nodes/bin/node",
+        "/Users/other/.local/share/malgn-agent/node/v24.22.0/bin/node",
+    ] {
+        let m = classify_install_method(&PathBuf::from(p), Some(&home), None, &prefixes);
+        assert_ne!(m, InstallMethod::AppManagedNode, "{p}");
+    }
+    let no_home = classify_install_method(
+        &PathBuf::from("/Users/hopegiver/.local/share/malgn-agent/node/v24.22.0/bin/node"),
+        None,
+        None,
+        &prefixes,
+    );
+    assert_ne!(no_home, InstallMethod::AppManagedNode);
+    // npm 전역 prefix의 패키지는 Node가 아니라 기존 NpmGlobal 규칙을 탄다(claude 갱신은 npm).
+    let claude = classify_install_method(
+        &PathBuf::from("/Users/hopegiver/.local/share/malgn-agent/npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"),
+        Some(&home),
+        None,
+        &prefixes,
+    );
+    assert_eq!(claude, InstallMethod::NpmGlobal { package: "@anthropic-ai/claude-code".to_string() });
+    // Homebrew Node는 그대로 HomebrewFormula.
+    let brew = classify_install_method(
+        &PathBuf::from("/opt/homebrew/Cellar/node/24.22.0/bin/node"),
+        Some(&home),
+        None,
+        &prefixes,
+    );
+    assert!(matches!(brew, InstallMethod::HomebrewFormula { .. }));
+}
+
+#[test]
+fn app_managed_node_updates_through_the_app_runner_and_nothing_else_does() {
+    assert!(matches!(
+        lookup_action(ToolId::Node, MethodKind::AppManagedNode),
+        Action::Run(plan) if plan.runner == crate::dev_tools::plan_table::Runner::AppNode
+    ));
+    // 다른 도구가 이 방식으로 분류되는 일은 없지만, 분류되더라도 앱 러너로 실행되지 않는다(Manual).
+    for tool in [ToolId::Claude, ToolId::Gh, ToolId::Git, ToolId::Pnpm, ToolId::Wrangler] {
+        assert!(
+            matches!(lookup_action(tool, MethodKind::AppManagedNode), Action::Manual(_)),
+            "{tool:?}"
+        );
+    }
+}
+
+// Windows 분류기는 이 방식을 절대 내지 않는다(회귀 없음) — 대표 후보 전수에 대해 확인.
+#[test]
+fn windows_classifier_never_returns_app_managed_node() {
+    let n = crate::dev_tools::win_candidate_test_support::for_every_windows_candidate(|_def, _tpl, expanded| {
+        let roots = crate::dev_tools::win_candidate_test_support::synthetic_windows_env_roots();
+        let m = classify_install_method_windows(&PathBuf::from(&expanded), &roots);
+        assert_ne!(m.kind(), MethodKind::AppManagedNode, "{expanded}");
+    });
+    assert!(n > 0);
+}

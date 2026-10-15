@@ -43,6 +43,10 @@ pub(crate) enum InstallMethod {
     // id: String }`과 달리 데이터를 갖지 않는다 — 쓰이지 않을 값을 지어내지
     // 않기 위한 의도적 단순화다.
     WingetPackage,
+    // P2-3c: 앱이 사용자 공간(`~/.local/share/malgn-agent/node/<버전>`)에 직접 설치한 Node.
+    // 업데이트는 같은 앱 내장 설치 파이프라인(Runner::AppNode)이 새 LTS를 받아 current를
+    // 원자 전환한다 — 패키지 매니저가 아니라 앱이 소유한 설치라 별도 방식으로 식별한다.
+    AppManagedNode,
     Unknown(String),
 }
 
@@ -57,6 +61,7 @@ pub(crate) enum MethodKind {
     SystemManaged,
     VersionManager,
     WingetPackage,
+    AppManagedNode,
     Unknown,
 }
 
@@ -72,6 +77,7 @@ impl InstallMethod {
             InstallMethod::SystemManaged => MethodKind::SystemManaged,
             InstallMethod::VersionManager(_) => MethodKind::VersionManager,
             InstallMethod::WingetPackage => MethodKind::WingetPackage,
+            InstallMethod::AppManagedNode => MethodKind::AppManagedNode,
             InstallMethod::Unknown(_) => MethodKind::Unknown,
         }
     }
@@ -88,6 +94,8 @@ pub(crate) fn describe_install_method(method: &InstallMethod) -> String {
         InstallMethod::SystemManaged => "systemManaged".to_string(),
         InstallMethod::VersionManager(name) => format!("versionManager({name})"),
         InstallMethod::WingetPackage => "wingetPackage".to_string(),
+        // 화면 표기("맑은에이전트 설치")는 프런트(devToolsText.ts installMethodLabel)가 이 코드를 받아 만든다.
+        InstallMethod::AppManagedNode => "appManagedNode".to_string(),
         InstallMethod::Unknown(path) => format!("unknown({path})"),
     }
 }
@@ -125,6 +133,15 @@ pub(crate) fn classify_install_method(
             return InstallMethod::HomebrewCask {
                 cask: segments[idx + 1].to_string(),
             };
+        }
+    }
+
+    // 2b. AppManagedNode (P2-3c): `<home>/.local/share/malgn-agent/node/…` 아래. npm 전역 prefix
+    // (`npm-global/`)는 node/ 밖 형제 폴더라 여기 걸리지 않고 아래 NpmGlobal 규칙을 탄다.
+    // 성분 단위 비교(`Path::starts_with`)라 `node-evil/` 같은 형제 접두는 걸리지 않는다.
+    if let Some(h) = home {
+        if canonical.starts_with(super::node_install::Layout::for_home(h).node_root()) {
+            return InstallMethod::AppManagedNode;
         }
     }
 

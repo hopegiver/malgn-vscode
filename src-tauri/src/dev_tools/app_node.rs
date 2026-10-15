@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 /// 설치 계획의 리터럴 argv 토큰(plan_table.rs RUN_APP_NODE_*). 실제 설치 버전은 동적 값이라
 /// argv가 아니라 `bind_target`으로 plan_id에만 묶는다.
 pub(crate) const INSTALL_ARG: &str = "install-lts";
+/// 업데이트 계획의 리터럴 argv 토큰(plan_table.rs RUN_APP_NODE_UPDATE).
+pub(crate) const UPDATE_ARG: &str = "update-lts";
 
 /// 사용자에게 보이는 설치 주체 라벨(`installer_label`, 메시지에 "…(으)로 설치되었습니다"로 쓰임).
 pub(crate) const INSTALLER_LABEL: &str = "맑은에이전트";
@@ -170,16 +172,63 @@ pub(crate) fn build_install_preview(
     argv: &[String],
 ) -> Result<DevToolPreview, String> {
     let tag = resolve_target_tag().map_err(|e| format!("최신 LTS 버전을 확인하지 못했습니다 — {e}"))?;
-    Ok(DevToolPreview {
+    Ok(install_preview_for_tag(def, runner_path, argv, &tag))
+}
+
+/// 설치됨 → 업데이트 미리보기. `installed_plain`은 `normalize_version`을 거친 현재 버전("24.21.0").
+pub(crate) fn build_update_preview(
+    def: &DevTool,
+    runner_path: &str,
+    argv: &[String],
+    installed_plain: &str,
+) -> Result<DevToolPreview, String> {
+    let tag = resolve_target_tag().map_err(|e| format!("최신 LTS 버전을 확인하지 못했습니다 — {e}"))?;
+    update_preview_for_tag(def, runner_path, argv, installed_plain, &tag)
+}
+
+fn install_preview_for_tag(def: &DevTool, runner_path: &str, argv: &[String], tag: &str) -> DevToolPreview {
+    DevToolPreview {
         id: def.key.to_string(),
-        plan_id: compute_plan_id(runner_path, &bind_target(argv, &tag), ""),
+        plan_id: compute_plan_id(runner_path, &bind_target(argv, tag), ""),
         will_run: true,
-        command_display: command_display(&tag),
+        command_display: command_display(tag),
         affected: vec![def.label.to_string()],
         notes: format!(
             "https://nodejs.org/dist/ 에서 Node.js {tag}(LTS)을 내려받아 공식 체크섬(SHA256)과 Apple 코드서명(OpenJS Foundation, Team ID HX7739G8FX)을 확인한 뒤 {}에 설치합니다. 약 50MB를 받으며 관리자 권한이 필요 없고 셸 설정·~/.npmrc는 바꾸지 않습니다. 확인에 실패하면 아무것도 설치하지 않습니다.",
-            install_dir_display(&tag)
+            install_dir_display(tag)
         ),
+        preview_reliable: true,
+    }
+}
+
+fn update_preview_for_tag(
+    def: &DevTool,
+    runner_path: &str,
+    argv: &[String],
+    installed_plain: &str,
+    tag: &str,
+) -> Result<DevToolPreview, String> {
+    let target = NodeVersion::parse_tag(tag).ok_or_else(|| format!("내부 오류: 버전 형식 {tag}"))?;
+    // 현재 버전을 읽지 못했거나 형식이 다르면 "새 버전이 있다"고 단정하지 않고 실행 가능으로 둔다
+    // (실행해도 같은 버전이면 변경 없이 끝난다).
+    let installed = NodeVersion::parse_plain(installed_plain);
+    let newer_available = installed.map(|cur| cur < target).unwrap_or(true);
+    let current_label = installed.map(|v| v.to_tag()).unwrap_or_else(|| installed_plain.to_string());
+    let notes = if newer_available {
+        format!(
+            "새 LTS {tag}이(가) 있습니다(현재 {current_label}). nodejs.org 공식 배포본을 내려받아 SHA256과 코드서명(Team ID HX7739G8FX)을 확인한 뒤 {}에 설치하고 `current`를 새 버전으로 전환합니다. 이전 버전은 한 단계 남겨 둡니다. 확인에 실패하면 현재 설치를 그대로 둡니다.",
+            install_dir_display(tag)
+        )
+    } else {
+        format!("이미 최신 LTS입니다(현재 {current_label}, 최신 {tag}). 실행해도 변경되지 않습니다.")
+    };
+    Ok(DevToolPreview {
+        id: def.key.to_string(),
+        plan_id: compute_plan_id(runner_path, &bind_target(argv, tag), installed_plain),
+        will_run: newer_available,
+        command_display: command_display(tag),
+        affected: vec![def.label.to_string()],
+        notes,
         preview_reliable: true,
     })
 }
@@ -431,5 +480,67 @@ mod tests {
             }
         }
         assert!(checked.len() >= 6, "claude 후보 목록 파일을 충분히 찾지 못했습니다(가드가 공허해짐): {checked:?}");
+    }
+
+    // ── P2-3c: 미리보기(순수 부분) ──
+
+    fn node_def() -> &'static DevTool {
+        super::super::tool_definition(super::super::ToolId::Node)
+    }
+
+    #[test]
+    fn update_preview_offers_the_run_only_when_a_newer_lts_exists() {
+        let args = vec![UPDATE_ARG.to_string()];
+        let newer = update_preview_for_tag(node_def(), "/r", &args, "24.21.0", "v24.22.0").unwrap();
+        assert!(newer.will_run);
+        assert!(newer.notes.contains("새 LTS v24.22.0"), "{}", newer.notes);
+        assert!(newer.notes.contains("24.21.0"));
+        assert!(newer.preview_reliable);
+
+        let same = update_preview_for_tag(node_def(), "/r", &args, "24.22.0", "v24.22.0").unwrap();
+        assert!(!same.will_run);
+        assert!(same.notes.contains("이미 최신"));
+        // 현재가 더 높은 경우(예: 이후 LTS가 회수됨)도 업그레이드를 권하지 않는다.
+        let ahead = update_preview_for_tag(node_def(), "/r", &args, "24.30.0", "v24.22.0").unwrap();
+        assert!(!ahead.will_run);
+        // 현재 버전을 해석할 수 없으면 새 버전이 있다고 단정하지 않되 실행은 열어 둔다.
+        let unknown = update_preview_for_tag(node_def(), "/r", &args, "알 수 없음", "v24.22.0").unwrap();
+        assert!(unknown.will_run);
+    }
+
+    #[test]
+    fn update_and_install_previews_bind_the_target_version_into_plan_id() {
+        let args = vec![UPDATE_ARG.to_string()];
+        let a = update_preview_for_tag(node_def(), "/r", &args, "24.21.0", "v24.22.0").unwrap();
+        let b = update_preview_for_tag(node_def(), "/r", &args, "24.21.0", "v24.23.0").unwrap();
+        let c = update_preview_for_tag(node_def(), "/r", &args, "24.20.0", "v24.22.0").unwrap();
+        assert_ne!(a.plan_id, b.plan_id, "대상 버전이 바뀌면 plan_id가 달라야 재미리보기를 강제한다");
+        assert_ne!(a.plan_id, c.plan_id, "현재 버전이 바뀌어도 plan_id가 달라야 한다");
+        let install = install_preview_for_tag(node_def(), "/r", &[INSTALL_ARG.to_string()], "v24.22.0");
+        assert!(install.will_run);
+        assert!(install.notes.contains("관리자 권한이 필요 없고"));
+        assert!(install.notes.contains("HX7739G8FX"));
+        assert!(install.command_display.contains("v24.22.0"));
+    }
+
+    // 실제 홈 기준 앱 설치 경로를 가진 Node는 앱 러너(Run)로 해석된다 — 설치방식 분류와 계획 해석이 이어지는지.
+    #[test]
+    fn resolve_plan_routes_an_app_installed_node_to_the_app_runner() {
+        use super::super::install_resolver::{resolve_plan, ResolvedAction};
+        let Some(layout) = current_layout() else { return };
+        if platform_now() != Platform::Mac {
+            return;
+        }
+        let node_bin = layout.node_bin_dir().join("node").to_string_lossy().to_string();
+        let resolved = resolve_plan(super::super::ToolId::Node, &node_bin);
+        assert_eq!(resolved.method, super::super::classify::InstallMethod::AppManagedNode);
+        match resolved.action {
+            ResolvedAction::Run { plan, runner_path } => {
+                assert_eq!(plan.runner, Runner::AppNode);
+                assert_eq!(plan.args.len(), 1);
+                assert_eq!(runner_path, layout.node_root().to_string_lossy());
+            }
+            ResolvedAction::Manual(_) => panic!("앱이 설치한 Node는 Manual이 아니라 앱 러너로 갱신돼야 합니다"),
+        }
     }
 }
