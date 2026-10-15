@@ -45,6 +45,8 @@ import { fetchDevTools, previewDevToolUpdate, updateDevTool, installDevTool, ope
 import type { DevToolStatus, DevToolPreview, DevToolActionResult, TerminalLaunchResult } from '../devToolsApi';
 import { parseRoute } from '../route';
 import { orderByInstallDependency, unmetInstallDependencies, isInstallConfirmedOutcome, describeUnmetDependencies, pendingDependentsOf, planInstallChain, planBatchInstall, describeBatchConsent } from '../devToolsOrder';
+import { isVersionUnverifiedTool, toolStatusLabel, classifyRun, updatedSummary, versionChangeNote, chainStuckToast, chainConsentMessage } from '../devToolsText';
+import type { RunKind } from '../devToolsText';
 
 // IA §4-5(§7-6): 개발 도구 사이드바 행을 클릭하면 본문의 해당 행으로 스크롤 +
 // 일시 강조한다(새 라우트·API 없음, 순수 클라이언트 동작). 강조는 영속 상태가
@@ -154,14 +156,21 @@ async function copyToClipboard(text: string, label: string): Promise<void> {
   }
 }
 
+// 실행 시작 시점의 도구 상태 — 결과 패널은 설치 뒤 재조회된 목록(경로가 새로 생김)으로 그려지므로
+// "실행 전에 경로가 있었는지"는 여기에 따로 붙잡아 둔다(신규 설치 vs 이전 버전 미확인 업데이트 구분용).
+const runOrigin: Record<string, { wasInstalled: boolean; hadPathBefore: boolean }> = {};
+
+function runKindOf(toolId: string, result: DevToolActionResult): RunKind {
+  const origin = runOrigin[toolId] ?? { wasInstalled: false, hadPathBefore: false };
+  return classifyRun({ versionBefore: result.versionBefore, ...origin });
+}
+
 function notifyOutcome(tool: DevToolStatus, result: DevToolActionResult): void {
   switch (result.outcome) {
     case 'updated': {
-      // R3-03: 패널(renderResultPanel)과 같은 규칙(versionBefore 유무)으로
-      // 신규 설치/업데이트를 구분한다 — 이전엔 outcome만 보고 무조건
-      // "업데이트되었습니다"라고 말해 신규 설치 성공 때도 동사가 틀렸다.
-      const fresh = !result.versionBefore;
-      showToast(`${tool.name}: v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 ${fresh ? '설치' : '업데이트'}되었습니다`);
+      // R3-03: 패널(renderResultPanel)과 같은 규칙으로 설치/업데이트를 구분한다. R20: versionBefore가 없다고
+      // 곧 신규 설치는 아니다 — 실행 전에 경로가 있었으면 "업데이트(이전 버전 미확인)"로 사실대로 말한다.
+      showToast(`${tool.name}: ${updatedSummary(runKindOf(tool.id, result), result.normalizedAfter ?? result.versionAfter ?? '?')}`);
       break;
     }
     case 'alreadyLatest':
@@ -220,6 +229,7 @@ async function runPlan(tool: DevToolStatus, preview: DevToolPreview): Promise<De
   startElapsedTimer(tool.id);
   notifyChange();
   let outcome: DevToolActionResult | null = null;
+  runOrigin[tool.id] = { wasInstalled: tool.installed, hadPathBefore: !!tool.path };
   try {
     const result = tool.installed ? await updateDevTool(tool.id, preview.planId) : await installDevTool(tool.id, preview.planId);
     outcome = result;
@@ -490,8 +500,9 @@ async function previewAndRun(tool: DevToolStatus): Promise<DevToolActionResult |
 //     MAX_CHAIN_ROUNDS로 끊는다. 이 함수는 재진입하지 않는다(chainRunning).
 //  4. 각 도구는 배치와 같은 previewAndRun을 거치므로 previewReliable=false·영향 항목 2개 이상은
 //     실행하지 않고 개별 확인 대기로 남는다.
-// macOS에서 Node.js는 자동 설치 대상이 아니므로(구조적 manual) 이 흐름은 사용자가 직접 설치한
-// 뒤의 "다시 확인"에서만 시작된다.
+// 시작 경로: 미설치 Node.js는 macOS에서 구조적 manual이라 사용자가 직접 설치한 뒤의 "다시 확인"에서
+// 시작된다. 예외로 경로가 있는 Homebrew Node(버전 미확인, run)의 업데이트가 버전을 확인하면 배치
+// 끝(handleUpdateAll)에서도 시작된다.
 let chainRunning = false;
 const MAX_CHAIN_ROUNDS = 3;
 
@@ -506,14 +517,14 @@ async function offerInstallChain(prevItems: readonly DevToolStatus[], handled: R
       if (!plan) return;
       const causeNames = plan.causes.map((t) => t.name).join(', ');
       if (plan.candidates.length === 0) {
-        // 선행 도구는 확인됐지만 앱이 이어 설치할 수 있는 경로를 아직 찾지 못했다 — 말없이
-        // 끝내지 않고 사실대로 알린다(각 항목의 "안내 보기"로 수동 진행).
-        showToast(`${causeNames} 설치가 확인되었지만 ${plan.stuck.map((t) => t.name).join(', ')}은(는) 앱이 아직 설치 경로를 찾지 못했습니다 — 각 항목의 안내를 확인하세요`);
+        // 선행 도구는 확인됐지만 앱이 이어 설치할 수 없는 도구만 남았다 — 말없이 끝내지 않고 알린다.
+        // 이유는 경로 미발견·쓰기 권한 등 여러 가지라 하나로 단정하지 않는다(각 항목의 안내에 있다).
+        showToast(chainStuckToast(causeNames, plan.stuck.map((t) => t.name).join(', ')));
         return;
       }
       const names = plan.candidates.map((t) => t.name).join(', ');
       const proceed = await confirmDialog(
-        `${causeNames} 설치가 확인되었습니다. 이어서 다음 ${plan.candidates.length}개 도구를 설치합니다: ${names}. 각 도구는 미리보기로 영향 범위를 확인한 뒤 설치하며, 확인할 수 없는 도구는 실행하지 않고 개별 확인으로 남깁니다. 계속할까요?`,
+        chainConsentMessage(causeNames, names, plan.candidates.length, plan.stuck.map((t) => t.name).join(', ')),
         { title: '이어서 설치', confirmLabel: '이어서 설치' }
       );
       for (const t of plan.candidates) done.add(t.id);
@@ -612,9 +623,10 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   const pendingPreview = state.devTools.preview[tool.id] ?? null;
   const lastResult = state.devTools.lastResult[tool.id] ?? null;
 
+  // 경로는 있는데 버전을 못 읽은 도구는 "설치 안 됨"이 아니라 "버전 미확인"으로 말한다(R20 RV-007).
   const statusBadge = tool.installed
-    ? el('span', { className: 'badge badge-active' }, [tool.version ?? '설치됨'])
-    : el('span', { className: 'badge badge-archived' }, ['설치 안 됨']);
+    ? el('span', { className: 'badge badge-active' }, [toolStatusLabel(tool, '설치 안 됨')])
+    : el('span', { className: 'badge badge-archived' }, [toolStatusLabel(tool, '설치 안 됨')]);
 
   const metaParts = [tool.id, tool.installMethod, tool.path].filter((v): v is string => !!v);
   const metaLine = el('div', { className: 'devtool-binary' }, [metaParts.join(' · ')]);
@@ -625,7 +637,7 @@ function renderDevToolItem(tool: DevToolStatus): HTMLElement {
   const badges = [statusBadge];
   if (tool.required) {
     const requiredBadge = el('span', { className: 'badge badge-archived' }, ['필수']);
-    if (!tool.installed) requiredBadge.style.color = 'var(--color-danger)';
+    if (!tool.installed && !isVersionUnverifiedTool(tool)) requiredBadge.style.color = 'var(--color-danger)';
     badges.push(requiredBadge);
   }
 
@@ -846,11 +858,9 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
         ? 'devtool-panel-danger'
         : 'devtool-panel-warn'; // unknownAfter / timedOut / notSupported
 
-  const installedFresh = !result.versionBefore;
+  const runKind = runKindOf(tool.id, result);
   const summary: Record<DevToolActionResult['outcome'], string> = {
-    updated: installedFresh
-      ? `✓ v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 설치되었습니다`
-      : `✓ v${result.normalizedAfter ?? result.versionAfter ?? '?'}(으)로 업데이트되었습니다`,
+    updated: `✓ ${updatedSummary(runKind, result.normalizedAfter ?? result.versionAfter ?? '?')}`,
     alreadyLatest: '✓ 이미 최신입니다',
     unknownAfter: '⚠ 명령은 성공했다고 보고했으나 실제 버전을 확인하지 못했습니다(확인되지 않음)',
     timedOut: '⏱ 상태 불명 — 시간이 초과되었습니다. 다시 확인해주세요',
@@ -864,14 +874,10 @@ function renderResultPanel(tool: DevToolStatus, result: DevToolActionResult): HT
     el('div', { className: 'devtool-panel-verified' }, [result.verified ? '확인됨(verified)' : '확인되지 않음(unverified)']),
   ];
 
-  if (result.versionBefore || result.versionAfter) {
-    // R3-04: 신규 설치(versionBefore 없음)에서는 "? → 2.0.68"처럼 물음표를
-    // 노출하지 않고 "신규 설치: 2.0.68"로 말한다.
-    const notes = !result.versionBefore && result.versionAfter
-      ? `신규 설치: ${result.normalizedAfter ?? result.versionAfter}`
-      : `${result.versionBefore ?? '?'} → ${result.versionAfter ?? '?'}`;
-    children.push(el('div', { className: 'devtool-panel-notes' }, [notes]));
-  }
+  // R3-04: 이전 버전이 없을 때 "? → 2.0.68"처럼 물음표를 노출하지 않는다. R20: 그 경우도 실행 전 경로가
+  // 있었으면 "신규 설치"가 아니라 "이전 버전 미확인 → X"로 적는다.
+  const versionNote = versionChangeNote(runKind, result.versionBefore, result.versionAfter, result.normalizedAfter);
+  if (versionNote) children.push(el('div', { className: 'devtool-panel-notes' }, [versionNote]));
 
   if (!result.pathVisible && result.pathHint) {
     children.push(
